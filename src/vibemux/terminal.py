@@ -67,8 +67,9 @@ class MockTerminalBackend:
         return list(self.panes.values())
 
     def send_text(self, pane_id: str, text: str, *, submit: bool = False) -> SendReceipt:
-        if pane_id not in self.panes:
-            raise TerminalResourceMismatchError(pane_id)
+        # Mock backend is process-local by design; persisted pane IDs remain valid
+        # across CLI invocations so offline workflows can replay send/stop calls.
+        self.panes.setdefault(pane_id, Pane(pane_id, "", alive=True))
         self.messages.append((pane_id, text, submit))
         return _receipt(text, submit)
 
@@ -211,4 +212,3 @@ class TmuxBackend:
     def activate(self, location: TerminalLocation) -> None:
         if location.workspace_id:
             self._run(["switch-client", "-t", location.workspace_id])
-

@@ -28,8 +28,9 @@ def ensure_repository(repo_root: Path) -> None:
 
 def ensure_clean_with_commit(repo_root: Path) -> str:
     ensure_repository(repo_root)
-    status = git_run(repo_root, ["status", "--porcelain"]).stdout.strip()
-    if status:
+    status_lines = git_run(repo_root, ["status", "--porcelain"]).stdout.splitlines()
+    relevant = [line for line in status_lines if not line[3:].replace("\\", "/").startswith(".vibemux/")]
+    if relevant:
         raise DirtyRepositoryError("repository must be clean")
     commit = git_run(repo_root, ["rev-parse", "HEAD"], check=False)
     if commit.returncode != 0:

@@ -117,3 +117,7 @@ def main() -> None:
     except VibeMuxError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(code=4) from exc
+
+
+if __name__ == "__main__":
+    main()

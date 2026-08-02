@@ -89,7 +89,7 @@ class Storage:
     def save_run(self, run: Run, event: Event | None = None) -> None:
         terminal = json.dumps(asdict(run.terminal), ensure_ascii=False) if run.terminal else None
         with self.connection:
-            self.connection.execute("INSERT OR REPLACE INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(run.run_id), str(run.task_id), str(run.project_id), run.harness, run.role, run.protocol, run.execution_backend, run.terminal_backend, run.status.value, run.branch, run.worktree, terminal, run.created_at.isoformat(), json.dumps(run.metadata, ensure_ascii=False)))
+            self.connection.execute("INSERT OR REPLACE INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(run.run_id), str(run.task_id), str(run.project_id), run.harness, run.role, run.protocol, run.execution_backend, run.terminal_backend, run.status.value, run.branch, run.worktree, terminal, run.created_at.isoformat(), json.dumps(run.metadata, ensure_ascii=False)))
             if event:
                 self._append_event(event)
 
@@ -121,4 +121,3 @@ class Storage:
     def list_events(self, project_id: UUID) -> list[Event]:
         rows = self.connection.execute("SELECT * FROM events WHERE project_id = ? ORDER BY sequence", (str(project_id),))
         return [Event(event_type=row["event_type"], project_id=UUID(row["project_id"]), task_id=UUID(row["task_id"]) if row["task_id"] else None, run_id=UUID(row["run_id"]) if row["run_id"] else None, payload=json.loads(row["payload"]), event_id=UUID(row["event_id"]), sequence=row["sequence"], timestamp=datetime.fromisoformat(row["timestamp"]), actor=row["actor"]) for row in rows]
-

@@ -28,8 +28,12 @@ def main() -> int:
         env = dict(__import__("os").environ, PYTHONPATH=str(root / "src"))
         cli = [sys.executable, "-m", "vibemux.cli"]
         subprocess.run([*cli, "init", "--terminal-backend", "mock"], cwd=repo, env=env, check=True)
-        task = subprocess.run([*cli, "task", "smoke"], cwd=repo, env=env, text=True, capture_output=True, check=True).stdout.strip()
-        run_id = subprocess.run([*cli, "spawn", task, "--terminal-backend", "mock"], cwd=repo, env=env, text=True, capture_output=True, check=True).stdout.strip()
+        task_result = subprocess.run([*cli, "task", "smoke"], cwd=repo, env=env, text=True, capture_output=True, check=True)
+        task = task_result.stdout.strip()
+        spawn_result = subprocess.run([*cli, "spawn", task, "--terminal-backend", "mock"], cwd=repo, env=env, text=True, capture_output=True, check=False)
+        if spawn_result.returncode:
+            raise RuntimeError(spawn_result.stderr or spawn_result.stdout)
+        run_id = spawn_result.stdout.strip()
         subprocess.run([*cli, "send", run_id, "PING", "--submit"], cwd=repo, env=env, check=True)
         subprocess.run([*cli, "stop", run_id], cwd=repo, env=env, check=True)
     print("PASS: mock workflow")
@@ -38,4 +42,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
