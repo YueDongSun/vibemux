@@ -34,15 +34,22 @@ def test_storage_event_order_and_roundtrip(tmp_path: Path) -> None:
     task = Task("demo", project.project_id)
     storage.save_task(task, Event("task_created", project.project_id, task.task_id))
     events = storage.list_events(project.project_id)
+    stored_task = storage.get_task(task.task_id)
     assert events[0].event_type == "task_created"
     assert events[0].sequence == 1
-    assert storage.get_task(task.task_id).title == "demo"
+    assert stored_task is not None
+    assert stored_task.title == "demo"
     storage.close()
 
 
 def test_mock_terminal_never_executes_text(tmp_path: Path) -> None:
     backend = MockTerminalBackend()
-    location = backend.open(__import__("vibemux.models", fromlist=["TerminalLocation"]).TerminalLocation("mock"), ["echo", "ignored"], tmp_path)
+    location = backend.open(
+        __import__("vibemux.models", fromlist=["TerminalLocation"]).TerminalLocation("mock"),
+        ["echo", "ignored"],
+        tmp_path,
+    )
+    assert location.pane_id is not None
     receipt = backend.send_text(location.pane_id, "hello; touch pwned", submit=True)
     assert receipt.byte_count > 0
     assert not (tmp_path / "pwned").exists()
@@ -54,6 +61,7 @@ def test_path_boundary_and_branch_safety(tmp_path: Path) -> None:
     assert not is_within(tmp_path / "worktrees-evil", root)
     assert sanitize_branch("vibemux/run 1") == "vibemux/run-1"
     from vibemux.errors import WorktreeError
+
     with pytest.raises(WorktreeError):
         sanitize_branch("../main")
 
@@ -67,7 +75,11 @@ def test_wezterm_command_contract(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         stdout = "42\n"
         stderr = ""
 
-    monkeypatch.setattr(backend, "_run", lambda args, input_text=None: calls.append((args, input_text)) or Result())
+    def record_call(args: list[str], input_text: str | None = None) -> Result:
+        calls.append((args, input_text))
+        return Result()
+
+    monkeypatch.setattr(backend, "_run", record_call)
     from vibemux.models import TerminalLocation
 
     backend.open(TerminalLocation("wezterm"), ["python", "-m", "x"], tmp_path)

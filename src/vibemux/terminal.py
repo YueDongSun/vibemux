@@ -5,14 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from .errors import TerminalBackendError, TerminalNotAvailableError, TerminalResourceMismatchError
+from .command_runner import Command, CommandResult, CommandRunner, SubprocessCommandRunner
+from .errors import (
+    CommandExecutionError,
+    TerminalBackendError,
+    TerminalNotAvailableError,
+    TerminalResourceMismatchError,
+)
 from .models import TerminalLocation
 
 
@@ -37,7 +42,9 @@ class TerminalBackend(Protocol):
     name: str
 
     def probe(self) -> bool: ...
-    def open(self, location: TerminalLocation, command: list[str], cwd: Path) -> TerminalLocation: ...
+    def open(
+        self, location: TerminalLocation, command: list[str], cwd: Path
+    ) -> TerminalLocation: ...
     def list(self) -> list[Pane]: ...
     def send_text(self, pane_id: str, text: str, *, submit: bool = False) -> SendReceipt: ...
     def stop(self, location: TerminalLocation) -> None: ...
@@ -45,7 +52,12 @@ class TerminalBackend(Protocol):
 
 
 def _receipt(text: str, submit: bool) -> SendReceipt:
-    return SendReceipt(hashlib.sha256(text.encode("utf-8")).hexdigest(), len(text.encode("utf-8")), text.count("\n") + (1 if text else 0), submit)
+    return SendReceipt(
+        hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        len(text.encode("utf-8")),
+        text.count("\n") + (1 if text else 0),
+        submit,
+    )
 
 
 class MockTerminalBackend:
@@ -60,8 +72,20 @@ class MockTerminalBackend:
 
     def open(self, location: TerminalLocation, command: list[str], cwd: Path) -> TerminalLocation:
         pane_id = location.pane_id or str(uuid4())
-        self.panes[pane_id] = Pane(pane_id, str(cwd), title=location.metadata.get("title", "vibemux"), workspace_id=location.workspace_id)
-        return TerminalLocation(self.name, resource_id=pane_id, workspace_id=location.workspace_id, pane_id=pane_id, cwd=str(cwd), metadata=location.metadata)
+        self.panes[pane_id] = Pane(
+            pane_id,
+            str(cwd),
+            title=location.metadata.get("title", "vibemux"),
+            workspace_id=location.workspace_id,
+        )
+        return TerminalLocation(
+            self.name,
+            resource_id=pane_id,
+            workspace_id=location.workspace_id,
+            pane_id=pane_id,
+            cwd=str(cwd),
+            metadata=location.metadata,
+        )
 
     def list(self) -> list[Pane]:
         return list(self.panes.values())
@@ -85,13 +109,18 @@ class MockTerminalBackend:
 class WezTermBackend:
     name = "wezterm"
 
-    def __init__(self, executable: str = "wezterm") -> None:
+    def __init__(
+        self,
+        executable: str = "wezterm",
+        runner: CommandRunner | None = None,
+    ) -> None:
         self.executable = executable
+        self.runner = runner or SubprocessCommandRunner()
 
-    def _run(self, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(self, args: list[str], *, input_text: str | None = None) -> CommandResult:
         try:
-            return subprocess.run([self.executable, *args], input=input_text, text=True, capture_output=True, check=False)
-        except OSError as exc:
+            return self.runner.run(Command(self.executable, tuple(args), input_text=input_text))
+        except CommandExecutionError as exc:
             raise TerminalNotAvailableError(self.executable) from exc
 
     def probe(self) -> bool:
@@ -104,7 +133,14 @@ class WezTermBackend:
         pane_id = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None
         if not pane_id:
             raise TerminalBackendError("wezterm returned no pane id")
-        return TerminalLocation(self.name, resource_id=pane_id, pane_id=pane_id, cwd=str(cwd), workspace_id=location.workspace_id, metadata=location.metadata)
+        return TerminalLocation(
+            self.name,
+            resource_id=pane_id,
+            pane_id=pane_id,
+            cwd=str(cwd),
+            workspace_id=location.workspace_id,
+            metadata=location.metadata,
+        )
 
     def list(self) -> list[Pane]:
         result = self._run(["cli", "list", "--format", "json"])
@@ -114,7 +150,16 @@ class WezTermBackend:
             payload = json.loads(result.stdout or "[]")
         except json.JSONDecodeError as exc:
             raise TerminalBackendError("malformed wezterm JSON") from exc
-        return [Pane(str(item.get("pane_id")), item.get("cwd", ""), item.get("title", ""), item.get("workspace"), item.get("is_dead") is not True) for item in payload]
+        return [
+            Pane(
+                str(item.get("pane_id")),
+                item.get("cwd", ""),
+                item.get("title", ""),
+                item.get("workspace"),
+                item.get("is_dead") is not True,
+            )
+            for item in payload
+        ]
 
     def send_text(self, pane_id: str, text: str, *, submit: bool = False) -> SendReceipt:
         result = self._run(["cli", "send-text", "--pane-id", pane_id], input_text=text)
@@ -145,17 +190,25 @@ class WezTermBackend:
 class TmuxBackend:
     name = "tmux"
 
-    def __init__(self, executable: str = "tmux", socket_name: str | None = None) -> None:
+    def __init__(
+        self,
+        executable: str = "tmux",
+        socket_name: str | None = None,
+        runner: CommandRunner | None = None,
+    ) -> None:
         self.executable = executable
         self.socket_name = socket_name
+        self.runner = runner or SubprocessCommandRunner()
 
     def _base(self) -> list[str]:
         return ["-L", self.socket_name] if self.socket_name else []
 
-    def _run(self, args: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(self, args: list[str], *, input_text: str | None = None) -> CommandResult:
         try:
-            return subprocess.run([self.executable, *self._base(), *args], input=input_text, text=True, capture_output=True, check=False)
-        except OSError as exc:
+            return self.runner.run(
+                Command(self.executable, tuple([*self._base(), *args]), input_text=input_text)
+            )
+        except CommandExecutionError as exc:
             raise TerminalNotAvailableError(self.executable) from exc
 
     def probe(self) -> bool:
@@ -166,15 +219,44 @@ class TmuxBackend:
 
     def open(self, location: TerminalLocation, command: list[str], cwd: Path) -> TerminalLocation:
         session = location.workspace_id or f"vibemux_{uuid4().hex[:8]}"
-        command_text = " ".join(subprocess.list2cmdline([part]) for part in command)
-        result = self._run(["new-session", "-d", "-s", session, "-c", os.fspath(cwd), command_text])
+        result = self._run(
+            [
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-s",
+                session,
+                "-c",
+                os.fspath(cwd),
+                "--",
+                *command,
+            ]
+        )
         if result.returncode != 0:
             raise TerminalBackendError(result.stderr.strip() or "tmux new-session failed")
-        pane_id = f"{session}:0.0"
-        return TerminalLocation(self.name, resource_id=pane_id, workspace_id=session, pane_id=pane_id, cwd=str(cwd), metadata=location.metadata)
+        pane_id = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None
+        if not pane_id:
+            raise TerminalBackendError("tmux returned no pane id")
+        return TerminalLocation(
+            self.name,
+            resource_id=pane_id,
+            workspace_id=session,
+            pane_id=pane_id,
+            cwd=str(cwd),
+            metadata=location.metadata,
+        )
 
     def list(self) -> list[Pane]:
-        result = self._run(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}"])
+        result = self._run(
+            [
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}",
+            ]
+        )
         if result.returncode != 0:
             if "no server running" in result.stderr.lower():
                 return []
@@ -183,7 +265,15 @@ class TmuxBackend:
         for line in result.stdout.splitlines():
             fields = line.split("\t", 3)
             if len(fields) == 4:
-                panes.append(Pane(fields[0], fields[1], fields[2], fields[0].split(":", 1)[0], fields[3] != "1"))
+                panes.append(
+                    Pane(
+                        fields[0],
+                        fields[1],
+                        fields[2],
+                        fields[0].split(":", 1)[0],
+                        fields[3] != "1",
+                    )
+                )
         return panes
 
     def send_text(self, pane_id: str, text: str, *, submit: bool = False) -> SendReceipt:

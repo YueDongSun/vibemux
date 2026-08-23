@@ -8,6 +8,7 @@ __pycache__/
 htmlcov/
 dist/
 build/
+target/
 *.egg-info/
 .vibemux/
 .env

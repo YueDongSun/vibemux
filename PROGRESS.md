@@ -209,13 +209,13 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 
 #### P0 — must be resolved before adding real harnesses
 
-- [ ] **Persist the actual base commit for every Run.**
+- [x] **Persist the actual base commit for every Run.**
   `Run` currently does not store `base_commit`; `RunService.diff` reconstructs a record with `"HEAD"`, while `WorkspaceManager.diff` only runs a working-tree diff. Committed agent changes and replay semantics are therefore not represented correctly.
 
-- [ ] **Introduce one injected command runner.**
+- [x] **Introduce one injected command runner.**
   Git, WezTerm, and tmux currently call `subprocess.run` directly. This prevents reliable contract testing, centralized redaction, deadline handling, process-group policy, and Windows launcher control.
 
-- [ ] **Remove shell-mediated tmux launch construction.**
+- [x] **Remove shell-mediated tmux launch construction.**
   The current tmux backend converts an argv array to one command string. A controlled cross-platform agent host must receive a validated launch spec and spawn the harness with `shell=false`.
 
 - [ ] **Implement complete spawn compensation.**
@@ -335,12 +335,12 @@ Exit criteria:
 
 ### M1 — Freeze and stabilize the Python behavior reference
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
 - [ ] Split command runner, domain, storage, workspace, terminal, harness, and services.
-- [ ] Persist `base_commit` and correct diff semantics.
+- [x] Persist `base_commit` and correct diff semantics.
 - [ ] Add migrations and atomic transition/event tests.
 - [ ] Implement reconciliation and immutable cleanup plan.
 - [ ] Replace fake mock persistence with a supervised mock process.
@@ -787,4 +787,37 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 - This baseline changes architecture governance only; it does not change the Python CLI, schema, or runtime behavior.
 
 **Known risks**
-- The current Python implementation still has the P0 lifecycle, ownership, diff, and command-execution defects listed above.
+- The current Python implementation still has the remaining P0 spawn-compensation, mock-resource, terminal-ownership, and reconciliation defects listed above.
+
+### 2026-08-23 — M1 Python reference P0 command and diff boundary
+
+**Status change**
+- M1 Python behavior reference: `PLANNED` -> `PARTIAL`
+
+**Implemented**
+- Persisted each Run's actual Git base commit through a forward SQLite migration.
+- Made diff output cover committed, staged, unstaged, and untracked changes relative to that base.
+- Injected one shell-free command runner into Git, WezTerm, tmux, and service orchestration.
+- Added a controlled agent host and removed tmux command-string construction.
+- Added a Windows launcher path that prefers direct executables and otherwise invokes a same-name PowerShell companion with fixed flags and separate arguments.
+
+**Evidence**
+- tests: 14 pytest tests passed, including real Git for Windows worktree and diff coverage
+- typing: mypy completed with no errors
+- lint: Ruff completed with no errors
+- smoke: offline mock CLI workflow passed
+- local CLI probes: Claude 2.1.224, Copilot 1.0.75, OpenCode 1.18.21, and Grok 0.2.114 returned versions through the controlled runner
+- live terminal backend: unavailable; WezTerm and tmux are not installed on the audited host
+
+**Remaining**
+- Implement immutable spawn compensation and reconciliation.
+- Replace process-local mock resource fabrication with supervised inventory.
+- Freeze the expanded Python compatibility fixtures.
+
+**Compatibility / migration**
+- Legacy databases migrate forward by adding nullable `runs.base_commit`; legacy rows remain readable and fail closed when an operation requires a missing base commit.
+- CLI command names and JSON output are unchanged.
+
+**Known risks**
+- The Python reference still inherits the harness process environment until the Rust plugin permission model is available.
+- PowerShell companion launch is a compatibility boundary, not a general-purpose script execution API.

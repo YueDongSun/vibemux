@@ -98,6 +98,7 @@ class Run:
     status: RunStatus = RunStatus.PREPARING
     branch: str | None = None
     worktree: str | None = None
+    base_commit: str | None = None
     terminal: TerminalLocation | None = None
     created_at: datetime = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
