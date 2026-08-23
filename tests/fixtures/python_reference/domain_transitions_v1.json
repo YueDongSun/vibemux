@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "source_commit": "99d1f8ebcf9e25248eb2af1eb6d64b530e51f848",
+  "task_transitions": {
+    "open": ["in_progress", "cancelled"],
+    "in_progress": ["blocked", "done", "cancelled"],
+    "blocked": ["in_progress", "cancelled"],
+    "done": [],
+    "cancelled": []
+  },
+  "run_transitions": {
+    "preparing": ["running", "failed"],
+    "running": ["stopped", "failed", "succeeded", "stale"],
+    "stopped": [],
+    "failed": [],
+    "succeeded": [],
+    "stale": ["stopped", "failed"]
+  }
+}

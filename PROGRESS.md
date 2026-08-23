@@ -361,16 +361,17 @@ Constraint:
 
 ### M2 — Rust workspace and canonical core
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
-- [ ] Add Rust 2024 workspace with MSRV aligned to the official A2A Rust SDK.
-- [ ] Implement typed IDs and state machines.
-- [ ] Implement canonical event envelopes and error taxonomy.
-- [ ] Implement deterministic transition tests and property tests.
+- [x] Add Rust 2024 workspace with MSRV aligned to the official A2A Rust SDK.
+- [x] Implement typed IDs and state machines.
+- [x] Implement canonical event envelopes and error taxonomy.
+- [x] Implement deterministic transition tests and property tests.
 - [ ] Add structured tracing with redaction.
-- [ ] Add Windows and Linux CI, formatting, clippy, tests, and dependency checks.
+- [x] Add Windows and Linux CI for formatting, clippy, and tests.
+- [ ] Add dependency policy and vulnerability checks to CI.
 
 Exit criteria:
 
@@ -788,3 +789,34 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 
 **Known risks**
 - The current Python implementation still has the P0 lifecycle, ownership, diff, and command-execution defects listed above.
+
+### 2026-08-23 — M2 canonical Rust core foundation
+
+**Status change**
+- M2 Rust workspace and canonical core: `PLANNED` -> `PARTIAL`
+
+**Implemented**
+- Added the Rust 2024 workspace with `vibemux_types` and `vibemux_events` crates.
+- Added opaque IDs, deterministic Task/Run transition tables, explicit run-success authority, canonical event envelopes, payload limits, and plaintext-sensitive-field rejection.
+- Added Python-reference transition and event fixtures plus Windows/Ubuntu Rust CI commands.
+
+**Evidence**
+- MSRV checks: Rust 1.85.0 `cargo fmt --all -- --check`, Clippy with `-D warnings`, and 10 tests passed
+- current stable check: Rust 1.97.0 ran the same 10 tests successfully
+- Python regression: 6 pytest tests, Ruff lint, mock smoke, and wheel build passed
+- known Python baseline gaps: Ruff format reports 12 existing unformatted files; mypy reports 4 existing errors
+- unavailable local gates: cargo-nextest, cargo-deny, and cargo-audit are not installed
+- benchmark: not applicable to this domain-only slice
+- live validation: not applicable; no terminal or daemon implementation changed
+
+**Remaining**
+- Add structured tracing and dependency policy gates.
+- Complete Python P0 fixes and expand parity fixtures before store or daemon cutover.
+- Implement persistence and local IPC only in the later M3 slice.
+
+**Compatibility / migration**
+- The Python CLI and SQLite schema are unchanged. Rust packages are private pre-alpha interfaces.
+
+**Known risks**
+- Event payload key rejection is a defense-in-depth schema check, not a general secret detector.
+- Rust CI configuration is present but remote GitHub Actions has not been observed in this session.

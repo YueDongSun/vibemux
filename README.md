@@ -21,6 +21,10 @@ vibemux doctor
 
 当前实现包含 Mock、WezTerm command adapter、tmux adapter、Native/POSIX 兼容建模、Git worktree、SQLite append-only event log、safe diff/stop/cleanup 基础和离线 mock harness。ACP/A2A/MCP、ConPTY、scheduler、daemon、自动 merge/push 均明确不在 MVP。
 
+## Rust 核心迁移
+
+Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2A 功能。Rust 2024 workspace 已开始实现与平台无关的 typed IDs、Task/Run 状态机和 canonical event envelope；Python CLI 仍是当前可运行入口，Rust daemon、store、plugin host、terminal/workspace parity 与 A2A endpoint 尚未实现。权威里程碑与验证边界见 [PROGRESS.md](PROGRESS.md)。
+
 ## Mock workflow
 
 ```powershell
@@ -37,7 +41,7 @@ vibemux stop $run
 python -m pytest
 python -m ruff check .
 python scripts/smoke_test.py
+cargo test --workspace --all-features
 ```
 
 详见 [docs/architecture.md](docs/architecture.md)、[docs/platform_support.md](docs/platform_support.md)、[docs/protocol_boundaries.md](docs/protocol_boundaries.md) 与 `docs/adr/`。
-
