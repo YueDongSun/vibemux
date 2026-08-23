@@ -8,11 +8,12 @@ The daemon writer core now owns the only Rust SQLite writer, but CLI and fronten
 
 ## Decision
 
-- Windows uses a per-instance named pipe; POSIX uses a Unix-domain socket.
+- Windows uses a per-instance named pipe; POSIX uses a randomized per-instance Unix-domain socket.
 - There is no TCP fallback.
 - Frames are four-byte big-endian length-prefixed JSON with a fixed maximum size and explicit protocol version.
 - Every request carries a unique request ID and a random 256-bit bearer token. Authentication is checked before dispatch and token text is redacted from Debug/error output.
 - The daemon publishes an ignored runtime descriptor containing the endpoint, protocol version, and token only after the listener is bound. POSIX creates the descriptor with mode `0600`; Windows relies on the per-user runtime directory plus the unguessable endpoint/token in this pre-alpha slice.
+- Frame reads, writes, and the one-request-per-connection close handshake use bounded deadlines. Runtime cleanup checks the matching descriptor owner token before removing descriptor or POSIX socket paths.
 - Initial operations are `health` and `shutdown`. State mutation is not exposed until authorization and compatibility tests cover it.
 - IPC handlers call the blocking writer through an owned blocking boundary and never hold an async mutex across await.
 - Malformed, oversized, unauthenticated, and version-mismatched frames return structured errors or close the connection without crashing the daemon.

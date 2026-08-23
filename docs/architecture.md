@@ -38,4 +38,6 @@ Git worktree                  WezTerm / tmux / mock
 
 ## Daemon writer ownership
 
-`vibemuxd::WriterWorker` 在 dedicated blocking thread内构造并独占 `SqliteStore`。调用方只持有 bounded queue handle；queue满时返回显式 backpressure。数据库旁的 nonce lock通过原子 `create_new`建立，第二 writer fail closed，shutdown后由持有者核验 nonce再删除。当前只完成 writer core；真正的 user-mode daemon进程、Windows named pipe、POSIX UDS和 authenticated control API仍未实现。
+`vibemuxd::WriterWorker` 在 dedicated blocking thread内构造并独占 `SqliteStore`。调用方只持有 bounded queue handle；queue满时返回显式 backpressure。数据库旁的 nonce lock通过原子 `create_new`建立，第二 writer fail closed，shutdown后由持有者核验 nonce再删除。
+
+`vibemuxd::control` 在 Windows 使用 per-instance named pipe，在 POSIX 使用随机化的 per-instance Unix-domain socket。listener bind成功后才发布含 protocol version、endpoint和OS CSPRNG bearer token的 ignored runtime descriptor；四字节大端长度前缀在分配JSON payload前执行64 KiB上限，连接读写与peer-close均有deadline。descriptor owner token同时保护descriptor/socket cleanup，旧实例不得删除替代实例的runtime artifact。当前只开放 versioned `health`和`shutdown`，blocking writer调用通过 `spawn_blocking`隔离，无TCP fallback。standalone user-mode daemon进程、CLI bootstrap/start/query/stop、stale-instance recovery和Windows hostile same-user ACL hardening仍未实现。

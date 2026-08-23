@@ -24,6 +24,8 @@ pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 64;
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
+pub mod control;
+
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

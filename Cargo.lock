@@ -2526,11 +2526,15 @@ dependencies = [
 name = "vibemuxd"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "thiserror",
  "time",
+ "tokio",
+ "uuid",
  "vibemux_events",
  "vibemux_store",
  "vibemux_types",

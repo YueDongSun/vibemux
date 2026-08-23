@@ -390,8 +390,9 @@ Scope:
 - [x] Atomic state + event transactions.
 - [x] Idempotency keys, sequence ordering, projections, and replay foundation.
 - [x] Dedicated daemon writer worker with bounded queue and explicit backpressure.
-- [ ] On-demand user-mode `vibemuxd`.
-- [ ] Windows named-pipe and POSIX Unix-domain-socket CLI IPC.
+- [ ] On-demand user-mode `vibemuxd` process and CLI bootstrap.
+- [x] Authenticated Windows named-pipe and POSIX Unix-domain-socket control transport library.
+- [ ] CLI start/query/stop wiring over local IPC.
 - [x] Daemon writer-core lifecycle, exclusive lock, health, and graceful shutdown.
 
 Exit criteria:
@@ -1254,16 +1255,52 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 
 ### 2026-08-24 — M3 local control IPC plan
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION`
+**Planning status:** `IMPLEMENTED — TRANSPORT LIBRARY SLICE`
 
 Acceptance gate:
 
-- Windows health/shutdown crosses a real named pipe; POSIX equivalent is implemented behind UDS cfg and compiled in CI.
-- No TCP listener is created.
-- Descriptor publication occurs after bind and is removed only by its matching owner token.
-- A valid client receives versioned health without database path or secret fields.
-- Wrong token and wrong protocol version return stable errors without dispatch.
-- Oversized frames are rejected before allocation beyond the configured maximum.
-- Shutdown responds, closes the listener, joins the server, shuts down the writer, and removes descriptor plus writer lock.
-- A second client cannot connect after shutdown.
-- `PROGRESS.md` keeps on-demand process/bootstrap unchecked until an actual standalone daemon binary exists.
+- [x] Windows health/shutdown crosses a real named pipe; POSIX health/shutdown crosses a real UDS in a Linux container.
+- [x] No TCP listener is created.
+- [x] Descriptor publication occurs after bind and is removed only by its matching owner token.
+- [x] A valid client receives versioned health without database path or secret fields.
+- [x] Wrong token and wrong protocol version return stable errors without dispatch.
+- [x] Oversized frames are rejected before allocation beyond the configured maximum.
+- [x] Shutdown responds, closes the listener, joins the server, shuts down the writer, and removes descriptor plus writer lock.
+- [x] A second client cannot connect after shutdown.
+- [x] `PROGRESS.md` keeps on-demand process/bootstrap unchecked until an actual standalone daemon binary exists.
+
+### 2026-08-24 — M3 authenticated local control transport
+
+**Status change**
+- M3 remains `PARTIAL`: the reusable authenticated transport is implemented on both platform families, while a standalone on-demand daemon process and CLI lifecycle wiring remain pending.
+
+**Implemented**
+- Added `vibemuxd::control::DaemonControlServer` and `ControlClient` with Windows named-pipe and POSIX UDS backends; no TCP fallback exists.
+- Added four-byte big-endian, length-prefixed JSON frames with protocol v1, a 64 KiB frame ceiling, bounded descriptor reads, request IDs, and stable error codes.
+- Added a 256-bit bearer token sourced directly from the OS CSPRNG. Descriptor and request `Debug` output redact it, and authentication comparison covers content plus length before dispatch.
+- Bound the local listener before publishing `control.json`; POSIX creates that descriptor with mode `0600` and uses a randomized per-instance UDS path. Owner-token verification prevents one server instance from deleting a replacement descriptor or socket.
+- Applied bounded read, write, request, and peer-close deadlines so an idle or non-reading local client cannot hold the single control listener indefinitely.
+- Routed blocking writer health and shutdown through `spawn_blocking`; no async mutex guard is held across an await.
+- Added a bounded peer-close handshake before recycling a Windows pipe instance, preventing `DisconnectNamedPipe` from truncating a response that the client has not consumed yet.
+- Limited the initial protocol to `health` and `shutdown`; state mutation remains behind the writer API and is not exposed over IPC in this slice.
+
+**Evidence**
+- Windows MSRV 1.85.0 and current stable 1.97.0: the full Rust workspace passed 47 tests on each toolchain; `vibemuxd` contributed 14 tests, and workspace Clippy with `-D warnings` passed on both.
+- Windows named-pipe health/auth/version/shutdown round trip passed 20 consecutive stress repetitions after the response-lifecycle fix.
+- Linux Docker on the local machine: `vibemuxd` passed 15 tests on Rust 1.85.1 using a real UDS; an earlier 12-test slice also passed on exact MSRV 1.85.0. Unix `0600` descriptor mode, owner-safe socket replacement, and socket cleanup were asserted.
+- Python reference regression remained green: 27 pytest tests, Ruff lint/format, and mypy passed.
+- Oversized frame tests reject the length prefix before allocating a payload buffer; descriptor replacement and post-shutdown connection refusal are covered.
+
+**Compatibility / migration**
+- The protocol is private pre-alpha v1 and has no standalone CLI contract yet.
+- Existing Python behavior and database remain reference-only; the control server owns the Rust writer and does not introduce concurrent Python/Rust writes.
+
+**Security impact**
+- Token values are absent from `Debug` and error output; unknown peer error text is collapsed to a fixed local code instead of being reflected.
+- The runtime descriptor is secret-bearing and remains under ignored `.vibemux/` state. Windows hostile same-user ACL isolation is not claimed by this slice.
+- Malformed, oversized, unauthenticated, and version-mismatched input cannot reach writer dispatch.
+
+**Remaining**
+- Add the standalone on-demand `vibemuxd` binary plus CLI start/query/stop and stale-instance reconciliation.
+- Add process-boundary crash/restart, abrupt termination, descriptor recovery, and Windows ACL-hardening tests.
+- Expose state mutation only after authorization, compatibility, cancellation, and bounded concurrency contracts are accepted.
