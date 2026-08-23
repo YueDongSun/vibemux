@@ -487,6 +487,35 @@ Non-goals for M4.0:
 **Next slice**
 - M4.1 process supervisor: shell-free child spawn, stdout-only frame transport, bounded queues, stderr cap, handshake/deadline/heartbeat/cancel/drain/shutdown and crash reporting using mock plugins.
 
+#### M4.1 — Process supervisor foundation plan
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION`
+
+Acceptance gate:
+
+- [ ] A resolved absolute executable + argv launch spec spawns without a shell, clears inherited environment, applies only bounded explicit variables, and uses a separate process group/no visible Windows console.
+- [ ] Real mock-plugin stdin/stdout completes Hello/CoreHello/session-bound Ready and echo traffic over the M4.0 codec on Windows and Linux.
+- [ ] Handshake timeout, malformed stdout, invalid transition, oversized frame and early exit terminate/quarantine only that child and return stable errors.
+- [ ] Bounded outbound/inbound channels expose queue-full backpressure and never use an unbounded buffer.
+- [ ] Stderr flood is drained independently; only bounded byte-count/truncation metadata crosses the supervisor API and stdout framing remains valid.
+- [ ] Heartbeat sequence/freshness, receive deadlines and explicit Cancel messages are observable with deterministic tests.
+- [ ] Drain -> Shutdown -> acknowledgement exits cleanly; shutdown timeout kills and reaps only the exact child.
+- [ ] Abrupt nonzero child exit produces a stable crash report and does not crash the test/core process.
+- [ ] Supervisor and fixtures have no SQLite/Git/terminal/A2A/vendor SDK/canonical-state mutation dependency.
+- [ ] Windows/Linux real-process tests, workspace MSRV/current-stable Clippy/tests, and Python reference regressions remain green.
+
+Implementation order:
+
+1. Add `vibemux_plugin_supervisor` launch/config/error/report types and bounded stderr collector.
+2. Add handshake and bounded reader/writer tasks over `vibemux_plugin_protocol`.
+3. Add session send/receive/heartbeat/cancel/drain/shutdown/crash APIs.
+4. Add mock/malformed/hang/stderr/crash fixture binary and cross-platform process tests.
+5. Update docs/evidence and commit after sanitization.
+
+Non-goals for M4.1:
+
+- Automatic restart policy, daemon/control-API integration, SDK publication, non-harness plugin kinds, sandbox enforcement, or Task/Run mutation.
+
 ### M5 — Workspace and terminal parity in Rust
 
 **Status:** `PLANNED`
