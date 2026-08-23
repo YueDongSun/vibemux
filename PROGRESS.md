@@ -427,6 +427,34 @@ Exit criteria:
 - Backpressure is observable and bounded.
 - Plugin stderr cannot corrupt the wire protocol.
 
+#### M4.0 — Protocol, manifest, and handshake foundation
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION`
+
+Acceptance gate:
+
+- [ ] Checked-in `vibemux.plugin.v1` Protobuf schema generates deterministically with pinned Prost and vendored `protoc` on Windows/Linux MSRV-compatible toolchains.
+- [ ] Four-byte big-endian framing rejects zero, oversized, truncated, malformed, and missing-body envelopes without allocation above the configured maximum or panic.
+- [ ] Envelope version/ID/correlation/causation grammar validation returns stable structured errors.
+- [ ] TOML manifest validation requires a shell-free argv entry point, known kind, bounded/deduplicated capabilities and permissions, supported platform list, and compatible protocol range.
+- [ ] Core negotiation grants only the intersection of manifest declarations, Hello requests, and core policy; omitted permission is denied.
+- [ ] Core lifecycle accepts only Hello -> CoreHello -> Ready -> Active -> Drain -> Shutdown -> Closed and rejects duplicate/out-of-phase transitions.
+- [ ] Canonical round-trip fixtures preserve message/correlation identity and demonstrate additive unknown-field tolerance under the same accepted version.
+- [ ] The crate contains no database, terminal, Git, A2A, vendor SDK, process-spawn, shell, or canonical-state mutation dependency.
+- [ ] Windows/Linux tests, workspace MSRV/current-stable Clippy/tests, and Python reference regressions remain green.
+
+Implementation order:
+
+1. Add the isolated `vibemux_plugin_protocol` crate, `.proto`, vendored code generation, error taxonomy, and validated fixed framing.
+2. Add manifest types/TOML validation and bounded identifier sets.
+3. Add core-side negotiation and lifecycle state machine with deterministic tests.
+4. Add malformed/truncated/oversized/property tests and canonical wire fixtures.
+5. Update architecture, protocol boundaries, changelog, and this ledger before committing.
+
+Non-goals for M4.0:
+
+- Child spawn/supervision, queues, heartbeat timers, restart budget, stderr capture, SDK publication, real plugin behavior, or Task/Run mutation.
+
 ### M5 — Workspace and terminal parity in Rust
 
 **Status:** `PLANNED`
