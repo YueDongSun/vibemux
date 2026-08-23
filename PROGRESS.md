@@ -475,13 +475,15 @@ Exit criteria:
 
 ### M7 — A2A core gateway
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
-- [ ] Agent Card generation from registered capabilities.
+- [x] Minimal Agent Card generation for the loopback information-share capability.
 - [ ] External A2A Task ↔ internal binding model.
-- [ ] Message, Part, Artifact, status, cancellation, and subscription mapping.
+- [x] Bounded Message/DataPart mapping for the M7.0 information-share contract.
+- [ ] Task, Artifact, status, cancellation, and subscription mapping.
+- [x] HTTP+JSON local loopback exchange through the official Rust SDK.
 - [ ] JSON-RPC and HTTP+JSON interoperability.
 - [ ] gRPC fast path.
 - [ ] Streaming, backpressure, reconnection, and task resubscription.
@@ -498,7 +500,7 @@ Exit criteria:
 
 #### M7.0 — Basic A2A information-share slice
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION` on 2026-08-24. M7 itself remains `PLANNED` until the integration gate below passes.
+**Slice status:** `VERIFIED — LOCAL LOOPBACK ONLY` on 2026-08-24. M7 remains `PARTIAL`; no remote or production support is advertised.
 
 Objective:
 
@@ -1025,3 +1027,51 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Known risks**
 - `rusqlite::Connection` is intentionally blocking and must remain behind the future daemon writer worker.
 - The current projection format is a private JSON snapshot contract and is not yet a public migration promise.
+
+### 2026-08-24 — M7.0 basic A2A information share
+
+**Status change**
+- M7 A2A core gateway: `PLANNED` -> `PARTIAL`
+- M7.0 local HTTP+JSON information share: `VERIFIED — LOCAL LOOPBACK ONLY`
+
+**Research baseline**
+- A2A specification: released protocol `1.0.0`; wire service version `1.0`
+- official Rust types: `a2a-lf 0.3.0`
+- official Rust client: `a2a-client-lf 0.2.1`
+- official Rust server: `a2a-server-lf 0.4.1`
+- all selected official crates declare Rust 1.85 MSRV
+
+**Implemented**
+- Added the dependency-isolated `vibemux_a2a` crate; no SDK type leaked into types/events/store crates.
+- Added a VibeMux-owned, size-bounded information-share and acknowledgement mapping over official Message/DataPart types.
+- Added a minimal Agent Card advertising only HTTP+JSON and the basic information-share skill.
+- Added an owned loopback server with OS-assigned port, readiness after bind, body limit, request deadline, bounded in-memory capture, graceful shutdown, join path, and Drop abort fallback.
+- Added an SDK Agent Card resolver and negotiated client that sends a direct Message response without creating canonical VibeMux Task/Run state.
+
+**Evidence**
+- Rust workspace: 23 tests passed on both MSRV 1.85 and current stable; A2A crate contributed 5 unit and 2 real-network integration tests
+- Client/server integration: `VIBEMUX_A2A_INFO_SHARE_OK` crossed a real TCP loopback connection and preserved its generated correlation ID
+- Discovery: the official SDK resolver fetched and parsed `/.well-known/agent-card.json`
+- Transport: the official HTTP+JSON client called the official server `/message:send` router
+- Failure paths: invalid contract returned a client error; an oversized HTTP body returned 413; a valid request still succeeded afterward
+- Lifecycle: graceful shutdown completed and the listener rejected a new connection afterward
+- Quality: Rust 1.85 rustfmt, Clippy with `-D warnings`, workspace tests, Python 27-test regression, Ruff, and mypy passed
+
+**Compatibility / migration**
+- This slice does not open either state database, create a canonical Task, or change the single-writer cutover.
+- The information contract is private pre-alpha and may change before M7 conformance.
+- Only the selected HTTP+JSON binding was exercised; JSON-RPC and gRPC remain unadvertised.
+
+**Security impact**
+- Bind is hard-coded to `127.0.0.1`; non-loopback URLs are rejected by the client and Agent Card validator.
+- Request bodies are limited to 16 KiB; information text, metadata count, keys, values, and identifiers have smaller explicit limits.
+- No environment, credential, repository file, prompt history, tool output, URL part, raw file part, or database content is shared implicitly.
+
+**Remaining**
+- Integrate the handler with the daemon-owned writer only after M3 lifecycle and IPC gates.
+- Add explicit internal/external Task binding before any stateful A2A operation.
+- Add authentication, TLS policy, SSRF controls, JSON-RPC, gRPC, streaming, cancellation, artifacts, TCK, ITK, and independent cross-language peers.
+
+**Known risks**
+- The official REST-only dependency graph still includes generated Protobuf and tonic support transitively through the SDK packages, increasing build time and binary dependency surface.
+- Local loopback success is not remote interoperability, deployment, security, or conformance evidence.
