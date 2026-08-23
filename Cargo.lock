@@ -2628,6 +2628,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibemux_plugin_protocol"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "proptest",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "vibemux_probe"
 version = "0.2.0-alpha.0"
 dependencies = [

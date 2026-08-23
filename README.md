@@ -25,6 +25,8 @@ vibemux doctor
 
 Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2A 功能。Rust 2024 workspace 已实现与平台无关的 typed IDs、Task/Run 状态机、canonical event envelope、SQLite store、dedicated single-writer worker、authenticated Windows named-pipe/POSIX UDS control transport、standalone `vibemuxd`与pre-alpha `vibemuxctl`生命周期，以及一个仅限本地 loopback 的 A2A v1 HTTP+JSON information-share验证切片；Python CLI仍是当前完整入口，Rust command parity/database migration、plugin host、terminal/workspace parity、stateful/remote A2A与 conformance尚未实现。权威里程碑与验证边界见 [PROGRESS.md](PROGRESS.md)。
 
+Rust workspace也已加入isolated `vibemux_plugin_protocol` M4.0基础：checked-in Protobuf v1、bounded framing、TOML manifest、permission/capability negotiation与handshake lifecycle。它尚未spawn或supervise任何插件，也不能修改Task/Run/SQLite。
+
 ## Rust daemon 生命周期预览
 
 迁移期间 Rust 只写 `.vibemux/vibemux_rust.sqlite3`，不会打开 Python 的 `.vibemux/vibemux.sqlite3`。`vibemuxctl`不会覆盖已安装的 Python `vibemux`命令：

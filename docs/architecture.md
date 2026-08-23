@@ -47,3 +47,5 @@ Git worktree                  WezTerm / tmux / mock
 `vibemuxctl daemon inspect`先尝试authenticated health，再读取有界且Debug脱敏的descriptor/writer-lock snapshot。只有记录PID已不存在、两份PID一致且artifact可解析时才返回domain-separated SHA-256 confirmation。`daemon recover`重新检查confirmation、PID与原始字节后，仅移除unchanged descriptor/UDS socket/writer lock；没有force、PID kill或数据库操作。Python数据库cutover仍未实现；同一Windows logon SID是协作信任边界，不承诺进程间ACL隔离。
 
 Windows control metadata现位于`%LOCALAPPDATA%\VibeMux\runtime\<domain-separated project hash>`。protected父DACL及叶/文件effective ACL仅包含current SID、`SYSTEM`与Administrators；named pipe显式`PIPE_REJECT_REMOTE_CLIENTS`并继续要求bearer。新daemon同时持有protected lock和旧project lock作为upgrade compatibility gate，防止旧二进制竞态写同一数据库。健康legacy daemon仍可health/stop，stale legacy artifacts仍走同一confirmation recovery。POSIX路径与`0600`/UDS语义不变。
+
+`vibemux_plugin_protocol`是独立M4 wire边界：checked-in Protobuf schema经pinned Prost/vendored protoc生成；stdin/stdout frame使用四字节大端长度与固定上限。manifest只保存argv、kind、platform、capability和requested permission；core negotiation只授予manifest/Hello/core policy交集。当前只完成codec与状态机，不spawn child、不读取stderr、不依赖数据库，也不把opaque payload映射成Task/Run mutation。

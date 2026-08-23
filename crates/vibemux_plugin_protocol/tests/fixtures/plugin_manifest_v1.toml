@@ -1,0 +1,11 @@
+schema_version = 1
+plugin_id = "mock.harness"
+plugin_version = "1.0.0"
+kind = "harness"
+entry_point = ["mock_plugin", "--stdio"]
+capabilities = ["harness:cancel", "harness:run"]
+requested_permissions = ["workspace:read"]
+supported_platforms = ["windows", "linux"]
+protocol_major = 1
+minimum_protocol_minor = 0
+maximum_protocol_minor = 0

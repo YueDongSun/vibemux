@@ -407,17 +407,18 @@ Exit criteria:
 
 ### M4 — Plugin protocol and supervisor
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
-- [ ] Protobuf plugin protocol v1.
-- [ ] Manifest, handshake, capabilities, permissions, and version negotiation.
+- [x] Protobuf plugin protocol v1 wire/framing foundation.
+- [x] Manifest, handshake, capabilities, permissions, and version negotiation foundation.
 - [ ] Bounded request/event channels.
 - [ ] Deadlines, cancellation, heartbeat, shutdown, and crash reporting.
 - [ ] Rust and Python plugin SDKs.
 - [ ] Mock plugins for every plugin kind.
-- [ ] Contract and fuzz tests for framing and malformed input.
+- [x] Contract fixtures and property tests for framing and malformed input.
+- [ ] Coverage-guided fuzz targets.
 
 Exit criteria:
 
@@ -429,19 +430,19 @@ Exit criteria:
 
 #### M4.0 — Protocol, manifest, and handshake foundation
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION`
+**Planning status:** `IMPLEMENTED — ISOLATED PROTOCOL FOUNDATION`
 
 Acceptance gate:
 
-- [ ] Checked-in `vibemux.plugin.v1` Protobuf schema generates deterministically with pinned Prost and vendored `protoc` on Windows/Linux MSRV-compatible toolchains.
-- [ ] Four-byte big-endian framing rejects zero, oversized, truncated, malformed, and missing-body envelopes without allocation above the configured maximum or panic.
-- [ ] Envelope version/ID/correlation/causation grammar validation returns stable structured errors.
-- [ ] TOML manifest validation requires a shell-free argv entry point, known kind, bounded/deduplicated capabilities and permissions, supported platform list, and compatible protocol range.
-- [ ] Core negotiation grants only the intersection of manifest declarations, Hello requests, and core policy; omitted permission is denied.
-- [ ] Core lifecycle accepts only Hello -> CoreHello -> Ready -> Active -> Drain -> Shutdown -> Closed and rejects duplicate/out-of-phase transitions.
-- [ ] Canonical round-trip fixtures preserve message/correlation identity and demonstrate additive unknown-field tolerance under the same accepted version.
-- [ ] The crate contains no database, terminal, Git, A2A, vendor SDK, process-spawn, shell, or canonical-state mutation dependency.
-- [ ] Windows/Linux tests, workspace MSRV/current-stable Clippy/tests, and Python reference regressions remain green.
+- [x] Checked-in `vibemux.plugin.v1` Protobuf schema generates deterministically with pinned Prost and vendored `protoc` on Windows/Linux MSRV-compatible toolchains.
+- [x] Four-byte big-endian framing rejects zero, oversized, truncated, malformed, and missing-body envelopes without allocation above the configured maximum or panic.
+- [x] Envelope version/ID/correlation/causation grammar validation returns stable structured errors.
+- [x] TOML manifest validation requires a shell-free argv entry point, known kind, bounded/deduplicated capabilities and permissions, supported platform list, and compatible protocol range.
+- [x] Core negotiation grants only the intersection of manifest declarations, Hello requests, and core policy; omitted permission is denied.
+- [x] Core lifecycle accepts only Hello -> CoreHello -> Ready -> Active -> Drain -> Shutdown -> Closed, binds Ready to the negotiated session ID, and rejects duplicate/out-of-phase transitions.
+- [x] Canonical round-trip fixtures preserve message/correlation identity and demonstrate additive unknown-field tolerance under the same accepted version.
+- [x] The crate contains no database, terminal, Git, A2A, vendor SDK, process-spawn, shell, or canonical-state mutation dependency.
+- [x] Windows/Linux tests, workspace MSRV/current-stable Clippy/tests, and Python reference regressions remain green.
 
 Implementation order:
 
@@ -454,6 +455,37 @@ Implementation order:
 Non-goals for M4.0:
 
 - Child spawn/supervision, queues, heartbeat timers, restart budget, stderr capture, SDK publication, real plugin behavior, or Task/Run mutation.
+
+#### 2026-08-24 — M4.0 protocol foundation implementation
+
+**Status change**
+- M4: `PLANNED` -> `PARTIAL`. The isolated wire/manifest/handshake foundation is implemented; process supervision and plugin behavior remain pending.
+
+**Implemented**
+- Added `vibemux_plugin_protocol` with no dependency on state, SQLite, Git, terminal, A2A, vendor SDK or process-spawn crates.
+- Added checked-in `vibemux.plugin.v1` schema for Hello/CoreHello/Ready, request/response/event, heartbeat/cancel/drain/shutdown and structured protocol errors.
+- Added pinned Prost 0.14.4 generation with vendored `protoc` 3.2.0; Windows and Linux generate the same checked-in canonical frame fixture.
+- Added configurable four-byte big-endian framing with a 1 MiB default/16 MiB hard ceiling and prefix validation before payload allocation.
+- Added bounded envelope/body/ID/version validation, deterministic unknown-field tolerance and stable error codes with no raw decoder/I/O text.
+- Added deny-unknown TOML manifest validation, SemVer, known platform/kind, bounded unique identifiers and shell-executable rejection for argv entry points.
+- Added policy negotiation that enforces manifest/Hello identity, protocol/platform overlap and deterministic capability/permission intersection; omitted permission is denied.
+- Added a core lifecycle machine with session-bound Ready, active/drain traffic allowlists and fail-closed duplicate/out-of-phase transitions.
+
+**Evidence**
+- Protocol crate: 16 unit/property tests plus 1 checked-in manifest/wire fixture test passed on Windows and Linux Rust 1.85-compatible toolchains.
+- Oversized-prefix tests provide only the four-byte prefix and receive `plugin_frame_too_large`, proving rejection before payload read/allocation.
+- Malformed, zero, truncated, trailing-byte, missing-body, unsupported-version, duplicate-ID, undeclared-capability, platform-mismatch and session-mismatch cases fail with stable errors.
+- Windows Rust 1.85.0 MSRV and stable 1.97.0: full workspace 92 tests passed on each; workspace Clippy with `-D warnings` passed on each.
+- Linux Docker Rust 1.85.1: vendored code generation and all 17 protocol contract tests passed.
+- Python reference: 27 pytest tests passed; Ruff lint/format and mypy passed.
+- Direct dependency audit: Prost, SemVer, Serde, Tokio I/O, TOML and error handling only; build/dev dependencies are vendored protoc, Proptest and Tempfile.
+
+**Compatibility boundary**
+- Protocol v1 remains private pre-alpha. Unknown Protobuf fields are tolerated, but a newer minor is rejected until an explicit additive compatibility policy is accepted.
+- Opaque request/event payloads are not authoritative Task/Run mutations. The core database remains unreachable from this crate.
+
+**Next slice**
+- M4.1 process supervisor: shell-free child spawn, stdout-only frame transport, bounded queues, stderr cap, handshake/deadline/heartbeat/cancel/drain/shutdown and crash reporting using mock plugins.
 
 ### M5 — Workspace and terminal parity in Rust
 

@@ -16,6 +16,7 @@
 - 增加 standalone `vibemuxd` 与pre-alpha `vibemuxctl`：on-demand start/health/stop、迁移隔离数据库、stale fail-closed和跨平台process lifecycle验证。
 - 增加显式`daemon inspect/recover`：PID/liveness阻断、snapshot-bound confirmation、unchanged artifact cleanup与数据库零修改恢复。
 - 增加Windows protected per-user control runtime、remote-pipe拒绝、dual-generation writer locks与legacy health/recovery兼容。
+- 增加M4.0 plugin protocol基础：checked-in Protobuf v1、bounded framing、validated manifest、policy negotiation、session lifecycle与contract fixtures。
 
 ## 0.1.0a0
 
