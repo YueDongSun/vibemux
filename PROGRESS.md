@@ -389,9 +389,10 @@ Scope:
 - [x] SQLite migration framework and WAL configuration.
 - [x] Atomic state + event transactions.
 - [x] Idempotency keys, sequence ordering, projections, and replay foundation.
+- [x] Dedicated daemon writer worker with bounded queue and explicit backpressure.
 - [ ] On-demand user-mode `vibemuxd`.
 - [ ] Windows named-pipe and POSIX Unix-domain-socket CLI IPC.
-- [ ] Daemon lifecycle, lock, health, and graceful shutdown.
+- [x] Daemon writer-core lifecycle, exclusive lock, health, and graceful shutdown.
 
 Exit criteria:
 
@@ -1208,3 +1209,45 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 - Version probes prove launcher startup only; provider authentication and inference require separate explicit probes.
 - Reading live third-party configuration remains best-effort and must degrade to `unknown` when formats change.
 - Ratatui shell rendering is verified, but live embedded agent TUIs remain deliberately unimplemented.
+
+### 2026-08-24 — M3 dedicated writer worker
+
+**Status change**
+- M3 remains `PARTIAL`; the daemon writer ownership core is implemented, while the user-mode process and IPC transports remain pending.
+
+**Implemented**
+- Added the `vibemuxd` library crate with one dedicated named blocking thread that constructs and exclusively owns `SqliteStore`.
+- Added an atomic `create_new` lifecycle lock containing only a process/nonce token; a second writer fails closed.
+- Added nonce verification before lock removal so one process cannot remove a replaced lock file.
+- Added a bounded `sync_channel`, non-blocking enqueue, stable `writer_queue_full` backpressure, response deadlines, and structured worker/store errors.
+- Added health, Task/Run commit, projection, ordered event replay, explicit shutdown, restart, and Drop-triggered eventual shutdown paths.
+- Kept all SQLite objects inside the writer thread; handles exchange owned domain values and bounded responses only.
+
+**Evidence**
+- `vibemuxd`: 7 tests passed
+- full Rust workspace: 40 tests passed on both MSRV 1.85 and current stable; rustfmt and Clippy with `-D warnings` passed
+- Python regression: 27 tests, Ruff format/lint, and mypy passed
+- exclusive ownership: a simultaneous second writer was rejected with `writer_lock_held`
+- backpressure: a test-only barrier filled a capacity-one queue and the next request returned `writer_queue_full`
+- commit/replay: Task projection and event sequence committed through the worker and survived shutdown/restart
+- lifecycle: explicit shutdown removed the lock; dropping the handle released it within the bounded test window
+- health JSON round-tripped without exposing a database path
+
+**Compatibility / migration**
+- The worker uses the existing private Rust store schema and does not open the Python prototype database.
+- No public IPC or daemon command contract is introduced by this slice.
+
+**Security impact**
+- Lock contents contain no credential, database path, prompt, environment, or request payload.
+- Queue saturation is reported rather than accumulating unbounded memory.
+- Store error text is reduced to stable VibeMux error codes across the thread boundary.
+
+**Remaining**
+- Add the on-demand `vibemuxd` process owner and authenticated local control protocol.
+- Implement Windows named pipe and POSIX UDS transports without unauthenticated TCP fallback.
+- Add stale-lock support-bundle diagnostics and an explicit recovery workflow; never delete a stale lock automatically.
+- Add crash/restart and abrupt-process termination tests at the process boundary.
+
+**Known risks**
+- A process crash intentionally leaves a stale lock and requires explicit diagnosis/recovery before another writer may start.
+- Drop requests shutdown but cannot forcibly terminate a blocked OS thread; only explicit shutdown provides joined completion evidence.

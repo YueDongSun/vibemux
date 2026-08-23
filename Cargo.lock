@@ -2523,6 +2523,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibemuxd"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "vibemux_events",
+ "vibemux_store",
+ "vibemux_types",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

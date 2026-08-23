@@ -6,6 +6,7 @@ members = [
     "crates/vibemux_probe",
     "crates/vibemux_store",
     "crates/vibemux_types",
+    "crates/vibemuxd",
 ]
 resolver = "3"
 

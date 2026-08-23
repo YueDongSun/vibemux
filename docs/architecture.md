@@ -35,3 +35,7 @@ Git worktree                  WezTerm / tmux / mock
 `vibemux_probe` 只产生版本化、非内容、只读诊断：launcher/version、显式 provider endpoint、CC Switch health/aggregate telemetry 和 A2A self-test。launcher验证不等于 authentication/inference验证。
 
 `vibemux_frontend` 消费 probe report 和未来 daemon control API；不直接读写 core SQLite。统一 dashboard 为 Claude、Codex、OpenCode、Copilot 和 Grok分别保留 `NativeTuiSlot`。这些 slot最终由 terminal plugin/ConPTY承载 CLI自身 TUI；dashboard不解析 terminal text、不重绘 vendor TUI，也不从 pane exit推断完成。当前 slot仅为 `reserved`，没有启动或输入转发行为。
+
+## Daemon writer ownership
+
+`vibemuxd::WriterWorker` 在 dedicated blocking thread内构造并独占 `SqliteStore`。调用方只持有 bounded queue handle；queue满时返回显式 backpressure。数据库旁的 nonce lock通过原子 `create_new`建立，第二 writer fail closed，shutdown后由持有者核验 nonce再删除。当前只完成 writer core；真正的 user-mode daemon进程、Windows named pipe、POSIX UDS和 authenticated control API仍未实现。

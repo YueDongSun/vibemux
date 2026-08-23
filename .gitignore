@@ -19,6 +19,7 @@ build/
 *.pid
 *.sock
 *.pipe
+*.writer.lock
 
 # Local agent and provider configuration
 /.claude/
