@@ -1251,3 +1251,19 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Known risks**
 - A process crash intentionally leaves a stale lock and requires explicit diagnosis/recovery before another writer may start.
 - Drop requests shutdown but cannot forcibly terminate a blocked OS thread; only explicit shutdown provides joined completion evidence.
+
+### 2026-08-24 — M3 local control IPC plan
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION`
+
+Acceptance gate:
+
+- Windows health/shutdown crosses a real named pipe; POSIX equivalent is implemented behind UDS cfg and compiled in CI.
+- No TCP listener is created.
+- Descriptor publication occurs after bind and is removed only by its matching owner token.
+- A valid client receives versioned health without database path or secret fields.
+- Wrong token and wrong protocol version return stable errors without dispatch.
+- Oversized frames are rejected before allocation beyond the configured maximum.
+- Shutdown responds, closes the listener, joins the server, shuts down the writer, and removes descriptor plus writer lock.
+- A second client cannot connect after shutdown.
+- `PROGRESS.md` keeps on-demand process/bootstrap unchecked until an actual standalone daemon binary exists.
