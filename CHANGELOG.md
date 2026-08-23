@@ -8,6 +8,7 @@
 - 增加 immutable cleanup plan、spawn compensation、持久化 mock inventory 与资源 reconciliation。
 - Run 成功状态要求 structured adapter、verifier 或显式用户授权。
 - 冻结 Python domain/event/cleanup/terminal contract fixture，供 Rust parity 测试复用。
+- 增加 Rust `vibemux_store`：SQLite migration、WAL、atomic state/event、idempotency 与 replay 基础。
 
 ## 0.1.0a0
 

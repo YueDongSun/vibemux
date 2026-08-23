@@ -23,7 +23,7 @@ vibemux doctor
 
 ## Rust 核心迁移
 
-Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2A 功能。Rust 2024 workspace 已开始实现与平台无关的 typed IDs、Task/Run 状态机和 canonical event envelope；Python CLI 仍是当前可运行入口，Rust daemon、store、plugin host、terminal/workspace parity 与 A2A endpoint 尚未实现。权威里程碑与验证边界见 [PROGRESS.md](PROGRESS.md)。
+Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2A 功能。Rust 2024 workspace 已实现与平台无关的 typed IDs、Task/Run 状态机、canonical event envelope，以及 SQLite store 的 migration/atomic commit/idempotency/replay 基础；Python CLI 仍是当前可运行入口，Rust daemon、local IPC、plugin host、terminal/workspace parity 与 A2A endpoint 尚未实现。权威里程碑与验证边界见 [PROGRESS.md](PROGRESS.md)。
 
 ## Mock workflow
 

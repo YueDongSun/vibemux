@@ -382,13 +382,13 @@ Exit criteria:
 
 ### M3 — Rust persistence and single-writer daemon
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
-- [ ] SQLite migration framework and WAL configuration.
-- [ ] Atomic state + event transactions.
-- [ ] Idempotency keys, sequence ordering, projections, and replay.
+- [x] SQLite migration framework and WAL configuration.
+- [x] Atomic state + event transactions.
+- [x] Idempotency keys, sequence ordering, projections, and replay foundation.
 - [ ] On-demand user-mode `vibemuxd`.
 - [ ] Windows named-pipe and POSIX Unix-domain-socket CLI IPC.
 - [ ] Daemon lifecycle, lock, health, and graceful shutdown.
@@ -905,3 +905,33 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Known risks**
 - Event payload key rejection is a defense-in-depth schema check, not a general secret detector.
 - Rust CI configuration is present but remote GitHub Actions has not been observed in this session.
+
+### 2026-08-23 — M3 Rust SQLite store foundation
+
+**Status change**
+- M3 Rust persistence and single-writer daemon: `PLANNED` -> `PARTIAL`
+
+**Implemented**
+- Added `vibemux_store` as the blocking SQLite boundary with bundled SQLite for repeatable Windows/Linux builds.
+- Added forward schema versioning, WAL, explicit busy timeout, ordered event sequences, JSON projections, and reopen replay.
+- Committed state projection and canonical event envelope in one immediate transaction.
+- Made idempotency-key duplicates return the original event without applying a second state change.
+
+**Evidence**
+- Rust tests: 16 passed across types, events, and store crates on both MSRV 1.85 and current stable
+- Rust quality: MSRV 1.85 rustfmt and Clippy with `-D warnings` passed
+- Atomicity: a forced projection trigger failure left the event log empty
+- Replay: a committed Run projection and event survived store close/reopen
+
+**Remaining**
+- Add the daemon-owned dedicated writer worker and exclusive lifecycle lock.
+- Add crash/restart projection verification and historical migration fixtures.
+- Add Windows named-pipe and POSIX Unix-domain-socket local control transport.
+
+**Compatibility / migration**
+- Rust store schema v1 is private pre-alpha and separate from the Python prototype database.
+- No Python/Rust dual-writer cutover occurred.
+
+**Known risks**
+- `rusqlite::Connection` is intentionally blocking and must remain behind the future daemon writer worker.
+- The current projection format is a private JSON snapshot contract and is not yet a public migration promise.
