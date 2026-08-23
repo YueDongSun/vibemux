@@ -218,19 +218,19 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 - [x] **Remove shell-mediated tmux launch construction.**
   The current tmux backend converts an argv array to one command string. A controlled cross-platform agent host must receive a validated launch spec and spawn the harness with `shell=false`.
 
-- [ ] **Implement complete spawn compensation.**
+- [x] **Implement complete spawn compensation.**
   If terminal creation fails after a worktree is created, the current flow marks the Run failed but does not reliably unwind the worktree, branch, launch spec, or terminal resources.
 
-- [ ] **Stop fabricating missing mock panes.**
+- [x] **Stop fabricating missing mock panes.**
   The mock backend currently recreates a pane record during `send_text`, masking stale-resource behavior. Mock state must be persisted or run inside an actual supervised process.
 
-- [ ] **Implement terminal resource ownership.**
+- [x] **Implement terminal resource ownership.**
   A pane ID alone is insufficient. Stop/send/activate must verify project workspace, task container, run identity, backend, and recorded ownership before operating.
 
-- [ ] **Implement reconciliation before real concurrency.**
+- [x] **Implement reconciliation before real concurrency.**
   The system must detect missing panes, missing worktrees, unknown resources, backend outages, and mismatched ownership without treating any of them as task success.
 
-- [ ] **Eliminate automatic success semantics from PTY runs.**
+- [x] **Eliminate automatic success semantics from PTY runs.**
   `RunStatus.SUCCEEDED` must not be reachable from process exit or terminal evidence. Completion requires a structured adapter event or explicit verifier/user transition.
 
 #### P1 — required for Rust-core parity
@@ -342,7 +342,7 @@ Scope:
 - [ ] Split command runner, domain, storage, workspace, terminal, harness, and services.
 - [x] Persist `base_commit` and correct diff semantics.
 - [ ] Add migrations and atomic transition/event tests.
-- [ ] Implement reconciliation and immutable cleanup plan.
+- [x] Implement reconciliation and immutable cleanup plan.
 - [ ] Replace fake mock persistence with a supervised mock process.
 - [ ] Add platform and security test suites.
 - [ ] Record stable JSON fixtures for CLI, events, and plugin concepts.
@@ -802,7 +802,7 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 - Added a Windows launcher path that prefers direct executables and otherwise invokes a same-name PowerShell companion with fixed flags and separate arguments.
 
 **Evidence**
-- tests: 14 pytest tests passed, including real Git for Windows worktree and diff coverage
+- tests: 16 pytest tests passed at commit `2b8d871`, including real Git for Windows worktree and diff coverage
 - typing: mypy completed with no errors
 - lint: Ruff completed with no errors
 - smoke: offline mock CLI workflow passed
@@ -810,8 +810,7 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 - live terminal backend: unavailable; WezTerm and tmux are not installed on the audited host
 
 **Remaining**
-- Implement immutable spawn compensation and reconciliation.
-- Replace process-local mock resource fabrication with supervised inventory.
+- Replace the persisted mock inventory with a supervised mock plugin process.
 - Freeze the expanded Python compatibility fixtures.
 
 **Compatibility / migration**
@@ -821,3 +820,33 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Known risks**
 - The Python reference still inherits the harness process environment until the Rust plugin permission model is available.
 - PowerShell companion launch is a compatibility boundary, not a general-purpose script execution API.
+
+### 2026-08-23 — M1 spawn compensation and reconciliation
+
+**Status change**
+- Python P0 defect list: all listed items now have implementations and focused acceptance tests
+
+**Implemented**
+- Added immutable cleanup plans with pre-execution revalidation and dirty-worktree refusal.
+- Added spawn compensation that stops an owned terminal, removes only a clean registered worktree, preserves the branch, and records sanitized outcomes.
+- Replaced fabricated mock panes with a persisted resource inventory that never stores message content.
+- Added project/backend/run/workspace/cwd/pane ownership checks before send and stop.
+- Added reconciliation that marks a running Run stale for missing or mismatched resources without treating expected worktree changes as failure.
+- Required structured-adapter, verifier, or explicit user authority for a Run to become succeeded.
+
+**Evidence**
+- tests: 26 pytest tests passed, including compensation, cleanup-plan drift, persistent inventory, ownership, reconciliation, and success-authority cases
+- typing and style: mypy, Ruff lint, and Ruff format checks passed
+- smoke and package: cross-process mock CLI smoke and isolated wheel build passed
+- live terminal backend: unavailable; contracts are tested but WezTerm and tmux are not installed
+
+**Remaining**
+- Freeze versioned Python CLI/event/cleanup/terminal/error fixtures.
+- Move mock process behavior to the future plugin protocol rather than extending the Python core.
+
+**Compatibility / migration**
+- Mock inventory is stored under ignored `.vibemux/` state; no prompt or message content is persisted.
+- Existing stopped Runs remain idempotent; legacy Runs without base commit remain readable but cannot produce authoritative diffs.
+
+**Known risks**
+- Compensation cannot identify a terminal resource if a backend creates it and then fails before returning its identity; later inventory reconciliation must preserve such unknown resources.

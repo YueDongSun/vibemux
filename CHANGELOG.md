@@ -5,6 +5,8 @@
 - 持久化 Run base commit，并修复 committed/staged/unstaged/untracked diff 语义。
 - 为 Git、terminal 和 harness host 引入 injected shell-free CommandRunner。
 - 增加 SQLite forward migration 与受控 Windows PowerShell companion launcher。
+- 增加 immutable cleanup plan、spawn compensation、持久化 mock inventory 与资源 reconciliation。
+- Run 成功状态要求 structured adapter、verifier 或显式用户授权。
 
 ## 0.1.0a0
 

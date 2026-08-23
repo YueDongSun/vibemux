@@ -75,6 +75,26 @@ class WorktreeRecord:
     base_commit: str
 
 
+@dataclass(frozen=True)
+class WorktreeInspection:
+    registered: bool
+    exists: bool
+    branch_matches: bool
+    head: str | None
+    dirty: bool
+    issues: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CleanupPlan:
+    record: WorktreeRecord
+    inspection: WorktreeInspection
+
+    @property
+    def executable(self) -> bool:
+        return not self.inspection.issues
+
+
 class WorkspaceManager:
     def __init__(
         self,
@@ -138,18 +158,91 @@ class WorkspaceManager:
             patches.append(untracked.stdout)
         return "".join(patches)
 
-    def cleanup(self, record: WorktreeRecord, *, dry_run: bool = True) -> None:
+    def inspect(self, record: WorktreeRecord) -> WorktreeInspection:
         ensure_managed_worktree(record.path, self.managed_root, self.repo_root)
-        status = git_run(record.path, ["status", "--porcelain"], runner=self.runner).stdout.strip()
-        if status:
-            raise ResourceSafetyError("refusing to remove dirty worktree")
-        if dry_run:
-            return
+        inventory = self._worktree_inventory()
+        entry = inventory.get(str(record.path.resolve()))
+        exists = record.path.exists()
+        registered = entry is not None
+        expected_branch = f"refs/heads/{record.branch}"
+        branch_matches = entry is not None and entry[1] == expected_branch
+        dirty = False
+        issues: list[str] = []
+        if not exists:
+            issues.append("worktree_missing")
+        if not registered:
+            issues.append("worktree_unregistered")
+        if registered and not branch_matches:
+            issues.append("worktree_branch_mismatch")
+        if exists and registered:
+            dirty = bool(
+                git_run(
+                    record.path,
+                    ["status", "--porcelain"],
+                    runner=self.runner,
+                ).stdout.strip()
+            )
+            if dirty:
+                issues.append("worktree_dirty")
+        return WorktreeInspection(
+            registered,
+            exists,
+            branch_matches,
+            entry[0] if entry else None,
+            dirty,
+            tuple(issues),
+        )
+
+    def plan_cleanup(self, record: WorktreeRecord) -> CleanupPlan:
+        return CleanupPlan(record, self.inspect(record))
+
+    def execute_cleanup(self, plan: CleanupPlan) -> None:
+        if not plan.executable:
+            raise ResourceSafetyError(
+                f"cleanup plan is not executable: {','.join(plan.inspection.issues)}"
+            )
+        refreshed = self.plan_cleanup(plan.record)
+        if refreshed != plan:
+            raise ResourceSafetyError("cleanup plan changed before execution")
         result = git_run(
             self.repo_root,
-            ["worktree", "remove", str(record.path)],
+            ["worktree", "remove", str(plan.record.path)],
             runner=self.runner,
             check=False,
         )
         if result.returncode != 0:
             raise WorktreeError(result.stderr.strip() or "git worktree remove failed")
+
+    def cleanup(self, record: WorktreeRecord, *, dry_run: bool = True) -> CleanupPlan:
+        plan = self.plan_cleanup(record)
+        if not dry_run:
+            self.execute_cleanup(plan)
+        return plan
+
+    def _worktree_inventory(self) -> dict[str, tuple[str | None, str | None]]:
+        output = git_run(
+            self.repo_root,
+            ["worktree", "list", "--porcelain", "-z"],
+            runner=self.runner,
+        ).stdout
+        inventory: dict[str, tuple[str | None, str | None]] = {}
+        current_path: str | None = None
+        current_head: str | None = None
+        current_branch: str | None = None
+        for field in output.split("\x00"):
+            if not field:
+                if current_path is not None:
+                    inventory[str(Path(current_path).resolve())] = (
+                        current_head,
+                        current_branch,
+                    )
+                current_path = current_head = current_branch = None
+            elif field.startswith("worktree "):
+                current_path = field.removeprefix("worktree ")
+            elif field.startswith("HEAD "):
+                current_head = field.removeprefix("HEAD ")
+            elif field.startswith("branch "):
+                current_branch = field.removeprefix("branch ")
+        if current_path is not None:
+            inventory[str(Path(current_path).resolve())] = (current_head, current_branch)
+        return inventory

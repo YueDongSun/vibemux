@@ -4,7 +4,15 @@ from uuid import uuid4
 import pytest
 
 from vibemux.errors import InvalidStateTransitionError
-from vibemux.models import Event, Project, Run, RunStatus, Task, TaskStatus
+from vibemux.models import (
+    Event,
+    Project,
+    Run,
+    RunCompletionAuthority,
+    RunStatus,
+    Task,
+    TaskStatus,
+)
 from vibemux.paths import is_within
 from vibemux.storage import Storage
 from vibemux.terminal import MockTerminalBackend, WezTermBackend
@@ -25,6 +33,18 @@ def test_run_state_transition() -> None:
     run.transition(RunStatus.STOPPED)
     with pytest.raises(InvalidStateTransitionError):
         run.transition(RunStatus.RUNNING)
+
+
+def test_run_success_requires_explicit_authority() -> None:
+    run = Run(uuid4(), uuid4(), "mock")
+    run.transition(RunStatus.RUNNING)
+    with pytest.raises(InvalidStateTransitionError):
+        run.transition(RunStatus.SUCCEEDED)
+    run.transition(
+        RunStatus.SUCCEEDED,
+        completion_authority=RunCompletionAuthority.STRUCTURED_ADAPTER,
+    )
+    assert run.status == RunStatus.SUCCEEDED
 
 
 def test_storage_event_order_and_roundtrip(tmp_path: Path) -> None:
@@ -82,8 +102,14 @@ def test_wezterm_command_contract(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     monkeypatch.setattr(backend, "_run", record_call)
     from vibemux.models import TerminalLocation
 
-    backend.open(TerminalLocation("wezterm"), ["python", "-m", "x"], tmp_path)
+    backend.open(
+        TerminalLocation("wezterm", workspace_id="project_1"),
+        ["python", "-m", "x"],
+        tmp_path,
+    )
     backend.send_text("42", "& calc.exe", submit=True)
     assert calls[0][0][:3] == ["cli", "spawn", "--cwd"]
+    assert calls[0][0][4:7] == ["--new-window", "--workspace", "project_1"]
+    assert calls[0][0][-4:] == ["--", "python", "-m", "x"]
     assert calls[1][0][-1] == "42"
     assert calls[1][1] == "& calc.exe"

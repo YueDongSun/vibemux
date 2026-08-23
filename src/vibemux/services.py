@@ -3,25 +3,44 @@
 from __future__ import annotations
 
 import platform
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from uuid import UUID
 
 from .command_runner import CommandRunner, SubprocessCommandRunner
 from .config import WORKTREE_DIR, Config, config_dir, config_path, database_path, require_config
-from .errors import NotInitializedError, ReconciliationError
-from .harness import LaunchContext, MockHarnessAdapter, profile_for
+from .errors import (
+    NotInitializedError,
+    ReconciliationError,
+    TerminalBackendError,
+    VibeMuxError,
+)
+from .harness import GenericCommandAdapter, LaunchContext, MockHarnessAdapter, profile_for
 from .models import Event, Project, Run, RunStatus, Task, TaskStatus, TerminalLocation
+from .paths import is_within, normalized
 from .storage import Storage
-from .terminal import MockTerminalBackend, TerminalBackend, TmuxBackend, WezTermBackend
-from .workspace import WorkspaceManager, ensure_clean_with_commit
+from .terminal import MockTerminalBackend, SendReceipt, TerminalBackend, TmuxBackend, WezTermBackend
+from .workspace import WorkspaceManager, WorktreeRecord, ensure_clean_with_commit
+
+MOCK_TERMINAL_STATE_FILE = "mock_terminal.json"
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    run_id: UUID
+    status_before: RunStatus
+    status_after: RunStatus
+    issues: tuple[str, ...]
 
 
 def choose_terminal_backend(
     name: str,
     runner: CommandRunner | None = None,
+    mock_state_path: Path | None = None,
 ) -> TerminalBackend:
     if name == "mock":
-        return MockTerminalBackend()
+        return MockTerminalBackend(mock_state_path)
     if name == "wezterm":
         return WezTermBackend(runner=runner)
     if name == "tmux":
@@ -99,7 +118,14 @@ class RunService:
         self.backends: dict[str, TerminalBackend] = {}
 
     def _backend(self, name: str) -> TerminalBackend:
-        return self.backends.setdefault(name, choose_terminal_backend(name, self.runner))
+        return self.backends.setdefault(
+            name,
+            choose_terminal_backend(
+                name,
+                self.runner,
+                config_dir(self.repo_root) / MOCK_TERMINAL_STATE_FILE,
+            ),
+        )
 
     def spawn(
         self,
@@ -136,23 +162,20 @@ class RunService:
                 payload={"harness": harness_name},
             ),
         )
+        worktree: WorktreeRecord | None = None
+        location: TerminalLocation | None = None
+        backend = self._backend(backend_name)
         try:
             worktree = self.workspace.create_worktree(
                 run.run_id.hex[:12], f"vibemux/{run.run_id.hex[:12]}", base_commit
             )
             run.worktree, run.branch = str(worktree.path), worktree.branch
             profile = profile_for(harness_name)
-            adapter = (
-                MockHarnessAdapter()
-                if harness_name == "mock"
-                else __import__(
-                    "vibemux.harness", fromlist=["GenericCommandAdapter"]
-                ).GenericCommandAdapter()
-            )
+            adapter = MockHarnessAdapter() if harness_name == "mock" else GenericCommandAdapter()
             launch = adapter.build_launch_spec(
                 profile, LaunchContext(worktree.path, str(run.run_id))
             )
-            location = self._backend(backend_name).open(
+            location = backend.open(
                 TerminalLocation(
                     backend_name,
                     workspace_id=str(self.project_id),
@@ -178,13 +201,39 @@ class RunService:
                 ),
             )
             return run
-        except Exception as exc:
-            run.transition(RunStatus.FAILED)
-            run.metadata["error"] = str(exc)
+        except Exception:
+            compensation: list[str] = []
+            if location is not None:
+                try:
+                    backend.stop(location)
+                    compensation.append("terminal_stopped")
+                except VibeMuxError:
+                    compensation.append("terminal_preserved")
+            if worktree is not None:
+                try:
+                    plan = self.workspace.plan_cleanup(worktree)
+                    if plan.executable:
+                        self.workspace.execute_cleanup(plan)
+                        compensation.append("worktree_removed")
+                    else:
+                        compensation.append("worktree_preserved")
+                except VibeMuxError:
+                    compensation.append("worktree_preserved")
+            if run.status in {RunStatus.PREPARING, RunStatus.RUNNING}:
+                run.transition(RunStatus.FAILED)
+            run.metadata["failure_code"] = "spawn_failed"
+            run.metadata["compensation"] = compensation
             self.storage.save_run(
                 run,
                 Event(
-                    "run_failed", self.project_id, task_id, run.run_id, payload={"error": str(exc)}
+                    "run_failed",
+                    self.project_id,
+                    task_id,
+                    run.run_id,
+                    payload={
+                        "failure_code": "spawn_failed",
+                        "compensation": compensation,
+                    },
                 ),
             )
             raise
@@ -195,12 +244,14 @@ class RunService:
             raise NotInitializedError(f"run not found: {run_id}")
         return run
 
-    def send(self, run_id: UUID, text: str, submit: bool = False) -> object:
+    def send(self, run_id: UUID, text: str, submit: bool = False) -> SendReceipt:
         run = self.get(run_id)
-        if not run.terminal or not run.terminal.pane_id:
+        self._require_terminal_resource(run)
+        location = run.terminal
+        if location is None or location.pane_id is None:
             raise ReconciliationError("run has no terminal pane")
         receipt = self._backend(run.terminal_backend).send_text(
-            run.terminal.pane_id, text, submit=submit
+            location.pane_id, text, submit=submit
         )
         self.storage.append_event(
             Event(
@@ -220,6 +271,9 @@ class RunService:
 
     def stop(self, run_id: UUID) -> Run:
         run = self.get(run_id)
+        if run.status not in {RunStatus.RUNNING, RunStatus.STALE}:
+            return run
+        self._require_terminal_resource(run)
         if run.terminal:
             self._backend(run.terminal_backend).stop(run.terminal)
         if run.status in {RunStatus.RUNNING, RunStatus.STALE}:
@@ -235,9 +289,92 @@ class RunService:
             return ""
         if not run.base_commit:
             raise ReconciliationError("run has no persisted base commit")
-        from .workspace import WorktreeRecord
-
         return self.workspace.diff(WorktreeRecord(Path(run.worktree), run.branch, run.base_commit))
 
     def trace(self) -> list[Event]:
         return self.storage.list_events(self.project_id)
+
+    def _require_terminal_resource(self, run: Run) -> None:
+        issues = self._terminal_resource_issues(run)
+        if issues:
+            raise ReconciliationError(f"terminal resource mismatch: {','.join(issues)}")
+
+    def _terminal_resource_issues(self, run: Run) -> tuple[str, ...]:
+        issues: list[str] = []
+        if run.project_id != self.project_id:
+            issues.append("project_mismatch")
+        location = run.terminal
+        if location is None or not location.pane_id:
+            return (*issues, "terminal_missing")
+        if location.backend != run.terminal_backend:
+            issues.append("terminal_backend_mismatch")
+        if location.metadata.get("run_id") != str(run.run_id):
+            issues.append("terminal_run_mismatch")
+        try:
+            panes = self._backend(run.terminal_backend).list()
+        except TerminalBackendError:
+            return (*issues, "terminal_inventory_unavailable")
+        pane = next((item for item in panes if item.pane_id == location.pane_id), None)
+        if pane is None:
+            return (*issues, "terminal_missing")
+        if not pane.alive:
+            issues.append("terminal_not_alive")
+        if location.workspace_id and pane.workspace_id != location.workspace_id:
+            issues.append("terminal_workspace_mismatch")
+        expected_cwd = run.worktree or location.cwd
+        if expected_cwd is None or not _terminal_cwd_matches(pane.cwd, Path(expected_cwd)):
+            issues.append("terminal_cwd_mismatch")
+        return tuple(issues)
+
+
+class ReconciliationService:
+    def __init__(self, run_service: RunService):
+        self.run_service = run_service
+
+    def reconcile(self, run_id: UUID) -> ReconciliationResult:
+        run = self.run_service.get(run_id)
+        status_before = run.status
+        issues = list(self.run_service._terminal_resource_issues(run))
+        if not run.worktree or not run.branch or not run.base_commit:
+            issues.append("worktree_record_incomplete")
+        else:
+            try:
+                inspection = self.run_service.workspace.inspect(
+                    WorktreeRecord(Path(run.worktree), run.branch, run.base_commit)
+                )
+                issues.extend(issue for issue in inspection.issues if issue != "worktree_dirty")
+            except VibeMuxError:
+                issues.append("worktree_unsafe")
+        unique_issues = tuple(dict.fromkeys(issues))
+        if unique_issues and run.status == RunStatus.RUNNING:
+            run.transition(RunStatus.STALE)
+            self.run_service.storage.save_run(
+                run,
+                Event(
+                    "run_stale",
+                    self.run_service.project_id,
+                    run.task_id,
+                    run.run_id,
+                    payload={"issues": list(unique_issues)},
+                ),
+            )
+        return ReconciliationResult(run.run_id, status_before, run.status, unique_issues)
+
+
+def _terminal_cwd_matches(inventory_cwd: str, expected_cwd: Path) -> bool:
+    if not inventory_cwd:
+        return False
+    parsed = urlparse(inventory_cwd)
+    candidate_text = inventory_cwd
+    if parsed.scheme == "file":
+        path_text = unquote(parsed.path)
+        if platform.system() == "Windows" and len(path_text) >= 3 and path_text[0] == "/":
+            path_text = path_text[1:]
+        candidate_text = f"//{parsed.netloc}{path_text}" if parsed.netloc else path_text
+    try:
+        candidate = Path(candidate_text)
+        return normalized(candidate) == normalized(expected_cwd) or is_within(
+            candidate, expected_cwd
+        )
+    except (OSError, ValueError):
+        return False

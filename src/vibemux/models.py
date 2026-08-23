@@ -32,6 +32,12 @@ class RunStatus(StrEnum):
     STALE = "stale"
 
 
+class RunCompletionAuthority(StrEnum):
+    STRUCTURED_ADAPTER = "structured_adapter"
+    VERIFIER = "verifier"
+    USER = "user"
+
+
 TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.OPEN: {TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
     TaskStatus.IN_PROGRESS: {TaskStatus.BLOCKED, TaskStatus.DONE, TaskStatus.CANCELLED},
@@ -103,9 +109,16 @@ class Run:
     created_at: datetime = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def transition(self, target: RunStatus) -> None:
+    def transition(
+        self,
+        target: RunStatus,
+        *,
+        completion_authority: RunCompletionAuthority | None = None,
+    ) -> None:
         if target not in RUN_TRANSITIONS[self.status]:
             raise InvalidStateTransitionError(f"run {self.status} -> {target} is not allowed")
+        if target == RunStatus.SUCCEEDED and completion_authority is None:
+            raise InvalidStateTransitionError("run success requires explicit completion authority")
         self.status = target
 
 

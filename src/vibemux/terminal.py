@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -19,6 +19,8 @@ from .errors import (
     TerminalResourceMismatchError,
 )
 from .models import TerminalLocation
+
+MOCK_TERMINAL_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -63,7 +65,8 @@ def _receipt(text: str, submit: bool) -> SendReceipt:
 class MockTerminalBackend:
     name = "mock"
 
-    def __init__(self) -> None:
+    def __init__(self, state_path: Path | None = None) -> None:
+        self.state_path = state_path
         self.panes: dict[str, Pane] = {}
         self.messages: list[tuple[str, str, bool]] = []
 
@@ -71,13 +74,15 @@ class MockTerminalBackend:
         return True
 
     def open(self, location: TerminalLocation, command: list[str], cwd: Path) -> TerminalLocation:
+        panes = self._load_panes()
         pane_id = location.pane_id or str(uuid4())
-        self.panes[pane_id] = Pane(
+        panes[pane_id] = Pane(
             pane_id,
             str(cwd),
             title=location.metadata.get("title", "vibemux"),
             workspace_id=location.workspace_id,
         )
+        self._write_panes(panes)
         return TerminalLocation(
             self.name,
             resource_id=pane_id,
@@ -88,22 +93,66 @@ class MockTerminalBackend:
         )
 
     def list(self) -> list[Pane]:
-        return list(self.panes.values())
+        return list(self._load_panes().values())
 
     def send_text(self, pane_id: str, text: str, *, submit: bool = False) -> SendReceipt:
-        # Mock backend is process-local by design; persisted pane IDs remain valid
-        # across CLI invocations so offline workflows can replay send/stop calls.
-        self.panes.setdefault(pane_id, Pane(pane_id, "", alive=True))
+        panes = self._load_panes()
+        if pane_id not in panes:
+            raise TerminalResourceMismatchError(pane_id)
         self.messages.append((pane_id, text, submit))
         return _receipt(text, submit)
 
     def stop(self, location: TerminalLocation) -> None:
-        if location.pane_id:
-            self.panes.pop(location.pane_id, None)
+        if not location.pane_id:
+            return
+        panes = self._load_panes()
+        if location.pane_id not in panes:
+            raise TerminalResourceMismatchError(location.pane_id)
+        panes.pop(location.pane_id)
+        self._write_panes(panes)
 
     def activate(self, location: TerminalLocation) -> None:
-        if location.pane_id and location.pane_id not in self.panes:
+        if location.pane_id and location.pane_id not in self._load_panes():
             raise TerminalResourceMismatchError(location.pane_id)
+
+    def _load_panes(self) -> dict[str, Pane]:
+        if self.state_path is None:
+            return dict(self.panes)
+        if not self.state_path.exists():
+            return {}
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if payload.get("schema_version") != MOCK_TERMINAL_SCHEMA_VERSION:
+                raise ValueError("unsupported schema")
+            panes = {
+                str(item["pane_id"]): Pane(**item)
+                for item in payload.get("panes", [])
+                if isinstance(item, dict)
+            }
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise TerminalBackendError("invalid mock terminal inventory") from exc
+        self.panes = panes
+        return dict(panes)
+
+    def _write_panes(self, panes: dict[str, Pane]) -> None:
+        self.panes = dict(panes)
+        if self.state_path is None:
+            return
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": MOCK_TERMINAL_SCHEMA_VERSION,
+                    "panes": [asdict(pane) for pane in panes.values()],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(self.state_path)
 
 
 class WezTermBackend:
@@ -127,7 +176,10 @@ class WezTermBackend:
         return self._run(["--version"]).returncode == 0
 
     def open(self, location: TerminalLocation, command: list[str], cwd: Path) -> TerminalLocation:
-        result = self._run(["cli", "spawn", "--cwd", os.fspath(cwd), *command])
+        args = ["cli", "spawn", "--cwd", os.fspath(cwd)]
+        if location.workspace_id:
+            args.extend(["--new-window", "--workspace", location.workspace_id])
+        result = self._run([*args, "--", *command])
         if result.returncode != 0:
             raise TerminalBackendError(result.stderr.strip() or "wezterm spawn failed")
         pane_id = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else None
