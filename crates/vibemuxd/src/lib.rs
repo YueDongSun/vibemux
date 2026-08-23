@@ -26,6 +26,7 @@ pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
 pub mod control;
 pub mod process;
+pub mod recovery;
 
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 

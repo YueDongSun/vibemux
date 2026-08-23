@@ -33,10 +33,19 @@ Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2
 cargo build -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl
 .\target\debug\vibemuxctl.exe daemon start --project-root .
 .\target\debug\vibemuxctl.exe daemon health --project-root .
+.\target\debug\vibemuxctl.exe daemon inspect --project-root .
 .\target\debug\vibemuxctl.exe daemon stop --project-root .
 ```
 
 `start`以authenticated IPC health而非PID作为ready依据。stale descriptor/lock会fail closed，不会自动删除文件或终止未知进程。
+
+daemon异常退出后，先运行`inspect`。仅当状态为`recoverable`时，才可把返回的64位confirmation用于单独恢复命令：
+
+```powershell
+.\target\debug\vibemuxctl.exe daemon recover --confirmation <inspect返回值> --project-root .
+```
+
+恢复不会kill PID，也不会打开或修改Python/Rust数据库；artifact、PID或confirmation发生变化时会拒绝。
 
 release启动性能可用固定脚本复测；脚本会拒绝已有daemon descriptor的项目：
 

@@ -1,7 +1,9 @@
 use serde_json::json;
 use vibemux_cli::{
     CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome, daemon_executable,
-    daemon_health, daemon_paths, parse_cli_arguments, start_daemon, stop_daemon,
+    daemon_health, daemon_paths, parse_cli_arguments,
+    recovery::{inspect_runtime, recover_runtime},
+    start_daemon, stop_daemon,
 };
 use vibemuxd::control::DaemonHealth;
 
@@ -63,6 +65,23 @@ async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
                 "process_id": health.process_id,
             }))
         }
+        CliCommand::DaemonInspect { project_root } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            let inspection = inspect_runtime(&paths).await?;
+            serde_json::to_value(inspection).map_err(|_| DaemonCliError::Control {
+                code: "cli_output_encoding_failed".to_string(),
+            })
+        }
+        CliCommand::DaemonRecover {
+            project_root,
+            confirmation,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            let outcome = recover_runtime(&paths, &confirmation).await?;
+            serde_json::to_value(outcome).map_err(|_| DaemonCliError::Control {
+                code: "cli_output_encoding_failed".to_string(),
+            })
+        }
         CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
     }
 }
@@ -84,7 +103,7 @@ fn emit_error(error: &DaemonCliError) {
 
 fn print_help() {
     println!(
-        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]"
+        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]"
     );
 }
 

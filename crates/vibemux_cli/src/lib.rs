@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Thin lifecycle client and controlled bootstrap for the Rust daemon.
 
+pub mod recovery;
+
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -139,8 +141,14 @@ impl SpawnedDaemon {
             .map_err(|_| DaemonCliError::StartFailed)
     }
 
-    fn release(self) -> Result<(), DaemonCliError> {
-        Ok(())
+    fn release(mut self) -> Result<(), DaemonCliError> {
+        std::thread::Builder::new()
+            .name("vibemux_daemon_reaper".to_string())
+            .spawn(move || {
+                let _ = self.child.wait();
+            })
+            .map(|_| ())
+            .map_err(|_| DaemonCliError::StartFailed)
     }
 
     fn terminate(&mut self) {
@@ -209,6 +217,13 @@ pub enum CliCommand {
     DaemonStop {
         project_root: Option<PathBuf>,
     },
+    DaemonInspect {
+        project_root: Option<PathBuf>,
+    },
+    DaemonRecover {
+        project_root: Option<PathBuf>,
+        confirmation: String,
+    },
     Help,
     Version,
 }
@@ -235,6 +250,12 @@ pub enum DaemonCliError {
     ShutdownTimeout,
     #[error("daemon control operation failed: {code}")]
     Control { code: String },
+    #[error("daemon recovery confirmation does not match current artifacts")]
+    RecoveryConfirmationMismatch,
+    #[error("daemon recovery is blocked: {reason_code}")]
+    RecoveryBlocked { reason_code: String },
+    #[error("daemon recovery artifact operation failed: {code}")]
+    RecoveryArtifact { code: String },
     #[error("CLI arguments are invalid")]
     InvalidArguments,
 }
@@ -253,6 +274,9 @@ impl DaemonCliError {
             Self::StartupTimeout => "daemon_startup_timeout",
             Self::ShutdownTimeout => "daemon_shutdown_timeout",
             Self::Control { code } => code,
+            Self::RecoveryConfirmationMismatch => "daemon_recovery_confirmation_mismatch",
+            Self::RecoveryBlocked { .. } => "daemon_recovery_blocked",
+            Self::RecoveryArtifact { code } => code,
             Self::InvalidArguments => "cli_invalid_arguments",
         }
     }
@@ -332,6 +356,7 @@ pub fn parse_cli_arguments(
         .ok_or(DaemonCliError::InvalidArguments)?;
     let mut project_root = None;
     let mut daemon_executable = None;
+    let mut confirmation = None;
     let mut index = 2;
     while index < arguments.len() {
         let flag = arguments[index]
@@ -347,6 +372,14 @@ pub fn parse_cli_arguments(
             "--daemon-executable" if action == "start" && daemon_executable.is_none() => {
                 daemon_executable = Some(PathBuf::from(value));
             }
+            "--confirmation" if action == "recover" && confirmation.is_none() => {
+                confirmation = Some(
+                    value
+                        .to_str()
+                        .ok_or(DaemonCliError::InvalidArguments)?
+                        .to_string(),
+                );
+            }
             _ => return Err(DaemonCliError::InvalidArguments),
         }
         index += 2;
@@ -358,6 +391,13 @@ pub fn parse_cli_arguments(
         }),
         "health" if daemon_executable.is_none() => Ok(CliCommand::DaemonHealth { project_root }),
         "stop" if daemon_executable.is_none() => Ok(CliCommand::DaemonStop { project_root }),
+        "inspect" if daemon_executable.is_none() && confirmation.is_none() => {
+            Ok(CliCommand::DaemonInspect { project_root })
+        }
+        "recover" if daemon_executable.is_none() => Ok(CliCommand::DaemonRecover {
+            project_root,
+            confirmation: confirmation.ok_or(DaemonCliError::InvalidArguments)?,
+        }),
         _ => Err(DaemonCliError::InvalidArguments),
     }
 }
@@ -695,6 +735,28 @@ mod tests {
             }
         );
         assert!(parse_cli_arguments([OsString::from("daemon start")].into_iter()).is_err());
+
+        let confirmation = "a".repeat(64);
+        assert_eq!(
+            parse_cli_arguments(
+                [
+                    OsString::from("daemon"),
+                    OsString::from("recover"),
+                    OsString::from("--confirmation"),
+                    OsString::from(&confirmation),
+                ]
+                .into_iter()
+            )
+            .expect("parse recovery command"),
+            CliCommand::DaemonRecover {
+                project_root: None,
+                confirmation,
+            }
+        );
+        assert!(
+            parse_cli_arguments([OsString::from("daemon"), OsString::from("recover")].into_iter())
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::{
@@ -94,6 +95,20 @@ pub struct ControlResponse {
     pub error_code: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlEndpointKind {
+    WindowsNamedPipe,
+    UnixSocket,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ControlArtifactInfo {
+    pub protocol_version: u32,
+    pub process_id: u32,
+    pub endpoint_kind: ControlEndpointKind,
+}
+
 impl ControlResponse {
     fn success(request_id: String, payload: ControlPayload) -> Self {
         Self {
@@ -135,6 +150,94 @@ impl fmt::Debug for ControlDescriptor {
     }
 }
 
+pub struct ControlArtifactSnapshot {
+    path: PathBuf,
+    encoded: Vec<u8>,
+    #[cfg(unix)]
+    descriptor: ControlDescriptor,
+    info: ControlArtifactInfo,
+}
+
+impl fmt::Debug for ControlArtifactSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ControlArtifactSnapshot")
+            .field("info", &self.info)
+            .field("endpoint", &"[redacted]")
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl ControlArtifactSnapshot {
+    #[must_use]
+    pub const fn info(&self) -> ControlArtifactInfo {
+        self.info
+    }
+
+    #[must_use]
+    pub fn binding_digest(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"vibemux-control-artifact-v1\0");
+        hasher.update(&self.encoded);
+        hasher.finalize().into()
+    }
+
+    pub fn remove_if_unchanged(&self) -> Result<(), ControlError> {
+        self.require_unchanged()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+
+            let socket_path = Path::new(&self.descriptor.endpoint);
+            match std::fs::symlink_metadata(socket_path) {
+                Ok(metadata) if metadata.file_type().is_socket() => {
+                    self.require_unchanged()?;
+                    std::fs::remove_file(socket_path)
+                        .map_err(|_| ControlError::ArtifactCleanupFailed)?;
+                }
+                Ok(_) => return Err(ControlError::UnsafeArtifact),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(ControlError::ArtifactCleanupFailed),
+            }
+        }
+        self.require_unchanged()?;
+        std::fs::remove_file(&self.path).map_err(|_| ControlError::ArtifactCleanupFailed)
+    }
+
+    fn require_unchanged(&self) -> Result<(), ControlError> {
+        let (encoded, _) = read_descriptor_with_bytes(&self.path)?;
+        if encoded == self.encoded {
+            Ok(())
+        } else {
+            Err(ControlError::ArtifactChanged)
+        }
+    }
+}
+
+pub fn inspect_control_artifact(
+    path: &Path,
+) -> Result<Option<ControlArtifactSnapshot>, ControlError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ControlError::DescriptorInvalid),
+    }
+    let (encoded, descriptor) = read_descriptor_with_bytes(path)?;
+    let info = ControlArtifactInfo {
+        protocol_version: descriptor.version,
+        process_id: descriptor.process_id,
+        endpoint_kind: endpoint_kind(&descriptor.endpoint),
+    };
+    Ok(Some(ControlArtifactSnapshot {
+        path: path.to_path_buf(),
+        encoded,
+        #[cfg(unix)]
+        descriptor,
+        info,
+    }))
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ControlError {
     #[error("local control descriptor already exists")]
@@ -155,6 +258,12 @@ pub enum ControlError {
     UnsupportedVersion,
     #[error("local control authentication token could not be generated")]
     TokenUnavailable,
+    #[error("local control runtime artifact path is unsafe")]
+    UnsafeArtifact,
+    #[error("local control runtime artifact changed after inspection")]
+    ArtifactChanged,
+    #[error("local control runtime artifact cleanup failed")]
+    ArtifactCleanupFailed,
     #[error("daemon writer operation failed: {code}")]
     Writer { code: String },
     #[error("local control operation exceeded its deadline")]
@@ -178,6 +287,9 @@ impl ControlError {
             Self::Unauthorized => "control_unauthorized",
             Self::UnsupportedVersion => "control_unsupported_version",
             Self::TokenUnavailable => "control_token_unavailable",
+            Self::UnsafeArtifact => "control_artifact_unsafe_path",
+            Self::ArtifactChanged => "control_artifact_changed",
+            Self::ArtifactCleanupFailed => "control_artifact_cleanup_failed",
             Self::Writer { code } | Self::Remote { code } => code,
             Self::Deadline => "control_deadline_exceeded",
             Self::ServerTerminated => "control_server_terminated",
@@ -733,6 +845,17 @@ where
 }
 
 fn read_descriptor(path: &Path) -> Result<ControlDescriptor, ControlError> {
+    read_descriptor_with_bytes(path).map(|(_, descriptor)| descriptor)
+}
+
+fn read_descriptor_with_bytes(path: &Path) -> Result<(Vec<u8>, ControlDescriptor), ControlError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ControlError::DescriptorInvalid)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(ControlError::UnsafeArtifact);
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_DESCRIPTOR_BYTES as u64 {
+        return Err(ControlError::DescriptorInvalid);
+    }
     let file = File::open(path).map_err(|_| ControlError::DescriptorInvalid)?;
     let mut encoded = Vec::new();
     file.take((MAX_DESCRIPTOR_BYTES + 1) as u64)
@@ -744,7 +867,7 @@ fn read_descriptor(path: &Path) -> Result<ControlDescriptor, ControlError> {
     let descriptor: ControlDescriptor =
         serde_json::from_slice(&encoded).map_err(|_| ControlError::DescriptorInvalid)?;
     validate_descriptor(&descriptor)?;
-    Ok(descriptor)
+    Ok((encoded, descriptor))
 }
 
 fn validate_descriptor(descriptor: &ControlDescriptor) -> Result<(), ControlError> {
@@ -767,9 +890,19 @@ fn valid_endpoint(endpoint: &str) -> bool {
     endpoint.starts_with(r"\\.\pipe\vibemux_") && endpoint.len() <= 256
 }
 
+#[cfg(windows)]
+fn endpoint_kind(_endpoint: &str) -> ControlEndpointKind {
+    ControlEndpointKind::WindowsNamedPipe
+}
+
 #[cfg(unix)]
 fn valid_endpoint(endpoint: &str) -> bool {
     Path::new(endpoint).is_absolute() && endpoint.ends_with(".sock")
+}
+
+#[cfg(unix)]
+fn endpoint_kind(_endpoint: &str) -> ControlEndpointKind {
+    ControlEndpointKind::UnixSocket
 }
 
 fn valid_request_id(request_id: &str) -> bool {
@@ -904,6 +1037,55 @@ mod tests {
 
         drop(guard);
         assert!(descriptor_path.exists());
+    }
+
+    #[test]
+    fn recovery_snapshot_is_redacted_and_removes_only_unchanged_descriptor() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let descriptor_path = temp.path().join(DESCRIPTOR_FILE_NAME);
+        let owner = ControlDescriptor {
+            version: CONTROL_PROTOCOL_VERSION,
+            process_id: 42,
+            endpoint: endpoint_name(temp.path()),
+            token: "a".repeat(64),
+        };
+        let guard =
+            DescriptorGuard::publish(&descriptor_path, owner.clone()).expect("publish descriptor");
+        let snapshot = inspect_control_artifact(&descriptor_path)
+            .expect("inspect descriptor")
+            .expect("descriptor snapshot");
+        assert_eq!(snapshot.info().process_id, 42);
+        let rendered = format!("{snapshot:?}");
+        assert!(!rendered.contains(&owner.token));
+        assert!(!rendered.contains(&owner.endpoint));
+        snapshot
+            .remove_if_unchanged()
+            .expect("remove unchanged descriptor");
+        assert!(!descriptor_path.exists());
+        drop(guard);
+
+        let replacement_guard = DescriptorGuard::publish(&descriptor_path, owner.clone())
+            .expect("republish descriptor");
+        let snapshot = inspect_control_artifact(&descriptor_path)
+            .expect("inspect replacement descriptor")
+            .expect("replacement snapshot");
+        let replacement = ControlDescriptor {
+            token: "b".repeat(64),
+            ..owner
+        };
+        std::fs::write(
+            &descriptor_path,
+            serde_json::to_vec(&replacement).expect("encode replacement"),
+        )
+        .expect("replace descriptor contents");
+        assert_eq!(
+            snapshot
+                .remove_if_unchanged()
+                .expect_err("changed descriptor must fail"),
+            ControlError::ArtifactChanged
+        );
+        assert!(descriptor_path.exists());
+        drop(replacement_guard);
     }
 
     #[cfg(unix)]

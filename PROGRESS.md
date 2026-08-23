@@ -394,7 +394,8 @@ Scope:
 - [x] Authenticated Windows named-pipe and POSIX Unix-domain-socket control transport library.
 - [x] CLI start/query/stop wiring over local IPC.
 - [x] Daemon writer-core lifecycle, exclusive lock, health, and graceful shutdown.
-- [ ] Explicit stale-instance inspect/recover workflow and Windows same-user ACL hardening.
+- [x] Explicit stale-instance inspect/recover workflow with confirmation-bound cleanup.
+- [ ] Windows same-user ACL hardening.
 
 Exit criteria:
 
@@ -1379,13 +1380,12 @@ Non-goals for this slice:
 - The Windows companion source is fixed and base64-encoded only for transport to system PowerShell; no user value is concatenated into executable code.
 
 **Remaining**
-- Implement read-only stale inspection with descriptor/lock ownership evidence, then a separately authorized recovery operation.
 - Harden Windows named-pipe/descriptor ACLs against hostile same-user access before release claims.
 - Keep Task/Run mutation out of lifecycle IPC until authorization and compatibility gates are accepted.
 
 ### 2026-08-24 — M3 explicit stale-runtime recovery plan
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION`
+**Planning status:** `IMPLEMENTED — EXPLICIT METADATA RECOVERY SLICE`
 
 Safety contract:
 
@@ -1397,15 +1397,15 @@ Safety contract:
 
 Acceptance gate:
 
-- [ ] Live daemon inspection reports `running`, exposes no confirmation, and recovery refuses without changing artifacts.
-- [ ] Abruptly terminated daemon inspection reports `recoverable` only after its recorded PID is absent.
-- [ ] Wrong/missing confirmation leaves descriptor, socket, lock, and databases byte-identical.
-- [ ] Correct confirmation removes only unchanged stale descriptor/socket/lock artifacts and permits a normal restart with the existing Rust database.
-- [ ] Descriptor-only and lock-only stale states are recoverable when valid; malformed or descriptor/lock PID-mismatched states fail closed.
-- [ ] Artifact replacement between inspection and recovery invalidates the confirmation or unchanged-content check.
-- [ ] A snapshot that names the current/live process is never recoverable; no PID termination API exists.
-- [ ] Inspect/recover JSON contains no token, endpoint, path, database name, lock nonce, prompt, message, or raw OS error.
-- [ ] Windows named-pipe and Linux UDS process recovery tests pass; MSRV/current-stable Rust and Python regressions remain green.
+- [x] Live daemon inspection reports `running`, exposes no confirmation, and recovery refuses without changing artifacts.
+- [x] Abruptly terminated daemon inspection reports `recoverable` only after its recorded PID is absent.
+- [x] Wrong/missing confirmation leaves descriptor, socket, lock, and databases byte-identical.
+- [x] Correct confirmation removes only unchanged stale descriptor/socket/lock artifacts and permits a normal restart with the existing Rust database.
+- [x] Descriptor-only and lock-only stale states are recoverable when valid; malformed or descriptor/lock PID-mismatched states fail closed.
+- [x] Artifact replacement between inspection and recovery invalidates the confirmation or unchanged-content check.
+- [x] A snapshot that names the current/live process is never recoverable; no production PID termination API exists.
+- [x] Inspect/recover JSON contains no token, endpoint path, project/database path, lock nonce, prompt, message, or raw OS error.
+- [x] Windows named-pipe and Linux UDS process recovery tests pass; MSRV/current-stable Rust and Python regressions remain green.
 
 Implementation order:
 
@@ -1418,3 +1418,35 @@ Implementation order:
 Non-goals:
 
 - Force recovery, PID kill, database repair/migration, Windows hostile same-user atomicity, or automatic startup cleanup.
+
+### 2026-08-24 — M3 explicit stale-runtime recovery implementation
+
+**Status change**
+- M3 remains `PARTIAL`: normal lifecycle and explicit stale metadata recovery are implemented; Windows hostile same-user isolation remains a release gate.
+
+**Implemented**
+- Added bounded `ControlArtifactSnapshot` and `WriterLockSnapshot` APIs. Debug output redacts descriptor token, endpoint and raw lock nonce; snapshot hashes bind the exact original bytes.
+- Added cross-platform PID presence checks pinned to the latest MSRV-compatible `sysinfo` (`0.36.1`). PID presence always blocks and no production kill API exists.
+- Added domain-separated SHA-256 recovery confirmations covering descriptor and lock presence/content. `recover` recomputes the plan and rejects missing, malformed, stale, or changed confirmations.
+- Added unchanged-content cleanup for descriptor, POSIX socket and writer lock. Cleanup never opens either database and preserves partial-failure evidence for a fresh inspection.
+- Added `vibemuxctl daemon inspect` and `daemon recover --confirmation`; JSON exposes only allowlisted booleans, status/reason, protocol/endpoint kind, PID presence and confirmation.
+- Added a POSIX reaper thread so library-mode launchers do not leave a released child as a zombie that would falsely block recovery.
+
+**Evidence**
+- Windows Rust 1.85.0 MSRV and stable 1.97.0: full workspace 69 tests passed on each; workspace Clippy with `-D warnings` passed on each.
+- Windows real process: live inspect returned `running` with no confirmation and recovery was blocked.
+- After exact test-daemon termination, inspect returned `recoverable` with `process_present=false`; wrong confirmation returned `daemon_recovery_confirmation_mismatch` and preserved both artifacts.
+- Correct confirmation removed descriptor and writer lock, left the Rust database SHA-256 unchanged, then the same database restarted and stopped normally.
+- Windows automated tests cover live/PID-present blocking, descriptor-only, lock-only, PID mismatch, changed artifact, malformed artifact, wrong confirmation, successful recovery/restart and database preservation.
+- Linux Docker Rust 1.85.1: 39 current-tree daemon/CLI tests passed, including real UDS abrupt recovery, socket cleanup, POSIX reaping and database-preserving restart.
+- Post-recovery-dependency release benchmark, 1 warmup + 20 samples: start-to-authenticated-health p50 `354.97 ms`, p95 `383.48 ms`, max `425.21 ms`; stop p95 `64.25 ms`. The `< 500 ms` budget remains met without optimization.
+- Python reference: 27 pytest tests passed; Ruff lint/format and mypy passed.
+
+**Security boundaries**
+- Confirmation is a non-secret checksum; authentication token, endpoint path, project/database path and raw nonce remain absent from reports and errors.
+- Recovery is compare-before-delete under ordinary same-user filesystem assumptions. It does not claim hostile same-user atomicity or Windows ACL isolation.
+- There is no force flag, implicit recovery, PID kill, database deletion, reset or migration path.
+
+**Remaining**
+- Harden Windows named-pipe and descriptor ACLs, then add hostile same-user access tests before changing the release claim.
+- Keep Task/Run mutation out of lifecycle IPC until authorization, compatibility and cancellation gates are accepted.
