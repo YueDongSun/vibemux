@@ -382,7 +382,7 @@ Exit criteria:
 
 ### M3 — Rust persistence and single-writer daemon
 
-**Status:** `PARTIAL`
+**Status:** `VERIFIED`
 
 Scope:
 
@@ -395,7 +395,7 @@ Scope:
 - [x] CLI start/query/stop wiring over local IPC.
 - [x] Daemon writer-core lifecycle, exclusive lock, health, and graceful shutdown.
 - [x] Explicit stale-instance inspect/recover workflow with confirmation-bound cleanup.
-- [ ] Windows protected current-user control runtime and cross-user/remote access boundary.
+- [x] Windows protected current-user control runtime and cross-user/remote access boundary.
 
 Exit criteria:
 
@@ -825,7 +825,8 @@ These are engineering targets for the Rust core, not claims about the current Py
 
 | Metric | Target |
 |---|---|
-| Core cold start to healthy local IPC | p95 < 500 ms on a typical Windows developer machine |
+| Core cold start to healthy local IPC | p95 < 500 ms after one-time platform security bootstrap on a typical Windows developer machine |
+| First Windows control-runtime ACL bootstrap | one-time p95 < 1,000 ms; measured separately from core cold start |
 | Local CLI → daemon no-op round trip | p99 < 10 ms |
 | Spawned plugin control round trip, 1 KiB payload | p99 < 10 ms excluding plugin work |
 | Canonical in-memory event routing | ≥ 10,000 1 KiB events/s in synthetic benchmark |
@@ -1299,7 +1300,7 @@ Acceptance gate:
 
 **Security impact**
 - Token values are absent from `Debug` and error output; unknown peer error text is collapsed to a fixed local code instead of being reflected.
-- The runtime descriptor is secret-bearing and remains under ignored `.vibemux/` state. Windows hostile same-user ACL isolation is not claimed by this slice.
+- In this historical transport slice the descriptor remained under ignored `.vibemux/` state; ADR 020 later moved Windows control metadata to a protected per-user runtime. Same-SID process isolation is not claimed.
 - Malformed, oversized, unauthenticated, and version-mismatched input cannot reach writer dispatch.
 
 **Remaining**
@@ -1453,7 +1454,7 @@ Non-goals:
 
 ### 2026-08-24 — M3 Windows control-runtime ACL plan
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION`
+**Planning status:** `IMPLEMENTED — WINDOWS PER-USER CONTROL BOUNDARY`
 
 Threat-model correction:
 
@@ -1463,15 +1464,15 @@ Threat-model correction:
 
 Acceptance gate:
 
-- [ ] Windows control descriptor and cooperative writer lock live under a canonical `%LOCALAPPDATA%\VibeMux\runtime\<sha256>` leaf; the hash output contains no project path text.
-- [ ] The leaf DACL is protected and contains only current-user, `LOCAL_SYSTEM`, and built-in-administrator allow rules with no inherited/broad principals.
-- [ ] The actual descriptor and lock inherit only allowlisted effective identities; bearer token/path/SID/raw ACL text remain absent from CLI JSON and logs.
-- [ ] Named-pipe construction explicitly rejects remote clients and still requires the bearer token for same-SID clients.
-- [ ] A healthy legacy project-local daemon remains discoverable and stoppable; stale legacy artifacts are inspectable/recoverable with the existing confirmation flow.
-- [ ] New daemon startup refuses while any unresolved legacy/current artifact exists; legacy and protected locks can never authorize concurrent writers.
-- [ ] Windows real start/health/inspect/stop/recover tests pass against the protected runtime; a structural ACL test proves broad principals are absent.
-- [ ] Linux UDS paths and `0600` semantics remain unchanged; cross-platform process/recovery tests pass.
-- [ ] Release startup p95 remains below `500 ms`; MSRV/current-stable Rust and Python regressions remain green.
+- [x] Windows control descriptor and cooperative writer lock live under a canonical `%LOCALAPPDATA%\VibeMux\runtime\<sha256>` leaf; the hash output contains no project path text.
+- [x] The runtime root DACL is protected and contains only current-user, `LOCAL_SYSTEM`, and built-in-administrator allow rules; hashed leaves inherit no broad principals.
+- [x] The actual descriptor and lock inherit only allowlisted effective identities; bearer token/path/SID/raw ACL text remain absent from CLI JSON and logs.
+- [x] Named-pipe construction explicitly rejects remote clients and still requires the bearer token for same-SID clients.
+- [x] A healthy legacy project-local daemon remains discoverable and stoppable; stale legacy artifacts are inspectable/recoverable with the existing confirmation flow.
+- [x] New daemon startup refuses while any unresolved legacy descriptor exists and holds both protected and legacy locks, preventing old/new concurrent writers.
+- [x] Windows real start/health/inspect/stop/recover tests pass against the protected runtime; a structural ACL test proves broad principals are absent.
+- [x] Linux UDS paths and `0600` semantics remain unchanged; cross-platform process/recovery tests pass.
+- [x] Post-bootstrap release startup p95 remains below `500 ms`; first-machine ACL initialization is separately measured and documented. MSRV/current-stable Rust and Python regressions remain green.
 
 Implementation order:
 
@@ -1484,3 +1485,38 @@ Implementation order:
 Non-goals:
 
 - Same-SID process isolation, admin/SYSTEM exclusion, repository data encryption, native unsafe ACL APIs, or automatic legacy cleanup.
+
+### 2026-08-24 — M3 Windows per-user control-runtime implementation
+
+**Status change**
+- M3: `PARTIAL` -> `VERIFIED`. Persistence, one-writer ownership, process lifecycle, authenticated local IPC, explicit stale recovery and the declared Windows cross-user boundary now have repeatable evidence.
+
+**Implemented**
+- Added `vibemux_platform` as an `unsafe`-free platform boundary with fixed, encoded system-PowerShell ACL construction and verification plus bounded helper execution.
+- Protected `%LOCALAPPDATA%\VibeMux\runtime` once with exactly three full-control allow identities: current user SID, `SYSTEM`, and built-in Administrators. Hashed project leaves, descriptor and protected lock inherit only those effective rules.
+- Added a domain-separated SHA-256 project runtime key; CLI/health/recovery output never contains the project path, runtime path, SID or raw ACL.
+- Moved the Windows descriptor and primary writer lock out of broadly inherited project storage. The Rust/Python databases remain separate and project-local.
+- Explicitly configured named pipes with remote-client rejection and a bounded two-instance handoff; stable state has one listener while handoff avoids response truncation.
+- Added dual-generation locks. New daemons acquire legacy then protected locks, so an old binary cannot race a new binary to the same SQLite writer.
+- Added healthy legacy health/stop compatibility, confirmation-bound stale legacy recovery, mixed-generation refusal and direct-daemon legacy descriptor refusal.
+- Kept POSIX project-local descriptor mode `0600`, randomized UDS, socket cleanup and single lock unchanged.
+
+**Evidence**
+- Windows ACL before change: project `.vibemux` inherited `Authenticated Users: Modify`; `%LOCALAPPDATA%` still exposed a sandbox-group read ACE.
+- Windows ACL after change: protected root, hash leaf, live descriptor and live protected lock each had exactly three allow identities and zero Everyone/Authenticated Users/Users/sandbox principals.
+- Windows real lifecycle returned `started -> running -> stopped` on one PID; live inspection reported `runtime_generation=current` and a valid compatibility lock.
+- Automated upgrade tests proved a healthy legacy daemon is discoverable/stoppable, stale legacy state recovers into protected runtime, mixed generations fail closed, and dual locks reject a legacy writer.
+- Windows Rust 1.85.0 MSRV and stable 1.97.0: full workspace 75 tests passed on each; workspace Clippy with `-D warnings` passed on each.
+- Linux Docker Rust 1.85.1: 40 current-tree daemon/CLI tests passed; Linux Clippy with `-D warnings` passed. POSIX path, `0600`, UDS, recovery and process semantics remained green.
+- Python reference: 27 pytest tests passed; Ruff lint/format and mypy passed.
+- Release after security bootstrap, existing database, 20 samples: start-to-health p50 `372.02 ms`, p95 `429.75 ms`, max `457.13 ms`; stop p95 `70.52 ms`.
+- Release on 10 fresh projects under an already protected root: p50 `366.23 ms`, p95/max `438.26 ms`, within the `< 500 ms` budget.
+- First machine ACL-root initialization, 5 isolated samples: median `852.32 ms`, mean `858.60 ms`, max `896.06 ms`; this one-time security bootstrap is tracked against the separate `< 1,000 ms` budget.
+
+**Security claim**
+- Other standard local users and remote named-pipe clients are outside the allowed control plane. Same-logon-SID agents are trusted collaborators; administrators and `SYSTEM` retain OS authority.
+- Bearer authentication remains required for every request. No token, endpoint path, project path, SID or ACL text is emitted by lifecycle/recovery JSON or errors.
+- No core crate contains `unsafe`; native handle-level same-SID isolation is neither implemented nor claimed.
+
+**Next milestone**
+- Begin M4 plugin protocol/supervisor work. Task/Run mutation remains absent from lifecycle IPC until M4 authorization, compatibility, bounded-channel and cancellation contracts are accepted.

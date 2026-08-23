@@ -47,6 +47,8 @@ daemon异常退出后，先运行`inspect`。仅当状态为`recoverable`时，�
 
 恢复不会kill PID，也不会打开或修改Python/Rust数据库；artifact、PID或confirmation发生变化时会拒绝。
 
+Windows将bearer descriptor和cooperative writer lock存放在`%LOCALAPPDATA%\VibeMux\runtime\<project_hash>`；protected根及其继承规则只允许当前登录用户、`SYSTEM`和Administrators。项目内仍只保存数据库；同一登录SID下的agents属于协作信任域。POSIX继续使用项目`.vibemux`下的`0600` descriptor与随机UDS。
+
 release启动性能可用固定脚本复测；脚本会拒绝已有daemon descriptor的项目：
 
 ```powershell

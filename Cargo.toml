@@ -4,6 +4,7 @@ members = [
     "crates/vibemux_cli",
     "crates/vibemux_events",
     "crates/vibemux_frontend",
+    "crates/vibemux_platform",
     "crates/vibemux_probe",
     "crates/vibemux_store",
     "crates/vibemux_types",

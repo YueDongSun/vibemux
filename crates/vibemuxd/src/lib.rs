@@ -108,6 +108,11 @@ struct LifecycleLock {
 impl LifecycleLock {
     fn acquire(database_path: &Path) -> Result<Self, WriterError> {
         let path = writer_lock_path_for_database(database_path);
+        Self::acquire_path(&path)
+    }
+
+    fn acquire_path(path: &Path) -> Result<Self, WriterError> {
+        let path = path.to_path_buf();
         let nonce = lock_nonce();
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
@@ -165,7 +170,73 @@ impl WriterWorker {
             return Err(WriterError::InvalidCapacity);
         }
         let lifecycle_lock = LifecycleLock::acquire(database_path)?;
-        let lock_path = lifecycle_lock.path.clone();
+        Self::start_with_lifecycle_locks(
+            database_path,
+            queue_capacity,
+            response_timeout,
+            vec![lifecycle_lock],
+        )
+    }
+
+    pub fn start_with_lock_path(
+        database_path: &Path,
+        lock_path: &Path,
+    ) -> Result<Self, WriterError> {
+        Self::start_with_config_and_lock_path(
+            database_path,
+            lock_path,
+            DEFAULT_WRITER_QUEUE_CAPACITY,
+            DEFAULT_RESPONSE_TIMEOUT,
+        )
+    }
+
+    pub fn start_with_config_and_lock_path(
+        database_path: &Path,
+        lock_path: &Path,
+        queue_capacity: usize,
+        response_timeout: Duration,
+    ) -> Result<Self, WriterError> {
+        if queue_capacity == 0 {
+            return Err(WriterError::InvalidCapacity);
+        }
+        let lifecycle_lock = LifecycleLock::acquire_path(lock_path)?;
+        Self::start_with_lifecycle_locks(
+            database_path,
+            queue_capacity,
+            response_timeout,
+            vec![lifecycle_lock],
+        )
+    }
+
+    pub fn start_with_compatibility_lock_path(
+        database_path: &Path,
+        primary_lock_path: &Path,
+        compatibility_lock_path: &Path,
+    ) -> Result<Self, WriterError> {
+        let mut lifecycle_locks = Vec::with_capacity(2);
+        if compatibility_lock_path != primary_lock_path {
+            lifecycle_locks.push(LifecycleLock::acquire_path(compatibility_lock_path)?);
+        }
+        lifecycle_locks.push(LifecycleLock::acquire_path(primary_lock_path)?);
+        Self::start_with_lifecycle_locks(
+            database_path,
+            DEFAULT_WRITER_QUEUE_CAPACITY,
+            DEFAULT_RESPONSE_TIMEOUT,
+            lifecycle_locks,
+        )
+    }
+
+    fn start_with_lifecycle_locks(
+        database_path: &Path,
+        queue_capacity: usize,
+        response_timeout: Duration,
+        lifecycle_locks: Vec<LifecycleLock>,
+    ) -> Result<Self, WriterError> {
+        let lock_path = lifecycle_locks
+            .last()
+            .ok_or(WriterError::LockIo)?
+            .path
+            .clone();
         let database_path = database_path.to_path_buf();
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
         let (ready_sender, ready_receiver) = mpsc::channel();
@@ -177,7 +248,7 @@ impl WriterWorker {
                     queue_capacity,
                     receiver,
                     ready_sender,
-                    lifecycle_lock,
+                    lifecycle_locks,
                 );
             })
             .map_err(|_| WriterError::ThreadTerminated)?;
@@ -297,7 +368,7 @@ fn writer_loop(
     queue_capacity: usize,
     receiver: Receiver<WriterRequest>,
     ready_sender: mpsc::Sender<Result<(), WriterError>>,
-    _lifecycle_lock: LifecycleLock,
+    _lifecycle_locks: Vec<LifecycleLock>,
 ) {
     let mut store = match SqliteStore::open(database_path) {
         Ok(store) => store,
@@ -469,6 +540,29 @@ mod tests {
             Err(WriterError::LockHeld)
         ));
         first.shutdown().expect("shutdown first");
+    }
+
+    #[test]
+    fn compatibility_lock_blocks_legacy_writer_and_both_locks_cleanup() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let database = temp.path().join("state.sqlite3");
+        let primary_lock = temp.path().join("protected.writer.lock");
+        let legacy_lock = writer_lock_path_for_database(&database);
+        let worker = WriterWorker::start_with_compatibility_lock_path(
+            &database,
+            &primary_lock,
+            &legacy_lock,
+        )
+        .expect("dual-lock writer");
+        assert!(primary_lock.is_file());
+        assert!(legacy_lock.is_file());
+        assert!(matches!(
+            WriterWorker::start(&database),
+            Err(WriterError::LockHeld)
+        ));
+        worker.shutdown().expect("shutdown dual-lock writer");
+        assert!(!primary_lock.exists());
+        assert!(!legacy_lock.exists());
     }
 
     #[test]

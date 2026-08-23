@@ -12,7 +12,7 @@ async fn main() {
     paths
         .ensure_runtime_dir()
         .expect("recovery fixture runtime directory");
-    let server = DaemonControlServer::start(paths.database_path(), paths.runtime_dir())
+    let server = DaemonControlServer::start_for_paths(&paths)
         .await
         .expect("recovery fixture control server");
     server.wait().await.expect("recovery fixture wait");

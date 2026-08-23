@@ -2619,6 +2619,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibemux_platform"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "base64",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "vibemux_probe"
 version = "0.2.0-alpha.0"
 dependencies = [
@@ -2674,6 +2683,7 @@ dependencies = [
  "tokio",
  "uuid",
  "vibemux_events",
+ "vibemux_platform",
  "vibemux_store",
  "vibemux_types",
 ]

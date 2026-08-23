@@ -115,6 +115,20 @@ pub enum DaemonStartOutcome {
     AlreadyRunning(DaemonHealth),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeLocation {
+    Protected,
+    Legacy,
+}
+
+struct RuntimeSelection<'a> {
+    descriptor_path: &'a Path,
+    writer_lock_path: &'a Path,
+    compatibility_lock_path: Option<&'a Path>,
+    location: RuntimeLocation,
+    has_artifacts: bool,
+}
+
 #[cfg(unix)]
 struct SpawnedDaemon {
     child: Child,
@@ -288,9 +302,13 @@ impl From<DaemonPathError> for DaemonCliError {
         match error {
             DaemonPathError::InvalidProjectRoot => Self::InvalidProjectRoot,
             DaemonPathError::RuntimeDirectoryUnavailable
+            | DaemonPathError::ControlRuntimeUnavailable
             | DaemonPathError::UnsafeRuntimeDirectory
+            | DaemonPathError::UnsafeControlRuntime
+            | DaemonPathError::ControlRuntimeSecurityInvalid
             | DaemonPathError::UnsafeDatabasePath
-            | DaemonPathError::DatabaseCollision => Self::Control {
+            | DaemonPathError::DatabaseCollision
+            | DaemonPathError::LegacyRuntimeConflict => Self::Control {
                 code: code.to_string(),
             },
         }
@@ -303,9 +321,7 @@ pub async fn start_daemon(
     validate_bootstrap_config(config)?;
     config.paths.ensure_runtime_dir()?;
 
-    if runtime_artifact_exists(config.paths.descriptor_path())?
-        || runtime_artifact_exists(config.paths.writer_lock_path())?
-    {
+    if select_runtime(&config.paths)?.has_artifacts {
         return wait_for_health(config, None).await;
     }
     if !config.daemon_executable.is_file() {
@@ -316,20 +332,20 @@ pub async fn start_daemon(
 }
 
 pub async fn daemon_health(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliError> {
-    validate_existing_runtime(paths)?;
-    let client = control_client(paths)?;
+    let selection = select_runtime(paths)?;
+    validate_selected_runtime(paths, &selection)?;
+    let client = control_client(&selection)?;
     client.health().await.map_err(map_control_error)
 }
 
 pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliError> {
-    validate_existing_runtime(paths)?;
-    let client = control_client(paths)?;
+    let selection = select_runtime(paths)?;
+    validate_selected_runtime(paths, &selection)?;
+    let client = control_client(&selection)?;
     let health = client.health().await.map_err(map_control_error)?;
     client.shutdown().await.map_err(map_control_error)?;
     let deadline = Instant::now() + DEFAULT_SHUTDOWN_TIMEOUT;
-    while runtime_artifact_exists(paths.descriptor_path())?
-        || runtime_artifact_exists(paths.writer_lock_path())?
-    {
+    while select_runtime(paths)?.has_artifacts {
         if Instant::now() >= deadline {
             return Err(DaemonCliError::ShutdownTimeout);
         }
@@ -445,14 +461,18 @@ async fn wait_for_health(
 ) -> Result<DaemonStartOutcome, DaemonCliError> {
     let deadline = Instant::now() + config.startup_timeout;
     let mut child_exited = false;
-    let mut last_reason_code = if runtime_artifact_exists(config.paths.writer_lock_path())? {
+    let initial_selection = select_runtime(&config.paths)?;
+    let mut last_reason_code = if runtime_artifact_exists(initial_selection.writer_lock_path)?
+        || initial_selection.compatibility_lock_path.is_some()
+    {
         "writer_lock_held".to_string()
     } else {
         "control_descriptor_unavailable".to_string()
     };
     loop {
-        if runtime_artifact_exists(config.paths.descriptor_path())? {
-            match probe_health(config, deadline).await {
+        let selection = select_runtime(&config.paths)?;
+        if runtime_artifact_exists(selection.descriptor_path)? {
+            match probe_health(config, selection.descriptor_path, deadline).await {
                 Ok(health) => {
                     let spawned_process = spawned
                         .as_ref()
@@ -463,8 +483,12 @@ async fn wait_for_health(
                     } else {
                         DaemonStartOutcome::AlreadyRunning(health)
                     };
-                    if let Some(spawned) = spawned.take() {
-                        spawned.release()?;
+                    if let Some(mut spawned) = spawned.take() {
+                        if spawned_process {
+                            spawned.release()?;
+                        } else {
+                            spawned.terminate();
+                        }
                     }
                     return Ok(outcome);
                 }
@@ -477,10 +501,7 @@ async fn wait_for_health(
                 child_exited = true;
             }
         }
-        if child_exited
-            && !runtime_artifact_exists(config.paths.descriptor_path())?
-            && !runtime_artifact_exists(config.paths.writer_lock_path())?
-        {
+        if child_exited && !select_runtime(&config.paths)?.has_artifacts {
             return Err(DaemonCliError::StartFailed);
         }
         if Instant::now() >= deadline {
@@ -502,6 +523,7 @@ async fn wait_for_health(
 
 async fn probe_health(
     config: &DaemonBootstrapConfig,
+    descriptor_path: &Path,
     startup_deadline: Instant,
 ) -> Result<DaemonHealth, DaemonCliError> {
     let remaining = startup_deadline.saturating_duration_since(Instant::now());
@@ -509,8 +531,7 @@ async fn probe_health(
     if probe_deadline.is_zero() {
         return Err(DaemonCliError::StartupTimeout);
     }
-    let client = ControlClient::from_descriptor(config.paths.descriptor_path())
-        .map_err(map_control_error)?;
+    let client = ControlClient::from_descriptor(descriptor_path).map_err(map_control_error)?;
     client
         .health_with_deadline(probe_deadline)
         .await
@@ -662,18 +683,77 @@ fn terminate_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn control_client(paths: &DaemonPaths) -> Result<ControlClient, DaemonCliError> {
-    if !runtime_artifact_exists(paths.descriptor_path())? {
-        return Err(DaemonCliError::NotRunning);
+fn control_client(selection: &RuntimeSelection<'_>) -> Result<ControlClient, DaemonCliError> {
+    if !runtime_artifact_exists(selection.descriptor_path)? {
+        return Err(if selection.has_artifacts {
+            DaemonCliError::StaleRuntime {
+                reason_code: "control_descriptor_unavailable".to_string(),
+            }
+        } else {
+            DaemonCliError::NotRunning
+        });
     }
-    ControlClient::from_descriptor(paths.descriptor_path()).map_err(map_control_error)
+    ControlClient::from_descriptor(selection.descriptor_path).map_err(map_control_error)
 }
 
-fn validate_existing_runtime(paths: &DaemonPaths) -> Result<(), DaemonCliError> {
-    if !runtime_artifact_exists(paths.runtime_dir())? {
+fn validate_selected_runtime(
+    paths: &DaemonPaths,
+    selection: &RuntimeSelection<'_>,
+) -> Result<(), DaemonCliError> {
+    if !selection.has_artifacts {
         return Err(DaemonCliError::NotRunning);
     }
-    paths.validate_runtime_dir().map_err(DaemonCliError::from)
+    match selection.location {
+        RuntimeLocation::Protected => paths.validate_runtime_dir(),
+        RuntimeLocation::Legacy => paths.validate_state_dir(),
+    }
+    .map_err(DaemonCliError::from)
+}
+
+fn select_runtime(paths: &DaemonPaths) -> Result<RuntimeSelection<'_>, DaemonCliError> {
+    let current_descriptor = runtime_artifact_exists(paths.descriptor_path())?;
+    let current_lock = runtime_artifact_exists(paths.writer_lock_path())?;
+    if !paths.has_distinct_legacy_runtime() {
+        return Ok(RuntimeSelection {
+            descriptor_path: paths.descriptor_path(),
+            writer_lock_path: paths.writer_lock_path(),
+            compatibility_lock_path: None,
+            location: RuntimeLocation::Protected,
+            has_artifacts: current_descriptor || current_lock,
+        });
+    }
+    let legacy_descriptor = runtime_artifact_exists(paths.legacy_descriptor_path())?;
+    let legacy_lock = runtime_artifact_exists(paths.legacy_writer_lock_path())?;
+    if (current_descriptor || current_lock) && legacy_descriptor {
+        return Err(DaemonCliError::StaleRuntime {
+            reason_code: "daemon_runtime_generation_conflict".to_string(),
+        });
+    }
+    if current_descriptor || current_lock {
+        return Ok(RuntimeSelection {
+            descriptor_path: paths.descriptor_path(),
+            writer_lock_path: paths.writer_lock_path(),
+            compatibility_lock_path: legacy_lock.then_some(paths.legacy_writer_lock_path()),
+            location: RuntimeLocation::Protected,
+            has_artifacts: true,
+        });
+    }
+    if legacy_descriptor || legacy_lock {
+        return Ok(RuntimeSelection {
+            descriptor_path: paths.legacy_descriptor_path(),
+            writer_lock_path: paths.legacy_writer_lock_path(),
+            compatibility_lock_path: None,
+            location: RuntimeLocation::Legacy,
+            has_artifacts: true,
+        });
+    }
+    Ok(RuntimeSelection {
+        descriptor_path: paths.descriptor_path(),
+        writer_lock_path: paths.writer_lock_path(),
+        compatibility_lock_path: None,
+        location: RuntimeLocation::Protected,
+        has_artifacts: false,
+    })
 }
 
 fn map_control_error(error: ControlError) -> DaemonCliError {
@@ -710,7 +790,27 @@ fn validate_bootstrap_config(config: &DaemonBootstrapConfig) -> Result<(), Daemo
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    use vibemuxd::control::DaemonControlServer;
+
     use super::*;
+
+    #[cfg(windows)]
+    struct ControlRuntimeCleanup(PathBuf);
+
+    #[cfg(windows)]
+    impl ControlRuntimeCleanup {
+        fn new(paths: &DaemonPaths) -> Self {
+            Self(paths.runtime_dir().to_path_buf())
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for ControlRuntimeCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn parser_preserves_path_arguments_without_command_strings() {
@@ -775,6 +875,8 @@ mod tests {
     async fn stale_descriptor_is_reported_without_modification_or_spawn() {
         let temp = tempfile::tempdir().expect("temp project");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        #[cfg(windows)]
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
         paths.ensure_runtime_dir().expect("runtime directory");
         let stale = b"stale-control-descriptor";
         std::fs::write(paths.descriptor_path(), stale).expect("stale descriptor");
@@ -795,6 +897,8 @@ mod tests {
     async fn lock_only_state_is_reported_without_modification_or_spawn() {
         let temp = tempfile::tempdir().expect("temp project");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        #[cfg(windows)]
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
         paths.ensure_runtime_dir().expect("runtime directory");
         let stale = b"stale-writer-lock";
         std::fs::write(paths.writer_lock_path(), stale).expect("stale writer lock");
@@ -810,6 +914,31 @@ mod tests {
         );
         assert!(!paths.descriptor_path().exists());
         assert!(!paths.database_path().exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn healthy_legacy_daemon_is_discoverable_and_stoppable() {
+        let temp = tempfile::tempdir().expect("temp project");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        paths.ensure_runtime_dir().expect("runtime directory");
+        let legacy_server = DaemonControlServer::start(paths.database_path(), paths.state_dir())
+            .await
+            .expect("legacy control server");
+        let health = daemon_health(&paths).await.expect("legacy daemon health");
+        let config = short_test_config(paths.clone());
+        let outcome = start_daemon(&config)
+            .await
+            .expect("legacy daemon already running");
+        assert!(matches!(outcome, DaemonStartOutcome::AlreadyRunning(_)));
+        assert_eq!(outcome.health().process_id, health.process_id);
+        stop_daemon(&paths).await.expect("stop legacy daemon");
+        legacy_server.wait().await.expect("wait legacy daemon");
+        assert!(!paths.legacy_descriptor_path().exists());
+        assert!(!paths.legacy_writer_lock_path().exists());
+        assert!(!paths.descriptor_path().exists());
+        assert!(!paths.writer_lock_path().exists());
     }
 
     fn short_test_config(paths: DaemonPaths) -> DaemonBootstrapConfig {

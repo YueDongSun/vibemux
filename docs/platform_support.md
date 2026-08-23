@@ -11,3 +11,4 @@
 | tmux | POSIX backend | command contract 已实现 |
 | ConPTY | 原生未来 backend | 未实现 |
 | `vibemuxd` / `vibemuxctl` | Windows named pipe / POSIX UDS | Windows实机与Linux容器process smoke通过 |
+| Windows control runtime | protected per-user DACL + hashed project leaf | current SID / SYSTEM / Administrators effective ACL验证通过 |

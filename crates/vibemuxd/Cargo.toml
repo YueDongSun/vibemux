@@ -17,6 +17,7 @@ thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 vibemux_events = { path = "../vibemux_events" }
+vibemux_platform = { path = "../vibemux_platform" }
 vibemux_store = { path = "../vibemux_store" }
 vibemux_types = { path = "../vibemux_types" }
 

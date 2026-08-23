@@ -264,6 +264,8 @@ pub enum ControlError {
     ArtifactChanged,
     #[error("local control runtime artifact cleanup failed")]
     ArtifactCleanupFailed,
+    #[error("local control runtime generation conflicts with legacy artifacts")]
+    RuntimeGenerationConflict,
     #[error("daemon writer operation failed: {code}")]
     Writer { code: String },
     #[error("local control operation exceeded its deadline")]
@@ -290,6 +292,7 @@ impl ControlError {
             Self::UnsafeArtifact => "control_artifact_unsafe_path",
             Self::ArtifactChanged => "control_artifact_changed",
             Self::ArtifactCleanupFailed => "control_artifact_cleanup_failed",
+            Self::RuntimeGenerationConflict => "control_runtime_generation_conflict",
             Self::Writer { code } | Self::Remote { code } => code,
             Self::Deadline => "control_deadline_exceeded",
             Self::ServerTerminated => "control_server_terminated",
@@ -413,7 +416,64 @@ pub struct DaemonControlServer {
 }
 
 impl DaemonControlServer {
+    pub async fn start_for_paths(
+        paths: &crate::process::DaemonPaths,
+    ) -> Result<Self, ControlError> {
+        paths
+            .validate_daemon_start()
+            .map_err(|_| ControlError::RuntimeGenerationConflict)?;
+        if paths.has_distinct_legacy_runtime() {
+            Self::start_with_writer_and_compatibility_lock(
+                paths.database_path(),
+                paths.runtime_dir(),
+                paths.writer_lock_path(),
+                paths.legacy_writer_lock_path(),
+            )
+            .await
+        } else {
+            Self::start_with_writer_lock(
+                paths.database_path(),
+                paths.runtime_dir(),
+                paths.writer_lock_path(),
+            )
+            .await
+        }
+    }
+
     pub async fn start(database_path: &Path, runtime_dir: &Path) -> Result<Self, ControlError> {
+        let writer_lock_path = crate::writer_lock_path_for_database(database_path);
+        Self::start_with_writer_lock(database_path, runtime_dir, &writer_lock_path).await
+    }
+
+    pub async fn start_with_writer_lock(
+        database_path: &Path,
+        runtime_dir: &Path,
+        writer_lock_path: &Path,
+    ) -> Result<Self, ControlError> {
+        Self::start_with_writer_locks(database_path, runtime_dir, writer_lock_path, None).await
+    }
+
+    pub async fn start_with_writer_and_compatibility_lock(
+        database_path: &Path,
+        runtime_dir: &Path,
+        writer_lock_path: &Path,
+        compatibility_lock_path: &Path,
+    ) -> Result<Self, ControlError> {
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            writer_lock_path,
+            Some(compatibility_lock_path),
+        )
+        .await
+    }
+
+    async fn start_with_writer_locks(
+        database_path: &Path,
+        runtime_dir: &Path,
+        writer_lock_path: &Path,
+        compatibility_lock_path: Option<&Path>,
+    ) -> Result<Self, ControlError> {
         std::fs::create_dir_all(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
         let runtime_dir =
             std::fs::canonicalize(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -423,9 +483,18 @@ impl DaemonControlServer {
         }
 
         let database_path = database_path.to_path_buf();
-        let writer = tokio::task::spawn_blocking(move || WriterWorker::start(&database_path))
-            .await
-            .map_err(|_| ControlError::ServerTerminated)??;
+        let writer_lock_path = writer_lock_path.to_path_buf();
+        let compatibility_lock_path = compatibility_lock_path.map(Path::to_path_buf);
+        let writer = tokio::task::spawn_blocking(move || match compatibility_lock_path {
+            Some(compatibility_lock_path) => WriterWorker::start_with_compatibility_lock_path(
+                &database_path,
+                &writer_lock_path,
+                &compatibility_lock_path,
+            ),
+            None => WriterWorker::start_with_lock_path(&database_path, &writer_lock_path),
+        })
+        .await
+        .map_err(|_| ControlError::ServerTerminated)??;
         let writer_lock_path = writer.lock_path().to_path_buf();
         let endpoint = endpoint_name(&runtime_dir);
         let descriptor = ControlDescriptor {
@@ -437,10 +506,7 @@ impl DaemonControlServer {
 
         #[cfg(windows)]
         {
-            use tokio::net::windows::named_pipe::ServerOptions;
-
-            let listener = ServerOptions::new()
-                .first_pipe_instance(true)
+            let listener = windows_server_options(true)
                 .create(&endpoint)
                 .map_err(|_| ControlError::EndpointUnavailable)?;
             let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
@@ -722,8 +788,6 @@ async fn run_server(
     endpoint: String,
     state: Arc<ServerState>,
 ) -> Result<(), ControlError> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
     loop {
         listener
             .connect()
@@ -736,10 +800,22 @@ async fn run_server(
         listener
             .disconnect()
             .map_err(|_| ControlError::EndpointUnavailable)?;
-        listener = ServerOptions::new()
+        listener = windows_server_options(false)
             .create(&endpoint)
             .map_err(|_| ControlError::EndpointUnavailable)?;
     }
+}
+
+#[cfg(windows)]
+fn windows_server_options(first_instance: bool) -> tokio::net::windows::named_pipe::ServerOptions {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut options = ServerOptions::new();
+    options
+        .first_pipe_instance(first_instance)
+        .reject_remote_clients(true)
+        .max_instances(2);
+    options
 }
 
 #[cfg(unix)]

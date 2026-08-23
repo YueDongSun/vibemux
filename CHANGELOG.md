@@ -15,6 +15,7 @@
 - 增加 Rust authenticated local control transport：Windows named pipe、POSIX UDS、versioned bounded framing、OS随机token、health/shutdown与owner-safe runtime cleanup。
 - 增加 standalone `vibemuxd` 与pre-alpha `vibemuxctl`：on-demand start/health/stop、迁移隔离数据库、stale fail-closed和跨平台process lifecycle验证。
 - 增加显式`daemon inspect/recover`：PID/liveness阻断、snapshot-bound confirmation、unchanged artifact cleanup与数据库零修改恢复。
+- 增加Windows protected per-user control runtime、remote-pipe拒绝、dual-generation writer locks与legacy health/recovery兼容。
 
 ## 0.1.0a0
 

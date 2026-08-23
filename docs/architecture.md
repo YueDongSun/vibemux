@@ -44,4 +44,6 @@ Git worktree                  WezTerm / tmux / mock
 
 `vibemuxd` binary现在是unprivileged foreground process owner；`vibemuxctl daemon start|health|stop`负责on-demand lifecycle。readiness必须通过authenticated health，PID只用于比较本次spawn identity。Windows使用固定、无用户代码插值的system PowerShell companion持有精确Process handle并切断captured stdout继承；POSIX直接argv spawn并建立独立process group。迁移期路径层固定使用`.vibemux/vibemux_rust.sqlite3`，拒绝runtime symlink与指向Python数据库的symlink/hardlink。
 
-`vibemuxctl daemon inspect`先尝试authenticated health，再读取有界且Debug脱敏的descriptor/writer-lock snapshot。只有记录PID已不存在、两份PID一致且artifact可解析时才返回domain-separated SHA-256 confirmation。`daemon recover`重新检查confirmation、PID与原始字节后，仅移除unchanged descriptor/UDS socket/writer lock；没有force、PID kill或数据库操作。Windows cross-user protected runtime与Python数据库cutover仍未实现；同一logon SID是协作信任边界，不承诺进程间ACL隔离。
+`vibemuxctl daemon inspect`先尝试authenticated health，再读取有界且Debug脱敏的descriptor/writer-lock snapshot。只有记录PID已不存在、两份PID一致且artifact可解析时才返回domain-separated SHA-256 confirmation。`daemon recover`重新检查confirmation、PID与原始字节后，仅移除unchanged descriptor/UDS socket/writer lock；没有force、PID kill或数据库操作。Python数据库cutover仍未实现；同一Windows logon SID是协作信任边界，不承诺进程间ACL隔离。
+
+Windows control metadata现位于`%LOCALAPPDATA%\VibeMux\runtime\<domain-separated project hash>`。protected父DACL及叶/文件effective ACL仅包含current SID、`SYSTEM`与Administrators；named pipe显式`PIPE_REJECT_REMOTE_CLIENTS`并继续要求bearer。新daemon同时持有protected lock和旧project lock作为upgrade compatibility gate，防止旧二进制竞态写同一数据库。健康legacy daemon仍可health/stop，stale legacy artifacts仍走同一confirmation recovery。POSIX路径与`0600`/UDS语义不变。

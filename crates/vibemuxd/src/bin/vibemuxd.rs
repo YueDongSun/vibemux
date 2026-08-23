@@ -52,7 +52,10 @@ async fn run_daemon(project_root: PathBuf) -> Result<(), String> {
     paths
         .ensure_runtime_dir()
         .map_err(|error| path_error_code(error).to_string())?;
-    let server = DaemonControlServer::start(paths.database_path(), paths.runtime_dir())
+    paths
+        .validate_daemon_start()
+        .map_err(|error| path_error_code(error).to_string())?;
+    let server = DaemonControlServer::start_for_paths(&paths)
         .await
         .map_err(|error| error.code().to_string())?;
     server

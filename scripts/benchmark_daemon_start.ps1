@@ -17,9 +17,10 @@ if (-not $vibemuxctl_path) {
     $vibemuxctl_path = Join-Path $repository_root "target\release\vibemuxctl.exe"
 }
 $resolved_vibemuxctl = (Resolve-Path -LiteralPath $vibemuxctl_path).Path
-$descriptor_path = Join-Path $resolved_project_root ".vibemux\control.json"
-if (Test-Path -LiteralPath $descriptor_path) {
-    throw "refusing to benchmark while a daemon descriptor exists"
+$initial_state = & $resolved_vibemuxctl daemon inspect --project-root $resolved_project_root |
+    ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $initial_state.status -ne "not_needed") {
+    throw "refusing to benchmark while daemon runtime artifacts exist"
 }
 
 $warmup = & $resolved_vibemuxctl daemon start --project-root $resolved_project_root |

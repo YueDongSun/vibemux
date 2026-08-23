@@ -10,10 +10,29 @@ use vibemux_cli::{
 };
 use vibemuxd::process::DaemonPaths;
 
+#[cfg(windows)]
+struct ControlRuntimeCleanup(PathBuf);
+
+#[cfg(windows)]
+impl ControlRuntimeCleanup {
+    fn new(paths: &DaemonPaths) -> Self {
+        Self(paths.runtime_dir().to_path_buf())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ControlRuntimeCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[tokio::test]
 async fn startup_timeout_terminates_only_the_spawned_fixture() {
     let temp = tempfile::tempdir().expect("temp project");
     let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    #[cfg(windows)]
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
     let config = DaemonBootstrapConfig::new(
         paths.clone(),
         PathBuf::from(env!("CARGO_BIN_EXE_vibemux_hang_fixture")),
@@ -30,8 +49,8 @@ async fn startup_timeout_terminates_only_the_spawned_fixture() {
             .expect_err("fixture must exceed startup deadline"),
         DaemonCliError::StartupTimeout
     );
-    let started = paths.runtime_dir().join("hang_fixture_started");
-    let completed = paths.runtime_dir().join("hang_fixture_completed");
+    let started = paths.state_dir().join("hang_fixture_started");
+    let completed = paths.state_dir().join("hang_fixture_completed");
     assert!(started.is_file());
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert!(!completed.exists());
@@ -43,6 +62,8 @@ async fn startup_timeout_terminates_only_the_spawned_fixture() {
 async fn abrupt_process_recovery_preserves_database_and_allows_restart() {
     let temp = tempfile::tempdir().expect("temp project");
     let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    #[cfg(windows)]
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
     let config = DaemonBootstrapConfig::new(
         paths.clone(),
         PathBuf::from(env!("CARGO_BIN_EXE_vibemux_recovery_fixture")),
@@ -81,6 +102,11 @@ async fn abrupt_process_recovery_preserves_database_and_allows_restart() {
         .expect("recover stale fixture");
     assert!(outcome.descriptor_removed);
     assert!(outcome.writer_lock_removed);
+    assert_eq!(
+        outcome.compatibility_lock_removed,
+        paths.has_distinct_legacy_runtime()
+    );
+    assert!(!paths.legacy_writer_lock_path().exists());
     assert_eq!(
         std::fs::read(paths.database_path()).expect("database after recovery"),
         database_before
