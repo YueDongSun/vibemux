@@ -1304,3 +1304,41 @@ Acceptance gate:
 - Add the standalone on-demand `vibemuxd` binary plus CLI start/query/stop and stale-instance reconciliation.
 - Add process-boundary crash/restart, abrupt termination, descriptor recovery, and Windows ACL-hardening tests.
 - Expose state mutation only after authorization, compatibility, cancellation, and bounded concurrency contracts are accepted.
+
+### 2026-08-24 — M3 standalone daemon process and CLI plan
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION`
+
+Architecture and migration boundaries:
+
+- `vibemuxd` is an unprivileged foreground binary internally; `vibemuxctl daemon start` is responsible for shell-free background launch and readiness polling.
+- All paths derive from one canonical project root. Rust writes `.vibemux/vibemux_rust.sqlite3`; the Python reference database `.vibemux/vibemux.sqlite3` is never opened by this slice.
+- `vibemuxctl` remains a pre-alpha lifecycle client and does not replace the installed Python `vibemux` executable.
+- A valid authenticated health response is the readiness authority. PID and descriptor existence are diagnostics only.
+- Existing descriptor/lock artifacts fail closed if they do not converge to health. No automatic delete, PID kill, reset, migration, or database reuse is permitted.
+
+Acceptance gate:
+
+- [ ] A real `vibemuxd` child publishes authenticated IPC health, remains alive after its launcher releases the child handle, accepts shutdown, exits successfully, and removes owned descriptor/socket/writer lock artifacts.
+- [ ] `vibemuxctl daemon start`, `health`, and `stop` work against the real child using argv only and emit bounded JSON without path, endpoint, token, prompt, or raw OS-error content.
+- [ ] A second start returns `already_running`; it does not create a second authoritative writer.
+- [ ] Simultaneous starts converge on one healthy daemon through the exclusive writer lock.
+- [ ] Invalid/stale descriptor and lock-only states return stable fail-closed errors and are not automatically modified.
+- [ ] Startup timeout terminates and reaps only the exact child launched by that call.
+- [ ] An existing Python `vibemux.sqlite3` sentinel remains byte-identical while Rust creates and uses only `vibemux_rust.sqlite3`.
+- [ ] Windows launch uses a hidden new process group; POSIX launch uses a separate process group. Neither path invokes a shell.
+- [ ] Windows named-pipe and Linux-container UDS process tests pass on MSRV-compatible Rust; workspace Rust and Python regressions remain green.
+
+Implementation order:
+
+1. Add canonical daemon project paths and a waitable server lifecycle API.
+2. Add the `vibemuxd` binary and process-boundary integration tests.
+3. Add the `vibemux_cli` crate and `vibemuxctl` lifecycle commands with injectable executable path and bounded bootstrap configuration.
+4. Exercise real Windows CLI start/health/second-start/stop plus stale cases; repeat the process test in Linux Docker.
+5. Update architecture, protocol, changelog, and this ledger with exact evidence before committing the implementation slice.
+
+Non-goals for this slice:
+
+- Python database migration or command-parity cutover.
+- Automatic stale-artifact deletion or PID-based recovery.
+- State mutation, plugin supervision, A2A routing, terminal ownership, autostart, or a privileged system service.
