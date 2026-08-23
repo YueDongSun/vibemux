@@ -1,3 +1,4 @@
+# Python environments and tooling
 .venv/
 __pycache__/
 *.py[cod]
@@ -8,11 +9,56 @@ __pycache__/
 htmlcov/
 dist/
 build/
-target/
 *.egg-info/
-.vibemux/
+
+# Rust build output
+/target/
+
+# VibeMux local runtime state
+/.vibemux/
+*.pid
+*.sock
+*.pipe
+
+# Local agent and provider configuration
+/.claude/
+/.codex/
+/.grok/
+/.cc-switch/
+/.config/opencode/
+
+# Credentials and machine-local secrets
 .env
 .env.*
 !.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+/credentials/
+/secrets/
+
+# Local databases and SQLite sidecars
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Probe, support-bundle, and terminal capture output
+/probe_output/
+/support_bundles/
+/probe_report.json
+/vibemux_probe_report*.json
+/frontend_snapshot*.txt
+*.har
+*.cast
+*.ansi
+
+# Logs and crash output
 *.log
+*.trace
