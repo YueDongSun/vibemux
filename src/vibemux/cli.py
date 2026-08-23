@@ -40,7 +40,13 @@ def init(terminal_backend: str = typer.Option("auto", "--terminal-backend")) -> 
 @app.command()
 def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
     repo_root = root()
-    checks = {"platform": platform.system(), "python": platform.python_version(), "git": "required", "config": config_path(repo_root).exists(), "database": database_path(repo_root).exists()}
+    checks = {
+        "platform": platform.system(),
+        "python": platform.python_version(),
+        "git": "required",
+        "config": config_path(repo_root).exists(),
+        "database": database_path(repo_root).exists(),
+    }
     try:
         config = require_config(repo_root)
         checks["terminal_backend"] = config.terminal_backend
@@ -60,13 +66,25 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
 def status(as_json: bool = typer.Option(False, "--json")) -> None:
     service = RunService(root())
     runs = service.storage.list_runs(service.project_id)
-    rows = [{"run_id": str(run.run_id), "task_id": str(run.task_id), "status": run.status.value, "harness": run.harness, "branch": run.branch, "pane": run.terminal.pane_id if run.terminal else None} for run in runs]
+    rows = [
+        {
+            "run_id": str(run.run_id),
+            "task_id": str(run.task_id),
+            "status": run.status.value,
+            "harness": run.harness,
+            "branch": run.branch,
+            "pane": run.terminal.pane_id if run.terminal else None,
+        }
+        for run in runs
+    ]
     if as_json:
         typer.echo(json.dumps(rows, ensure_ascii=False, indent=2))
         return
     table = Table("run_id", "task_id", "status", "harness", "branch", "pane")
     for row in rows:
-        table.add_row(*(str(row[k]) for k in ("run_id", "task_id", "status", "harness", "branch", "pane")))
+        table.add_row(
+            *(str(row[k]) for k in ("run_id", "task_id", "status", "harness", "branch", "pane"))
+        )
     console.print(table)
 
 
@@ -79,12 +97,23 @@ def task(title: str, description: str = typer.Option("", "--description")) -> No
 
 @app.command()
 def tasks(as_json: bool = typer.Option(False, "--json")) -> None:
-    rows = [{"task_id": str(t.task_id), "title": t.title, "status": t.status.value} for t in TaskService(root()).list()]
-    typer.echo(json.dumps(rows, ensure_ascii=False, indent=2) if as_json else "\n".join(f"{r['task_id']} {r['status']} {r['title']}" for r in rows))
+    rows = [
+        {"task_id": str(t.task_id), "title": t.title, "status": t.status.value}
+        for t in TaskService(root()).list()
+    ]
+    typer.echo(
+        json.dumps(rows, ensure_ascii=False, indent=2)
+        if as_json
+        else "\n".join(f"{r['task_id']} {r['status']} {r['title']}" for r in rows)
+    )
 
 
 @app.command()
-def spawn(task_id: str, harness: str = "mock", terminal_backend: str | None = typer.Option(None, "--terminal-backend")) -> None:
+def spawn(
+    task_id: str,
+    harness: str = "mock",
+    terminal_backend: str | None = typer.Option(None, "--terminal-backend"),
+) -> None:
     run = RunService(root()).spawn(UUID(task_id), harness, terminal_backend=terminal_backend)
     typer.echo(str(run.run_id))
 
@@ -103,7 +132,18 @@ def diff(run_id: str) -> None:
 @app.command()
 def trace() -> None:
     for event in RunService(root()).trace():
-        typer.echo(json.dumps({"sequence": event.sequence, "type": event.event_type, "task": str(event.task_id) if event.task_id else None, "run": str(event.run_id) if event.run_id else None, "payload": event.payload}, ensure_ascii=False))
+        typer.echo(
+            json.dumps(
+                {
+                    "sequence": event.sequence,
+                    "type": event.event_type,
+                    "task": str(event.task_id) if event.task_id else None,
+                    "run": str(event.run_id) if event.run_id else None,
+                    "payload": event.payload,
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 @app.command()
