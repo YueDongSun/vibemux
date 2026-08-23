@@ -475,7 +475,7 @@ Exit criteria:
 
 #### M5.0 — Read-only probe and unified frontend shell
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION` on 2026-08-24.
+**Slice status:** `PARTIAL — PROBE AND FRONTEND SHELL VERIFIED` on 2026-08-24. Native CLI TUI attachment remains disabled.
 
 Objective:
 
@@ -1152,3 +1152,59 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Known risks**
 - The official REST-only dependency graph still includes generated Protobuf and tonic support transitively through the SDK packages, increasing build time and binary dependency surface.
 - Local loopback success is not remote interoperability, deployment, security, or conformance evidence.
+
+### 2026-08-24 — M5.0 fixed probe and unified frontend shell
+
+**Status change**
+- M5.0 read-only probe and unified frontend shell: `PLANNED` -> `PARTIAL`
+
+**Implemented**
+- Added `vibemux_probe` with a versioned JSON report for five agent launchers, safe endpoint routing, CC Switch health/telemetry, and the A2A loopback self-test.
+- Added Windows direct-executable and same-name PowerShell-companion resolution; `.cmd` contents are never executed.
+- Added bounded version probes with deadlines, child kill-on-drop, and an explicit environment allowlist that excludes provider keys and tokens.
+- Added allowlisted JSON/TOML endpoint parsing; credential-bearing URLs and non-HTTP schemes are discarded.
+- Added read-only CC Switch SQLite aggregation that never selects request/response body or error-message columns.
+- Added `vibemux_frontend` with a backend-neutral dashboard model, Ratatui renderer, deterministic `--once` output, and five `NativeTuiSlot` reservations.
+- Kept native TUI launch, attach, input, focus, resize, and teardown code absent from this slice.
+
+**Live evidence on Windows**
+- Claude `2.1.224`, Codex `0.137.0`, OpenCode `1.18.21`, Copilot `1.0.75`, and Grok `0.2.114` launchers were version-verified without inference.
+- Claude and Grok were classified as `local_gateway`; OpenCode as `direct`; Codex and Copilot as `unknown` because no safe explicit endpoint was present.
+- CC Switch `127.0.0.1:15721` was TCP-reachable, `/health` returned 200, and aggregate telemetry reported `grokbuild` failures without exposing body content.
+- A2A self-test preserved correlation and closed its listener.
+- Frontend `--once` rendered gateway/A2A summaries, all five agents, and five reserved native-TUI slots, then exited cleanly.
+
+**Automated evidence**
+- Full Rust workspace: 33 tests passed on both MSRV 1.85 and current stable; rustfmt and Clippy with `-D warnings` passed
+- Probe: 6 unit tests, including bounded/allowlisted config parsing, read-only aggregate telemetry, JSON fixture round-trip, and repeatable A2A self-test
+- Frontend: 4 tests, including wide/narrow Ratatui TestBackend rendering and deterministic snapshot output
+- Native slot tests prove reservation state only; they do not prove PTY/ConPTY attachment
+- Python regression: 27 tests, Ruff format/lint, and mypy passed
+
+**Frontend dependency baseline**
+- Ratatui `0.29.0` (Rust 1.74 MSRV)
+- Crossterm `0.28.1` (Rust 1.63 MSRV)
+- TOML parser `0.8.23` (Rust 1.66 MSRV)
+- Interactive Windows smoke entered alternate-screen/raw mode, rendered the dashboard, accepted `q`, and restored the terminal successfully
+
+**Compatibility / migration**
+- Probe schema v1 and the frontend model are private pre-alpha contracts.
+- Neither crate opens the VibeMux state database or performs canonical transitions.
+- Authentication and inference states are separately reported as `not_run`; launcher verification is not promoted to model-health evidence.
+
+**Security impact**
+- Default probes perform no paid inference, login, provider switch, process termination, config write, or database write.
+- Child process environments are allowlisted; report endpoints omit credentials, query strings, and fragments.
+- CC Switch is opened with SQLite read-only/no-mutex flags and fixed aggregate SQL.
+
+**Remaining**
+- Move probe execution behind the daemon support-bundle/control API when M3 IPC is ready.
+- Add fixture versioning for backward-compatible probe report evolution.
+- Implement terminal plugin and Windows ConPTY ownership before changing any native TUI slot from `reserved` to attachable.
+- Add focus, resize, input, clipboard, approval, cancellation, crash recovery, and teardown tests before interactive native surfaces are enabled.
+- Build the graphical frontend only after the terminal-surface and daemon APIs stabilize.
+
+**Known risks**
+- Version probes prove launcher startup only; provider authentication and inference require separate explicit probes.
+- Reading live third-party configuration remains best-effort and must degrade to `unknown` when formats change.
+- Ratatui shell rendering is verified, but live embedded agent TUIs remain deliberately unimplemented.

@@ -10,6 +10,7 @@
 - 冻结 Python domain/event/cleanup/terminal contract fixture，供 Rust parity 测试复用。
 - 增加 Rust `vibemux_store`：SQLite migration、WAL、atomic state/event、idempotency 与 replay 基础。
 - 增加 Rust `vibemux_a2a`：官方 A2A v1 SDK Agent Card discovery 与本地 HTTP+JSON 基础信息分享。
+- 增加 Rust `vibemux_probe` 与 `vibemux_frontend`：固定化 agent/gateway/A2A只读探测、统一 Ratatui dashboard和五个 native-TUI reserved slots。
 
 ## 0.1.0a0
 

@@ -44,4 +44,15 @@ python scripts/smoke_test.py
 cargo test --workspace --all-features
 ```
 
+## 本机探测与统一前端预览
+
+以下命令只执行 launcher版本、显式 endpoint、CC Switch只读 telemetry和本地 A2A self-test，不发送模型 prompt：
+
+```powershell
+cargo run -p vibemux_probe --bin vibemux_probe
+cargo run -p vibemux_frontend --bin vibemux_frontend -- --once
+```
+
+交互式 Ratatui shell可通过不带 `--once` 启动并使用 `q`/`Esc`退出。Claude、Codex、OpenCode、Copilot、Grok native TUI目前只显示 reserved slot；真实 PTY/ConPTY attach尚未实现，不应理解为可用。
+
 详见 [docs/architecture.md](docs/architecture.md)、[docs/platform_support.md](docs/platform_support.md)、[docs/protocol_boundaries.md](docs/protocol_boundaries.md) 与 `docs/adr/`。

@@ -29,3 +29,9 @@ Git worktree                  WezTerm / tmux / mock
 ```
 
 “同一个 folder”指同一逻辑 repo；每个 Run 使用不同物理 worktree。worktree 只隔离并发修改，不是 sandbox。TerminalBackend 管 pane 生命周期，不判断 Task 成功；ExecutionBackend 描述 runtime；HarnessAdapter 只构造受控启动规格。Git、WezTerm 和 tmux 共用 injected CommandRunner；agent_host 只接收受控 argv/environment，不执行 shell command string。ACP/A2A/MCP 是未来 gateway，当前不伪造实现。
+
+## Probe 与统一前端边界
+
+`vibemux_probe` 只产生版本化、非内容、只读诊断：launcher/version、显式 provider endpoint、CC Switch health/aggregate telemetry 和 A2A self-test。launcher验证不等于 authentication/inference验证。
+
+`vibemux_frontend` 消费 probe report 和未来 daemon control API；不直接读写 core SQLite。统一 dashboard 为 Claude、Codex、OpenCode、Copilot 和 Grok分别保留 `NativeTuiSlot`。这些 slot最终由 terminal plugin/ConPTY承载 CLI自身 TUI；dashboard不解析 terminal text、不重绘 vendor TUI，也不从 pane exit推断完成。当前 slot仅为 `reserved`，没有启动或输入转发行为。
