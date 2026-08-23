@@ -51,6 +51,11 @@ impl CorePluginPolicy {
             platform,
         })
     }
+
+    #[must_use]
+    pub const fn frame_config(&self) -> FrameCodecConfig {
+        self.frame_config
+    }
 }
 
 impl Default for CorePluginPolicy {

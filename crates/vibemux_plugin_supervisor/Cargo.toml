@@ -1,0 +1,24 @@
+[package]
+name = "vibemux_plugin_supervisor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+test_helpers = []
+
+[[bin]]
+name = "vibemux_mock_plugin"
+path = "src/bin/vibemux_mock_plugin.rs"
+required-features = ["test_helpers"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+vibemux_plugin_protocol = { path = "../vibemux_plugin_protocol" }
+
+[dev-dependencies]
+tempfile.workspace = true

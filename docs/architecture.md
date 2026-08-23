@@ -49,3 +49,5 @@ Git worktree                  WezTerm / tmux / mock
 Windows control metadata现位于`%LOCALAPPDATA%\VibeMux\runtime\<domain-separated project hash>`。protected父DACL及叶/文件effective ACL仅包含current SID、`SYSTEM`与Administrators；named pipe显式`PIPE_REJECT_REMOTE_CLIENTS`并继续要求bearer。新daemon同时持有protected lock和旧project lock作为upgrade compatibility gate，防止旧二进制竞态写同一数据库。健康legacy daemon仍可health/stop，stale legacy artifacts仍走同一confirmation recovery。POSIX路径与`0600`/UDS语义不变。
 
 `vibemux_plugin_protocol`是独立M4 wire边界：checked-in Protobuf schema经pinned Prost/vendored protoc生成；stdin/stdout frame使用四字节大端长度与固定上限。manifest只保存argv、kind、platform、capability和requested permission；core negotiation只授予manifest/Hello/core policy交集。当前只完成codec与状态机，不spawn child、不读取stderr、不依赖数据库，也不把opaque payload映射成Task/Run mutation。
+
+`vibemux_plugin_supervisor`在协议之上拥有一个child：canonical executable/cwd、argv、clean environment、Windows hidden process group/POSIX process group、bounded stdin/stdout channels和独立stderr drain。握手、receive与shutdown有deadline；queue full、heartbeat、cancel、drain、exit/crash都结构化。当前registry/restart/quarantine尚未接入`vibemuxd`，也没有真实vendor plugin或canonical-state mutation。

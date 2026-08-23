@@ -17,6 +17,7 @@
 - 增加显式`daemon inspect/recover`：PID/liveness阻断、snapshot-bound confirmation、unchanged artifact cleanup与数据库零修改恢复。
 - 增加Windows protected per-user control runtime、remote-pipe拒绝、dual-generation writer locks与legacy health/recovery兼容。
 - 增加M4.0 plugin protocol基础：checked-in Protobuf v1、bounded framing、validated manifest、policy negotiation、session lifecycle与contract fixtures。
+- 增加M4.1 process supervisor基础：clean argv spawn、real stdio handshake、bounded queues/stderr、deadline/heartbeat/cancel/shutdown与crash containment。
 
 ## 0.1.0a0
 

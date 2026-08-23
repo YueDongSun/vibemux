@@ -413,8 +413,8 @@ Scope:
 
 - [x] Protobuf plugin protocol v1 wire/framing foundation.
 - [x] Manifest, handshake, capabilities, permissions, and version negotiation foundation.
-- [ ] Bounded request/event channels.
-- [ ] Deadlines, cancellation, heartbeat, shutdown, and crash reporting.
+- [x] Bounded request/event channel foundation with observable backpressure.
+- [x] Handshake/receive/shutdown deadlines, cancellation, heartbeat, and crash-reporting foundation.
 - [ ] Rust and Python plugin SDKs.
 - [ ] Mock plugins for every plugin kind.
 - [x] Contract fixtures and property tests for framing and malformed input.
@@ -489,20 +489,20 @@ Non-goals for M4.0:
 
 #### M4.1 — Process supervisor foundation plan
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION`
+**Planning status:** `IMPLEMENTED — ISOLATED PROCESS SUPERVISOR FOUNDATION`
 
 Acceptance gate:
 
-- [ ] A resolved absolute executable + argv launch spec spawns without a shell, clears inherited environment, applies only bounded explicit variables, and uses a separate process group/no visible Windows console.
-- [ ] Real mock-plugin stdin/stdout completes Hello/CoreHello/session-bound Ready and echo traffic over the M4.0 codec on Windows and Linux.
-- [ ] Handshake timeout, malformed stdout, invalid transition, oversized frame and early exit terminate/quarantine only that child and return stable errors.
-- [ ] Bounded outbound/inbound channels expose queue-full backpressure and never use an unbounded buffer.
-- [ ] Stderr flood is drained independently; only bounded byte-count/truncation metadata crosses the supervisor API and stdout framing remains valid.
-- [ ] Heartbeat sequence/freshness, receive deadlines and explicit Cancel messages are observable with deterministic tests.
-- [ ] Drain -> Shutdown -> acknowledgement exits cleanly; shutdown timeout kills and reaps only the exact child.
-- [ ] Abrupt nonzero child exit produces a stable crash report and does not crash the test/core process.
-- [ ] Supervisor and fixtures have no SQLite/Git/terminal/A2A/vendor SDK/canonical-state mutation dependency.
-- [ ] Windows/Linux real-process tests, workspace MSRV/current-stable Clippy/tests, and Python reference regressions remain green.
+- [x] A resolved canonical executable + argv launch spec spawns without a shell, clears inherited environment, applies only bounded explicit variables, and uses a separate process group/no visible Windows console.
+- [x] Real mock-plugin stdin/stdout completes Hello/CoreHello/session-bound Ready and echo traffic over the M4.0 codec on Windows and Linux.
+- [x] Handshake timeout, malformed stdout, invalid transition, oversized frame and early exit terminate/quarantine only that child and return stable errors.
+- [x] Bounded outbound/inbound channels expose queue-full backpressure and never use an unbounded buffer.
+- [x] Stderr flood is drained independently; only bounded byte-count/truncation metadata crosses the supervisor API and stdout framing remains valid.
+- [x] Heartbeat sequence/freshness, receive deadlines and explicit Cancel messages are observable with deterministic tests.
+- [x] Drain -> Shutdown -> acknowledgement exits cleanly; shutdown timeout kills and reaps only the exact child.
+- [x] Abrupt nonzero child exit produces a stable crash report and does not crash the test/core process.
+- [x] Supervisor and fixtures have no SQLite/Git/terminal/A2A/vendor SDK/canonical-state mutation dependency.
+- [x] Windows/Linux real-process tests, workspace MSRV/current-stable Clippy/tests, and Python reference regressions remain green.
 
 Implementation order:
 
@@ -515,6 +515,35 @@ Implementation order:
 Non-goals for M4.1:
 
 - Automatic restart policy, daemon/control-API integration, SDK publication, non-harness plugin kinds, sandbox enforcement, or Task/Run mutation.
+
+#### 2026-08-24 — M4.1 process supervisor implementation
+
+**Implemented**
+- Added isolated `vibemux_plugin_supervisor` with canonical executable/cwd resolution, argv-only spawn, shell-executable rejection, clean environment and bounded explicit variables.
+- Added Windows hidden/new-process-group and POSIX process-group launch while retaining the exact child handle; Drop starts exact-child kill plus background reap.
+- Added deadline-bound Hello/CoreHello/session-ready handshake over child stdin/stdout and bounded reader/writer Tokio channels.
+- Added public queue-full/closed errors, receive deadlines, monotonic heartbeat sequence/freshness, explicit Cancel, Drain/Shutdown acknowledgement and exact-child timeout termination.
+- Added independent stderr draining that retains no raw content and reports only capped byte count plus truncation.
+- Added stable graceful/crash exit reports with exit code and bounded stderr metadata.
+- Added a feature-gated mock harness binary with normal echo/environment/cancel, quiet saturation, duplicate heartbeat, malformed, oversized, wrong Ready, handshake hang, stderr flood, crash and shutdown-hang modes.
+
+**Evidence**
+- Supervisor crate: 3 unit tests plus 8 real-process integration tests passed on Windows and Linux Rust 1.85-compatible toolchains.
+- Real normal session proved inherited `PATH` absent, explicit `ALLOWED_VALUE` present, correlation-preserving echo, Cancel event, heartbeat freshness and graceful exit code 0.
+- A quiet plugin saturated the real outbound path and returned `plugin_supervisor_queue_full`; a separate 50 ms receive returned `plugin_supervisor_receive_timeout`.
+- A 128 KiB stderr flood reported exactly the configured 1 KiB captured count with `truncated=true` while stdout response framing remained valid.
+- Malformed/oversized stdout, wrong-session Ready, handshake hang, duplicate heartbeat, exit code 7 crash and shutdown hang all produced stable errors/reports without crashing the supervisor test process.
+- Windows Rust 1.85.0 MSRV and stable 1.97.0: full workspace 103 tests passed on each; workspace Clippy with `-D warnings` passed on each.
+- Linux Docker Rust 1.85.1: all 11 supervisor unit/process tests passed with POSIX process-group behavior.
+- Python reference: 27 pytest tests passed; Ruff lint/format and mypy passed.
+
+**Security boundaries**
+- `ResolvedPluginLaunch` Debug redacts executable, cwd, arguments and environment values. Stderr content never crosses the API.
+- Environment allowlisting is process hygiene, not a sandbox; filesystem/network enforcement still requires future permission-aware sandbox plugins.
+- No supervisor dependency reaches SQLite, Git, terminal, A2A, vendor SDK or canonical Task/Run state.
+
+**Next slice**
+- Add daemon-owned supervisor registry, restart budgets/quarantine, plugin status/control API, and mock manifests for the remaining declared plugin kinds before SDK publication.
 
 ### M5 — Workspace and terminal parity in Rust
 
