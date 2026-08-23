@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "prototype_base_commit": "99d1f8ebcf9e25248eb2af1eb6d64b530e51f848",
+  "task_transitions": {
+    "open": ["cancelled", "in_progress"],
+    "in_progress": ["blocked", "cancelled", "done"],
+    "blocked": ["cancelled", "in_progress"],
+    "done": [],
+    "cancelled": []
+  },
+  "run_transitions": {
+    "preparing": ["failed", "running"],
+    "running": ["failed", "stale", "stopped", "succeeded"],
+    "stopped": [],
+    "failed": [],
+    "succeeded": [],
+    "stale": ["failed", "stopped"]
+  },
+  "run_completion_authorities": ["structured_adapter", "user", "verifier"],
+  "event_fields": [
+    "event_type",
+    "project_id",
+    "task_id",
+    "run_id",
+    "payload",
+    "event_id",
+    "sequence",
+    "timestamp",
+    "actor"
+  ],
+  "worktree_record_fields": ["path", "branch", "base_commit"],
+  "worktree_inspection_fields": [
+    "registered",
+    "exists",
+    "branch_matches",
+    "head",
+    "dirty",
+    "issues"
+  ],
+  "cleanup_plan_fields": ["record", "inspection"],
+  "terminal_inventory": {
+    "schema_version": 1,
+    "top_level_fields": ["schema_version", "panes"],
+    "pane_fields": ["pane_id", "cwd", "title", "workspace_id", "alive"]
+  },
+  "send_receipt_fields": ["digest", "byte_count", "line_count", "submit"]
+}

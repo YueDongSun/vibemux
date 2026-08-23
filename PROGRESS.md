@@ -345,7 +345,7 @@ Scope:
 - [x] Implement reconciliation and immutable cleanup plan.
 - [ ] Replace fake mock persistence with a supervised mock process.
 - [ ] Add platform and security test suites.
-- [ ] Record stable JSON fixtures for CLI, events, and plugin concepts.
+- [x] Record stable JSON fixtures for domain, events, cleanup, terminal inventory, and send receipts.
 
 Exit criteria:
 
@@ -850,3 +850,28 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 
 **Known risks**
 - Compensation cannot identify a terminal resource if a backend creates it and then fails before returning its identity; later inventory reconciliation must preserve such unknown resources.
+
+### 2026-08-23 — M1 Python compatibility fixture freeze
+
+**Status change**
+- Immediate execution order step 8: completed for implemented Python contracts
+
+**Implemented**
+- Added a versioned fixture tied to the original Python prototype base commit.
+- Frozen Task/Run transitions, completion authorities, Event fields, worktree and cleanup records, mock terminal inventory, and send receipt fields.
+- Added a contract test that compares the checked-in fixture directly with current definitions.
+
+**Evidence**
+- tests: 27 pytest tests passed, including the fixture-to-implementation contract check
+- typing and style: mypy, Ruff lint, and Ruff format checks passed
+- smoke: cross-process mock CLI workflow passed after fixture freeze
+
+**Remaining**
+- CLI machine-readable fixtures should expand when the Rust thin CLI contract is designed.
+- Plugin handshake fixtures remain deferred until the Protobuf schema exists; planned fields are not presented as implemented.
+
+**Compatibility / migration**
+- Fixture schema v1 is additive test evidence and does not change runtime storage or CLI output.
+
+**Known risks**
+- This fixture freezes implemented Python shapes, not the future Rust persistence or plugin wire schema.
