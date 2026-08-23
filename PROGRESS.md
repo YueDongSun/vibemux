@@ -1382,3 +1382,39 @@ Non-goals for this slice:
 - Implement read-only stale inspection with descriptor/lock ownership evidence, then a separately authorized recovery operation.
 - Harden Windows named-pipe/descriptor ACLs against hostile same-user access before release claims.
 - Keep Task/Run mutation out of lifecycle IPC until authorization and compatibility gates are accepted.
+
+### 2026-08-24 — M3 explicit stale-runtime recovery plan
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION`
+
+Safety contract:
+
+- `daemon inspect` is read-only and attempts authenticated health before classifying artifacts as stale.
+- Recovery requires a separate `daemon recover --confirmation <sha256>` invocation bound to the exact descriptor/lock snapshot.
+- A live or merely PID-present owner, malformed artifact, descriptor/lock PID mismatch, symlink, inaccessible path, or changed snapshot always refuses recovery.
+- Recovery removes runtime metadata only; it never kills a process and never opens or changes Python/Rust SQLite files.
+- Normal `start`, `health`, and `stop` remain fail-closed and never call recovery implicitly.
+
+Acceptance gate:
+
+- [ ] Live daemon inspection reports `running`, exposes no confirmation, and recovery refuses without changing artifacts.
+- [ ] Abruptly terminated daemon inspection reports `recoverable` only after its recorded PID is absent.
+- [ ] Wrong/missing confirmation leaves descriptor, socket, lock, and databases byte-identical.
+- [ ] Correct confirmation removes only unchanged stale descriptor/socket/lock artifacts and permits a normal restart with the existing Rust database.
+- [ ] Descriptor-only and lock-only stale states are recoverable when valid; malformed or descriptor/lock PID-mismatched states fail closed.
+- [ ] Artifact replacement between inspection and recovery invalidates the confirmation or unchanged-content check.
+- [ ] A snapshot that names the current/live process is never recoverable; no PID termination API exists.
+- [ ] Inspect/recover JSON contains no token, endpoint, path, database name, lock nonce, prompt, message, or raw OS error.
+- [ ] Windows named-pipe and Linux UDS process recovery tests pass; MSRV/current-stable Rust and Python regressions remain green.
+
+Implementation order:
+
+1. Add bounded redacted descriptor and writer-lock snapshot APIs in `vibemuxd`.
+2. Add process-liveness classification, domain-separated confirmation hashing, and compare-before-delete recovery planning in `vibemux_cli`.
+3. Add `daemon inspect` and `daemon recover --confirmation` parsing and allowlisted JSON output.
+4. Exercise live, abrupt, wrong-confirmation, changed-artifact, PID-present, and successful restart paths on Windows and Linux.
+5. Update architecture, security boundaries, changelog, and this ledger with exact evidence before committing.
+
+Non-goals:
+
+- Force recovery, PID kill, database repair/migration, Windows hostile same-user atomicity, or automatic startup cleanup.
