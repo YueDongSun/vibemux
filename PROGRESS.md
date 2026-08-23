@@ -473,6 +473,83 @@ Exit criteria:
 - PTY runs are visibly marked as reduced-reliability.
 - Harness version changes are caught by contract tests.
 
+#### M5.0 — Read-only probe and unified frontend shell
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION` on 2026-08-24.
+
+Objective:
+
+- Replace ad hoc machine probes with a stable Rust report and render that evidence in one Windows-first terminal dashboard while reserving, not recreating, every supported CLI's native TUI.
+
+Probe contract:
+
+- schema version and observation timestamp;
+- platform and probe mode;
+- per-agent launcher availability, resolved launcher kind, bounded version result, route classification, and safe endpoint host/port;
+- local gateway listener and health result;
+- allowlisted CC Switch request aggregates only: app type, request count, failure count, latest timestamp, status/model/latency summary;
+- A2A loopback self-test result;
+- explicit `verified`, `failed`, `unavailable`, and `not_run` states;
+- no key, token, authorization header, cookie, environment dump, prompt, response body, repository content, or raw error payload.
+
+Probe implementation phases:
+
+1. Define `ProbeConfig`, versioned `ProbeReport`, stable error codes, size limits, and default-disabled inference mode.
+2. Resolve Windows direct executables and same-name PowerShell companions without executing `.cmd` content.
+3. Run bounded `--version` probes with `shell=false`; classify authentication/inference separately and never infer them from version success.
+4. Parse only allowlisted endpoint/model fields from Claude, Codex, OpenCode, Grok, and Copilot configuration locations.
+5. Detect loopback routes and CC Switch health; open `cc-switch.db` with SQLite read-only flags and fixed aggregate SQL.
+6. Invoke the local `vibemux_a2a` self-test and include only correlation/status evidence.
+7. Expose a JSON-producing `vibemux-probe` binary and fixture-backed unit/integration tests.
+
+Frontend implementation phases:
+
+1. Define a backend-neutral dashboard view model derived from `ProbeReport`.
+2. Define stable `NativeTuiSlot` records for Claude, Codex, OpenCode, Copilot, Grok, and future harnesses.
+3. Render overview, gateway, A2A, alerts, and native-TUI reservation panels through Ratatui.
+4. Provide a deterministic in-memory render test and a non-interactive `--once` mode for Windows smoke/CI.
+5. Keep interactive attach/launch actions disabled with an explicit `reserved` reason until terminal ownership, ConPTY, resize, focus, cancellation, and teardown contracts pass.
+6. Later route slot activation through daemon control API and terminal plugins; the frontend never writes SQLite directly.
+
+Expected owned files:
+
+```text
+docs/adr/016_probe_and_unified_frontend.md
+crates/vibemux_probe/
+crates/vibemux_frontend/
+Cargo.toml
+Cargo.lock
+PROGRESS.md
+README.md
+CHANGELOG.md
+```
+
+Acceptance gate for this slice:
+
+- A real local probe reports the five installed agent families without printing secrets.
+- Claude and Grok are attributed to the detected CC Switch route when their safe configuration points to loopback; direct providers remain distinct.
+- CC Switch health and aggregate telemetry are read successfully when available and degrade to structured `unavailable` otherwise.
+- The A2A self-test shares the fixed information marker and shuts down cleanly.
+- JSON serialization round-trips under a versioned fixture.
+- The frontend render contains every agent, gateway/A2A status, and five native-TUI slots using a Ratatui test backend.
+- Native slots are visibly `reserved` and cannot start a process in this slice.
+- `--once` exits without leaving raw terminal mode enabled, child processes, listeners, files, or database writes.
+- Rust format, Clippy, workspace tests, Python regression, and `git diff --check` pass.
+
+Explicitly deferred:
+
+- model inference smoke and paid request execution;
+- login or provider mutation;
+- prompt/response body capture or TLS interception;
+- daemon control API and authoritative task mutation;
+- real PTY/ConPTY attachment, native TUI embedding, focus/resize/input forwarding, and process teardown;
+- graphical web/Tauri frontend, remote browser access, and multi-user authentication.
+
+Rollback:
+
+- Both crates are non-authoritative and have no daemon consumer in this slice.
+- If live probing or terminal rendering cannot remain read-only and bounded, keep the ADR and tests, remove the unsafe path, and leave M5.0 `PLANNED`.
+
 ### M7 — A2A core gateway
 
 **Status:** `PARTIAL`
