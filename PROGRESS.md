@@ -361,16 +361,17 @@ Constraint:
 
 ### M2 — Rust workspace and canonical core
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
-- [ ] Add Rust 2024 workspace with MSRV aligned to the official A2A Rust SDK.
-- [ ] Implement typed IDs and state machines.
-- [ ] Implement canonical event envelopes and error taxonomy.
-- [ ] Implement deterministic transition tests and property tests.
+- [x] Add Rust 2024 workspace with MSRV aligned to the official A2A Rust SDK.
+- [x] Implement typed IDs and state machines.
+- [x] Implement canonical event envelopes and error taxonomy.
+- [x] Implement deterministic transition tests and property tests.
 - [ ] Add structured tracing with redaction.
-- [ ] Add Windows and Linux CI, formatting, clippy, tests, and dependency checks.
+- [x] Add Windows and Linux CI for formatting, clippy, and tests.
+- [ ] Add dependency policy and vulnerability checks to CI.
 
 Exit criteria:
 
@@ -787,7 +788,7 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 - This baseline changes architecture governance only; it does not change the Python CLI, schema, or runtime behavior.
 
 **Known risks**
-- The current Python implementation still has the remaining P0 spawn-compensation, mock-resource, terminal-ownership, and reconciliation defects listed above.
+- The Python P0 items listed above were completed on the later reference branch; the prototype remains non-authoritative and still requires a supervised mock plugin before M1 exit.
 
 ### 2026-08-23 — M1 Python reference P0 command and diff boundary
 
@@ -875,3 +876,32 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 
 **Known risks**
 - This fixture freezes implemented Python shapes, not the future Rust persistence or plugin wire schema.
+### 2026-08-23 — M2 canonical Rust core foundation
+
+**Status change**
+- M2 Rust workspace and canonical core: `PLANNED` -> `PARTIAL`
+
+**Implemented**
+- Added the Rust 2024 workspace with `vibemux_types` and `vibemux_events` crates.
+- Added opaque IDs, deterministic Task/Run transition tables, explicit run-success authority, canonical event envelopes, payload limits, and plaintext-sensitive-field rejection.
+- Added Python-reference transition and event fixtures plus Windows/Ubuntu Rust CI commands.
+
+**Evidence**
+- MSRV checks: Rust 1.85.0 `cargo fmt --all -- --check`, Clippy with `-D warnings`, and 10 tests passed
+- current stable check: Rust 1.97.0 ran the same 10 tests successfully
+- Python regression at the original Rust commit: 6 pytest tests, Ruff lint, mock smoke, and wheel build passed
+- The later Python P0 branch resolved the recorded formatting and mypy gaps before integration.
+- unavailable local gates: cargo-nextest, cargo-deny, and cargo-audit are not installed
+- benchmark: not applicable to this domain-only slice
+- live validation: not applicable; no terminal or daemon implementation changed
+
+**Remaining**
+- Add structured tracing and dependency policy gates.
+- Implement Rust persistence and local IPC in the M3 slices.
+
+**Compatibility / migration**
+- Rust packages remain private pre-alpha interfaces; Python schema migration and compatibility details are recorded in the M1 entries above.
+
+**Known risks**
+- Event payload key rejection is a defense-in-depth schema check, not a general secret detector.
+- Rust CI configuration is present but remote GitHub Actions has not been observed in this session.
