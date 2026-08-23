@@ -44,4 +44,4 @@ Git worktree                  WezTerm / tmux / mock
 
 `vibemuxd` binary现在是unprivileged foreground process owner；`vibemuxctl daemon start|health|stop`负责on-demand lifecycle。readiness必须通过authenticated health，PID只用于比较本次spawn identity。Windows使用固定、无用户代码插值的system PowerShell companion持有精确Process handle并切断captured stdout继承；POSIX直接argv spawn并建立独立process group。迁移期路径层固定使用`.vibemux/vibemux_rust.sqlite3`，拒绝runtime symlink与指向Python数据库的symlink/hardlink。
 
-`vibemuxctl daemon inspect`先尝试authenticated health，再读取有界且Debug脱敏的descriptor/writer-lock snapshot。只有记录PID已不存在、两份PID一致且artifact可解析时才返回domain-separated SHA-256 confirmation。`daemon recover`重新检查confirmation、PID与原始字节后，仅移除unchanged descriptor/UDS socket/writer lock；没有force、PID kill或数据库操作。Windows hostile same-user ACL/atomic handle deletion与Python数据库cutover仍未实现。
+`vibemuxctl daemon inspect`先尝试authenticated health，再读取有界且Debug脱敏的descriptor/writer-lock snapshot。只有记录PID已不存在、两份PID一致且artifact可解析时才返回domain-separated SHA-256 confirmation。`daemon recover`重新检查confirmation、PID与原始字节后，仅移除unchanged descriptor/UDS socket/writer lock；没有force、PID kill或数据库操作。Windows cross-user protected runtime与Python数据库cutover仍未实现；同一logon SID是协作信任边界，不承诺进程间ACL隔离。

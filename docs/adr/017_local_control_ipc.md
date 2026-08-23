@@ -22,7 +22,7 @@ The daemon writer core now owns the only Rust SQLite writer, but CLI and fronten
 
 - Independent local clients can query and stop the daemon without direct database access.
 - Descriptor/token lifecycle becomes security-sensitive and requires cleanup, redaction, and stale-artifact diagnostics.
-- Windows same-user ACL hardening remains a release gate; this slice does not claim hostile same-user isolation.
+- Windows cross-user descriptor/pipe hardening remains a release gate. Processes under the same logon SID are not isolated by discretionary ACLs and are treated as the collaboration boundary.
 - Protocol v1 is private pre-alpha and may change before the Rust CLI is public.
 
 ## Alternatives

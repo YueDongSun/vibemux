@@ -395,7 +395,7 @@ Scope:
 - [x] CLI start/query/stop wiring over local IPC.
 - [x] Daemon writer-core lifecycle, exclusive lock, health, and graceful shutdown.
 - [x] Explicit stale-instance inspect/recover workflow with confirmation-bound cleanup.
-- [ ] Windows same-user ACL hardening.
+- [ ] Windows protected current-user control runtime and cross-user/remote access boundary.
 
 Exit criteria:
 
@@ -1304,7 +1304,7 @@ Acceptance gate:
 
 **Remaining**
 - Add an explicit inspect/recover command with process-identity proof before stale descriptor/lock removal.
-- Add Windows hostile same-user ACL hardening and process-boundary recovery tests.
+- Add Windows protected-runtime DACL hardening and process-boundary recovery tests.
 - Expose state mutation only after authorization, compatibility, cancellation, and bounded concurrency contracts are accepted.
 
 ### 2026-08-24 — M3 standalone daemon process and CLI plan
@@ -1348,7 +1348,7 @@ Non-goals for this slice:
 ### 2026-08-24 — M3 standalone daemon and lifecycle CLI implementation
 
 **Status change**
-- M3 remains `PARTIAL`: normal on-demand process lifecycle is implemented, while explicit stale recovery and Windows hostile same-user isolation remain release gates.
+- M3 remains `PARTIAL`: normal on-demand process lifecycle is implemented, while explicit stale recovery and the Windows cross-user control-runtime boundary remain release gates.
 
 **Implemented**
 - Added canonical `DaemonPaths` rooted at one existing project directory. The Rust process uses `.vibemux/vibemux_rust.sqlite3`; Python remains on `.vibemux/vibemux.sqlite3`.
@@ -1380,7 +1380,7 @@ Non-goals for this slice:
 - The Windows companion source is fixed and base64-encoded only for transport to system PowerShell; no user value is concatenated into executable code.
 
 **Remaining**
-- Harden Windows named-pipe/descriptor ACLs against hostile same-user access before release claims.
+- Harden the Windows descriptor/lock runtime against other standard local users before release claims.
 - Keep Task/Run mutation out of lifecycle IPC until authorization and compatibility gates are accepted.
 
 ### 2026-08-24 — M3 explicit stale-runtime recovery plan
@@ -1422,7 +1422,7 @@ Non-goals:
 ### 2026-08-24 — M3 explicit stale-runtime recovery implementation
 
 **Status change**
-- M3 remains `PARTIAL`: normal lifecycle and explicit stale metadata recovery are implemented; Windows hostile same-user isolation remains a release gate.
+- M3 remains `PARTIAL`: normal lifecycle and explicit stale metadata recovery are implemented; the Windows cross-user control-runtime boundary remains a release gate.
 
 **Implemented**
 - Added bounded `ControlArtifactSnapshot` and `WriterLockSnapshot` APIs. Debug output redacts descriptor token, endpoint and raw lock nonce; snapshot hashes bind the exact original bytes.
@@ -1448,5 +1448,39 @@ Non-goals:
 - There is no force flag, implicit recovery, PID kill, database deletion, reset or migration path.
 
 **Remaining**
-- Harden Windows named-pipe and descriptor ACLs, then add hostile same-user access tests before changing the release claim.
+- Move Windows control metadata to a protected current-user runtime and verify cross-user DACL/remote-client boundaries before changing the release claim.
 - Keep Task/Run mutation out of lifecycle IPC until authorization, compatibility and cancellation gates are accepted.
+
+### 2026-08-24 — M3 Windows control-runtime ACL plan
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION`
+
+Threat-model correction:
+
+- Windows ACLs isolate SIDs, not processes under one SID. Same-logon agents are the intended collaboration domain and are not treated as mutually hostile.
+- The implementable release boundary is: current user + `SYSTEM` + administrators may access control metadata; other standard local users and remote named-pipe clients may not.
+- Project/database filesystem confidentiality remains governed by the repository/drive ACL and is not silently redefined by VibeMux.
+
+Acceptance gate:
+
+- [ ] Windows control descriptor and cooperative writer lock live under a canonical `%LOCALAPPDATA%\VibeMux\runtime\<sha256>` leaf; the hash output contains no project path text.
+- [ ] The leaf DACL is protected and contains only current-user, `LOCAL_SYSTEM`, and built-in-administrator allow rules with no inherited/broad principals.
+- [ ] The actual descriptor and lock inherit only allowlisted effective identities; bearer token/path/SID/raw ACL text remain absent from CLI JSON and logs.
+- [ ] Named-pipe construction explicitly rejects remote clients and still requires the bearer token for same-SID clients.
+- [ ] A healthy legacy project-local daemon remains discoverable and stoppable; stale legacy artifacts are inspectable/recoverable with the existing confirmation flow.
+- [ ] New daemon startup refuses while any unresolved legacy/current artifact exists; legacy and protected locks can never authorize concurrent writers.
+- [ ] Windows real start/health/inspect/stop/recover tests pass against the protected runtime; a structural ACL test proves broad principals are absent.
+- [ ] Linux UDS paths and `0600` semantics remain unchanged; cross-platform process/recovery tests pass.
+- [ ] Release startup p95 remains below `500 ms`; MSRV/current-stable Rust and Python regressions remain green.
+
+Implementation order:
+
+1. Add a small `vibemux_platform` crate for fixed Windows PowerShell execution and protected-user-directory ACL creation/inspection.
+2. Split daemon state paths from control-runtime paths and add a domain-separated project hash.
+3. Move process-owned descriptor/cooperative lock to the protected runtime while retaining the project-local Rust database.
+4. Add legacy descriptor/lock discovery to start, health, stop, inspect, and recover without automatic deletion.
+5. Run actual ACL, lifecycle, upgrade, recovery, Linux, performance, and regression checks; update the ledger before committing.
+
+Non-goals:
+
+- Same-SID process isolation, admin/SYSTEM exclusion, repository data encryption, native unsafe ACL APIs, or automatic legacy cleanup.

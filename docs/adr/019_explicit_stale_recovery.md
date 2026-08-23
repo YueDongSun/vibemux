@@ -25,7 +25,7 @@ The descriptor contains an authentication token and endpoint path. Recovery diag
 - A crashed local daemon can be recovered without weakening the single-writer invariant or relying on PID-based termination.
 - Conservative false negatives are possible when a PID has been reused; the operator must wait until that PID is absent rather than override the guard.
 - The inspection confirmation becomes invalid whenever any protected artifact changes, closing the inspect-to-recover race for ordinary local failures.
-- Filesystem compare-then-delete cannot claim hostile same-user atomicity; Windows ACL hardening and stronger native handle-based deletion remain separate release gates.
+- Filesystem compare-then-delete cannot claim atomicity against a process under the same trusted SID; Windows cross-user runtime ACL hardening and stronger native handle-based deletion remain separate concerns.
 
 ## Alternatives
 
