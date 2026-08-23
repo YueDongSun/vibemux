@@ -496,6 +496,96 @@ Exit criteria:
 - TCK/ITK results are archived as CI artifacts.
 - Transport choice does not change canonical state semantics.
 
+#### M7.0 — Basic A2A information-share slice
+
+**Planning status:** `APPROVED FOR IMPLEMENTATION` on 2026-08-24. M7 itself remains `PLANNED` until the integration gate below passes.
+
+Objective:
+
+- Prove that two independent local VibeMux A2A peers can discover each other and exchange one bounded, non-secret information message through an official A2A v1 Rust SDK boundary.
+- Produce implementation evidence without claiming task orchestration, persistence, remote deployment, authentication, streaming, cancellation, gRPC, or TCK conformance.
+
+Information contract:
+
+- sender-owned correlation ID;
+- backend-neutral sender peer ID;
+- information kind and UTF-8 text;
+- optional small structured metadata map;
+- receiver acknowledgement carrying the same correlation ID;
+- no local repository file, environment variable, credential, prompt history, tool result, or artifact body is shared implicitly.
+
+Authority boundary:
+
+- The slice is an ephemeral read-only adapter and does not create or transition canonical Task/Run state.
+- It does not open the Python or Rust state database and therefore cannot become a second writer.
+- External A2A SDK objects are contained inside `vibemux_a2a`; core domain crates remain SDK-independent.
+- Loopback bind is the only enabled runtime path in this slice. Non-loopback bind, TLS, and authentication remain fail-closed and unadvertised.
+
+Implementation phases:
+
+1. **R0 — source-of-truth research**
+   - Record the current A2A specification version separately from Rust crate versions.
+   - Inspect the official Rust SDK Agent Card, Message, Part, client, server, and transport APIs.
+   - Pin compatible official crates that compile on the workspace MSRV; do not copy protocol types.
+2. **R1 — VibeMux-owned information mapping**
+   - Define a size-bounded `InformationShare` and acknowledgement contract.
+   - Map it explicitly to official Message/DataPart or TextPart objects and back.
+   - Reject missing correlation IDs, unsupported roles/parts, oversized text/metadata, and unknown required fields.
+3. **R2 — discovery**
+   - Generate a minimal Agent Card from explicit VibeMux capabilities.
+   - Advertise only the binding exercised by the integration test.
+   - Validate the served card through the SDK parser before the server reports ready.
+4. **R3 — local client/server exchange**
+   - Start one owned loopback server on an OS-assigned port.
+   - Discover it from a separately constructed client.
+   - Send one information message and return a deterministic acknowledgement without invoking a model or tool.
+   - Give the server an owner, cancellation signal, readiness barrier, bounded request size, deadline, join path, and graceful shutdown.
+5. **R4 — verification and evidence**
+   - Unit-test mapping success and malformed/oversized failure paths.
+   - Run a real loopback integration test using the network stack rather than calling the handler directly.
+   - Assert correlation preservation, exact information payload, no workspace/database writes, clean shutdown, and no leaked listener.
+   - Re-run Rust format, Clippy, workspace tests, Python regression, and `git diff --check`.
+6. **R5 — status update**
+   - Move only this M7.0 slice to `PARTIAL` after fresh evidence.
+   - Keep every unsupported M7 transport/security/conformance item unchecked.
+   - Record exact crate/spec versions, commands, platform, limitations, and residual risks.
+
+Expected owned files:
+
+```text
+Cargo.toml
+Cargo.lock
+crates/vibemux_a2a/Cargo.toml
+crates/vibemux_a2a/src/lib.rs
+crates/vibemux_a2a/tests/basic_information_share.rs
+docs/protocol_boundaries.md
+PROGRESS.md
+CHANGELOG.md
+```
+
+Acceptance gate:
+
+- An SDK-backed client discovers a valid Agent Card from the owned loopback server.
+- The client sends `VIBEMUX_A2A_INFO_SHARE_OK` with a generated correlation ID.
+- The independent server receives the exact information contract and returns an acknowledgement with the same correlation ID.
+- The client validates that acknowledgement and the server records only bounded in-memory test evidence.
+- Malformed and oversized messages fail with structured errors and do not crash the server.
+- The server shuts down within its deadline, its listener closes, and the repository plus both state databases remain unchanged.
+- The gate is not satisfied by serialization-only, handler-only, command-construction, or mock-transport tests.
+
+Explicitly deferred:
+
+- canonical A2A Task binding and state transitions;
+- SQLite persistence and daemon writer integration;
+- JSON-RPC plus REST plus gRPC parity beyond the one selected binding;
+- streaming, push notifications, resubscription, cancellation, artifacts, and remote peers;
+- non-loopback exposure, authentication, TLS, signed Agent Cards, SSRF controls, TCK, and ITK.
+
+Rollback:
+
+- The new crate is dependency-isolated and has no runtime consumer until its acceptance gate passes.
+- If the official SDK cannot satisfy the bounded local exchange on MSRV, keep the research evidence, remove the unverified runtime advertisement, and leave M7 `PLANNED` rather than substituting a fake protocol.
+
 ### M8 — Collaboration workflow
 
 **Status:** `PLANNED`
