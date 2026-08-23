@@ -47,6 +47,25 @@ pub struct ControlRequest {
     pub operation: ControlOperation,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DaemonHealth {
+    pub healthy: bool,
+    pub process_id: u32,
+    pub store_schema_version: u32,
+    pub queue_capacity: usize,
+}
+
+impl DaemonHealth {
+    fn from_writer(process_id: u32, writer: WriterHealth) -> Self {
+        Self {
+            healthy: writer.healthy,
+            process_id,
+            store_schema_version: writer.store_schema_version,
+            queue_capacity: writer.queue_capacity,
+        }
+    }
+}
+
 impl fmt::Debug for ControlRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -62,7 +81,7 @@ impl fmt::Debug for ControlRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum ControlPayload {
-    Health(WriterHealth),
+    Health(DaemonHealth),
     ShutdownAccepted,
 }
 
@@ -99,6 +118,7 @@ impl ControlResponse {
 #[serde(deny_unknown_fields)]
 struct ControlDescriptor {
     version: u32,
+    process_id: u32,
     endpoint: String,
     token: String,
 }
@@ -108,6 +128,7 @@ impl fmt::Debug for ControlDescriptor {
         formatter
             .debug_struct("ControlDescriptor")
             .field("version", &self.version)
+            .field("process_id", &self.process_id)
             .field("endpoint", &self.endpoint)
             .field("token", &"[redacted]")
             .finish()
@@ -269,6 +290,7 @@ impl Drop for SocketPathGuard {
 
 struct ServerState {
     writer: Mutex<Option<WriterWorker>>,
+    process_id: u32,
     token: String,
 }
 
@@ -296,6 +318,7 @@ impl DaemonControlServer {
         let endpoint = endpoint_name(&runtime_dir);
         let descriptor = ControlDescriptor {
             version: CONTROL_PROTOCOL_VERSION,
+            process_id: std::process::id(),
             endpoint: endpoint.clone(),
             token: control_token()?,
         };
@@ -311,6 +334,7 @@ impl DaemonControlServer {
             let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
             let state = Arc::new(ServerState {
                 writer: Mutex::new(Some(writer)),
+                process_id: descriptor.process_id,
                 token: descriptor.token,
             });
             let task = tokio::spawn(async move {
@@ -336,6 +360,7 @@ impl DaemonControlServer {
             socket_guard.bind_owner(descriptor_path.clone(), descriptor.clone());
             let state = Arc::new(ServerState {
                 writer: Mutex::new(Some(writer)),
+                process_id: descriptor.process_id,
                 token: descriptor.token,
             });
             let task = tokio::spawn(async move {
@@ -375,6 +400,11 @@ impl DaemonControlServer {
             Ok(Ok(result)) => result,
         }
     }
+
+    pub async fn wait(mut self) -> Result<(), ControlError> {
+        let task = self.task.take().ok_or(ControlError::ServerTerminated)?;
+        task.await.map_err(|_| ControlError::ServerTerminated)?
+    }
 }
 
 impl Drop for DaemonControlServer {
@@ -399,34 +429,62 @@ impl ControlClient {
         Ok(Self { descriptor })
     }
 
-    pub async fn health(&self) -> Result<WriterHealth, ControlError> {
-        match self.request(ControlOperation::Health).await? {
+    pub async fn health(&self) -> Result<DaemonHealth, ControlError> {
+        self.health_with_deadline(CONTROL_DEADLINE).await
+    }
+
+    pub async fn health_with_deadline(
+        &self,
+        deadline: Duration,
+    ) -> Result<DaemonHealth, ControlError> {
+        match self.request(ControlOperation::Health, deadline).await? {
             ControlPayload::Health(health) => Ok(health),
             ControlPayload::ShutdownAccepted => Err(ControlError::InvalidFrame),
         }
     }
 
     pub async fn shutdown(&self) -> Result<(), ControlError> {
-        match self.request(ControlOperation::Shutdown).await? {
+        self.shutdown_with_deadline(CONTROL_DEADLINE).await
+    }
+
+    pub async fn shutdown_with_deadline(&self, deadline: Duration) -> Result<(), ControlError> {
+        match self.request(ControlOperation::Shutdown, deadline).await? {
             ControlPayload::ShutdownAccepted => Ok(()),
             ControlPayload::Health(_) => Err(ControlError::InvalidFrame),
         }
     }
 
-    async fn request(&self, operation: ControlOperation) -> Result<ControlPayload, ControlError> {
-        self.request_raw(ControlRequest {
-            version: CONTROL_PROTOCOL_VERSION,
-            request_id: Uuid::new_v4().to_string(),
-            token: self.descriptor.token.clone(),
-            operation,
-        })
+    async fn request(
+        &self,
+        operation: ControlOperation,
+        deadline: Duration,
+    ) -> Result<ControlPayload, ControlError> {
+        self.request_raw_with_deadline(
+            ControlRequest {
+                version: CONTROL_PROTOCOL_VERSION,
+                request_id: Uuid::new_v4().to_string(),
+                token: self.descriptor.token.clone(),
+                operation,
+            },
+            deadline,
+        )
         .await
     }
 
+    #[cfg(test)]
     async fn request_raw(&self, request: ControlRequest) -> Result<ControlPayload, ControlError> {
+        self.request_raw_with_deadline(request, CONTROL_DEADLINE)
+            .await
+    }
+
+    async fn request_raw_with_deadline(
+        &self,
+        request: ControlRequest,
+        deadline: Duration,
+    ) -> Result<ControlPayload, ControlError> {
         let response = timeout(
-            CONTROL_DEADLINE,
-            request_over_local_transport(&self.descriptor.endpoint, &request),
+            deadline,
+            request_over_local_transport(&self.descriptor.endpoint, &request, deadline),
         )
         .await
         .map_err(|_| ControlError::Deadline)??;
@@ -513,8 +571,9 @@ where
     }
 }
 
-async fn writer_health(state: Arc<ServerState>) -> Result<WriterHealth, ControlError> {
-    tokio::task::spawn_blocking(move || {
+async fn writer_health(state: Arc<ServerState>) -> Result<DaemonHealth, ControlError> {
+    let process_id = state.process_id;
+    let writer_health = tokio::task::spawn_blocking(move || {
         let guard = state
             .writer
             .lock()
@@ -526,7 +585,8 @@ async fn writer_health(state: Arc<ServerState>) -> Result<WriterHealth, ControlE
             .map_err(ControlError::from)
     })
     .await
-    .map_err(|_| ControlError::ServerTerminated)?
+    .map_err(|_| ControlError::ServerTerminated)??;
+    Ok(DaemonHealth::from_writer(process_id, writer_health))
 }
 
 async fn shutdown_writer(state: Arc<ServerState>) -> Result<(), ControlError> {
@@ -590,10 +650,11 @@ async fn run_server(
 async fn request_over_local_transport(
     endpoint: &str,
     request: &ControlRequest,
+    deadline: Duration,
 ) -> Result<ControlResponse, ControlError> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let deadline = Instant::now() + CONTROL_DEADLINE;
+    let deadline = Instant::now() + deadline;
     let mut client = loop {
         match ClientOptions::new().open(endpoint) {
             Ok(client) => break client,
@@ -613,6 +674,7 @@ async fn request_over_local_transport(
 async fn request_over_local_transport(
     endpoint: &str,
     request: &ControlRequest,
+    _deadline: Duration,
 ) -> Result<ControlResponse, ControlError> {
     let mut stream = tokio::net::UnixStream::connect(endpoint)
         .await
@@ -687,6 +749,7 @@ fn read_descriptor(path: &Path) -> Result<ControlDescriptor, ControlError> {
 
 fn validate_descriptor(descriptor: &ControlDescriptor) -> Result<(), ControlError> {
     if descriptor.version == 0
+        || descriptor.process_id == 0
         || descriptor.token.len() != 64
         || !descriptor
             .token
@@ -775,6 +838,7 @@ mod tests {
     fn descriptor_debug_redacts_token() {
         let descriptor = ControlDescriptor {
             version: CONTROL_PROTOCOL_VERSION,
+            process_id: 1,
             endpoint: "local_endpoint".to_string(),
             token: "a".repeat(64),
         };
@@ -822,6 +886,7 @@ mod tests {
         let descriptor_path = temp.path().join(DESCRIPTOR_FILE_NAME);
         let owner = ControlDescriptor {
             version: CONTROL_PROTOCOL_VERSION,
+            process_id: 1,
             endpoint: endpoint_name(temp.path()),
             token: "a".repeat(64),
         };
@@ -849,6 +914,7 @@ mod tests {
         let descriptor_path = temp.path().join(DESCRIPTOR_FILE_NAME);
         let owner = ControlDescriptor {
             version: CONTROL_PROTOCOL_VERSION,
+            process_id: 1,
             endpoint: socket_path.to_string_lossy().into_owned(),
             token: "a".repeat(64),
         };
@@ -924,6 +990,7 @@ mod tests {
         };
         let health = client.health().await.expect("health response");
         assert!(health.healthy);
+        assert_eq!(health.process_id, std::process::id());
 
         let mut wrong_token = client.clone();
         wrong_token.descriptor.token = "f".repeat(64);

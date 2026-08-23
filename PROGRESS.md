@@ -390,10 +390,11 @@ Scope:
 - [x] Atomic state + event transactions.
 - [x] Idempotency keys, sequence ordering, projections, and replay foundation.
 - [x] Dedicated daemon writer worker with bounded queue and explicit backpressure.
-- [ ] On-demand user-mode `vibemuxd` process and CLI bootstrap.
+- [x] On-demand user-mode `vibemuxd` process and CLI bootstrap.
 - [x] Authenticated Windows named-pipe and POSIX Unix-domain-socket control transport library.
-- [ ] CLI start/query/stop wiring over local IPC.
+- [x] CLI start/query/stop wiring over local IPC.
 - [x] Daemon writer-core lifecycle, exclusive lock, health, and graceful shutdown.
+- [ ] Explicit stale-instance inspect/recover workflow and Windows same-user ACL hardening.
 
 Exit criteria:
 
@@ -1301,17 +1302,17 @@ Acceptance gate:
 - Malformed, oversized, unauthenticated, and version-mismatched input cannot reach writer dispatch.
 
 **Remaining**
-- Add the standalone on-demand `vibemuxd` binary plus CLI start/query/stop and stale-instance reconciliation.
-- Add process-boundary crash/restart, abrupt termination, descriptor recovery, and Windows ACL-hardening tests.
+- Add an explicit inspect/recover command with process-identity proof before stale descriptor/lock removal.
+- Add Windows hostile same-user ACL hardening and process-boundary recovery tests.
 - Expose state mutation only after authorization, compatibility, cancellation, and bounded concurrency contracts are accepted.
 
 ### 2026-08-24 — M3 standalone daemon process and CLI plan
 
-**Planning status:** `APPROVED FOR IMPLEMENTATION`
+**Planning status:** `IMPLEMENTED — PROCESS AND LIFECYCLE CLI SLICE`
 
 Architecture and migration boundaries:
 
-- `vibemuxd` is an unprivileged foreground binary internally; `vibemuxctl daemon start` is responsible for shell-free background launch and readiness polling.
+- `vibemuxd` is an unprivileged foreground binary internally; `vibemuxctl daemon start` is responsible for controlled background launch and readiness polling.
 - All paths derive from one canonical project root. Rust writes `.vibemux/vibemux_rust.sqlite3`; the Python reference database `.vibemux/vibemux.sqlite3` is never opened by this slice.
 - `vibemuxctl` remains a pre-alpha lifecycle client and does not replace the installed Python `vibemux` executable.
 - A valid authenticated health response is the readiness authority. PID and descriptor existence are diagnostics only.
@@ -1319,15 +1320,15 @@ Architecture and migration boundaries:
 
 Acceptance gate:
 
-- [ ] A real `vibemuxd` child publishes authenticated IPC health, remains alive after its launcher releases the child handle, accepts shutdown, exits successfully, and removes owned descriptor/socket/writer lock artifacts.
-- [ ] `vibemuxctl daemon start`, `health`, and `stop` work against the real child using argv only and emit bounded JSON without path, endpoint, token, prompt, or raw OS-error content.
-- [ ] A second start returns `already_running`; it does not create a second authoritative writer.
-- [ ] Simultaneous starts converge on one healthy daemon through the exclusive writer lock.
-- [ ] Invalid/stale descriptor and lock-only states return stable fail-closed errors and are not automatically modified.
-- [ ] Startup timeout terminates and reaps only the exact child launched by that call.
-- [ ] An existing Python `vibemux.sqlite3` sentinel remains byte-identical while Rust creates and uses only `vibemux_rust.sqlite3`.
-- [ ] Windows launch uses a hidden new process group; POSIX launch uses a separate process group. Neither path invokes a shell.
-- [ ] Windows named-pipe and Linux-container UDS process tests pass on MSRV-compatible Rust; workspace Rust and Python regressions remain green.
+- [x] A real `vibemuxd` child publishes authenticated IPC health, remains alive after its launcher releases the child handle, accepts shutdown, exits successfully, and removes owned descriptor/socket/writer lock artifacts.
+- [x] `vibemuxctl daemon start`, `health`, and `stop` work against the real child using controlled argv and emit bounded JSON without path, endpoint, token, prompt, or raw OS-error content.
+- [x] A second start returns `already_running`; it does not create a second authoritative writer.
+- [x] Simultaneous starts converge on one healthy daemon through the exclusive writer lock.
+- [x] Invalid/stale descriptor and lock-only states return stable fail-closed errors and are not automatically modified.
+- [x] Startup timeout terminates and reaps only the exact child launched by that call.
+- [x] An existing Python `vibemux.sqlite3` sentinel remains byte-identical while Rust creates and uses only `vibemux_rust.sqlite3`.
+- [x] Windows launch uses a hidden new process group plus a fixed companion with no user-code interpolation; POSIX uses direct argv and a separate process group.
+- [x] Windows named-pipe and Linux-container UDS process tests pass on MSRV-compatible Rust; workspace Rust and Python regressions remain green.
 
 Implementation order:
 
@@ -1342,3 +1343,42 @@ Non-goals for this slice:
 - Python database migration or command-parity cutover.
 - Automatic stale-artifact deletion or PID-based recovery.
 - State mutation, plugin supervision, A2A routing, terminal ownership, autostart, or a privileged system service.
+
+### 2026-08-24 — M3 standalone daemon and lifecycle CLI implementation
+
+**Status change**
+- M3 remains `PARTIAL`: normal on-demand process lifecycle is implemented, while explicit stale recovery and Windows hostile same-user isolation remain release gates.
+
+**Implemented**
+- Added canonical `DaemonPaths` rooted at one existing project directory. The Rust process uses `.vibemux/vibemux_rust.sqlite3`; Python remains on `.vibemux/vibemux.sqlite3`.
+- Rejected runtime-directory symlinks and Rust database symlink/hardlink aliases to the Python database before the process opens SQLite.
+- Added the foreground `vibemuxd` binary, waitable control-server lifecycle, process ID in authenticated health, and process-boundary normal/abrupt-exit tests.
+- Added the `vibemux_cli` crate and pre-alpha `vibemuxctl daemon start|health|stop`. Outputs contain only allowlisted status, PID, schema, queue, and healthy fields.
+- Added bounded startup/health/shutdown polling, second-start convergence, stale descriptor/lock diagnosis, and a test-only hanging executable proving timeout termination.
+- Added a Windows system-PowerShell companion encoded from fixed project source. Paths cross only as environment values; stdin accepts only `release`/`terminate`. `ProcessStartInfo` retains the exact child handle and hidden launch semantics.
+- Kept POSIX launch direct and shell-free with null stdio plus a separate process group.
+
+**Root-cause repair**
+- A direct Windows `std::process::Command` child retained an unrelated captured-stdout handle, so `vibemuxctl daemon start | ConvertFrom-Json` did not receive EOF until daemon shutdown.
+- The fixed companion launches the daemon through hidden `ProcessStartInfo`/`ShellExecute`, holds the exact process until authenticated health, and then releases it. The original captured pipeline now returns immediately while the daemon remains healthy.
+- Companion PID read, release, and terminate paths have independent deadlines; readiness timing no longer depends on an unbounded helper read.
+
+**Evidence**
+- Windows Rust 1.85.0 MSRV and stable 1.97.0: full workspace 59 tests passed on each; workspace Clippy with `-D warnings` passed on each.
+- Linux Docker Rust 1.85.1: 29 current-tree `vibemuxd`/`vibemux_cli` tests passed, including real UDS processes, POSIX process groups, symlink/hardlink rejection, abrupt exit, and timeout termination.
+- Windows real CLI pipeline: start -> health -> second start -> stop completed in one captured PowerShell command with one consistent PID and statuses `started`, `running`, `already_running`, `stopped`.
+- Windows simultaneous two-client start: both returned successfully against one PID; exactly one reported `started` and one `already_running`.
+- Abrupt process termination preserved descriptor and writer lock byte-for-byte; a replacement daemon failed closed without changing either artifact.
+- Windows release benchmark, existing Rust database, 1 warmup + 20 samples: start-to-authenticated-health p50 `355.38 ms`, p95 `383.31 ms`, max `403.25 ms`; stop p95 `57.40 ms`.
+- Windows release benchmark, 10 fresh project databases: start-to-authenticated-health p50 `369.73 ms`, p95/max `385.14 ms`. Both workloads meet the `< 500 ms` cold-start budget; no speculative optimization was applied.
+- Python reference: 27 pytest tests passed; Ruff lint/format and mypy passed.
+
+**Security and migration impact**
+- Neither lifecycle binary accepts a public database override, and process/CLI JSON omits paths, endpoint, token, prompt, message, and raw OS errors.
+- Startup kills only the process represented by the exact child/companion handle it created. Existing PIDs and stale artifacts are never modified automatically.
+- The Windows companion source is fixed and base64-encoded only for transport to system PowerShell; no user value is concatenated into executable code.
+
+**Remaining**
+- Implement read-only stale inspection with descriptor/lock ownership evidence, then a separately authorized recovery operation.
+- Harden Windows named-pipe/descriptor ACLs against hostile same-user access before release claims.
+- Keep Task/Run mutation out of lifecycle IPC until authorization and compatibility gates are accepted.

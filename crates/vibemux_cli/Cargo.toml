@@ -1,0 +1,32 @@
+[package]
+name = "vibemux_cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+test_helpers = []
+
+[[bin]]
+name = "vibemuxctl"
+path = "src/main.rs"
+
+[[bin]]
+name = "vibemux_hang_fixture"
+path = "src/bin/vibemux_hang_fixture.rs"
+required-features = ["test_helpers"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+vibemuxd = { path = "../vibemuxd" }
+
+[target.'cfg(windows)'.dependencies]
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

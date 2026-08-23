@@ -19,11 +19,31 @@ vibemux doctor
 
 `Task/Run/Event` 是与终端无关的领域模型。`TerminalBackend` 只管理 pane；`ExecutionBackend` 描述命令在哪个 runtime 执行；`HarnessAdapter` 生成受控 argv。用户消息永远不进入 shell 字符串，事件只记录内容 hash/大小。
 
-当前实现包含 Mock、WezTerm command adapter、tmux adapter、Native/POSIX 兼容建模、Git worktree、SQLite append-only event log、safe diff/stop/cleanup 基础和离线 mock harness。ACP/A2A/MCP、ConPTY、scheduler、daemon、自动 merge/push 均明确不在 MVP。
+当前实现包含 Mock、WezTerm command adapter、tmux adapter、Native/POSIX 兼容建模、Git worktree、SQLite append-only event log、safe diff/stop/cleanup 基础、离线 mock harness，以及pre-alpha Rust daemon生命周期。ACP/MCP、ConPTY、scheduler、自动 merge/push与完整远程A2A仍未实现。
 
 ## Rust 核心迁移
 
-Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2A 功能。Rust 2024 workspace 已实现与平台无关的 typed IDs、Task/Run 状态机、canonical event envelope、SQLite store、dedicated single-writer worker、authenticated Windows named-pipe/POSIX UDS control transport library，以及一个仅限本地 loopback 的 A2A v1 HTTP+JSON information-share验证切片；Python CLI仍是当前可运行入口，standalone Rust daemon进程与CLI bootstrap、plugin host、terminal/workspace parity、stateful/remote A2A与 conformance尚未实现。权威里程碑与验证边界见 [PROGRESS.md](PROGRESS.md)。
+Python `99d1f8e` 是当前行为参考，不再承接新的 orchestration 或 A2A 功能。Rust 2024 workspace 已实现与平台无关的 typed IDs、Task/Run 状态机、canonical event envelope、SQLite store、dedicated single-writer worker、authenticated Windows named-pipe/POSIX UDS control transport、standalone `vibemuxd`与pre-alpha `vibemuxctl`生命周期，以及一个仅限本地 loopback 的 A2A v1 HTTP+JSON information-share验证切片；Python CLI仍是当前完整入口，Rust command parity/database migration、plugin host、terminal/workspace parity、stateful/remote A2A与 conformance尚未实现。权威里程碑与验证边界见 [PROGRESS.md](PROGRESS.md)。
+
+## Rust daemon 生命周期预览
+
+迁移期间 Rust 只写 `.vibemux/vibemux_rust.sqlite3`，不会打开 Python 的 `.vibemux/vibemux.sqlite3`。`vibemuxctl`不会覆盖已安装的 Python `vibemux`命令：
+
+```powershell
+cargo build -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl
+.\target\debug\vibemuxctl.exe daemon start --project-root .
+.\target\debug\vibemuxctl.exe daemon health --project-root .
+.\target\debug\vibemuxctl.exe daemon stop --project-root .
+```
+
+`start`以authenticated IPC health而非PID作为ready依据。stale descriptor/lock会fail closed，不会自动删除文件或终止未知进程。
+
+release启动性能可用固定脚本复测；脚本会拒绝已有daemon descriptor的项目：
+
+```powershell
+cargo build --release -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl
+.\scripts\benchmark_daemon_start.ps1 -project_root C:\path\to\test_project -sample_count 20
+```
 
 ## Mock workflow
 

@@ -25,6 +25,7 @@ pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
 pub mod control;
+pub mod process;
 
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -105,7 +106,7 @@ struct LifecycleLock {
 
 impl LifecycleLock {
     fn acquire(database_path: &Path) -> Result<Self, WriterError> {
-        let path = writer_lock_path(database_path);
+        let path = writer_lock_path_for_database(database_path);
         let nonce = lock_nonce();
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
@@ -381,7 +382,8 @@ fn store_error(code: &str) -> WriterError {
     }
 }
 
-fn writer_lock_path(database_path: &Path) -> PathBuf {
+#[must_use]
+pub fn writer_lock_path_for_database(database_path: &Path) -> PathBuf {
     let file_name = database_path
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -453,7 +455,7 @@ mod tests {
             json!("open")
         );
         worker.shutdown().expect("shutdown");
-        assert!(!writer_lock_path(&database).exists());
+        assert!(!writer_lock_path_for_database(&database).exists());
     }
 
     #[test]
@@ -492,7 +494,7 @@ mod tests {
             WriterWorker::start_with_config(&database, 0, DEFAULT_RESPONSE_TIMEOUT),
             Err(WriterError::InvalidCapacity)
         ));
-        assert!(!writer_lock_path(&database).exists());
+        assert!(!writer_lock_path_for_database(&database).exists());
     }
 
     #[test]

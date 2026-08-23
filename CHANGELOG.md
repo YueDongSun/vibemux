@@ -13,6 +13,7 @@
 - 增加 Rust `vibemux_probe` 与 `vibemux_frontend`：固定化 agent/gateway/A2A只读探测、统一 Ratatui dashboard和五个 native-TUI reserved slots。
 - 增加 Rust `vibemuxd::WriterWorker`：独占 lifecycle lock、dedicated SQLite owner、bounded queue、backpressure、health与 graceful shutdown核心。
 - 增加 Rust authenticated local control transport：Windows named pipe、POSIX UDS、versioned bounded framing、OS随机token、health/shutdown与owner-safe runtime cleanup。
+- 增加 standalone `vibemuxd` 与pre-alpha `vibemuxctl`：on-demand start/health/stop、迁移隔离数据库、stale fail-closed和跨平台process lifecycle验证。
 
 ## 0.1.0a0
 
