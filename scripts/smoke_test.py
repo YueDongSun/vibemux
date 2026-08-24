@@ -28,9 +28,18 @@ def main() -> int:
         env = dict(__import__("os").environ, PYTHONPATH=str(root / "src"))
         cli = [sys.executable, "-m", "vibemux.cli"]
         subprocess.run([*cli, "init", "--terminal-backend", "mock"], cwd=repo, env=env, check=True)
-        task_result = subprocess.run([*cli, "task", "smoke"], cwd=repo, env=env, text=True, capture_output=True, check=True)
+        task_result = subprocess.run(
+            [*cli, "task", "smoke"], cwd=repo, env=env, text=True, capture_output=True, check=True
+        )
         task = task_result.stdout.strip()
-        spawn_result = subprocess.run([*cli, "spawn", task, "--terminal-backend", "mock"], cwd=repo, env=env, text=True, capture_output=True, check=False)
+        spawn_result = subprocess.run(
+            [*cli, "spawn", task, "--terminal-backend", "mock"],
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
         if spawn_result.returncode:
             raise RuntimeError(spawn_result.stderr or spawn_result.stdout)
         run_id = spawn_result.stdout.strip()

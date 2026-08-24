@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "observed_at_epoch_seconds": 1,
+  "platform": "windows",
+  "agents": [
+    {
+      "agent": "claude",
+      "launcher_state": "verified",
+      "authentication_state": "not_run",
+      "inference_state": "not_run",
+      "launcher": "direct_executable",
+      "version": "fixture-version",
+      "route": "local_gateway",
+      "endpoints": [
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 15721,
+          "path": "/"
+        }
+      ],
+      "code": "version_verified"
+    }
+  ],
+  "gateway": {
+    "state": "verified",
+    "host": "127.0.0.1",
+    "port": 15721,
+    "tcp_reachable": true,
+    "health_status": 200,
+    "telemetry_state": "verified",
+    "telemetry": [
+      {
+        "app_type": "claude",
+        "requests": 1,
+        "failures": 0,
+        "latest_epoch_seconds": 1
+      }
+    ],
+    "code": "gateway_verified"
+  },
+  "a2a": {
+    "state": "verified",
+    "correlation_preserved": true,
+    "listener_closed": true,
+    "code": "a2a_self_test_verified"
+  }
+}

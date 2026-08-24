@@ -1,0 +1,18 @@
+[package]
+name = "vibemux_store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+vibemux_events = { path = "../vibemux_events" }
+vibemux_types = { path = "../vibemux_types" }
+
+[dev-dependencies]
+tempfile.workspace = true
+time.workspace = true

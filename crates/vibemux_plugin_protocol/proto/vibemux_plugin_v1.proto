@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package vibemux.plugin.v1;
+
+enum PluginKind {
+  PLUGIN_KIND_UNSPECIFIED = 0;
+  PLUGIN_KIND_HARNESS = 1;
+  PLUGIN_KIND_TERMINAL = 2;
+  PLUGIN_KIND_SANDBOX = 3;
+  PLUGIN_KIND_INTEGRATION = 4;
+  PLUGIN_KIND_UI = 5;
+  PLUGIN_KIND_REPORTER = 6;
+  PLUGIN_KIND_POLICY = 7;
+}
+
+enum ResponseStatus {
+  RESPONSE_STATUS_UNSPECIFIED = 0;
+  RESPONSE_STATUS_OK = 1;
+  RESPONSE_STATUS_ERROR = 2;
+  RESPONSE_STATUS_CANCELLED = 3;
+  RESPONSE_STATUS_OVERLOADED = 4;
+}
+
+message Envelope {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  string message_id = 3;
+  optional string correlation_id = 4;
+  optional string causation_id = 5;
+
+  oneof body {
+    Hello hello = 10;
+    CoreHello core_hello = 11;
+    Ready ready = 12;
+    Request request = 13;
+    Response response = 14;
+    Event event = 15;
+    Heartbeat heartbeat = 16;
+    Cancel cancel = 17;
+    Drain drain = 18;
+    Shutdown shutdown = 19;
+    ProtocolError protocol_error = 20;
+  }
+}
+
+message Hello {
+  string plugin_id = 1;
+  string plugin_version = 2;
+  PluginKind kind = 3;
+  repeated string capabilities = 4;
+  repeated string requested_permissions = 5;
+  uint32 minimum_protocol_minor = 6;
+  uint32 maximum_protocol_minor = 7;
+}
+
+message CoreHello {
+  string session_id = 1;
+  uint32 accepted_protocol_minor = 2;
+  repeated string granted_capabilities = 3;
+  repeated string granted_permissions = 4;
+  uint32 maximum_frame_bytes = 5;
+  uint32 maximum_in_flight = 6;
+  uint64 heartbeat_interval_ms = 7;
+}
+
+message Ready {
+  string session_id = 1;
+}
+
+message Request {
+  string request_id = 1;
+  string method = 2;
+  bytes payload = 3;
+  uint64 deadline_unix_ms = 4;
+  optional string idempotency_key = 5;
+}
+
+message Response {
+  string request_id = 1;
+  ResponseStatus status = 2;
+  bytes payload = 3;
+  optional string error_code = 4;
+}
+
+message Event {
+  string event_id = 1;
+  string event_type = 2;
+  bytes payload = 3;
+}
+
+message Heartbeat {
+  uint64 sequence = 1;
+}
+
+message Cancel {
+  string request_id = 1;
+  string reason_code = 2;
+}
+
+message Drain {
+  uint64 deadline_unix_ms = 1;
+}
+
+message Shutdown {
+  string reason_code = 1;
+}
+
+message ProtocolError {
+  string code = 1;
+  optional string related_message_id = 2;
+}

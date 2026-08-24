@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_id": "10000000-0000-4000-8000-000000000001",
+  "sequence": 1,
+  "event_type": "task_created",
+  "project_id": "20000000-0000-4000-8000-000000000001",
+  "task_id": "30000000-0000-4000-8000-000000000001",
+  "run_id": null,
+  "causation_id": null,
+  "actor": "system",
+  "timestamp": "2026-08-23T12:00:00Z",
+  "idempotency_key": "fixture_task_1",
+  "payload": {
+    "title_sha256": "2a97516c354b68848cdbd8f54a226a0a55b21ed138e207ad6c5cbb9c00aa5aea",
+    "title_bytes": 4
+  }
+}

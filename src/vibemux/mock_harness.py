@@ -21,7 +21,11 @@ def main() -> int:
             print(argument, flush=True)
         elif command == "WRITE":
             target = (cwd / argument).resolve()
-            if Path(argument).is_absolute() or ".." in Path(argument).parts or os.path.commonpath([str(target), str(cwd)]) != str(cwd):
+            if (
+                Path(argument).is_absolute()
+                or ".." in Path(argument).parts
+                or os.path.commonpath([str(target), str(cwd)]) != str(cwd)
+            ):
                 print("ERROR unsafe path", flush=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -36,4 +40,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

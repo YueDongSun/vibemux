@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import platform
 import shutil
 import sys
 from dataclasses import dataclass
@@ -10,6 +13,18 @@ from pathlib import Path
 from typing import Protocol
 
 from .errors import HarnessConfigurationError, HarnessNotFoundError
+
+AGENT_HOST_MODULE = "vibemux.agent_host"
+WINDOWS_DIRECT_SUFFIXES = (".exe", ".com")
+WINDOWS_SCRIPT_SUFFIXES = (".cmd", ".bat", ".ps1")
+POWERSHELL_SCRIPT_ARGS = (
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+)
 
 
 class HarnessProtocol(StrEnum):
@@ -54,6 +69,20 @@ class LaunchSpec:
     def as_command(self) -> list[str]:
         return [self.executable, *self.args]
 
+    def as_host_command(self) -> list[str]:
+        return [
+            sys.executable,
+            "-m",
+            AGENT_HOST_MODULE,
+            "--cwd",
+            str(self.cwd),
+            "--environment-json",
+            json.dumps(self.environment, ensure_ascii=True, separators=(",", ":")),
+            "--",
+            self.executable,
+            *self.args,
+        ]
+
 
 class HarnessAdapter(Protocol):
     def probe(self, profile: HarnessProfile) -> HarnessCapabilities: ...
@@ -63,19 +92,71 @@ class HarnessAdapter(Protocol):
 
 class GenericCommandAdapter:
     def probe(self, profile: HarnessProfile) -> HarnessCapabilities:
-        path = shutil.which(profile.command[0]) if profile.command else None
-        return HarnessCapabilities(path is not None, False, False, False, path)
+        try:
+            self.validate_profile(profile)
+            resolved = self._locate_command(profile.command[0])
+            if resolved is None:
+                return HarnessCapabilities(False, False, False, False, None)
+            executable, args = self._resolve_command(profile, resolved)
+        except HarnessConfigurationError:
+            return HarnessCapabilities(False, False, False, False, None)
+        path = (
+            args[len(POWERSHELL_SCRIPT_ARGS)] if self._is_powershell_wrapper(args) else executable
+        )
+        return HarnessCapabilities(True, False, False, False, path)
 
     def validate_profile(self, profile: HarnessProfile) -> None:
-        if not profile.command or any(not isinstance(part, str) or "\x00" in part for part in profile.command):
+        if not profile.command or any(
+            not isinstance(part, str) or "\x00" in part for part in profile.command
+        ):
             raise HarnessConfigurationError("harness command must be a non-empty safe argv tuple")
-        if profile.command[0].lower().endswith((".cmd", ".bat")):
-            raise HarnessConfigurationError("batch launchers require an explicit controlled wrapper")
 
     def build_launch_spec(self, profile: HarnessProfile, context: LaunchContext) -> LaunchSpec:
         self.validate_profile(profile)
-        executable = shutil.which(profile.command[0]) or profile.command[0]
-        return LaunchSpec(executable, tuple(profile.command[1:]), context.cwd, {"VIBEMUX_RUN_ID": context.run_id})
+        executable, args = self._resolve_command(profile)
+        return LaunchSpec(executable, args, context.cwd, {"VIBEMUX_RUN_ID": context.run_id})
+
+    def _resolve_command(
+        self,
+        profile: HarnessProfile,
+        resolved: str | None = None,
+    ) -> tuple[str, tuple[str, ...]]:
+        resolved = resolved or self._locate_command(profile.command[0]) or profile.command[0]
+        suffix = Path(resolved).suffix.lower()
+        if platform.system() != "Windows" or suffix not in WINDOWS_SCRIPT_SUFFIXES:
+            return resolved, tuple(profile.command[1:])
+        script = Path(resolved) if suffix == ".ps1" else Path(resolved).with_suffix(".ps1")
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not script.is_file() or powershell is None:
+            raise HarnessConfigurationError(
+                "Windows script launcher has no controlled PowerShell wrapper"
+            )
+        return powershell, (*POWERSHELL_SCRIPT_ARGS, str(script), *profile.command[1:])
+
+    @classmethod
+    def _locate_command(cls, command: str) -> str | None:
+        direct = (
+            cls._find_direct_windows_executable(command) if platform.system() == "Windows" else None
+        )
+        return direct or shutil.which(command)
+
+    @staticmethod
+    def _find_direct_windows_executable(command: str) -> str | None:
+        command_path = Path(command)
+        if command_path.suffix.lower() in WINDOWS_DIRECT_SUFFIXES:
+            return str(command_path) if command_path.is_file() else None
+        if command_path.parent != Path("."):
+            return None
+        for directory in os.get_exec_path():
+            for suffix in WINDOWS_DIRECT_SUFFIXES:
+                candidate = Path(directory) / f"{command}{suffix}"
+                if candidate.is_file():
+                    return str(candidate)
+        return None
+
+    @staticmethod
+    def _is_powershell_wrapper(args: tuple[str, ...]) -> bool:
+        return args[: len(POWERSHELL_SCRIPT_ARGS)] == POWERSHELL_SCRIPT_ARGS
 
 
 class MockHarnessAdapter(GenericCommandAdapter):
@@ -83,7 +164,12 @@ class MockHarnessAdapter(GenericCommandAdapter):
         return HarnessCapabilities(True, True, False, False, sys.executable)
 
     def build_launch_spec(self, profile: HarnessProfile, context: LaunchContext) -> LaunchSpec:
-        return LaunchSpec(sys.executable, ("-m", "vibemux.mock_harness"), context.cwd, {"VIBEMUX_RUN_ID": context.run_id})
+        return LaunchSpec(
+            sys.executable,
+            ("-m", "vibemux.mock_harness"),
+            context.cwd,
+            {"VIBEMUX_RUN_ID": context.run_id},
+        )
 
 
 DEFAULT_PROFILES = {
