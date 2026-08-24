@@ -14,13 +14,15 @@
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
 | Audited branch | `main` |
-| Audited commit | `99d1f8ebcf9e25248eb2af1eb6d64b530e51f848` |
-| Package version | `0.1.0a0` |
+| Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
+| Python package version | `0.1.0a0` |
+| Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
-| Current implementation | Python 3.12 executable prototype |
-| Target core implementation | Rust 2024 edition |
-| Current maturity | Executable architecture skeleton; **not yet a functional multi-harness alpha** |
-| Current release posture | Pre-alpha; no stability or compatibility guarantee |
+| Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, loopback-only A2A information-share, read-only probe/frontend shell, plugin protocol v1 foundation, and isolated plugin process supervisor |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle only |
+| Current maturity | M3 is `VERIFIED`; M4.0 and M4.1 are verified within their isolated scope; **not yet a functional multi-harness alpha** |
+| Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
 ### Status vocabulary
 
@@ -60,7 +62,7 @@ VibeMux is a Windows-first, local-first coordination environment for multiple co
 - A custom model runtime.
 - Kubernetes or distributed consensus.
 - In-process third-party native plugins.
-- Automatic merge to the user’s primary branch.
+- Automatic merge to the user's primary branch.
 - Treating Git worktrees as a security sandbox.
 - Storing full prompts or secrets in the default audit log.
 - Maintaining two independent state writers during the Python-to-Rust transition.
@@ -71,16 +73,23 @@ VibeMux is a Windows-first, local-first coordination environment for multiple co
 
 ### 3.1 Decision
 
-The final orchestration and A2A data path will be implemented as a long-lived **Rust core**. Optional and vendor-specific functionality will run as **out-of-process plugins**.
+The accepted authoritative architecture is a long-lived **Rust core** with optional and vendor-specific functionality running as **out-of-process plugins**.
+
+The migration is already in progress rather than merely planned:
+
+- M2 domain/event foundations exist in Rust.
+- M3 persistence, single-writer daemon, authenticated local IPC, lifecycle, stale recovery, and the declared Windows control-runtime boundary are implemented and verified within scope.
+- M4.0 protocol and M4.1 process-supervisor foundations are implemented as isolated crates.
+- Full command parity, Python-to-Rust state migration/cutover, daemon-owned plugin registry/control integration, Rust workspace/terminal parity, real vendor plugins, and stateful/remote A2A remain incomplete.
 
 The current Python implementation remains valuable as:
 
-- a behavior prototype;
-- a compatibility oracle for CLI and state semantics;
-- a temporary implementation while Rust parity is built;
+- the current complete prototype CLI;
+- a behavior and compatibility reference;
+- a source of parity fixtures;
 - a future Python plugin SDK and integration host.
 
-It must not continue growing into the authoritative A2A router, event broker, scheduler, or state writer.
+Python must not receive new authoritative orchestration, A2A routing, event-broker, scheduler, or public plugin behavior. It must also not become a concurrent writer to the Rust database.
 
 ### 3.2 Process topology
 
@@ -173,115 +182,148 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 
 | Area | Status | Current evidence | Assessment |
 |---|---|---|---|
-| Python package and Typer CLI | `PARTIAL` | `pyproject.toml`, `src/vibemux/cli.py` | Installable command skeleton exists; command surface is much smaller than the intended product contract |
-| Windows-first declaration | `PARTIAL` | README, platform docs, CI matrix | Goal is explicit, but live Windows/WezTerm validation is not yet demonstrated |
-| Domain models | `PARTIAL` | `models.py` | Task, Run, Event, TerminalLocation exist; lifecycle and fields are not sufficient for replay or review gates |
-| SQLite persistence | `PARTIAL` | `storage.py` | State and events are persisted; migrations, WAL policy, richer IDs, and safe update semantics are incomplete |
-| Git worktree manager | `PARTIAL` | `workspace.py` | Worktree creation and dirty cleanup refusal exist; base-commit and artifact semantics are incorrect/incomplete |
-| Path safety helper | `PARTIAL` | `paths.py` | Common-path checks exist; Windows junction/reparse and Git ownership validation need full coverage |
-| Terminal abstraction | `PARTIAL` | `terminal.py` | Mock, WezTerm, and tmux classes exist; project/task/run topology and ownership are incomplete |
-| Harness profiles | `PARTIAL` | `harness.py` | Generic profiles and a mock adapter exist; no structured real-harness adapter exists |
-| Canonical event log concept | `PARTIAL` | Event dataclass and SQLite event table | Events exist, but naming, correlation, migrations, replay projections, and invariants are incomplete |
-| Spawn orchestration | `PARTIAL` | `RunService.spawn` | Basic worktree → terminal flow exists; no complete saga/compensation behavior |
-| Reconciliation | `PLANNED` | Error type and design text | `status` currently lists records but does not reconcile terminal/worktree reality |
-| Safe cleanup CLI | `PLANNED` | `WorkspaceManager.cleanup` helper | No complete immutable cleanup plan or CLI workflow |
-| Tests | `PARTIAL` | one `test_core.py`, mock smoke | Core concepts are smoke-tested; security, integration, migration, platform, and live backend coverage are missing |
-| CI | `PARTIAL` | Windows/Ubuntu matrix | Runs pytest, ruff, and mock smoke; no mypy, coverage gate, package build, Rust, TCK, or live backend gate |
-| Rust workspace | `PLANNED` | none | Not started |
-| Core daemon | `PLANNED` | current ADR rejects daemon for MVP | Must be introduced and the old decision superseded for the A2A/plugin architecture |
-| Plugin protocol/host | `PLANNED` | none | Not started |
-| A2A gateway | `PLANNED` | protocol mentioned only in docs | Not started |
-| ACP/RPC/stream-json adapters | `PLANNED` | enum values only | Not started |
-| Scheduler, artifacts, review gates | `PLANNED` | none | Not started |
+| Python package and Typer CLI | `PARTIAL` | `pyproject.toml`, `src/vibemux/`, Python reference fixtures | The current complete prototype workflow remains runnable; original P0 correctness fixes are implemented, but Python is not the future authoritative core |
+| Windows-first product path | `PARTIAL` | README, platform docs, Windows CI, protected control runtime | Native daemon lifecycle and the declared ACL boundary have evidence; live WezTerm/ConPTY multi-harness operation is not implemented |
+| Rust workspace and canonical domain/event core | `PARTIAL` | root `Cargo.toml`, `vibemux_types`, `vibemux_events` | Rust 2024/MSRV workspace, typed IDs, state machines, events, and property tests exist; tracing and public compatibility policy remain incomplete |
+| Rust SQLite store and single-writer daemon | `VERIFIED` | `vibemux_store`, `vibemuxd`, `vibemux_cli`, `vibemux_platform` | M3 is implemented within scope: migrations/WAL, atomic state+event, replay/idempotency, bounded writer, authenticated IPC, lifecycle, explicit recovery, and Windows protected runtime |
+| Rust CLI | `PARTIAL` | `vibemuxctl daemon start|health|inspect|recover|stop` | Lifecycle commands exist; Task/Run/workspace/plugin command parity does not |
+| Plugin protocol v1 foundation | `VERIFIED` | `vibemux_plugin_protocol`, checked-in Protobuf/TOML fixtures | M4.0 is verified as an isolated private pre-alpha wire/manifest/negotiation/lifecycle foundation; it does not spawn or mutate state |
+| Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
+| Daemon-owned plugin registry and control plane | `PLANNED` | `vibemuxd` does not depend on `vibemux_plugin_supervisor` | No registry, status/control API, restart budget/quarantine, real plugin loading, or Task/Run mutation integration exists |
+| A2A adapter | `PARTIAL — LOOPBACK ONLY` | `vibemux_a2a` | Only a bounded local-loopback HTTP+JSON information-share slice is verified; stateful/remote A2A, authentication, streaming, other transports, TCK, and ITK remain absent |
+| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection and reserved Ratatui slots exist; real PTY/ConPTY attachment and native-TUI lifecycle do not |
+| Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
+| Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
+| Rust terminal plugins and native-TUI attachment | `PLANNED` | no terminal plugin/ConPTY implementation | Mock/WezTerm/tmux plugin parity and ownership are not implemented |
+| Structured vendor harness plugins | `PLANNED` | mock fixture only | No OpenCode/Claude/Copilot/Pi/Grok/Gemini production adapter is integrated |
+| Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
+| Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
+| Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
 
 ### 4.2 Strengths worth preserving
 
-1. The repository already states that Windows is the primary product platform.
-2. `TerminalLocation` is backend-neutral rather than hard-coded to tmux.
-3. User text is sent to WezTerm through stdin rather than interpolated into a shell string.
-4. Worktrees are treated as collaboration isolation rather than a security sandbox.
-5. Events are modeled separately from terminal output.
-6. Cleanup refuses a dirty worktree in the current helper.
-7. The project is already Apache-2.0 and organized as an open-source repository.
-8. The initial commit is small enough that architectural correction is still inexpensive.
+1. Windows remains the primary product platform, and the Rust daemon has a verified current-user control-runtime boundary.
+2. The Python prototype remains runnable and has versioned behavior fixtures instead of being deleted during migration.
+3. Domain, event, store, daemon, platform, A2A, protocol, supervisor, probe, and frontend responsibilities are separated into Rust crates.
+4. Python and Rust use separate databases, preventing an accidental dual-writer cutover.
+5. Plugin framing, queues, deadlines, cancellation, stderr handling, and child lifecycle are bounded and fail closed in the implemented foundations.
+6. Plugin protocol and supervisor crates cannot directly mutate canonical Task/Run state or SQLite.
+7. A2A, probe, and frontend slices are explicitly non-authoritative and do not silently become state writers.
+8. PR #1 head passed the configured Windows/Ubuntu Python and Rust CI jobs.
 
 ### 4.3 Critical defects and technical debt
 
-#### P0 — must be resolved before adding real harnesses
+#### Resolved P0 — Python behavior-reference safety baseline
 
-- [x] **Persist the actual base commit for every Run.**
-  `Run` currently does not store `base_commit`; `RunService.diff` reconstructs a record with `"HEAD"`, while `WorkspaceManager.diff` only runs a working-tree diff. Committed agent changes and replay semantics are therefore not represented correctly.
+- [x] **Persisted the actual base commit and implemented authoritative Run diffs.**
+  `Run.base_commit` is persisted; diff covers committed, staged, unstaged, and untracked changes relative to that commit.
 
-- [x] **Introduce one injected command runner.**
-  Git, WezTerm, and tmux currently call `subprocess.run` directly. This prevents reliable contract testing, centralized redaction, deadline handling, process-group policy, and Windows launcher control.
+- [x] **Introduced one injected, shell-free command runner.**
+  Git, WezTerm, tmux, and harness-host paths use controlled argv/stdin boundaries.
 
-- [x] **Remove shell-mediated tmux launch construction.**
-  The current tmux backend converts an argv array to one command string. A controlled cross-platform agent host must receive a validated launch spec and spawn the harness with `shell=false`.
+- [x] **Removed shell-mediated tmux target construction.**
+  The controlled agent host receives validated argv and launches with `shell=false`.
 
-- [x] **Implement complete spawn compensation.**
-  If terminal creation fails after a worktree is created, the current flow marks the Run failed but does not reliably unwind the worktree, branch, launch spec, or terminal resources.
+- [x] **Added plan-first spawn compensation.**
+  Owned terminal/worktree resources are stopped or removed only after safety revalidation, and outcomes are recorded.
 
-- [x] **Stop fabricating missing mock panes.**
-  The mock backend currently recreates a pane record during `send_text`, masking stale-resource behavior. Mock state must be persisted or run inside an actual supervised process.
+- [x] **Persisted mock terminal inventory and rejected unknown panes.**
+  Cross-process mock state no longer fabricates missing resources and does not persist message content.
 
-- [x] **Implement terminal resource ownership.**
-  A pane ID alone is insufficient. Stop/send/activate must verify project workspace, task container, run identity, backend, and recorded ownership before operating.
+- [x] **Validated terminal resource ownership before operations.**
+  Project, backend, Run identity, workspace, cwd, and pane inventory are checked before send/stop.
 
-- [x] **Implement reconciliation before real concurrency.**
-  The system must detect missing panes, missing worktrees, unknown resources, backend outages, and mismatched ownership without treating any of them as task success.
+- [x] **Reconciled missing or mismatched resources.**
+  Affected running Runs become `STALE`; terminal/worktree evidence never implies success.
 
-- [x] **Eliminate automatic success semantics from PTY runs.**
-  `RunStatus.SUCCEEDED` must not be reachable from process exit or terminal evidence. Completion requires a structured adapter event or explicit verifier/user transition.
+- [x] **Required explicit Run completion authority.**
+  Only a structured adapter, verifier, or user transition may produce `SUCCEEDED`.
 
-#### P1 — required for Rust-core parity
+These defects are resolved in the current Python reference. Remaining work is Rust parity, integration, and cutover, not continued present-tense description of the old bugs.
+
+#### P1 — active parity, migration, and platform work
+
+Completed foundations:
+
+- [x] Python schema migration history, WAL, busy timeout, and atomic Task/Run save-plus-event paths.
+- [x] Python immutable cleanup plans, spawn compensation, ownership, reconciliation, and compatibility fixtures.
+- [x] Rust migrations/WAL, atomic state+event, idempotency, projections/replay, and single-writer daemon lifecycle.
+- [x] Rust authenticated local IPC and explicit stale-runtime recovery.
+
+Remaining:
 
 - [ ] Replace `INSERT OR REPLACE` state writes with explicit insert/update operations.
-- [ ] Add migration history, schema versioning, WAL, busy timeout, and transaction tests.
-- [ ] Add `updated_at`, `stopped_at`, `failure_code`, `base_commit`, `correlation_id`, `causation_id`, and idempotency fields.
-- [ ] Make every state transition and corresponding event one atomic transaction.
-- [ ] Expand task lifecycle to include review, verified, merged, failed, and cancelled semantics.
-- [ ] Implement project → task → run topology for WezTerm workspace/window/tab/pane.
-- [ ] Implement project → task → run topology for tmux session/window/pane.
-- [ ] Replace process-local mock state with a real testable mock plugin and mock terminal inventory.
-- [ ] Add immutable cleanup plans and fail-closed execution.
-- [ ] Add task/run show, list, filters, manual transitions, trace filters, and JSON output contracts.
+- [ ] Add failure-injection transaction tests for every remaining Python state/event path.
+- [ ] Complete persisted domain fields and lifecycle semantics needed for review, verification, merge, failure, cancellation, correlation, and causation.
+- [ ] Add Rust Task/Run control API and machine-readable CLI parity.
+- [ ] Design and test Python-to-Rust state migration, exclusive cutover, rollback, and version compatibility.
+- [ ] Implement Rust Git worktree lifecycle, diff, cleanup, artifacts, ownership, and reconciliation.
+- [ ] Implement mock, WezTerm, tmux, and Windows ConPTY terminal plugins.
 - [ ] Add Windows path tests for drive letters, case folding, spaces, Unicode, junctions, reparse points, and cross-drive refusal.
-- [ ] Add package build, mypy, coverage, security, integration, and platform jobs to CI.
-- [ ] Split the current monolithic Python modules before freezing them as the reference implementation.
+- [ ] Replace the Python mock runtime path with a daemon-supervised mock plugin before claiming Rust end-to-end parity.
+- [ ] Enforce mypy, Ruff format, package build, coverage, security, integration, and live platform gates in CI.
 
 #### P2 — required before public plugin API
 
-- [ ] Versioned plugin manifest and protocol schema.
-- [ ] Capability negotiation and permission model.
-- [ ] Heartbeat, deadlines, cancellation, crash recovery, and restart policy.
+Implemented private foundations:
+
+- [x] Versioned Protobuf plugin schema, bounded framing, and validated TOML manifest.
+- [x] Capability, permission, platform, and protocol negotiation.
+- [x] Session-bound handshake/lifecycle validation.
+- [x] Shell-free child spawn, clean environment, bounded queues, deadlines, heartbeat, cancellation, stderr cap, graceful shutdown, and crash containment.
+- [x] Contract fixtures, malformed-input tests, and cross-platform real-process tests.
+
+Remaining:
+
+- [ ] Daemon-owned plugin registry and authoritative plugin lifecycle state.
+- [ ] Authenticated plugin list/status/start/stop control API with bounded concurrency and redacted diagnostics.
+- [ ] Restart budget, exponential backoff, quarantine, and operator-controlled recovery.
 - [ ] Plugin SDKs for Rust and Python.
-- [ ] Protocol compatibility matrix.
-- [ ] A2A conformance and cross-language integration tests.
-- [ ] Structured telemetry with secret redaction.
-- [ ] Artifact store and content-addressed references.
-- [ ] Deterministic scheduler contract and conflict prediction input schema.
+- [ ] Public compatibility policy, previous-version fixtures, and version matrix.
+- [ ] Coverage-guided fuzz targets for framing, manifests, negotiation, and lifecycle transitions.
+- [ ] Daemon-owned mock plugins and compatibility tests for each intended plugin kind.
+- [ ] Real vendor plugins only after M4.2/M5 integration gates pass.
+- [ ] Sandbox enforcement and external-endpoint permission brokers.
 
 ---
 
-## 5. Repository Target Layout
+## 5. Current Repository Layout and Remaining Target Additions
+
+### 5.1 Current `main`
 
 ```text
 vibemux/
 ├── Cargo.toml
 ├── rust-toolchain.toml
 ├── crates/
-│   ├── vibemux-types/          # IDs, domain objects, state machines
-│   ├── vibemux-events/         # canonical envelopes, projections, idempotency
-│   ├── vibemux-store/          # SQLite migrations and repositories
-│   ├── vibemux-plugin-api/     # generated protocol types and manifest model
-│   ├── vibemux-plugin-host/    # process supervision, handshake, routing
-│   ├── vibemux-a2a/            # official SDK adapter and A2A mappings
-│   ├── vibemux-workspace/      # Git worktrees and artifacts
-│   ├── vibemux-platform/       # Windows/POSIX process and IPC primitives
+│   ├── vibemux_types/          # IDs, domain objects, state machines
+│   ├── vibemux_events/         # canonical envelopes and invariants
+│   ├── vibemux_store/          # SQLite migrations and repositories
+│   ├── vibemux_platform/       # Windows/POSIX process and IPC primitives
+│   ├── vibemux_a2a/            # official SDK adapter; loopback slice only
+│   ├── vibemux_probe/          # read-only launcher/gateway probes
+│   ├── vibemux_frontend/       # Ratatui shell with reserved native-TUI slots
+│   ├── vibemux_plugin_protocol/
+│   │   └── proto/vibemux_plugin_v1.proto
+│   ├── vibemux_plugin_supervisor/
 │   ├── vibemuxd/               # long-lived local core
-│   └── vibemux-cli/            # thin CLI client and daemon bootstrap
-├── proto/
-│   └── plugin/v1/plugin.proto
+│   └── vibemux_cli/             # thin lifecycle client and daemon bootstrap
+├── src/vibemux/                 # Python behavior-reference package
+├── tests/                       # Python tests and fixtures
+├── scripts/                     # smoke and benchmark scripts
+├── docs/                        # architecture, ADRs, boundaries, and labs
+├── AGENTS.md
+└── PROGRESS.md
+```
+
+The root `Cargo.toml` is authoritative for current workspace membership.
+
+### 5.2 Planned additions
+
+```text
+vibemux/
+├── crates/
+│   └── vibemux_workspace/       # Rust Git worktrees, artifacts, cleanup
 ├── plugins/
 │   ├── terminal-wezterm/
 │   ├── terminal-tmux/
@@ -290,21 +332,16 @@ vibemux/
 ├── sdk/
 │   ├── python/
 │   └── rust/
-├── python/
-│   └── prototype/              # frozen initial implementation during migration
 ├── tests/
 │   ├── contract/
 │   ├── integration/
 │   ├── conformance/
 │   ├── fixtures/
 │   └── performance/
-├── benches/
-├── docs/
-├── AGENTS.md
-└── PROGRESS.md
+└── benches/
 ```
 
-This layout is a target, not permission to perform a single destructive rewrite. Migration must preserve a runnable branch and pass parity tests at each step.
+Planned paths are not implemented claims or permission for a destructive rewrite. Migration must preserve a runnable branch and pass parity tests at each step.
 
 ---
 
@@ -322,16 +359,16 @@ Scope:
 - [x] Add this `PROGRESS.md`.
 - [x] Replace the current minimal `AGENTS.md`.
 - [x] Add ADR: Rust core and out-of-process plugins.
-- [x] Add ADR: supersede “no daemon in MVP”.
+- [x] Add ADR: supersede "no daemon in MVP".
 - [x] Add ADR: plugin wire protocol and compatibility policy.
-- [ ] Create issues for every P0 item.
+- [ ] Create issues with named owners for the remaining M4.2, M5, CI-hardening, migration, and P1/P2 work.
 
 Exit criteria:
 
 - Architecture decisions are explicit.
 - Current claims match current evidence.
 - No contributor can mistake the Python prototype for the final core.
-- P0 defects have owners and acceptance tests.
+- Remaining integration and migration risks have owners and acceptance tests.
 
 ### M1 — Freeze and stabilize the Python behavior reference
 
@@ -339,12 +376,12 @@ Exit criteria:
 
 Scope:
 
-- [ ] Split command runner, domain, storage, workspace, terminal, harness, and services.
+- [x] Split command runner, domain, storage, workspace, terminal, harness, and services.
 - [x] Persist `base_commit` and correct diff semantics.
-- [ ] Add migrations and atomic transition/event tests.
+- [x] Add schema migrations, WAL/busy-timeout configuration, and atomic state/event foundations.
 - [x] Implement reconciliation and immutable cleanup plan.
 - [ ] Replace fake mock persistence with a supervised mock process.
-- [ ] Add platform and security test suites.
+- [ ] Add complete failure-injection, live-backend, and Windows path-edge suites.
 - [x] Record stable JSON fixtures for domain, events, cleanup, terminal inventory, and send receipts.
 
 Exit criteria:
@@ -415,8 +452,11 @@ Scope:
 - [x] Manifest, handshake, capabilities, permissions, and version negotiation foundation.
 - [x] Bounded request/event channel foundation with observable backpressure.
 - [x] Handshake/receive/shutdown deadlines, cancellation, heartbeat, and crash-reporting foundation.
+- [ ] Daemon-owned plugin registry and authoritative lifecycle state.
+- [ ] Authenticated plugin status/control API.
+- [ ] Restart budget, backoff, quarantine, and operator recovery.
+- [ ] Daemon-owned mock manifests and plugins.
 - [ ] Rust and Python plugin SDKs.
-- [ ] Mock plugins for every plugin kind.
 - [x] Contract fixtures and property tests for framing and malformed input.
 - [ ] Coverage-guided fuzz targets.
 
@@ -430,7 +470,7 @@ Exit criteria:
 
 #### M4.0 — Protocol, manifest, and handshake foundation
 
-**Planning status:** `IMPLEMENTED — ISOLATED PROTOCOL FOUNDATION`
+**Slice status:** `VERIFIED — ISOLATED PROTOCOL FOUNDATION`
 
 Acceptance gate:
 
@@ -489,13 +529,13 @@ Non-goals for M4.0:
 
 #### M4.1 — Process supervisor foundation plan
 
-**Planning status:** `IMPLEMENTED — ISOLATED PROCESS SUPERVISOR FOUNDATION`
+**Slice status:** `VERIFIED — ISOLATED PROCESS SUPERVISOR FOUNDATION`
 
 Acceptance gate:
 
 - [x] A resolved canonical executable + argv launch spec spawns without a shell, clears inherited environment, applies only bounded explicit variables, and uses a separate process group/no visible Windows console.
 - [x] Real mock-plugin stdin/stdout completes Hello/CoreHello/session-bound Ready and echo traffic over the M4.0 codec on Windows and Linux.
-- [x] Handshake timeout, malformed stdout, invalid transition, oversized frame and early exit terminate/quarantine only that child and return stable errors.
+- [x] Handshake timeout, malformed stdout, invalid transition, oversized frame, and early exit terminate only that child and return stable errors.
 - [x] Bounded outbound/inbound channels expose queue-full backpressure and never use an unbounded buffer.
 - [x] Stderr flood is drained independently; only bounded byte-count/truncation metadata crosses the supervisor API and stdout framing remains valid.
 - [x] Heartbeat sequence/freshness, receive deadlines and explicit Cancel messages are observable with deterministic tests.
@@ -566,34 +606,6 @@ Exit criteria:
 - Cleanup is plan-first and fail-closed.
 - Live Windows WezTerm and WSL/Linux tmux smoke tests are documented and repeatable.
 - No terminal evidence changes Task to completed.
-
-### M6 — Structured harness plugins
-
-**Status:** `PLANNED`
-
-Implementation order:
-
-1. OpenCode ACP or Gemini ACP.
-2. Pi RPC.
-3. Claude stream-json / Agent SDK subprocess protocol.
-4. Copilot ACP.
-5. Grok structured/headless protocol.
-6. Generic PTY fallback.
-
-Scope:
-
-- [ ] Per-harness capability probes.
-- [ ] Session create/resume/cancel/approval mappings where supported.
-- [ ] Canonical event normalization.
-- [ ] PTY fallback capability downgrade.
-- [ ] Adapter contract tests and fixture replay.
-
-Exit criteria:
-
-- At least two structured harnesses can run concurrently.
-- Approval and cancellation are not inferred from terminal text.
-- PTY runs are visibly marked as reduced-reliability.
-- Harness version changes are caught by contract tests.
 
 #### M5.0 — Read-only probe and unified frontend shell
 
@@ -671,6 +683,34 @@ Rollback:
 
 - Both crates are non-authoritative and have no daemon consumer in this slice.
 - If live probing or terminal rendering cannot remain read-only and bounded, keep the ADR and tests, remove the unsafe path, and leave M5.0 `PLANNED`.
+
+### M6 — Structured harness plugins
+
+**Status:** `PLANNED`
+
+Implementation order:
+
+1. OpenCode ACP or Gemini ACP.
+2. Pi RPC.
+3. Claude stream-json / Agent SDK subprocess protocol.
+4. Copilot ACP.
+5. Grok structured/headless protocol.
+6. Generic PTY fallback.
+
+Scope:
+
+- [ ] Per-harness capability probes.
+- [ ] Session create/resume/cancel/approval mappings where supported.
+- [ ] Canonical event normalization.
+- [ ] PTY fallback capability downgrade.
+- [ ] Adapter contract tests and fixture replay.
+
+Exit criteria:
+
+- At least two structured harnesses can run concurrently.
+- Approval and cancellation are not inferred from terminal text.
+- PTY runs are visibly marked as reduced-reliability.
+- Harness version changes are caught by contract tests.
 
 ### M7 — A2A core gateway
 
@@ -854,18 +894,18 @@ Entry condition:
 
 The next implementation work should follow this order:
 
-1. **Merge `PROGRESS.md` and the replacement `AGENTS.md`.**
-2. **Create ADR-013:** Rust core daemon and out-of-process plugin architecture; supersede ADR-011.
-3. **Create ADR-014:** plugin protocol v1, framing, compatibility, and permission model.
-4. **Open one issue per P0 defect.**
-5. **Fix and test base-commit/diff semantics in the Python prototype.**
-6. **Introduce the injected command runner and controlled agent host.**
-7. **Implement spawn compensation and reconciliation.**
-8. **Freeze Python behavior fixtures.**
-9. **Bootstrap the Rust workspace without deleting Python.**
-10. **Implement canonical Rust state machines before any A2A endpoint.**
+1. Open issues for M4.2, M5, CI hardening, and migration, each with an explicit owner and acceptance gate.
+2. Implement the daemon-owned plugin registry.
+3. Add an authenticated plugin status/control API.
+4. Implement restart budgets, bounded backoff, quarantine, and operator recovery.
+5. Add daemon-owned mock manifests and plugins.
+6. Add protocol compatibility fixtures and fuzz gates.
+7. Implement Rust workspace/worktree parity.
+8. Implement terminal plugins in the order mock, WezTerm/ConPTY, then tmux.
+9. Add real vendor harness plugins only after the M4.2 and M5 gates pass.
+10. Perform Python-to-Rust state cutover and stateful/remote A2A only after the preceding ownership, migration, and conformance gates pass.
 
-Do not begin real harness integration or A2A routing before steps 1–8 are complete. Otherwise defects in lifecycle, ownership, and state semantics will be replicated into the new core.
+Do not infer daemon integration from the isolated M4.0/M4.1 foundations, and do not begin real vendor integration before the mock, registry, restart, workspace, and terminal boundaries are verified together.
 
 ---
 
@@ -1062,7 +1102,7 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Implemented**
 - Replaced the minimal repository guidance with the Rust-core, single-writer, and out-of-process plugin rules.
 - Added the evidence-based migration plan and accepted ADRs 013 through 015.
-- Recorded commit `99d1f8ebcf9e25248eb2af1eb6d64b530e51f848` as the Python behavior-reference source snapshot.
+- Recorded commit `99d1f8ebcf9e25248eb2af1eb6d64b530e51f848` as the original Python audit baseline.
 
 **Evidence**
 - baseline tests: `python -m pytest` -> 6 passed
@@ -1638,3 +1678,18 @@ Non-goals:
 
 **Next milestone**
 - Begin M4 plugin protocol/supervisor work. Task/Run mutation remains absent from lifecycle IPC until M4 authorization, compatibility, bounded-channel and cancellation contracts are accepted.
+
+### 2026-08-24 — Post-PR #1 documentation reconciliation
+
+**Status reconciliation**
+
+- Updated the audited implementation baseline to PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341`. The earlier `99d1f8e` commit remains only the original Python audit baseline.
+- Recorded Python package version `0.1.0a0`, Rust workspace version `0.2.0-alpha.0`, Rust edition 2024, and MSRV 1.85.
+- Reconciled the current overview with the later evidence ledger: M3 is `VERIFIED`; M4 remains `PARTIAL`; M4.0 protocol and M4.1 process-supervisor foundations are verified only within their isolated scopes.
+- Recorded PR #1 head GitHub Actions run #8 as successful for the configured Windows/Ubuntu Python and Rust jobs. This does not imply that nextest, deny, audit, fuzz, or live-backend gates ran.
+- Confirmed that `vibemuxd` does not depend on `vibemux_plugin_supervisor`; daemon-owned plugin registry/control integration, restart budget/quarantine, and real vendor plugins remain unimplemented.
+- Replaced the obsolete execution order with M4.2 daemon integration and M5 workspace/terminal parity as the next implementation priorities.
+
+**Impact**
+
+- Documentation only. No runtime, SQLite schema, plugin wire protocol, A2A behavior, or CLI behavior changed in this reconciliation.
