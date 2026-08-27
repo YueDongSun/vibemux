@@ -13,13 +13,13 @@
 |---|---|
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
-| Audited branch | `main` |
-| Audited commit | `99d1f8ebcf9e25248eb2af1eb6d64b530e51f848` |
-| Package version | `0.1.0a0` |
+| Audited branch | `codex/harness_request_dispatch` |
+| Integration baseline | `6498e6aa711f751d9f9e50e37034d61c17d4b341`; current delivery is the commit containing this document |
+| Package version | Rust `0.2.0-alpha.1`; Python reference `0.1.0a0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
-| Current implementation | Python 3.12 executable prototype |
+| Current implementation | Rust core, common CLI, read-only TUI, and harness dispatch; Python 3.12 reference CLI |
 | Target core implementation | Rust 2024 edition |
-| Current maturity | Executable architecture skeleton; **not yet a functional multi-harness alpha** |
+| Current maturity | Bounded local harness slice; daemon Task/Run and remote A2A execution remain unbound |
 | Current release posture | Pre-alpha; no stability or compatibility guarantee |
 
 ### Status vocabulary
@@ -34,6 +34,67 @@
 | `REMOVED` | Previously present behavior that has been deliberately retired |
 
 Progress is evidence-based. A feature is not `VERIFIED` merely because a class, command, or document exists.
+
+### M4.3 Unified CLI and Workspace Layout (2026-08-28)
+
+- `vibemuxctl` now groups daemon, harness, probe, status, workspace, and UI
+  commands. Legacy daemon exports/JSON and standalone binaries are retained.
+- CLI parsing, lifecycle I/O, application orchestration, Git inventory, and
+  output formatting are separate modules. Frontend model, navigation,
+  rendering, and terminal ownership are also separate.
+- The CLI and frontend share a bounded saved-report validation/redaction
+  boundary in `vibemux_probe::snapshot`. Saved data is labeled, endpoint details
+  are omitted, and control characters cannot become terminal instructions.
+- The UI has Overview, Harnesses, and Workspace sections with bounded
+  selection, help, and offline snapshots. It does not launch native TUIs,
+  approve tools, start daemons, or invoke models through key presses.
+- Guides, workflow policy, dated reports, and harness examples have distinct
+  directories. Existing worktree locations and historical branches are
+  preserved; build caches are ignored rather than deleted.
+- Rust package version advances to `0.2.0-alpha.1`; no database, A2A, or plugin
+  wire version changes. See [ADR 024](docs/adr/024_unified_cli_and_workspace_layout.md)
+  and the [unified CLI guide](docs/guides/unified_cli_guide.md).
+- Final Windows validation: 160 Rust tests, 30 Python tests, Clippy, formatting,
+  Mypy, mock smoke, and the public-artifact scan passed. Actual offline terminal
+  sessions covered navigation, 80 x 24 layout, source labels, and normal exit.
+  Git filter side effects are disabled and explicitly qualified in the output.
+  [Current evidence](docs/reports/workspace_cli_validation_20260828.md) records
+  the environment corrections, independent review, Git state, and limits.
+- Nextest, cargo-deny, and cargo-audit are not installed locally; their declared
+  additional gates remain unverified. Secondary-remote synchronization could
+  not be refreshed. These limits are not release-gate waivers.
+
+The M4.2 evidence below is a historical snapshot. New local checks and any
+unavailable tooling gates are recorded separately for M4.3; neither slice
+claims Linux qualification, production deployment, or model-generation success.
+
+### M4.2 Local Harness Slice (2026-08-27)
+
+- Added typed text requests, complete JSON record retention, native protocol
+  sessions, clean environment launch, and a bounded dispatcher using M4.1.
+- Added independent terminal-evidence checks, configuration-digest binding,
+  duplicate/resource admission, cancellation-aware backpressure, and default
+  content-free reports. No canonical database contract changed.
+- Focused Windows verification: 37 Rust tests passed, including five synthetic
+  native routes and malformed/forged/blocked/cancelled cases.
+- Live initialization plus clean exit passed: Codex 0.149.1, Claude 2.1.224,
+  OpenCode 1.18.21, and Copilot 1.0.75. Grok 0.2.114 received two JSON records but
+  failed the shutdown deadline; that route remains live-unverified.
+- Real model generation was not authorized or executed. No Linux run, remote
+  A2A task, deployment, commit, or publication is claimed for this slice.
+- The public `origin/main` and secondary `linux/main` differ; feature-ref and
+  language evidence is in [the branch inventory](docs/reports/branch_inventory_20260827.md).
+
+The next implementation boundary is a loopback A2A task through daemon-owned
+admission and the single writer. Details and non-goals are in
+[ADR 023](docs/adr/023_harness_request_dispatch.md). The separate
+[learning path](docs/guides/a2a_implementation_learning_path.md) is not an automatic
+execution or deployment plan.
+
+Final local regression: 140 Rust workspace tests and 30 Python tests passed,
+along with Clippy, formatting, mock smoke, and the public-artifact gate.
+Exact commands and live qualification boundaries are recorded in the
+[validation record](docs/reports/harness_validation_20260827.md).
 
 ---
 

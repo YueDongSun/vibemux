@@ -1,5 +1,7 @@
 # Architecture
 
+## Python Reference Baseline
+
 ```text
 PowerShell / CLI / Future TUI
              |
@@ -50,4 +52,24 @@ Windows control metadata现位于`%LOCALAPPDATA%\VibeMux\runtime\<domain-separat
 
 `vibemux_plugin_protocol`是独立M4 wire边界：checked-in Protobuf schema经pinned Prost/vendored protoc生成；stdin/stdout frame使用四字节大端长度与固定上限。manifest只保存argv、kind、platform、capability和requested permission；core negotiation只授予manifest/Hello/core policy交集。当前只完成codec与状态机，不spawn child、不读取stderr、不依赖数据库，也不把opaque payload映射成Task/Run mutation。
 
-`vibemux_plugin_supervisor`在协议之上拥有一个child：canonical executable/cwd、argv、clean environment、Windows hidden process group/POSIX process group、bounded stdin/stdout channels和独立stderr drain。握手、receive与shutdown有deadline；queue full、heartbeat、cancel、drain、exit/crash都结构化。当前registry/restart/quarantine尚未接入`vibemuxd`，也没有真实vendor plugin或canonical-state mutation。
+`vibemux_plugin_supervisor` owns a child with canonical launch paths, explicit
+argv/environment, bounded channels, and independent stderr draining. Handshake,
+receive, cancellation, drain, and shutdown have explicit bounds. Registry,
+restart, quarantine, and canonical-state mutation remain outside the daemon's
+current integration.
+
+## Structured Harness Slice
+
+`vibemux_harness` now supplies a standalone vendor plugin and dispatcher over
+that supervisor. Native JSON framing, conservative observations, protocol
+correlation, and OS process ownership are separate modules. Complete vendor
+stdout records remain in bounded private memory; public reports contain only
+metadata. The dispatcher revalidates terminal evidence and configuration
+identity without writing canonical Task/Run state.
+
+See [ADR 023](adr/023_harness_request_dispatch.md) for the trust boundary,
+[the core guide](guides/harness_core_guide.md) for commands and live limits, and
+[the A2A learning path](guides/a2a_implementation_learning_path.md) for the proposed
+daemon-owned task binding. The separate protocol version namespaces must not
+be conflated: the existing A2A adapter pins wire version `1.0`, ACP uses integer
+`1`, and the internal plugin envelope and request schema have their own versions.

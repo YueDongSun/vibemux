@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Read-only local agent, gateway, and A2A diagnostics.
 
+pub mod snapshot;
+
 use std::{
     collections::BTreeSet,
     env,

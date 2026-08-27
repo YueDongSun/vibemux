@@ -2565,7 +2565,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vibemux_a2a"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "a2a-client-lf",
  "a2a-lf",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_cli"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "base64",
  "serde",
@@ -2593,12 +2593,15 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "vibemux_frontend",
+ "vibemux_harness",
+ "vibemux_probe",
  "vibemuxd",
 ]
 
 [[package]]
 name = "vibemux_events"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2610,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_frontend"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "crossterm",
  "ratatui",
@@ -2619,8 +2622,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibemux_harness"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "vibemux_plugin_protocol",
+ "vibemux_plugin_supervisor",
+]
+
+[[package]]
 name = "vibemux_platform"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "base64",
  "tempfile",
@@ -2629,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_plugin_protocol"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "proptest",
  "prost",
@@ -2645,7 +2662,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_plugin_supervisor"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "serde",
  "tempfile",
@@ -2656,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_probe"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "reqwest",
  "rusqlite",
@@ -2672,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_store"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -2685,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "vibemux_types"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "proptest",
  "serde",
@@ -2696,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "vibemuxd"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 dependencies = [
  "getrandom 0.4.3",
  "same-file",

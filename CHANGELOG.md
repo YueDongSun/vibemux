@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Rust 0.2.0-alpha.1
+
+- Add bounded native harness dispatch with private full JSON capture and safe public summaries.
+- Unify daemon, harness, probe, workspace, status, and UI commands under `vibemuxctl`.
+- Preserve daemon APIs and standalone command compatibility; add terminal text and explicit JSON output.
+- Add navigable, responsive read-only TUI sections and deterministic offline snapshots.
+- Separate parser, lifecycle, orchestration, diagnostic snapshot, model, and rendering modules.
+- Group guides, workflow documentation, historical reports, and harness examples.
+- Add current-tree privacy checks and reject unsafe saved-report/display data.
+
+### Earlier Pre-alpha Work
+
 - 持久化 Run base commit，并修复 committed/staged/unstaged/untracked diff 语义。
 - 为 Git、terminal 和 harness host 引入 injected shell-free CommandRunner。
 - 增加 SQLite forward migration 与受控 Windows PowerShell companion launcher。

@@ -1,147 +1,101 @@
-use serde_json::json;
-use vibemux_cli::{
-    CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome, daemon_executable,
-    daemon_health, daemon_paths, parse_cli_arguments,
-    recovery::{inspect_runtime, recover_runtime},
-    start_daemon, stop_daemon,
+use std::{
+    ffi::OsString,
+    io::{self, IsTerminal, Write},
 };
-use vibemuxd::control::DaemonHealth;
+use vibemux_cli::{
+    application::{self, Outcome},
+    command::{self, Format},
+    failure::Failure,
+    output,
+};
 
 const EXIT_USAGE: i32 = 2;
 const EXIT_RUNTIME: i32 = 4;
 
 #[tokio::main]
 async fn main() {
-    let result = match parse_cli_arguments(std::env::args_os().skip(1)) {
-        Ok(CliCommand::Help) => {
-            print_help();
-            return;
-        }
-        Ok(CliCommand::Version) => {
-            println!(env!("CARGO_PKG_VERSION"));
-            return;
-        }
-        Ok(command) => run(command).await,
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let terminal = io::stdout().is_terminal();
+    let invocation = match command::parse(arguments.iter().cloned()) {
+        Ok(invocation) => invocation,
         Err(error) => {
-            emit_error(&error);
+            let format = requested_format(&arguments, terminal);
+            write_text(&output::error_text(&error, format), true);
             std::process::exit(EXIT_USAGE);
         }
     };
-    match result {
-        Ok(output) => println!("{output}"),
+    let format = output::resolve(invocation.format, terminal);
+    let result = application::run(invocation.command, format).await;
+    let exit_code = match result {
+        Ok(Outcome::Text(text)) => {
+            if write_text(&text, false) {
+                0
+            } else {
+                EXIT_RUNTIME
+            }
+        }
+        Ok(Outcome::Interactive) => 0,
+        Ok(Outcome::Data {
+            kind,
+            body,
+            success,
+        }) => match output::report(kind, &body, format) {
+            Ok(text) => {
+                if write_text(&text, false) && success {
+                    0
+                } else {
+                    EXIT_RUNTIME
+                }
+            }
+            Err(error) => {
+                write_text(&output::error_text(&error, format), true);
+                EXIT_RUNTIME
+            }
+        },
         Err(error) => {
-            emit_error(&error);
-            std::process::exit(EXIT_RUNTIME);
+            write_text(&output::error_text(&error, format), true);
+            EXIT_RUNTIME
         }
+    };
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 }
 
-async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
-    match command {
-        CliCommand::DaemonStart {
-            project_root,
-            daemon_executable: explicit_executable,
-        } => {
-            let paths = daemon_paths(project_root.as_deref())?;
-            let executable = daemon_executable(explicit_executable.as_deref())?;
-            let outcome = start_daemon(&DaemonBootstrapConfig::new(paths, executable)).await?;
-            let status = match &outcome {
-                DaemonStartOutcome::Started(_) => "started",
-                DaemonStartOutcome::AlreadyRunning(_) => "already_running",
-            };
-            Ok(health_json(status, outcome.health()))
+fn requested_format(arguments: &[OsString], terminal: bool) -> Format {
+    let format = if arguments.first().is_some_and(|value| value == "--json") {
+        Format::Json
+    } else if arguments.first().is_some_and(|value| value == "--format") {
+        match arguments.get(1).and_then(|value| value.to_str()) {
+            Some("json") => Format::Json,
+            Some("text") => Format::Text,
+            _ => Format::Auto,
         }
-        CliCommand::DaemonHealth { project_root } => {
-            let paths = daemon_paths(project_root.as_deref())?;
-            let health = daemon_health(&paths).await?;
-            Ok(health_json("running", &health))
-        }
-        CliCommand::DaemonStop { project_root } => {
-            let paths = daemon_paths(project_root.as_deref())?;
-            let health = stop_daemon(&paths).await?;
-            Ok(json!({
-                "ok": true,
-                "status": "stopped",
-                "process_id": health.process_id,
-            }))
-        }
-        CliCommand::DaemonInspect { project_root } => {
-            let paths = daemon_paths(project_root.as_deref())?;
-            let inspection = inspect_runtime(&paths).await?;
-            serde_json::to_value(inspection).map_err(|_| DaemonCliError::Control {
-                code: "cli_output_encoding_failed".to_string(),
-            })
-        }
-        CliCommand::DaemonRecover {
-            project_root,
-            confirmation,
-        } => {
-            let paths = daemon_paths(project_root.as_deref())?;
-            let outcome = recover_runtime(&paths, &confirmation).await?;
-            serde_json::to_value(outcome).map_err(|_| DaemonCliError::Control {
-                code: "cli_output_encoding_failed".to_string(),
-            })
-        }
-        CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
-    }
+    } else {
+        Format::Auto
+    };
+    output::resolve(format, terminal)
 }
 
-fn health_json(status: &str, health: &DaemonHealth) -> serde_json::Value {
-    json!({
-        "ok": true,
-        "status": status,
-        "healthy": health.healthy,
-        "process_id": health.process_id,
-        "store_schema_version": health.store_schema_version,
-        "queue_capacity": health.queue_capacity,
-    })
-}
-
-fn emit_error(error: &DaemonCliError) {
-    eprintln!("{}", json!({"ok": false, "error_code": error.code()}));
-}
-
-fn print_help() {
-    println!(
-        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]"
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn health_output_contains_only_allowlisted_non_secret_fields() {
-        let output = health_json(
-            "running",
-            &DaemonHealth {
-                healthy: true,
-                process_id: 42,
-                store_schema_version: 1,
-                queue_capacity: 64,
-            },
-        );
-        let keys = output
-            .as_object()
-            .expect("health output object")
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            keys,
-            std::collections::BTreeSet::from([
-                "healthy",
-                "ok",
-                "process_id",
-                "queue_capacity",
-                "status",
-                "store_schema_version",
-            ])
-        );
-        let encoded = output.to_string();
-        for forbidden in ["token", "endpoint", "database", "project_root", "prompt"] {
-            assert!(!encoded.contains(forbidden));
+fn write_text(text: &str, error: bool) -> bool {
+    let mut stream: Box<dyn Write> = if error {
+        Box::new(io::stderr())
+    } else {
+        Box::new(io::stdout())
+    };
+    let result = stream.write_all(text.as_bytes()).and_then(|_| {
+        if text.ends_with('\n') {
+            Ok(())
+        } else {
+            stream.write_all(b"\n")
+        }
+    });
+    match result {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => true,
+        Err(_) => {
+            let _ = writeln!(io::stderr(), "{}", Failure::new("cli_output_failed"));
+            false
         }
     }
 }

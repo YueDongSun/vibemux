@@ -1,297 +1,20 @@
 #![forbid(unsafe_code)]
-//! Unified read-only dashboard model and Ratatui renderer.
-
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
-};
-use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeTuiSlotState {
-    Reserved,
-    Unavailable,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeTuiSlot {
-    pub agent: AgentKind,
-    pub title: String,
-    pub state: NativeTuiSlotState,
-    pub reason: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AgentView {
-    pub name: String,
-    pub launcher_state: String,
-    pub authentication_state: String,
-    pub inference_state: String,
-    pub version: String,
-    pub route: String,
-    pub code: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DashboardModel {
-    pub title: String,
-    pub platform: String,
-    pub agents: Vec<AgentView>,
-    pub gateway_summary: String,
-    pub telemetry_summary: String,
-    pub a2a_summary: String,
-    pub native_tui_slots: Vec<NativeTuiSlot>,
-}
-
-impl DashboardModel {
-    #[must_use]
-    pub fn from_report(report: &ProbeReport) -> Self {
-        let agents = report
-            .agents
-            .iter()
-            .map(|probe| AgentView {
-                name: probe.agent.display_name().to_string(),
-                launcher_state: state_label(probe.launcher_state).to_string(),
-                authentication_state: state_label(probe.authentication_state).to_string(),
-                inference_state: state_label(probe.inference_state).to_string(),
-                version: probe.version.clone().unwrap_or_else(|| "-".to_string()),
-                route: route_label(probe.route).to_string(),
-                code: probe.code.clone(),
-            })
-            .collect();
-        let native_tui_slots = AgentKind::all()
-            .into_iter()
-            .map(|agent| {
-                let available = report
-                    .agents
-                    .iter()
-                    .find(|probe| probe.agent == agent)
-                    .is_some_and(|probe| probe.launcher_state == ProbeState::Verified);
-                NativeTuiSlot {
-                    agent,
-                    title: format!("{} native TUI", agent.display_name()),
-                    state: if available {
-                        NativeTuiSlotState::Reserved
-                    } else {
-                        NativeTuiSlotState::Unavailable
-                    },
-                    reason: if available {
-                        "reserved for supervised PTY/ConPTY attach".to_string()
-                    } else {
-                        "launcher unavailable or version probe failed".to_string()
-                    },
-                }
-            })
-            .collect();
-        let telemetry_summary = if report.gateway.telemetry.is_empty() {
-            "telemetry unavailable".to_string()
-        } else {
-            report
-                .gateway
-                .telemetry
-                .iter()
-                .map(|item| {
-                    format!(
-                        "{}:{} req/{} fail",
-                        item.app_type, item.requests, item.failures
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" | ")
-        };
-        Self {
-            title: "VibeMux Unified Frontend".to_string(),
-            platform: report.platform.clone(),
-            agents,
-            gateway_summary: format!(
-                "{}:{} {} health={}",
-                report.gateway.host,
-                report.gateway.port,
-                state_label(report.gateway.state),
-                report
-                    .gateway
-                    .health_status
-                    .map_or_else(|| "-".to_string(), |status| status.to_string())
-            ),
-            telemetry_summary,
-            a2a_summary: format!(
-                "{} correlation={} listener_closed={}",
-                state_label(report.a2a.state),
-                report.a2a.correlation_preserved,
-                report.a2a.listener_closed
-            ),
-            native_tui_slots,
-        }
-    }
-
-    #[must_use]
-    pub fn plain_snapshot(&self) -> String {
-        let mut lines = vec![
-            self.title.clone(),
-            format!("platform: {}", self.platform),
-            format!("gateway: {}", self.gateway_summary),
-            format!("telemetry: {}", self.telemetry_summary),
-            format!("a2a: {}", self.a2a_summary),
-            "agents:".to_string(),
-        ];
-        lines.extend(self.agents.iter().map(|agent| {
-            format!(
-                "- {} launcher={} auth={} inference={} version={} route={} code={}",
-                agent.name,
-                agent.launcher_state,
-                agent.authentication_state,
-                agent.inference_state,
-                agent.version,
-                agent.route,
-                agent.code
-            )
-        }));
-        lines.push("native_tui_slots:".to_string());
-        lines.extend(self.native_tui_slots.iter().map(|slot| {
-            format!(
-                "- {} state={} reason={}",
-                slot.title,
-                slot_state_label(slot.state),
-                slot.reason
-            )
-        }));
-        lines.join("\n")
-    }
-}
-
-pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(12),
-            Constraint::Length(5),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            &model.title,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("  [{}]", model.platform)),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(title, areas[0]);
-
-    let body = if areas[1].width >= 110 {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
-            .split(areas[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(4)])
-            .split(areas[1])
-    };
-    let rows = model.agents.iter().map(|agent| {
-        Row::new(vec![
-            Cell::from(agent.name.clone()),
-            Cell::from(format!(
-                "L:{} A:{} I:{}",
-                agent.launcher_state, agent.authentication_state, agent.inference_state
-            )),
-            Cell::from(agent.version.clone()),
-            Cell::from(agent.route.clone()),
-        ])
-    });
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(12),
-            Constraint::Length(28),
-            Constraint::Min(18),
-            Constraint::Length(14),
-        ],
-    )
-    .header(
-        Row::new(["Agent", "Launcher/Auth/Inference", "Version", "Route"])
-            .style(Style::default().add_modifier(Modifier::BOLD)),
-    )
-    .block(Block::default().title("Agent probes").borders(Borders::ALL));
-    frame.render_widget(table, body[0]);
-
-    let diagnostics = Paragraph::new(vec![
-        Line::from(format!("Gateway: {}", model.gateway_summary)),
-        Line::from(format!("A2A: {}", model.a2a_summary)),
-        Line::from(format!("Telemetry: {}", model.telemetry_summary)),
-    ])
-    .wrap(Wrap { trim: true })
-    .block(Block::default().title("Diagnostics").borders(Borders::ALL));
-    frame.render_widget(diagnostics, body[1]);
-
-    let slot_labels = model
-        .native_tui_slots
-        .iter()
-        .map(|slot| {
-            format!(
-                "{} [{}]",
-                slot.agent.display_name(),
-                slot_state_label(slot.state)
-            )
-        })
-        .collect::<Vec<_>>();
-    let slot_block = Block::default()
-        .title("Native CLI TUI surfaces")
-        .borders(Borders::ALL);
-    if areas[2].width >= 110 {
-        let tabs = Tabs::new(slot_labels.iter().map(String::as_str))
-            .block(slot_block)
-            .style(Style::default().fg(Color::Yellow))
-            .divider(" | ");
-        frame.render_widget(tabs, areas[2]);
-    } else {
-        let slots = Paragraph::new(slot_labels.join(" | "))
-            .style(Style::default().fg(Color::Yellow))
-            .wrap(Wrap { trim: true })
-            .block(slot_block);
-        frame.render_widget(slots, areas[2]);
-    }
-
-    let footer = Paragraph::new("q/Esc: quit | native TUI launch/attach intentionally disabled")
-        .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, areas[3]);
-}
-
-const fn state_label(state: ProbeState) -> &'static str {
-    match state {
-        ProbeState::Verified => "verified",
-        ProbeState::Failed => "failed",
-        ProbeState::Unavailable => "unavailable",
-        ProbeState::NotRun => "not_run",
-    }
-}
-
-const fn route_label(route: RouteKind) -> &'static str {
-    match route {
-        RouteKind::Direct => "direct",
-        RouteKind::LocalGateway => "local_gateway",
-        RouteKind::Unknown => "unknown",
-    }
-}
-
-const fn slot_state_label(state: NativeTuiSlotState) -> &'static str {
-    match state {
-        NativeTuiSlotState::Reserved => "reserved",
-        NativeTuiSlotState::Unavailable => "unavailable",
-    }
-}
+//! Read-only dashboard model, navigation and renderers.
+mod model;
+mod render;
+mod runtime;
+mod state;
+pub use model::{AgentView, DashboardModel, NativeTuiSlot, NativeTuiSlotState, safe_text};
+pub use render::{render_dashboard, render_with_state};
+pub use runtime::{run_interactive, snapshot};
+pub use state::{Branch, Context, State, Tab, Workspace};
 
 #[cfg(test)]
 mod tests {
     use ratatui::{Terminal, backend::TestBackend};
-    use vibemux_probe::{A2aSelfTestProbe, AgentProbe, GatewayProbe, ProbeState};
+    use vibemux_probe::{
+        A2aSelfTestProbe, AgentKind, AgentProbe, GatewayProbe, ProbeReport, ProbeState, RouteKind,
+    };
 
     use super::*;
 
@@ -400,5 +123,85 @@ mod tests {
         let snapshot = DashboardModel::from_report(&report()).plain_snapshot();
         assert!(snapshot.contains("Claude native TUI state=reserved"));
         assert!(snapshot.contains("a2a: verified correlation=true listener_closed=true"));
+    }
+
+    #[test]
+    fn navigation_views_and_small_terminals_render_without_authority_changes() {
+        let model = DashboardModel::from_report(&report());
+        let workspace = Workspace {
+            current_branch: "codex/topic".to_string(),
+            head: "12345678".to_string(),
+            baseline: "origin/main".to_string(),
+            change_detection: "external_filters_disabled".to_string(),
+            branches: vec![Branch {
+                name: "codex/topic".to_string(),
+                role: "current".to_string(),
+                commit: "12345678".to_string(),
+                upstream: "-".to_string(),
+            }],
+            worktrees: vec!["codex/topic -> <primary>".to_string()],
+            ..Workspace::default()
+        };
+        let context = Context {
+            source: "saved_report".to_string(),
+            workspace: Some(workspace),
+        };
+        for tab in [Tab::Overview, Tab::Harnesses, Tab::Workspace] {
+            let state = State {
+                tab,
+                ..State::default()
+            };
+            for (width, height) in [(100, 28), (80, 24)] {
+                let rendered = snapshot(&model, &state, &context, width, height).unwrap();
+                assert!(rendered.contains("READ ONLY"));
+                if tab == Tab::Workspace {
+                    assert!(rendered.contains("codex/topic"));
+                    assert!(rendered.contains("Changes: staged="));
+                    assert!(rendered.contains("External filters disabled"));
+                    assert!(rendered.contains("current"), "a branch row must be visible");
+                }
+                if tab == Tab::Harnesses {
+                    assert!(rendered.contains("Native attach: disabled"));
+                    assert!(rendered.contains("Inference: not_run"));
+                }
+            }
+            assert!(snapshot(&model, &state, &context, 20, 6).is_ok());
+        }
+    }
+
+    #[test]
+    fn standalone_views_retain_source_without_inventing_workspace_metadata() {
+        let model = DashboardModel::from_report(&report());
+        for source in ["saved_report", "local_probe"] {
+            let context = Context {
+                source: source.to_string(),
+                ..Context::default()
+            };
+            for tab in [Tab::Overview, Tab::Harnesses, Tab::Workspace] {
+                let state = State {
+                    tab,
+                    ..State::default()
+                };
+                let rendered = snapshot(&model, &state, &context, 100, 28).unwrap();
+                assert!(rendered.contains(&format!("READ ONLY / {source}")));
+                if tab == Tab::Workspace {
+                    assert!(rendered.contains("Workspace inventory not supplied"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn control_characters_and_missing_observations_are_not_rendered_as_readiness() {
+        let mut report = report();
+        report.agents.truncate(1);
+        report.agents[0].version = Some("fixture\u{1b}[31m\u{202e}version".to_string());
+        let model = DashboardModel::from_report(&report);
+        assert_eq!(model.agents.len(), 5);
+        assert_eq!(model.agents[1].launcher_state, "not_run");
+        let text = model.plain_snapshot();
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains('\u{202e}'));
+        assert!(!text.contains("127.0.0.1"));
     }
 }

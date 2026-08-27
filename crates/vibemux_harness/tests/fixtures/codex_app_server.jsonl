@@ -1,0 +1,10 @@
+{"id":1,"result":{"userAgent":"synthetic_agent"}}
+{"id":2,"result":{"thread":{"id":"synthetic_thread"}}}
+{"id":3,"result":{"turn":{"id":"synthetic_turn","status":"inProgress"}}}
+{"method":"turn/started","params":{"threadId":"synthetic_thread","turn":{"id":"synthetic_turn","status":"inProgress"}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"synthetic_thread","turnId":"synthetic_turn","itemId":"message_one","delta":"first chunk"}}
+{"method":"item/agentMessage/delta","params":{"threadId":"synthetic_thread","turnId":"synthetic_turn","itemId":"message_one","delta":"second chunk"}}
+{"method":"item/completed","params":{"item":{"id":"tool_one","type":"commandExecution","status":"failed","exitCode":1}}}
+{"id":9,"method":"item/commandExecution/requestApproval","params":{"threadId":"synthetic_thread","turnId":"synthetic_turn","itemId":"tool_two"}}
+{"method":"thread/tokenUsage/updated","params":{"threadId":"synthetic_thread","tokenUsage":{"last":{"inputTokens":10,"outputTokens":2}}}}
+{"method":"turn/completed","params":{"threadId":"synthetic_thread","turn":{"id":"synthetic_turn","status":"completed"}}}

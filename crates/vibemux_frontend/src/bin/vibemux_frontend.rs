@@ -1,57 +1,70 @@
-use std::{io, time::Duration};
-
-use crossterm::{
-    cursor::Show,
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+use std::{
+    io::{self, IsTerminal},
+    path::PathBuf,
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
-use vibemux_frontend::{DashboardModel, render_dashboard};
-use vibemux_probe::{ProbeConfig, run_probe};
-
-struct TerminalGuard;
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
-    }
-}
+use vibemux_frontend::{Context, DashboardModel, run_interactive};
+use vibemux_probe::snapshot;
 
 #[tokio::main]
 async fn main() {
-    let once = std::env::args()
-        .skip(1)
-        .any(|argument| argument == "--once");
-    let report = run_probe(&ProbeConfig::from_environment()).await;
-    let model = DashboardModel::from_report(&report);
-    if once {
-        println!("{}", model.plain_snapshot());
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments.len() == 1 && matches!(arguments[0].to_str(), Some("--help" | "-h")) {
+        println!(
+            "VibeMux read-only dashboard\n\nUsage: vibemux_frontend [--once] [--report <saved_report.json>]\nUnified entrypoint: vibemuxctl ui\nNo model invocation or native TUI attachment."
+        );
         return;
     }
-    if let Err(error) = run_interactive(&model) {
-        eprintln!("frontend failed: {error}");
+    if arguments.len() == 1 && arguments[0] == "--version" {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    let mut once = false;
+    let mut report_path = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--once") if !once => {
+                once = true;
+                index += 1;
+            }
+            Some("--report") if report_path.is_none() => {
+                let Some(value) = arguments.get(index + 1).filter(|value| !value.is_empty()) else {
+                    usage();
+                };
+                report_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            _ => usage(),
+        }
+    }
+    if !once && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
+        eprintln!("ui_terminal_required");
+        std::process::exit(4);
+    }
+    let snapshot = match snapshot::load(report_path).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("{}", error.code());
+            std::process::exit(4);
+        }
+    };
+    let model = DashboardModel::from_report(&snapshot.report);
+    if once {
+        println!("{}\nsource: {}", model.plain_snapshot(), snapshot.source);
+        return;
+    }
+    let context = Context {
+        source: snapshot.source.to_string(),
+        ..Context::default()
+    };
+    let result = tokio::task::spawn_blocking(move || run_interactive(model, context)).await;
+    if !matches!(result, Ok(Ok(()))) {
+        eprintln!("ui_terminal_failed");
         std::process::exit(4);
     }
 }
 
-fn run_interactive(model: &DashboardModel) -> io::Result<()> {
-    enable_raw_mode()?;
-    let _guard = TerminalGuard;
-    execute!(io::stdout(), EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
-    loop {
-        terminal.draw(|frame| render_dashboard(frame, model))?;
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    break;
-                }
-            }
-        }
-    }
-    terminal.show_cursor()?;
-    Ok(())
+fn usage() -> ! {
+    eprintln!("ui_invalid_arguments");
+    std::process::exit(2)
 }

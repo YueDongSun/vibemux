@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"synthetic_thread"}
+{"type":"turn.started"}
+{"type":"item.updated","item":{"id":"message_one","type":"agent_message","text":"first chunk"}}
+{"type":"item.completed","item":{"id":"message_two","type":"agent_message","text":"second chunk"}}
+{"type":"item.completed","item":{"id":"tool_one","type":"command_execution","status":"completed","exit_code":0,"command":"literal $(synthetic_command); & | > < `token` %SYNTHETIC_ENV%"}}
+{"type":"vendor.extension","extension":{"nested":[true,4,{"preserve":"SYNTHETIC_SECRET_TOKEN"}]}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}
