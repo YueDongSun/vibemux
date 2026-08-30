@@ -132,7 +132,7 @@ Do not delete the Python prototype until Rust parity tests and a state migration
 
 ### 4.2 Expected Rust workspace
 
-New Rust code should follow the responsibility split recorded in `PROGRESS.md`. Do not create circular dependencies or a single “god crate.”
+New Rust code should follow the responsibility split recorded in `PROGRESS.md`. Do not create circular dependencies or a single "god crate."
 
 Dependency direction:
 
@@ -205,7 +205,7 @@ Before handoff:
 5. Update an ADR if an architecture decision changed.
 6. Report unverified platform paths explicitly.
 7. Leave the worktree clean or clearly describe remaining changes.
-8. Never say “tests pass” when they were not executed.
+8. Never say "tests pass" when they were not executed.
 
 ---
 
@@ -483,7 +483,7 @@ No endpoint is documented as supported before these gates pass.
 
 ### 11.1 SQLite
 
-- Use schema migrations; never recreate a user database to “fix” a mismatch.
+- Use schema migrations; never recreate a user database to "fix" a mismatch.
 - Enable foreign keys.
 - Configure WAL and busy timeout deliberately.
 - Use explicit `INSERT` and `UPDATE`; avoid `INSERT OR REPLACE` for state entities.
@@ -529,7 +529,7 @@ Rules:
 - Commands are represented as executable plus argv.
 - User text is passed through stdin or a dedicated protocol field.
 - `.cmd`/`.bat` launchers require a narrow, tested Windows shim.
-- User message, task title, description, role, file content, and remote payload must never enter that shim’s command string.
+- User message, task title, description, role, file content, and remote payload must never enter that shim's command string.
 - Environment inheritance is allowlisted or explicitly documented.
 - Process groups/job objects are used for reliable cancellation.
 - Child processes must be supervised and reaped.
@@ -629,7 +629,7 @@ Security-sensitive changes require a threat-model note and tests for failure pat
 
 ### 14.2 Test integrity
 
-- Tests must not use the user’s normal tmux/WezTerm namespace.
+- Tests must not use the user's normal tmux/WezTerm namespace.
 - Tests must not modify global Git configuration.
 - Tests create local Git identities only in temporary repositories.
 - Tests must clean only resources they created.
@@ -843,4 +843,3 @@ Every coding-agent handoff must include:
 ```
 
 Do not include hidden chain-of-thought. Provide decisions, evidence, and reproducible results.
-

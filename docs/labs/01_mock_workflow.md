@@ -1,4 +1,3 @@
 # Mock workflow lab
 
-在 initial commit 的临时 repo 中运行 `vibemux init --terminal-backend mock`，创建 task，spawn 两个 run，分别发送 `PING`、`WRITE file.txt`，检查 diff 和 trace。该实验不联网、不调用模型、不触碰用户 terminal。
-
+In a temporary repo with an initial commit, run `vibemux init --terminal-backend mock`, create a task, spawn two runs, send `PING` and `WRITE file.txt` to each, then inspect the diff and trace. This experiment does not access the network, does not call any model, and does not touch the user's terminal.

@@ -1,4 +1,4 @@
 # Security
 
-VibeMux 的 worktree 只提供并发编辑隔离，不是 sandbox。核心安全边界包括 shell=False/argv、stdin 发送、路径 commonpath 校验、symlink/reparse fail-closed、pane ownership 校验、append-only events 和 cleanup dry-run。发现问题请不要公开披露凭据或 exploit payload，先联系维护者。
+VibeMux worktrees provide concurrent-edit isolation only; they are not security sandboxes. Core security boundaries include `shell=False` with structured argv, stdin-based message delivery, `commonpath` path validation, fail-closed symlink/reparse handling, pane-ownership validation, append-only events, and dry-run cleanup. Do not publicly disclose credentials or exploit payloads when reporting an issue; contact the maintainer first.
 
