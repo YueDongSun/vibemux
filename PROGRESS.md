@@ -13,15 +13,16 @@
 |---|---|
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
-| Audited branch | `main` |
+| Historical audited branch | `main` |
+| Current implementation branch | `codex/m7_a2a_supervisor`, based on `85697d6743b01b8e0aa10c48d79837dcc56c007c`; original tested input fingerprint in `docs/evidence/a2a_source_manifest.json`, publication audit in the 2026-08-31 ledger |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, loopback-only A2A information-share, read-only probe/frontend shell, plugin protocol v1 foundation, and isolated plugin process supervisor |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status |
 | Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle only |
-| Current maturity | M3 is `VERIFIED`; M4.0 and M4.1 are verified within their isolated scope; **not yet a functional multi-harness alpha** |
+| Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
 ### Status vocabulary
@@ -79,8 +80,8 @@ The migration is already in progress rather than merely planned:
 
 - M2 domain/event foundations exist in Rust.
 - M3 persistence, single-writer daemon, authenticated local IPC, lifecycle, stale recovery, and the declared Windows control-runtime boundary are implemented and verified within scope.
-- M4.0 protocol and M4.1 process-supervisor foundations are implemented as isolated crates.
-- Full command parity, Python-to-Rust state migration/cutover, daemon-owned plugin registry/control integration, Rust workspace/terminal parity, real vendor plugins, and stateful/remote A2A remain incomplete.
+- M4.0 protocol and M4.1 process-supervisor foundations are implemented as isolated crates; M4.2 integrates the supervisor into the daemon registry without Task/Run routing.
+- Full command parity, Python-to-Rust state migration/cutover, operator plugin recovery and writable plugin control, Rust workspace/terminal parity, real vendor CLI plugins, remote A2A, full ITK, and automatic in-flight workflow recovery remain incomplete.
 
 The current Python implementation remains valuable as:
 
@@ -189,8 +190,8 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 | Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop` | Lifecycle commands exist; Task/Run/workspace/plugin command parity does not |
 | Plugin protocol v1 foundation | `VERIFIED` | `vibemux_plugin_protocol`, checked-in Protobuf/TOML fixtures | M4.0 is verified as an isolated private pre-alpha wire/manifest/negotiation/lifecycle foundation; it does not spawn or mutate state |
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
-| Daemon-owned plugin registry and control plane | `PLANNED` | `vibemuxd` does not depend on `vibemux_plugin_supervisor` | No registry, status/control API, restart budget/quarantine, real plugin loading, or Task/Run mutation integration exists |
-| A2A adapter | `PARTIAL — LOOPBACK ONLY` | `vibemux_a2a` | Only a bounded local-loopback HTTP+JSON information-share slice is verified; stateful/remote A2A, authentication, streaming, other transports, TCK, and ITK remain absent |
+| Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
+| A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
 | Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection and reserved Ratatui slots exist; real PTY/ConPTY attachment and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
@@ -273,11 +274,13 @@ Implemented private foundations:
 - [x] Shell-free child spawn, clean environment, bounded queues, deadlines, heartbeat, cancellation, stderr cap, graceful shutdown, and crash containment.
 - [x] Contract fixtures, malformed-input tests, and cross-platform real-process tests.
 
-Remaining:
+M4.2 delivery and remaining gates:
 
-- [ ] Daemon-owned plugin registry and authoritative plugin lifecycle state.
-- [ ] Authenticated plugin list/status/start/stop control API with bounded concurrency and redacted diagnostics.
-- [ ] Restart budget, exponential backoff, quarantine, and operator-controlled recovery.
+- [x] Daemon-owned ephemeral plugin registry and lifecycle snapshots (M4.2).
+- [x] Authenticated read-only plugin status with bounded snapshots and redacted diagnostics.
+- [ ] Writable plugin start/stop API with authorization gates.
+- [x] Lifetime restart budget, capped exponential backoff, and terminal quarantine.
+- [ ] Operator-controlled quarantine recovery and cross-daemon persistence.
 - [ ] Plugin SDKs for Rust and Python.
 - [ ] Public compatibility policy, previous-version fixtures, and version matrix.
 - [ ] Coverage-guided fuzz targets for framing, manifests, negotiation, and lifecycle transitions.
@@ -452,9 +455,11 @@ Scope:
 - [x] Manifest, handshake, capabilities, permissions, and version negotiation foundation.
 - [x] Bounded request/event channel foundation with observable backpressure.
 - [x] Handshake/receive/shutdown deadlines, cancellation, heartbeat, and crash-reporting foundation.
-- [ ] Daemon-owned plugin registry and authoritative lifecycle state.
-- [ ] Authenticated plugin status/control API.
-- [ ] Restart budget, backoff, quarantine, and operator recovery.
+- [x] Daemon-owned ephemeral plugin registry and lifecycle snapshots.
+- [x] Authenticated read-only plugin status API.
+- [ ] Writable plugin control API.
+- [x] Restart budget, bounded backoff, and quarantine.
+- [ ] Operator recovery.
 - [ ] Daemon-owned mock manifests and plugins.
 - [ ] Rust and Python plugin SDKs.
 - [x] Contract fixtures and property tests for framing and malformed input.
@@ -584,6 +589,25 @@ Non-goals for M4.1:
 
 **Next slice**
 - Add daemon-owned supervisor registry, restart budgets/quarantine, plugin status/control API, and mock manifests for the remaining declared plugin kinds before SDK publication.
+
+#### M4.2 - Daemon registry and read-only status slice
+
+**Slice status:** `VERIFIED - NATIVE WINDOWS MOCK INTEGRATION`; M4 remains `PARTIAL`.
+
+**Implemented scope**
+
+- `vibemuxd` owns the existing Rust supervisor through a bounded in-memory registry; the default daemon loads no plugins. An explicit `--plugin-config` JSON file supplies validated local startup registrations.
+- Maximum 32 entries, lifetime restart budget of at most 16 additional launches, capped exponential backoff, unique attempt/session IDs, heartbeat watchdog with negotiated-interval margin, and terminal quarantine. Status reads never launch, reset budgets, clear quarantine, or contact a child.
+- Only heartbeat envelopes are accepted after Ready. Unsolicited request/response/event payloads quarantine and never reach Task/Run state or the database. Registry code has no writer/store handle.
+- IPC v2 adds authenticated read-only `plugin_status`. v1 health/shutdown requests and their error versions remain compatible; old v1 clients must be upgraded to accept v2 descriptors. Plugin wire/manifest and SQLite schemas are unchanged.
+- Cancellation during active execution, handshake, and backoff prevents further restarts. Normal daemon exit joins exact-child cleanup and I/O workers before releasing its writer. Unconfirmed reap preserves PID evidence in quarantine. Shutdown acknowledgement is acceptance only.
+- See [ADR 023](docs/adr/023_daemon_plugin_registry.md) and [registry protocol](docs/plugin_registry_protocol.md) for defaults, compatibility, redaction, and threat model.
+
+**Evidence and limits**
+
+- Real Rust mock-child and separate-daemon integration scenarios exercise crash exhaustion, permanent protocol quarantine, healthy sibling visibility, authentication, unchanged seeded Task/events, cancellation, periodic/missing heartbeat, forced shutdown, and post-join OS process absence.
+- Final commands and outcomes are recorded in the dated M4.2 ledger below. These are local native Windows results, not Linux, CI, live terminal, vendor-plugin, sandbox, fuzz, soak, or production evidence.
+- Quarantine/budgets are ephemeral to a daemon lifetime. Writable plugin control, operator recovery, other plugin-kind fixtures, SDKs, vendor integrations, process-tree containment, and abrupt-daemon-exit child cleanup remain outside this slice.
 
 ### M5 — Workspace and terminal parity in Rust
 
@@ -719,15 +743,18 @@ Exit criteria:
 Scope:
 
 - [x] Minimal Agent Card generation for the loopback information-share capability.
-- [ ] External A2A Task ↔ internal binding model.
+- [x] External A2A Task ↔ internal Run binding with optimistic versions and atomic audit events.
 - [x] Bounded Message/DataPart mapping for the M7.0 information-share contract.
-- [ ] Task, Artifact, status, cancellation, and subscription mapping.
+- [x] Bounded Task, Artifact, status, cancellation, and subscription mapping for local gateways.
 - [x] HTTP+JSON local loopback exchange through the official Rust SDK.
-- [ ] JSON-RPC and HTTP+JSON interoperability.
-- [ ] gRPC fast path.
-- [ ] Streaming, backpressure, reconnection, and task resubscription.
-- [ ] Authentication, TLS, URL validation, SSRF protection, and audit.
-- [ ] Official conformance and cross-language integration tests.
+- [x] JSON-RPC and HTTP+JSON local interoperability.
+- [x] Official SDK gRPC adapter over the same daemon backend; local conformance/integration scope.
+- [x] Bounded streaming, explicit subscriber-lag errors, and explicit reconnect/resubscribe while the owner is alive.
+- [ ] Automatic in-flight recovery after daemon restart.
+- [x] Bearer-to-subject authorization, explicit loopback-origin allowlists, redirect refusal, bounded payloads and canonical audit.
+- [ ] Non-loopback TLS/auth deployment, broader endpoint/SSRF policy, signed cards and push delivery.
+- [x] Official TCK and custom bidirectional tests against pinned official Python/Go SDKs for the local gateway, with explicit exclusions.
+- [ ] Full official cross-language ITK traversal.
 
 Exit criteria:
 
@@ -827,18 +854,32 @@ Rollback:
 - The new crate is dependency-isolated and has no runtime consumer until its acceptance gate passes.
 - If the official SDK cannot satisfy the bounded local exchange on MSRV, keep the research evidence, remove the unverified runtime advertisement, and leave M7 `PLANNED` rather than substituting a fake protocol.
 
+#### M7.1 / M8.0 - Local stateful gateway and supervisor acceptance
+
+**Slice status:** `VERIFIED - LOCAL STRUCTURED-DATA SUPERVISOR` on 2026-08-30. Overall M7 and M8 remain `PARTIAL`.
+
+- The daemon owns one canonical writer and delegates through bounded SDK-independent A2A backends. HTTP+JSON, JSONRPC and gRPC share authorization and state contracts; plugin registry/status still cannot mutate Task/Run state.
+- SQLite schema 2 adds validated A2A bindings, optimistic versions, idempotency conflicts, independent review receipts and immutable audit records. Schema-1 history migrates forward. Remote Completed cannot declare canonical success.
+- Writable role Runs use independent worktrees with private Git-directory owner receipts. Optional model peers read explicitly selected CC Switch profiles in read-only mode; they never receive a core writer or execute model-generated shell/code.
+- Three real provider combinations completed planner-worker-reviewer-verifier loops on native Windows, each reaching canonical `done` and joined shutdown. A fresh loop after the final provider API-root correction also passed. The synthetic integer task returned sorted unique values `[-3, 0, 1, 5, 9]` and sum `12`.
+- Selected CC Switch profile probes: **9 of 14 passed**. The remaining five were HTTP 401, 403, 404, 429, or invalid structured output. This counts configured profile entries, not distinct suppliers or model-quality rankings.
+- Final Rust workspace: **184 passed, 0 failed, 1 ignored** across 49 groups; the ignored child helper is explicitly invoked by its parent test. Format and Clippy passed. Python: 27 pytest tests, Ruff format/lint and mypy passed.
+- Final official TCK across three bindings/all levels: **207 passed, 53 skipped, 5 xfailed**, zero failures/errors, pytest and fixture exit 0. Pinned official Python and Go SDK custom bilateral tests passed. Full official ITK, remote/TLS, complete history and cross-restart recovery remain unverified or incomplete.
+- Exact commands, source/binary identities, failure history and residual gates are in the dated ledger, [handoff](docs/m7_a2a_handoff.md), [sanitized evidence](docs/evidence/a2a_supervisor_validation.json), [protocol](docs/a2a_supervisor_protocol.md), and [conformance procedure](docs/a2a_conformance_validation.md).
+
 ### M8 — Collaboration workflow
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL`
 
 Scope:
 
-- [ ] Planner–Worker–Reviewer–Verifier workflow.
-- [ ] Artifact store and content-addressed references.
-- [ ] Review records and verification gates.
+- [x] Bounded local Planner–Worker–Reviewer–Verifier structured-data workflow; real provider acceptance recorded separately from fixtures.
+- [x] Immutable Run artifact files and SHA-256 references.
+- [ ] General content-addressed artifact store and remote artifact lifecycle.
+- [x] Independent reviewer binding and local verifier receipts gate canonical completion.
 - [ ] DAG dependencies.
 - [ ] Conflict prediction and file-ownership hints.
-- [ ] Repair runs rather than mutation of historical runs.
+- [x] Rejected verification creates new repair Runs without rewriting prior evidence.
 - [ ] Manual merge gate.
 
 Exit criteria:
@@ -894,18 +935,14 @@ Entry condition:
 
 The next implementation work should follow this order:
 
-1. Open issues for M4.2, M5, CI hardening, and migration, each with an explicit owner and acceptance gate.
-2. Implement the daemon-owned plugin registry.
-3. Add an authenticated plugin status/control API.
-4. Implement restart budgets, bounded backoff, quarantine, and operator recovery.
-5. Add daemon-owned mock manifests and plugins.
-6. Add protocol compatibility fixtures and fuzz gates.
-7. Implement Rust workspace/worktree parity.
-8. Implement terminal plugins in the order mock, WezTerm/ConPTY, then tmux.
-9. Add real vendor harness plugins only after the M4.2 and M5 gates pass.
-10. Perform Python-to-Rust state cutover and stateful/remote A2A only after the preceding ownership, migration, and conformance gates pass.
+1. Close remaining M4.2 platform, plugin-kind, operator-recovery, and writable-control acceptance gaps before exposing a broader plugin API.
+2. Add previous-version protocol fixtures, fuzz gates, and missing CI tooling.
+3. Extend the verified supervisor workspace ownership slice to complete Rust workspace/worktree parity.
+4. Implement terminal plugins in the order mock, WezTerm/ConPTY, then tmux.
+5. Add real vendor harness plugins only after the M4.2 and M5 gates pass together.
+6. Perform Python-to-Rust state cutover and expand remote A2A only after the preceding ownership, migration, and conformance gates pass; the explicitly requested local stateful supervisor slice is already verified within its narrower contract.
 
-Do not infer daemon integration from the isolated M4.0/M4.1 foundations, and do not begin real vendor integration before the mock, registry, restart, workspace, and terminal boundaries are verified together.
+The M4.2 registry/status slice is integrated and locally tested with mock children. The user-requested M7.1/M8.0 path now proves a local structured-data supervisor loop using real providers, with the necessary owned-worktree subset. Neither establishes full workspace/terminal parity, vendor CLI readiness, remote readiness, or overall M7/M8 completion.
 
 ---
 
@@ -1712,3 +1749,95 @@ Non-goals:
 **Limits**
 
 - This documentation review adds no runtime capability or platform-support claim. The full workspace/Python suites, Linux/WSL tests, live terminal backends, benchmarks, and A2A conformance were not rerun in this review.
+
+### 2026-08-30 - M4.2 daemon registry and read-only plugin status
+
+**Baseline and scope**
+
+- Implemented on `codex/m4_2_plugin_registry` from `85697d6`; local uncommitted delivery. Existing untracked `.weave/` is excluded and untouched. No commit, push, installation, or deployment was performed.
+- Added explicit daemon-owned startup registration, bounded per-plugin lifetime restart budgets/backoff/quarantine, heartbeat monitoring, read-only authenticated IPC v2 status, and joined shutdown before writer release. Task/Run operations remain prohibited.
+- Supervisor cleanup now explicitly kills/reaps and joins I/O on failure, accepts queued drain-legal traffic before shutdown acknowledgement, and validates shutdown session correlation. Handshake failure reaping is deadline-bound.
+- Independent review identified and tests reproduced a queued-frame shutdown false timeout and a v1 authentication error incorrectly returned as a version error; both regression tests now pass. Heartbeat grace is three negotiated intervals in startup configuration, and registry validation rejects deadlines no greater than the negotiated interval.
+
+**Validation executed (native Windows, pinned Rust 1.85.0)**
+
+- `cargo test --locked --offline --workspace --all-features`: **126 passed, 0 failed, 0 ignored** across 36 test/doc-test groups. Includes 9 daemon registry integration tests, 13 supervisor process integration tests, the real standalone daemon/config/plugin path, existing writer/CLI/platform tests, and protocol fixtures.
+- `cargo clippy --locked --offline --workspace --all-targets --all-features -- -D warnings`: passed on the final Rust implementation.
+- `cargo fmt --all -- --check`: passed.
+- `git diff --check`: passed; final added-line privacy and local Markdown link checks passed.
+- `cargo nextest run --workspace --all-features`, `cargo deny check`, and `cargo audit`: each attempted and returned exit 101 because the corresponding cargo subcommand is not installed. These gates are **unverified**, not passed.
+
+**Observed boundaries**
+
+- Real crashing mock children exhausted exactly the configured restart counter and remained quarantined across status reads. A healthy sibling retained its session and the writer health endpoint remained responsive.
+- Malformed frames and unsolicited Task/Run-shaped plugin events quarantined without retries; seeded canonical Task projection/events remained unchanged, and no Run projection appeared. A second writer remained refused while the daemon held the lock.
+- Active, handshake, and backoff cancellation prevented new restarts. A cancelled daemon wait requested cleanup without aborting its owner. Graceful and forced cleanup tests inspected OS process absence after join; forced shutdown preserved its error.
+- Periodic heartbeat traffic survived multiple deadlines; a silent mock quarantined at zero restart budget. Invalid configuration batches created no descriptor, database, or writer lock; duplicate registration did not replace a session or reset policy.
+- Read-only status rejects unauthenticated access and mutation operation names; worst-bound snapshots fit within the existing 64 KiB frame limit. Status contains no prompt, environment values, argv, or workspace path.
+
+**Limits / next work**
+
+- M4 remains `PARTIAL`. M4.2 evidence is native Windows only; Linux/WSL, live WezTerm/tmux/ConPTY, vendor plugins, fuzz/soak, additional plugin kinds, sandbox enforcement, and release/production readiness are not claimed.
+- No Python source changed; Python checks were not rerun. No new CI run was triggered. Required nextest/deny/audit tooling remains unavailable locally.
+- Budgets/quarantine are ephemeral and reset with a new daemon lifetime. Operator quarantine recovery, writable plugin control, persisted lifecycle audit, descendant-process cleanup, and abrupt-daemon-exit cleanup remain future work.
+- Local IPC advances to v2 with v1 health/shutdown request compatibility. Old v1 clients reject v2 descriptors and require upgrade. SQLite and plugin wire/manifest schemas are unchanged; rollback is normal daemon stop and restart without plugin configuration.
+
+### 2026-08-30 - M7.1/M8.0 local A2A and real supervisor acceptance
+
+**Scope and authority**
+
+- Implemented on `codex/m7_a2a_supervisor` over `85697d6`, retaining the earlier uncommitted M4.2 work. This is an uncommitted source delivery, not a release or CI result. The [source manifest](docs/evidence/a2a_source_manifest.json) fingerprints the tested implementation inputs.
+- Local machine/model testing was explicitly authorized. Only selected CC Switch API profiles and synthetic task data were used; provider defaults, credentials and global settings were not changed. Plugin status remains read-only; canonical A2A commands use the daemon's existing single writer.
+- Added official-SDK task adapters, owned bounded execution/streams, subject authorization, schema-2 binding and verification transactions, owned Run workspaces, separate model peers and explicit supervisor startup/one-shot CLI. See [ADR 024](docs/adr/024_stateful_a2a_supervisor.md).
+
+**Validation executed**
+
+- Native Windows 11 Pro build 26200, x86_64, Rust 1.85.0: `cargo test --locked --offline --workspace --all-features -j 2` passed **184 tests**, with **0 failures and 1 ignored standalone child helper** across 49 test/doc-test groups. The parent invokes that helper explicitly.
+- `cargo fmt --all -- --check` and `cargo clippy --locked --offline --workspace --all-targets --all-features -j 2 -- -D warnings`: passed.
+- Task-isolated CPython 3.13.12: `python -m pytest` passed **27**; `python -m mypy .` passed **21 source files**; `python -m ruff check .` and `python -m ruff format --check .` passed, with **64 files formatted**. No ignores, exclusions or weakened assertions were introduced.
+- `cargo nextest run --workspace --all-features`, `cargo deny check`, and `cargo audit`: attempted, each exit 101 because its cargo subcommand is absent. These gates remain unverified.
+- Final `tools/run_a2a_tck.py` against unmodified official TCK commit `5996b79f9cefa6fc390980e383e358a66fb9e49e`: **207 passed, 53 skipped, 5 xfailed**, all requirement levels, HTTP+JSON/JSONRPC/gRPC, no failures/errors; pytest/fixture exit 0, no early fixture exit or forced cleanup. Exclusions and binary hashes are in [conformance evidence](docs/a2a_conformance_validation.md).
+- Custom official Python SDK v1.1.3 and Go SDK v2.5.0 bilateral tests passed all three bindings. Go ran three tests without skips, plus `go vet .` and `go mod verify`. These are not the full official ITK.
+- Real process regression tests cover valid completion, rejected review/new repair Runs, active and review-stage cancellation, gRPC daemon calls, sibling fault isolation, bounded queues/streams, shutdown, migration/authority, real Git ownership and dirty/mismatched cleanup refusal. Existing plugin crash-budget/quarantine/status tests remain green.
+
+**Live provider and supervisor evidence**
+
+- Fourteen selected API profile entries were probed; nine passed. Final negative outcomes are HTTP 401/403/404/429 and one strict-JSON contract failure. OAuth-only, unknown APIs and the local large-model profile were not tested. Requested model IDs do not attest to the provider's actual weights or routing.
+- Three real loops used independent configured provider combinations; public evidence now uses opaque model/profile aliases, while original selection details remain private. All reached canonical `done`, one attempt each, with independent review, exact local verification and joined daemon/peer shutdown.
+- Final provider adapter repair preserved configured `/v3` and `/v4` API roots instead of inserting `/v1`. Its wrong-path regression was reproduced; corrected live probes yielded one pass and one HTTP 429. The final rebuilt binaries then completed another real supervisor loop. Earlier timeout/404/numeric-contract failures remain separate local receipts, not rewritten successes.
+- Live tests used a task-created synthetic repository, with unchanged main HEAD and tracked files. Run artifacts and private raw receipts are intentionally retained as evidence. No user repository content or credentials were sent as task data.
+
+**Limits and delivery**
+
+- Only the local structured-data M7.1/M8.0 slice is verified. Overall M4/M7/M8 remain partial: no complete official ITK, remote/TLS deployment, full history, inbound restart recovery, live terminal/vendor CLI, sandbox enforcement, fuzz/soak or new CI/publication claim.
+- SQLite schema migration is forward-only; do not run an old writer against a schema-2 database. Python migration/default cutover and stable public API compatibility are not implemented.
+- An unrelated concurrent `rust-analyzer` component addition in `rust-toolchain.toml` was preserved and is excluded from this task's authorship. The initial excessive-parallelism build failed under memory pressure; final builds used `-j 2`, without stopping unrelated processes.
+- Detailed delivery, resource ownership, security boundaries and reproduction commands are in [the handoff](docs/m7_a2a_handoff.md). No commit or push was performed; `.weave/` remains ignored and untouched.
+
+- Final handoff audit: diff/cached-diff whitespace checks passed; 13 changed Markdown files had no broken local links; five JSON artifacts parsed; no added private-path/key signatures were found; all 102 implementation fingerprints matched. Three task-created developer worktrees were archived and removed without force, with branches retained. The implementation worktree and intentionally retained private live-test evidence remain.
+
+### 2026-08-31 - Feature-branch publication preparation and privacy audit
+
+**Authorized scope**
+
+- The user authorized committing and pushing the M4.2 plus M7.1/M8.0 implementation. Destination: `origin`, branch `codex/m7_a2a_supervisor`. This is feature-branch source publication, not a main merge, tagged release, deployment or declaration that remaining milestone gates passed.
+- The unrelated local `rust-toolchain.toml` addition of the editor component remains unstaged and excluded. Rust edition/MSRV/runtime source are unchanged. Earlier dated uncommitted/no-push statements describe those earlier handoffs, not the later publication decision.
+
+**Privacy and evidence handling**
+
+- Reviewed the entire staged source/docs/tools snapshot for credential patterns, private paths, private endpoint literals and accidentally tracked runtime/config/database files. Initial matches were synthetic security fixtures: rejected URL userinfo, wildcard/test-network IPs and test bearer constants, not operational credentials.
+- Public supervisor evidence schema 2 replaces actual configured model values and generated reviewer Run identity with opaque aliases. Real selection mappings, provider URLs/keys, private configuration, raw reports and artifacts remain local. Receipt hashes still identify original private receipt bytes; redaction does not alter success/failure counts.
+- The source manifest records the original tested filesystem bytes. Publication evidence separately fingerprints normalized staged implementation inputs and identifies the excluded local toolchain difference. This prevents a historical working-tree hash from being presented as a final commit hash.
+- `.weave/`, local provider/runtime directories, secrets and database files remain ignored; shareable example JSON remains trackable and uses placeholders. No history rewriting, credential rotation or global provider changes were performed.
+
+**Fresh validation**
+
+- `cargo test --locked --offline --workspace --all-features -j 2`: **184 passed, 0 failed, 1 ignored** across 49 groups; the ignored helper is invoked by its parent. `cargo fmt --all -- --check` and workspace/all-targets/all-features Clippy with `-D warnings`: passed.
+- Existing isolated CPython environment: pytest **27 passed**; mypy **21 source files** passed; Ruff check and format passed, **65 files formatted**. No model calls were needed for this publication check.
+- The 102 historical implementation fingerprints matched before publication preparation. Runtime source has not changed since the recorded final TCK, bilateral interoperability and real-model acceptance; those remain explicitly dated evidence, not rerun claims.
+- `cargo nextest run --workspace --all-features`, `cargo deny check`, and `cargo audit` were freshly attempted; each returned exit 101 because the command is not installed. No full release-gate pass or new CI success is claimed.
+- The repository-specific `scripts/inspect_git_release.py` inspector is absent. Explicit Git status/branch/worktree/remote inspection, exact-index scans and independent isolated privacy review are used instead; they are not a claim that the absent inspector ran.
+
+Publication authorization does not resolve the documented Linux/WSL, full ITK, remote/TLS, terminal/vendor-CLI, recovery, fuzz/soak or auxiliary-tooling gaps. See [publication evidence](docs/evidence/publication_validation.json) for the prepared snapshot and validation identity; the observed remote SHA is reported only after the push is verified.
+
+- Final exact-index checks: 77 intended files; 13 Markdown files and six JSON files validated; no broken staged local links; diff/cached-diff whitespace and ignore/example checks passed. Independent review in a separate worktree found no newly introduced operational credentials, private endpoints/profile IDs, machine-user paths or raw runtime/config artifacts. The only unstaged file is the unrelated toolchain component edit.

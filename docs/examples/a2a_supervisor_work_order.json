@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "task_description": "Return the unique input integers in ascending order and their sum.",
+  "input": [-3, 5, 1, 5, 0, -3, 9],
+  "expected_result": {"values": [-3, 0, 1, 5, 9], "sum": 12},
+  "max_repairs": 1
+}

@@ -2,7 +2,7 @@
 
 VibeMux is a Windows-first, local-first, terminal-native collaboration environment for multiple coding harnesses. The official target is Windows 10/11 + PowerShell; WSL2/Linux is for development and the optional tmux backend. Windows Terminal is only the entry point; WezTerm is the first programmable terminal backend.
 
-> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the verified M3 daemon/store/local-IPC scope plus isolated M4.0 protocol and M4.1 process-supervisor foundations. VibeMux is not yet a functional multi-harness alpha.
+> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, plus a local stateful A2A gateway and bounded supervisor workflow. VibeMux is not yet a functional multi-harness alpha.
 
 ## Current status
 
@@ -10,8 +10,8 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 |---|---|---|---|
 | Python `vibemux` | `PARTIAL — BEHAVIOR REFERENCE` | Mock workflow, Git worktrees, safe diff/stop/cleanup, SQLite event log, resource ownership/reconciliation, and compatibility fixtures | Not the future authoritative core; new orchestration, A2A, and public plugin behavior must target Rust |
 | Rust core / `vibemuxd` | `VERIFIED` within M3 | Typed IDs and state machines, canonical events, SQLite store, single-writer worker, authenticated local IPC, and start/health/inspect/recover/stop | Complete Task/Run CLI parity and Python-to-Rust state migration/default cutover |
-| Plugin protocol / supervisor | `PARTIAL` overall M4 | M4.0 wire/manifest/negotiation/lifecycle and M4.1 shell-free child supervision, bounded queues, heartbeat/cancel/drain/shutdown, and crash containment | Daemon-owned registry/control, restart budget/quarantine, real vendor plugins, and SDKs |
-| A2A | `PARTIAL — LOOPBACK ONLY` | Local-loopback HTTP+JSON information-share validation slice | Stateful/remote A2A, authentication/TLS, streaming, JSON-RPC/gRPC, and TCK/ITK conformance |
+| Plugin protocol / supervisor | `PARTIAL` overall M4 | Wire foundation, shell-free supervision, daemon registry, bounded restart/quarantine and read-only status | Writable plugin control, operator recovery, real vendor CLI plugins and SDKs |
+| A2A / supervisor | `PARTIAL — LOCAL STATEFUL` | Authenticated HTTP+JSON/JSONRPC/gRPC; canonical bindings, artifacts, cancellation, subscriptions, independent review/verifier gates and local model-peer workflow | Remote/TLS deployment, full official ITK, message history, automatic restart recovery and unrestricted coding-harness integration |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes and a Ratatui shell | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
 
 ## Python behavior-reference quick start (Windows PowerShell)
@@ -37,13 +37,26 @@ The Python behavior reference includes Mock, a WezTerm command adapter, a tmux a
 
 `99d1f8e` is only the original Python audit baseline; it is not the current implementation baseline. The Python package remains the behavior reference and complete prototype workflow entry point, but new orchestration, A2A, event-broker, scheduler, and public plugin behavior must target Rust.
 
-The Rust 2024 workspace (`0.2.0-alpha.0`, MSRV 1.85) implements platform-independent typed IDs and Task/Run state machines, a canonical event envelope, SQLite migrations/WAL and atomic state-plus-event foundations, a dedicated single-writer worker, authenticated Windows named-pipe/POSIX UDS control, standalone `vibemuxd`, the pre-alpha `vibemuxctl` daemon lifecycle, explicit stale-runtime recovery, the declared Windows per-user control-runtime boundary, a loopback-only A2A v1 HTTP+JSON information-share slice, read-only probe/frontend shells, and the isolated M4.0/M4.1 foundations.
+The Rust 2024 workspace (`0.2.0-alpha.0`, MSRV 1.85) implements platform-independent typed IDs and Task/Run state machines, a canonical event envelope, SQLite migrations/WAL and atomic state-plus-event foundations, a dedicated single-writer worker, authenticated Windows named-pipe/POSIX UDS control, standalone `vibemuxd`, the pre-alpha `vibemuxctl` daemon lifecycle, explicit stale-runtime recovery, the declared Windows per-user control-runtime boundary, authenticated loopback A2A v1 HTTP+JSON/JSONRPC/gRPC task services, a bounded supervisor workflow, read-only probe/frontend shells, and the M4 plugin foundations/registry.
 
-Python `vibemux` remains the complete prototype entry point; Rust `vibemuxctl` provides daemon lifecycle commands only. Complete Rust Task/Run command parity, Python-to-Rust state migration/default cutover, daemon-owned plugin registry/control integration, restart budget/quarantine, Rust workspace/terminal parity, real vendor plugins, plugin SDKs, and stateful/remote A2A conformance are not implemented. Authoritative milestones and verification boundaries live in [PROGRESS.md](PROGRESS.md).
+Python `vibemux` remains the complete prototype entry point; Rust `vibemuxctl` provides daemon lifecycle commands only. Complete Rust Task/Run command parity, Python-to-Rust state migration/default cutover, full Rust workspace/terminal parity, real vendor CLI plugins, plugin SDKs, remote A2A and full ITK conformance remain incomplete. Authoritative milestones and verification boundaries live in [PROGRESS.md](PROGRESS.md).
 
 The Rust workspace also includes the isolated `vibemux_plugin_protocol` M4.0 foundation: a checked-in Protobuf v1 schema, bounded framing, a TOML manifest, permission/capability negotiation, and a handshake lifecycle. The wire crate itself does not spawn processes and cannot mutate Task/Run state or SQLite.
 
-M4.1 `vibemux_plugin_supervisor` has been validated on Windows/Linux against a real mock child for shell-free spawn, clean environment, bounded queues, stderr cap, heartbeat/cancel/drain/shutdown, and crash containment. The isolated process-supervisor foundation is implemented. Daemon-owned plugin registry/control integration, restart budget/quarantine, real vendor plugins, and Task/Run mutation integration are not implemented; `vibemuxd` does not currently depend on the supervisor crate.
+M4.1 `vibemux_plugin_supervisor` has been validated on Windows/Linux against a real mock child for shell-free spawn, clean environment, bounded queues, stderr cap, heartbeat/cancel/drain/shutdown, and crash containment. The isolated process-supervisor foundation is implemented. M4.2 now integrates that supervisor into a daemon-owned registry with bounded restart/quarantine and read-only status. The plugin registry still cannot mutate Task/Run state. Stateful A2A orchestration uses a separate authenticated backend and the existing single writer.
+
+## Local A2A supervisor workflow
+
+An explicitly configured daemon can serve authenticated local A2A tasks and coordinate separate planner, worker and reviewer model-peer processes. Canonical completion requires independent review and a local verifier, not merely a peer's terminal state. The current recipe produces bounded structured-data artifacts; it does not execute model-generated code, invoke vendor CLI tools, auto-commit, or merge branches.
+
+Build first with `cargo build --locked --workspace -j 2`, then run from the repository root on Windows (adjust paths for `CARGO_TARGET_DIR`):
+
+```text
+./target/debug/vibemuxd.exe --project-root <project> --supervisor-config <private_config.json>
+./target/debug/vibemux_supervisor.exe --config <private_config.json> --job <work_order.json>
+```
+
+The one-shot runner owns a fresh daemon and refuses an already-owned project writer. Default daemon startup launches no model peers. See the [protocol and configuration templates](docs/a2a_supervisor_protocol.md), [conformance procedure](docs/a2a_conformance_validation.md), [verified handoff](docs/m7_a2a_handoff.md), and [progress ledger](PROGRESS.md) for verified scope and limitations. Keep completed provider configurations and credentials outside version control.
 
 ## Rust daemon lifecycle (M3 verified scope)
 

@@ -9,7 +9,10 @@ use thiserror::Error;
 use vibemux_events::{EventDraft, EventEnvelope, EventError, EventSequence};
 use vibemux_types::{Run, Task};
 
-pub const STORE_SCHEMA_VERSION: u32 = 1;
+mod a2a;
+pub use a2a::A2aCommitOutcome;
+
+pub const STORE_SCHEMA_VERSION: u32 = 2;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -39,6 +42,26 @@ COMMIT;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("A2A state validation failed")]
+    A2aState(#[source] vibemux_types::a2a::A2aStateError),
+    #[error("A2A run was not found")]
+    A2aNotFound,
+    #[error("A2A state version changed")]
+    A2aVersionConflict,
+    #[error("A2A idempotency key content conflicts")]
+    A2aIdempotencyConflict,
+    #[error("A2A binding or workspace ownership conflicts")]
+    A2aBindingConflict,
+    #[error("A2A lifecycle transition is invalid")]
+    A2aInvalidTransition,
+    #[error("A2A verification evidence is rejected")]
+    A2aVerificationRejected,
+    #[error("A2A task run capacity is exhausted")]
+    A2aCapacity,
+    #[error("A2A projection integrity check failed")]
+    A2aProjectionMismatch,
+    #[error("A2A-bound entities require the validated A2A command API")]
+    A2aBoundProjection,
     #[error("SQLite store operation failed")]
     Database(#[source] rusqlite::Error),
     #[error("canonical JSON operation failed")]
@@ -57,6 +80,16 @@ impl StoreError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::A2aState(_) => "store_a2a_invalid_input",
+            Self::A2aNotFound => "store_a2a_not_found",
+            Self::A2aVersionConflict => "store_a2a_version_conflict",
+            Self::A2aIdempotencyConflict => "store_a2a_idempotency_conflict",
+            Self::A2aBindingConflict => "store_a2a_binding_conflict",
+            Self::A2aInvalidTransition => "store_a2a_invalid_transition",
+            Self::A2aVerificationRejected => "store_a2a_verification_rejected",
+            Self::A2aCapacity => "store_a2a_capacity_exhausted",
+            Self::A2aProjectionMismatch => "store_a2a_projection_mismatch",
+            Self::A2aBoundProjection => "store_a2a_bound_projection",
             Self::Database(_) => "store_database_error",
             Self::Json(_) => "store_json_error",
             Self::Event(_) => "store_event_error",
@@ -197,8 +230,11 @@ impl SqliteStore {
                 supported: STORE_SCHEMA_VERSION,
             });
         }
-        if found < STORE_SCHEMA_VERSION {
+        if found == 0 {
             self.connection.execute_batch(INITIAL_SCHEMA)?;
+        }
+        if found < 2 {
+            self.connection.execute_batch(a2a::MIGRATION_V2)?;
         }
         Ok(())
     }
@@ -209,6 +245,21 @@ impl SqliteStore {
         draft: EventDraft,
     ) -> Result<CommitOutcome, StoreError> {
         draft.validate()?;
+        let bound: bool = match &projection {
+            Projection::Task(task) => self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM a2a_runs WHERE task_id=?)",
+                [task.task_id().to_string()],
+                |row| row.get(0),
+            )?,
+            Projection::Run(run) => self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM a2a_runs WHERE run_id=?)",
+                [run.run_id().to_string()],
+                |row| row.get(0),
+            )?,
+        };
+        if bound {
+            return Err(StoreError::A2aBoundProjection);
+        }
         let idempotency_key = draft
             .idempotency_key
             .clone()
@@ -427,14 +478,14 @@ mod tests {
         let connection = Connection::open(temporary.path()).expect("open raw database");
         connection
             .execute_batch(
-                "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (2, 'future');",
+                "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (3, 'future');",
             )
             .expect("future migration registry");
         drop(connection);
         assert!(matches!(
             SqliteStore::open(temporary.path()),
             Err(StoreError::NewerSchema {
-                found: 2,
+                found: 3,
                 supported: STORE_SCHEMA_VERSION
             })
         ));

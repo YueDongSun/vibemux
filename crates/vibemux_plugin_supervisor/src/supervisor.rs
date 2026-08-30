@@ -122,6 +122,20 @@ impl StderrState {
     }
 }
 
+// During handshake the session does not exist yet. Abort stderr collection if
+// the spawn future is cancelled before it can transfer task ownership.
+struct HandshakeStderrGuard {
+    abort_handle: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for HandshakeStderrGuard {
+    fn drop(&mut self) {
+        if let Some(abort_handle) = self.abort_handle.take() {
+            abort_handle.abort();
+        }
+    }
+}
+
 type InboundItem = Result<Envelope, PluginSupervisorError>;
 
 pub struct PluginSession {
@@ -137,6 +151,7 @@ pub struct PluginSession {
     receive_timeout: Duration,
     shutdown_timeout: Duration,
     message_counter: u64,
+    io_tasks_finished: bool,
     last_heartbeat_sequence: Option<u64>,
     last_heartbeat_at: Option<Instant>,
 }
@@ -186,6 +201,10 @@ pub async fn spawn_plugin(
         stderr_state.clone(),
     ));
 
+    let mut stderr_abort_guard = HandshakeStderrGuard {
+        abort_handle: Some(stderr_task.abort_handle()),
+    };
+
     let handshake = async {
         let frame_config = config.policy.frame_config();
         let hello_envelope = read_envelope(&mut stdout, frame_config).await?;
@@ -215,13 +234,17 @@ pub async fn spawn_plugin(
     let (lifecycle, frame_config) = match timeout(config.handshake_timeout, handshake).await {
         Ok(Ok(handshake)) => handshake,
         Ok(Err(error)) => {
-            terminate_child(&mut child).await;
+            let cleanup = terminate_child(&mut child, config.shutdown_timeout).await;
             stderr_task.abort();
+            let _ = stderr_task.await;
+            cleanup?;
             return Err(error);
         }
         Err(_) => {
-            terminate_child(&mut child).await;
+            let cleanup = terminate_child(&mut child, config.shutdown_timeout).await;
             stderr_task.abort();
+            let _ = stderr_task.await;
+            cleanup?;
             return Err(PluginSupervisorError::HandshakeTimeout);
         }
     };
@@ -253,6 +276,7 @@ pub async fn spawn_plugin(
         }
     });
 
+    stderr_abort_guard.abort_handle.take();
     Ok(PluginSession {
         session_id: config.session_id,
         lifecycle,
@@ -266,6 +290,7 @@ pub async fn spawn_plugin(
         receive_timeout: config.receive_timeout,
         shutdown_timeout: config.shutdown_timeout,
         message_counter: 1,
+        io_tasks_finished: false,
         last_heartbeat_sequence: None,
         last_heartbeat_at: None,
     })
@@ -315,6 +340,11 @@ impl PluginSession {
             .map_err(|_| PluginSupervisorError::ReceiveTimeout)?
             .ok_or(PluginSupervisorError::SessionClosed)??;
         self.lifecycle.receive(&item)?;
+        self.record_heartbeat(&item)?;
+        Ok(item)
+    }
+
+    fn record_heartbeat(&mut self, item: &Envelope) -> Result<(), PluginSupervisorError> {
         if let Some(envelope::Body::Heartbeat(Heartbeat { sequence })) = item.body.as_ref() {
             if self
                 .last_heartbeat_sequence
@@ -327,7 +357,7 @@ impl PluginSession {
             self.last_heartbeat_sequence = Some(*sequence);
             self.last_heartbeat_at = Some(Instant::now());
         }
-        Ok(item)
+        Ok(())
     }
 
     #[must_use]
@@ -374,6 +404,30 @@ impl PluginSession {
     }
 
     pub async fn shutdown(mut self) -> Result<PluginExitReport, PluginSupervisorError> {
+        match self.shutdown_gracefully().await {
+            Ok(status) => {
+                self.child.take();
+                self.finish_report(status, true).await
+            }
+            Err(error) => {
+                // Preserve the original failure while completing exact-child cleanup.
+                // Cleanup failures take priority because the owner must not restart a
+                // plugin until its previous process is known to have been reaped.
+                self.terminate_in_place().await?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Terminates and reaps this session's exact child and joins its I/O tasks.
+    /// A successful report is returned only after the child has been reaped.
+    pub async fn terminate(mut self) -> Result<PluginExitReport, PluginSupervisorError> {
+        self.terminate_in_place().await
+    }
+
+    async fn shutdown_gracefully(
+        &mut self,
+    ) -> Result<std::process::ExitStatus, PluginSupervisorError> {
         self.lifecycle.begin_drain()?;
         let deadline_at = Instant::now() + self.shutdown_timeout;
         let drain = self.next_envelope(envelope::Body::Drain(Drain {
@@ -385,35 +439,60 @@ impl PluginSession {
             reason_code: "core:shutdown".to_string(),
         }));
         self.send_critical(shutdown, deadline_at).await?;
+        self.receive_shutdown_acknowledgement(deadline_at).await?;
 
-        let remaining = deadline_at.saturating_duration_since(Instant::now());
-        let acknowledgement = self.receive_with_timeout(remaining).await;
-        if !matches!(
-            acknowledgement,
-            Ok(Envelope {
-                body: Some(envelope::Body::Shutdown(_)),
-                ..
-            })
-        ) {
-            self.terminate().await;
-            return Err(PluginSupervisorError::ShutdownTimeout);
-        }
         let remaining = deadline_at.saturating_duration_since(Instant::now());
         let child = self
             .child
             .as_mut()
             .ok_or(PluginSupervisorError::SessionClosed)?;
-        let status = match timeout(remaining, child.wait()).await {
-            Ok(Ok(status)) => status,
-            _ => {
-                self.terminate().await;
-                return Err(PluginSupervisorError::ShutdownTimeout);
-            }
-        };
-        self.child.take();
-        self.finish_report(status, true).await
+        timeout(remaining, child.wait())
+            .await
+            .map_err(|_| PluginSupervisorError::ShutdownTimeout)?
+            .map_err(|_| PluginSupervisorError::ChildStatusUnavailable)
     }
 
+    async fn receive_shutdown_acknowledgement(
+        &mut self,
+        deadline_at: Instant,
+    ) -> Result<(), PluginSupervisorError> {
+        loop {
+            if Instant::now() >= deadline_at {
+                return Err(PluginSupervisorError::ShutdownTimeout);
+            }
+            let remaining = deadline_at.saturating_duration_since(Instant::now());
+            let item = timeout(remaining, self.inbound.recv())
+                .await
+                .map_err(|_| PluginSupervisorError::ShutdownTimeout)?
+                .ok_or(PluginSupervisorError::SessionClosed)??;
+            validate_envelope(&item)?;
+            match item.body.as_ref() {
+                Some(envelope::Body::Shutdown(_)) => {
+                    if item.correlation_id.as_deref() != Some(self.session_id.as_str()) {
+                        return Err(
+                            vibemux_plugin_protocol::PluginProtocolError::InvalidTransition.into(),
+                        );
+                    }
+                    self.lifecycle.receive(&item)?;
+                    return Ok(());
+                }
+                // These frames may already be in flight when Shutdown is sent.
+                // Consume only drain-legal traffic under the original deadline;
+                // never route it into canonical Task/Run state.
+                Some(
+                    envelope::Body::Response(_)
+                    | envelope::Body::Event(_)
+                    | envelope::Body::Heartbeat(_)
+                    | envelope::Body::ProtocolError(_),
+                ) => self.record_heartbeat(&item)?,
+                _ => {
+                    return Err(
+                        vibemux_plugin_protocol::PluginProtocolError::InvalidTransition.into(),
+                    );
+                }
+            }
+        }
+    }
     async fn send_critical(
         &self,
         envelope: Envelope,
@@ -444,9 +523,7 @@ impl PluginSession {
         status: std::process::ExitStatus,
         graceful: bool,
     ) -> Result<PluginExitReport, PluginSupervisorError> {
-        self.reader_task.abort();
-        self.writer_task.abort();
-        let _ = timeout(Duration::from_secs(1), &mut self.stderr_task).await;
+        self.finish_io_tasks(true).await;
         Ok(PluginExitReport {
             graceful,
             success: status.success(),
@@ -455,18 +532,51 @@ impl PluginSession {
         })
     }
 
-    async fn terminate(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+    async fn terminate_in_place(&mut self) -> Result<PluginExitReport, PluginSupervisorError> {
+        let status = if let Some(child) = self.child.as_mut() {
+            // start_kill can fail for an already-exited child; wait is the authority
+            // for whether this exact process has been reaped.
+            let _ = child.start_kill();
+            timeout(self.shutdown_timeout, child.wait())
+                .await
+                .map_err(|_| PluginSupervisorError::ChildStatusUnavailable)
+                .and_then(|result| {
+                    result.map_err(|_| PluginSupervisorError::ChildStatusUnavailable)
+                })
+        } else {
+            Err(PluginSupervisorError::SessionClosed)
+        };
+        if status.is_ok() {
+            self.child.take();
         }
-        self.child.take();
+        self.finish_io_tasks(status.is_ok()).await;
+        let status = status?;
+        Ok(PluginExitReport {
+            graceful: false,
+            success: status.success(),
+            exit_code: status.code(),
+            stderr: self.stderr_state.report(),
+        })
+    }
+
+    async fn finish_io_tasks(&mut self, drain_stderr: bool) {
+        if self.io_tasks_finished {
+            return;
+        }
         self.reader_task.abort();
         self.writer_task.abort();
-        self.stderr_task.abort();
+        let _ = tokio::join!(&mut self.reader_task, &mut self.writer_task);
+        if !drain_stderr
+            || timeout(Duration::from_secs(1), &mut self.stderr_task)
+                .await
+                .is_err()
+        {
+            self.stderr_task.abort();
+            let _ = (&mut self.stderr_task).await;
+        }
+        self.io_tasks_finished = true;
     }
 }
-
 impl Drop for PluginSession {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
@@ -506,9 +616,16 @@ async fn collect_stderr(
     }
 }
 
-async fn terminate_child(child: &mut Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+async fn terminate_child(
+    child: &mut Child,
+    deadline: Duration,
+) -> Result<(), PluginSupervisorError> {
+    let _ = child.start_kill();
+    timeout(deadline, child.wait())
+        .await
+        .map_err(|_| PluginSupervisorError::ChildStatusUnavailable)?
+        .map_err(|_| PluginSupervisorError::ChildStatusUnavailable)?;
+    Ok(())
 }
 
 fn unix_deadline_ms(deadline: Duration) -> u64 {

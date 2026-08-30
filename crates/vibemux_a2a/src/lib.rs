@@ -1,6 +1,17 @@
 #![forbid(unsafe_code)]
 //! Minimal, loopback-only A2A v1 information sharing boundary.
 
+pub mod task_client;
+pub mod task_contract;
+pub mod task_grpc;
+pub mod task_runtime;
+pub mod task_server;
+pub use task_client::{TaskClient, TaskClientConfig};
+pub use task_contract::*;
+pub use task_grpc::{GrpcTaskClient, GrpcTaskServer};
+pub use task_server::{TaskServer, TaskServerConfig};
+pub(crate) mod task_wire;
+
 use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,

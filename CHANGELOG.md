@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add local stateful A2A HTTP+JSON/JSONRPC/gRPC, atomic schema-2 binding/verification commands, owned Run workspaces, and an explicit supervisor workflow using separate model peers. Add official TCK tooling and bidirectional Python/Go SDK interoperability fixtures; remote/TLS and full ITK remain outside verified scope.
+
+- Add M4.2 daemon-owned plugin registry: explicit bounded startup configuration, lifetime restart budgets/backoff/quarantine, read-only IPC v2 status with v1 health/shutdown compatibility, and joined plugin cleanup before writer shutdown. No Task/Run mutation or SQLite/plugin-wire migration.
+
 - Persist Run base commit and fix committed/staged/unstaged/untracked diff semantics.
 - Introduce an injected shell-free `CommandRunner` for Git, terminal, and harness host code.
 - Add SQLite forward migration and a controlled Windows PowerShell companion launcher.

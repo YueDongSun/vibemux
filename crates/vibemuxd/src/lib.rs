@@ -6,6 +6,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
+        Arc, Weak,
         atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
@@ -17,16 +18,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use vibemux_events::{EventDraft, EventEnvelope};
-use vibemux_store::{CommitOutcome, STORE_SCHEMA_VERSION, SqliteStore};
-use vibemux_types::{Run, Task};
+use vibemux_store::{A2aCommitOutcome, CommitOutcome, STORE_SCHEMA_VERSION, SqliteStore};
+use vibemux_types::{
+    Run, RunId, Task, TaskId,
+    a2a::{A2aRunRecord, A2aRunStart, A2aRunUpdate},
+};
 
 pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 64;
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
 pub mod control;
+pub mod model_peer_process;
+pub mod plugin_configuration;
+pub mod plugin_registry;
 pub mod process;
 pub mod recovery;
+pub mod supervisor_service;
+pub mod supervisor_workflow;
 
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -74,6 +83,22 @@ impl WriterError {
 }
 
 enum WriterRequest {
+    StartA2aRun {
+        start: Box<A2aRunStart>,
+        response: mpsc::Sender<Result<A2aCommitOutcome, WriterError>>,
+    },
+    UpdateA2aRun {
+        update: A2aRunUpdate,
+        response: mpsc::Sender<Result<A2aCommitOutcome, WriterError>>,
+    },
+    A2aRun {
+        run_id: RunId,
+        response: mpsc::Sender<Result<Option<A2aRunRecord>, WriterError>>,
+    },
+    A2aRuns {
+        task_id: TaskId,
+        response: mpsc::Sender<Result<Vec<A2aRunRecord>, WriterError>>,
+    },
     Health(mpsc::Sender<Result<WriterHealth, WriterError>>),
     CommitTask {
         task: Task,
@@ -144,8 +169,78 @@ impl Drop for LifecycleLock {
     }
 }
 
+/// Cloneable bounded request capability. It owns no writer thread, lock, or
+/// database and deliberately cannot shut down the authoritative writer.
+#[derive(Clone)]
+pub struct WriterHandle {
+    sender: Weak<SyncSender<WriterRequest>>,
+    response_timeout: Duration,
+}
+
+impl WriterHandle {
+    pub fn health(&self) -> Result<WriterHealth, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::Health(response))?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn events(&self) -> Result<Vec<EventEnvelope>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::Events(response))?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn projection(
+        &self,
+        entity_kind: impl Into<String>,
+        entity_id: impl Into<String>,
+    ) -> Result<Option<Value>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::Projection {
+            entity_kind: entity_kind.into(),
+            entity_id: entity_id.into(),
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn start_a2a_run(&self, start: A2aRunStart) -> Result<A2aCommitOutcome, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::StartA2aRun {
+            start: Box::new(start),
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn update_a2a_run(&self, update: A2aRunUpdate) -> Result<A2aCommitOutcome, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::UpdateA2aRun { update, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn a2a_run(&self, run_id: RunId) -> Result<Option<A2aRunRecord>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::A2aRun { run_id, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn a2a_runs(&self, task_id: TaskId) -> Result<Vec<A2aRunRecord>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::A2aRuns { task_id, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    fn enqueue(&self, request: WriterRequest) -> Result<(), WriterError> {
+        let sender = self.sender.upgrade().ok_or(WriterError::WorkerStopped)?;
+        sender.try_send(request).map_err(|error| match error {
+            TrySendError::Full(_) => WriterError::QueueFull,
+            TrySendError::Disconnected(_) => WriterError::WorkerStopped,
+        })
+    }
+}
 pub struct WriterWorker {
-    sender: Option<SyncSender<WriterRequest>>,
+    sender: Option<Arc<SyncSender<WriterRequest>>>,
     thread: Option<JoinHandle<()>>,
     response_timeout: Duration,
     queue_capacity: usize,
@@ -153,6 +248,25 @@ pub struct WriterWorker {
 }
 
 impl WriterWorker {
+    pub fn handle(&self) -> Result<WriterHandle, WriterError> {
+        Ok(WriterHandle {
+            sender: Arc::downgrade(self.sender.as_ref().ok_or(WriterError::WorkerStopped)?),
+            response_timeout: self.response_timeout,
+        })
+    }
+
+    pub fn start_a2a_run(&self, start: A2aRunStart) -> Result<A2aCommitOutcome, WriterError> {
+        self.handle()?.start_a2a_run(start)
+    }
+    pub fn update_a2a_run(&self, update: A2aRunUpdate) -> Result<A2aCommitOutcome, WriterError> {
+        self.handle()?.update_a2a_run(update)
+    }
+    pub fn a2a_run(&self, run_id: RunId) -> Result<Option<A2aRunRecord>, WriterError> {
+        self.handle()?.a2a_run(run_id)
+    }
+    pub fn a2a_runs(&self, task_id: TaskId) -> Result<Vec<A2aRunRecord>, WriterError> {
+        self.handle()?.a2a_runs(task_id)
+    }
     pub fn start(database_path: &Path) -> Result<Self, WriterError> {
         Self::start_with_config(
             database_path,
@@ -254,7 +368,7 @@ impl WriterWorker {
             .map_err(|_| WriterError::ThreadTerminated)?;
         match ready_receiver.recv_timeout(response_timeout) {
             Ok(Ok(())) => Ok(Self {
-                sender: Some(sender),
+                sender: Some(Arc::new(sender)),
                 thread: Some(thread),
                 response_timeout,
                 queue_capacity,
@@ -382,6 +496,30 @@ fn writer_loop(
     }
     while let Ok(request) = receiver.recv() {
         match request {
+            WriterRequest::StartA2aRun { start, response } => {
+                let result = store
+                    .start_a2a_run(*start)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::UpdateA2aRun { update, response } => {
+                let result = store
+                    .update_a2a_run(update)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::A2aRun { run_id, response } => {
+                let result = store
+                    .a2a_run(run_id)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::A2aRuns { task_id, response } => {
+                let result = store
+                    .a2a_runs(task_id)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
             WriterRequest::Health(response) => {
                 let _ = response.send(Ok(WriterHealth {
                     healthy: true,
@@ -504,6 +642,91 @@ mod tests {
         .expect("task")
     }
 
+    #[test]
+    fn nonowning_handles_serialize_a2a_commands_and_cannot_keep_writer_alive() {
+        use vibemux_types::{
+            RunSpec,
+            a2a::{A2aRunAction, RunWorkspace},
+        };
+        let directory = tempfile::tempdir().expect("directory");
+        let database = directory.path().join("state.sqlite3");
+        let worker = WriterWorker::start(&database).expect("writer");
+        let handle = worker.handle().expect("handle");
+        let task = task(ProjectId::new());
+        let run = Run::new(RunSpec {
+            project_id: task.project_id(),
+            task_id: task.task_id(),
+            harness: "mock".to_string(),
+            role: "worker".to_string(),
+            protocol: "a2a".to_string(),
+            base_commit: "a".repeat(40),
+        })
+        .expect("run");
+        let request = A2aRunStart {
+            task: task.clone(),
+            run: run.clone(),
+            peer_id: "worker_peer".to_string(),
+            external_task_id: "external_task".to_string(),
+            transport: "http_json".to_string(),
+            protocol_version: "1.0".to_string(),
+            workspace: RunWorkspace {
+                path: "/vibemux_fixture/run".to_string(),
+                branch: "codex/writer_fixture".to_string(),
+                base_commit: "a".repeat(40),
+                ownership_token: "owned_fixture".to_string(),
+            },
+            timestamp: time::OffsetDateTime::now_utc(),
+            idempotency_key: "concurrent_create".to_string(),
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let joins = (0..2)
+            .map(|_| {
+                let handle = handle.clone();
+                let request = request.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    handle.start_a2a_run(request).expect("concurrent creation")
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let outcomes = joins
+            .into_iter()
+            .map(|join| join.join().expect("caller joined"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.duplicate).count(),
+            1
+        );
+        assert_eq!(outcomes[0].record, outcomes[1].record);
+        assert_eq!(handle.events().expect("events").len(), 1);
+        assert_eq!(handle.a2a_runs(task.task_id()).expect("runs").len(), 1);
+        let updated = handle
+            .update_a2a_run(A2aRunUpdate {
+                run_id: run.run_id(),
+                expected_version: 1,
+                timestamp: request.timestamp,
+                idempotency_key: "started".to_string(),
+                action: A2aRunAction::Start,
+            })
+            .expect("start");
+        assert_eq!(updated.record.version, 2);
+        worker.shutdown().expect("shutdown remains owned by worker");
+        assert_eq!(handle.health(), Err(WriterError::WorkerStopped));
+        assert!(!writer_lock_path_for_database(&database).exists());
+        let restarted = WriterWorker::start(&database).expect("restart");
+        let retained = restarted.handle().expect("retained handle");
+        drop(restarted);
+        assert_eq!(retained.health(), Err(WriterError::WorkerStopped));
+        for _ in 0..100 {
+            if !writer_lock_path_for_database(&database).exists() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("non-owning capability retained writer lock");
+    }
     #[test]
     fn worker_owns_store_and_commits_projection() {
         let directory = tempfile::tempdir().expect("tempdir");

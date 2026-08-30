@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize, de};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod a2a;
+mod restore;
+
 const MAX_TITLE_BYTES: usize = 512;
 const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
 const MAX_NAME_BYTES: usize = 128;

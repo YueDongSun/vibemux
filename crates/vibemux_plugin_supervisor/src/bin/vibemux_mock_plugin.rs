@@ -37,7 +37,8 @@ async fn main() {
         "plugin_hello_1",
         None,
         envelope::Body::Hello(Hello {
-            plugin_id: "mock.harness".to_string(),
+            plugin_id: std::env::var("VIBEMUX_MOCK_PLUGIN_ID")
+                .unwrap_or_else(|_| "mock.harness".to_string()),
             plugin_version: "1.0.0".to_string(),
             kind: PluginKind::Harness.into(),
             capabilities: vec!["mock:cancel".to_string(), "mock:echo".to_string()],
@@ -55,6 +56,10 @@ async fn main() {
     };
     let accepted_session = match core_hello.body.as_ref() {
         Some(envelope::Body::CoreHello(core_hello)) => core_hello.session_id.clone(),
+        _ => return,
+    };
+    let heartbeat_interval_ms = match core_hello.body.as_ref() {
+        Some(envelope::Body::CoreHello(core_hello)) => core_hello.heartbeat_interval_ms,
         _ => return,
     };
     let ready_session = if mode == "wrong_ready" {
@@ -98,6 +103,24 @@ async fn main() {
     {
         return;
     }
+    if mode == "crash_after_heartbeat" {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        std::process::exit(7);
+    }
+    if mode == "unsolicited_event" {
+        let event = envelope(
+            "untrusted_state_message",
+            Some(session_id.clone()),
+            envelope::Body::Event(Event {
+                event_id: "untrusted_state_event".to_string(),
+                event_type: "task:completed".to_string(),
+                payload: br#"{"task_id":"mock_task","run_id":"mock_run","state":"succeeded","prompt":"private_mock_prompt"}"#.to_vec(),
+            }),
+        );
+        if write_envelope(&mut output, &event, config).await.is_err() {
+            return;
+        }
+    }
     if mode == "duplicate_heartbeat" {
         let duplicate = envelope(
             "plugin_heartbeat_2",
@@ -111,11 +134,32 @@ async fn main() {
         return;
     }
 
+    let mut heartbeat_timer = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
+    heartbeat_timer.tick().await;
+    let mut heartbeat_sequence = 1_u64;
     let mut message_counter = 1_u64;
     loop {
-        let incoming = match read_envelope(&mut input, config).await {
-            Ok(incoming) => incoming,
-            Err(_) => return,
+        let incoming = {
+            // Preserve the partially read frame across heartbeat ticks.
+            let read = read_envelope(&mut input, config);
+            tokio::pin!(read);
+            loop {
+                tokio::select! {
+                    incoming = &mut read => match incoming {
+                        Ok(incoming) => break incoming,
+                        Err(_) => return,
+                    },
+                    _ = heartbeat_timer.tick(), if mode == "periodic_heartbeat" => {
+                        heartbeat_sequence += 1;
+                        let heartbeat = envelope(
+                            &format!("plugin_heartbeat_{heartbeat_sequence}"),
+                            Some(session_id.clone()),
+                            envelope::Body::Heartbeat(Heartbeat { sequence: heartbeat_sequence }),
+                        );
+                        if write_envelope(&mut output, &heartbeat, config).await.is_err() { return; }
+                    }
+                }
+            }
         };
         message_counter = message_counter.saturating_add(1);
         match incoming.body {
@@ -162,7 +206,11 @@ async fn main() {
                 }
                 let acknowledgement = envelope(
                     &format!("plugin_shutdown_{message_counter}"),
-                    incoming.correlation_id,
+                    if mode == "wrong_shutdown_ack" {
+                        Some("wrong_session".to_string())
+                    } else {
+                        incoming.correlation_id
+                    },
                     envelope::Body::Shutdown(Shutdown {
                         reason_code: "plugin:ack".to_string(),
                     }),
