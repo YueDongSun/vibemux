@@ -5,9 +5,29 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "VibeMux unified frontend: read-only TUI debug view + egui-based central console GUI"
+
+[lib]
+# default `lib` target
+
+[[bin]]
+name = "vibemux_frontend"
+path = "src/bin/vibemux_frontend.rs"
+
+[[bin]]
+name = "vibemux_frontend_tui"
+path = "src/bin/vibemux_frontend_tui.rs"
+
+[[bin]]
+name = "vibemux_frontend_dump"
+path = "src/bin/vibemux_frontend_dump.rs"
 
 [dependencies]
 crossterm.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 vibemux_probe = { path = "../vibemux_probe" }
+egui.workspace = true
+eframe.workspace = true
+serde.workspace = true
+serde_json.workspace = true

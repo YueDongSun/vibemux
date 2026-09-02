@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#0C0B0A; --window:#121110; --surface:#161514; --surface2:#1B1A18;
+    --hair:rgba(255,255,255,.07); --hair2:rgba(255,255,255,.05);
+    --txt:#ECEAE3; --mut:#A09D93; --mut2:#6E6B63;
+    --acc:#D97757; --acc-dim:rgba(217,119,87,.13);
+    --ok:#7BA97A; --warn:#D2A35E; --err:#C96A63;
+    --mono:"Consolas","Cascadia Code",ui-monospace,monospace;
+    --sans:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#070606}
+  body{font-family:var(--sans);color:var(--txt);-webkit-font-smoothing:antialiased}
+  .stage{width:1440px;height:900px;background:var(--bg);position:relative;overflow:hidden;
+    display:flex;flex-direction:column}
+
+  /* ── top chrome ─────────────────────────────── */
+  .top{height:58px;flex:0 0 auto;display:flex;align-items:center;gap:18px;
+    padding:0 22px;border-bottom:1px solid var(--hair)}
+  .brand{display:flex;align-items:baseline;gap:9px}
+  .mark{color:var(--acc);font-size:17px;line-height:1;font-weight:600;transform:translateY(1px)}
+  .brand b{font-size:13.5px;letter-spacing:.14em;font-weight:650;text-transform:lowercase}
+  .brand b em{font-style:normal;color:var(--mut)}
+  .crumbs{color:var(--mut2);font-size:12px;display:flex;gap:8px;align-items:center}
+  .crumbs .at{color:var(--mut2)}
+  .spacer{flex:1}
+  .chip{font-family:var(--mono);font-size:10.5px;color:var(--mut);
+    border:1px solid var(--hair);border-radius:6px;padding:5px 9px;display:inline-flex;gap:7px;align-items:center}
+  .chip .dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+  .chip.gate .dot{background:var(--ok)}
+  .chip.a2a .dot{background:var(--mut2)}
+  .themes{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+  .themes span{font-size:10.5px;padding:6px 11px;color:var(--mut2);cursor:default}
+  .themes span.on{background:var(--surface2);color:var(--txt)}
+
+  /* ── body ───────────────────────────────────── */
+  .body{flex:1;overflow:hidden;display:flex}
+  .col{flex:1;overflow-y:auto;padding:0;scrollbar-width:none}
+  .col::-webkit-scrollbar{display:none}
+
+  .ledger{max-width:900px;margin:0 auto;padding:26px 40px 60px}
+  .eyebrow{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--acc);text-transform:uppercase;margin-bottom:10px}
+  h1{font-size:23px;font-weight:600;letter-spacing:-.01em}
+  .leder-sub{margin-top:6px;color:var(--mut);font-size:13px}
+  .leder-sub b{color:var(--txt);font-weight:600}
+  .leder-sub .g{color:var(--ok)}
+  .leder-sub .sep{margin:0 6px;color:var(--mut2)}
+
+  .row{margin-top:18px}
+  .session{background:var(--surface);border:1px solid var(--hair);border-radius:10px;
+    transition:border-color .15s}
+  .session.open{border-color:rgba(217,119,87,.45)}
+  .session-head{display:flex;align-items:center;gap:14px;padding:14px 16px;cursor:default}
+  .mono{width:40px;height:40px;border-radius:9px;background:var(--surface2);
+    display:grid;place-items:center;font-family:var(--mono);font-weight:700;font-size:15px;color:var(--txt)}
+  .mono.c{color:var(--acc)} .mono.x{color:#9FB7E0} .mono.o{color:#C9A9E6}
+  .mono.g{color:#9AD0E6} .mono.k{color:#E2B96A}
+  .s-main{flex:1;min-width:0}
+  .s-title{display:flex;align-items:baseline;gap:10px}
+  .s-name{font-size:14.5px;font-weight:600}
+  .s-bin{font-family:var(--mono);font-size:10px;color:var(--mut2)}
+  .s-line{font-family:var(--mono);font-size:11.5px;color:var(--mut);margin-top:3px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .s-line .cmd{color:var(--acc-dim);color:var(--txt);opacity:.9}
+  .s-line .hl{color:var(--acc)}
+  .s-right{display:flex;align-items:center;gap:12px}
+  .pill{font-family:var(--mono);font-size:10px;padding:4px 9px;border-radius:20px;
+    border:1px solid var(--hair2);color:var(--mut)}
+  .pill.idle{color:var(--mut)}
+  .pill.run{color:#B7D9B6;background:rgba(123,169,122,.12);border-color:rgba(123,169,122,.35)}
+  .chev{color:var(--mut2);font-size:13px;transition:transform .15s}
+  .session.open .chev{transform:rotate(90deg)}
+
+  /* terminal sheet (Claude expanded) */
+  .sheet{border-top:1px solid var(--hair2);padding:14px 16px 16px}
+  .term{background:#0A0908;border:1px solid var(--hair2);border-radius:8px;
+    font-family:var(--mono);font-size:11.5px;line-height:1.65;padding:14px 15px;color:#D6D3CA;height:206px;overflow:hidden}
+  .term .p{color:#9A978E}
+  .term .acc{color:var(--acc)}
+  .term .dim{color:#5F5D56}
+  .term .user{color:#ECEAE3;font-weight:600}
+  .sheet-actions{display:flex;gap:8px;margin-top:10px;align-items:center}
+  .composer{flex:1;display:flex;align-items:center;gap:10px;background:var(--surface2);
+    border:1px solid var(--hair);border-radius:8px;padding:7px 12px}
+  .composer .carat{color:var(--acc);font-family:var(--mono);font-size:12px}
+  .composer .ph{color:var(--mut2);font-size:12.5px}
+  .btn{font-size:12px;padding:7px 14px;border-radius:7px;border:1px solid var(--hair);color:var(--mut)}
+  .btn.pri{background:var(--acc);border-color:var(--acc);color:#1A0E09;font-weight:600}
+  .btn.ghost{background:var(--surface2)}
+
+  .hint{margin-top:26px;color:var(--mut2);font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+    display:flex;gap:16px}
+  .hint span b{color:var(--acc);font-weight:600}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="top">
+    <div class="brand"><span class="mark">✳</span><b>vibemux</b></div>
+    <div class="crumbs"><span class="at">/</span> E:\lab\vibemux <span class="at">·</span> main</div>
+    <div class="spacer"></div>
+    <span class="chip gate"><span class="dot"></span>gateway 127.0.0.1:15721</span>
+    <span class="chip a2a"><span class="dot"></span>a2a local</span>
+    <div class="themes"><span class="on">claude</span><span>github</span><span>vscode</span></div>
+  </div>
+
+  <div class="body">
+    <div class="col">
+      <div class="ledger">
+        <div class="eyebrow">Console</div>
+        <h1>Your agents, right now</h1>
+        <div class="leder-sub">
+          <b class="g">●</b>&nbsp; 3 idle · 2 warm &nbsp;<span class="sep">/</span>&nbsp; telemetry
+          claude-desktop 339 req <span class="sep">·</span> codex 14 req <span class="sep">/</span>
+          schema v1
+        </div>
+
+        <!-- Claude: expanded -->
+        <div class="row">
+          <div class="session open">
+            <div class="session-head">
+              <div class="mono c">C</div>
+              <div class="s-main">
+                <div class="s-title"><span class="s-name">Claude Code</span><span class="s-bin">claude · v1.2.3 · direct</span></div>
+                <div class="s-line"><span class="cmd">›</span> ready&nbsp;<span class="dim">·</span>&nbsp;0 in / 0 out&nbsp;<span class="dim">·</span>&nbsp;session 0h 12m</div>
+              </div>
+              <div class="s-right"><span class="pill run">ready</span><span class="chev">›</span></div>
+            </div>
+            <div class="sheet">
+              <div class="term">
+                <span class="acc">Claude Code v1.2.3</span> · local<br>
+                <span class="p">&gt; thinking…</span><br>
+                &nbsp;&nbsp;considering 3 options<br>
+                <span class="p">&gt; ready</span><br>
+                <span class="user">Claude&gt;</span> explain this worktree in two sentences<br>
+                <span class="dim">⏎ awaiting…</span><br>
+                <span class="p">&gt; ready</span>&nbsp;<span class="dim">· last_seen 12s ago</span>
+              </div>
+              <div class="sheet-actions">
+                <div class="composer"><span class="carat">&gt;</span><span class="ph">Send to Claude Code …</span></div>
+                <button class="btn pri">Send</button>
+                <button class="btn">⌃C</button>
+                <button class="btn">Clear</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Codex -->
+        <div class="row"><div class="session">
+          <div class="session-head">
+            <div class="mono x">X</div>
+            <div class="s-main">
+              <div class="s-title"><span class="s-name">Codex</span><span class="s-bin">codex · v0.1 · local_gateway</span></div>
+              <div class="s-line"><span class="cmd">›</span> <span class="hl">sweep</span> in progress — 3 files touched</div>
+            </div>
+            <div class="s-right"><span class="pill run">working</span><span class="chev">›</span></div>
+          </div>
+        </div></div>
+
+        <!-- OpenCode -->
+        <div class="row"><div class="session">
+          <div class="session-head">
+            <div class="mono o">O</div>
+            <div class="s-main">
+              <div class="s-title"><span class="s-name">OpenCode</span><span class="s-bin">opencode · v1.18.21 · direct</span></div>
+              <div class="s-line"><span class="cmd">›</span> idle — provider openai · 0 jobs</div>
+            </div>
+            <div class="s-right"><span class="pill idle">idle</span><span class="chev">›</span></div>
+          </div>
+        </div></div>
+
+        <!-- Copilot -->
+        <div class="row"><div class="session">
+          <div class="session-head">
+            <div class="mono g">K</div>
+            <div class="s-main">
+              <div class="s-title"><span class="s-name">GitHub Copilot</span><span class="s-bin">gh-copilot · v1.0 · unknown</span></div>
+              <div class="s-line"><span class="cmd">›</span> idle — no cli session</div>
+            </div>
+            <div class="s-right"><span class="pill idle">idle</span><span class="chev">›</span></div>
+          </div>
+        </div></div>
+
+        <!-- Grok -->
+        <div class="row"><div class="session">
+          <div class="session-head">
+            <div class="mono k">G</div>
+            <div class="s-main">
+              <div class="s-title"><span class="s-name">Grok</span><span class="s-bin">grok · v0.2 · local_gateway</span></div>
+              <div class="s-line"><span class="cmd">›</span> idle — ask anything.</div>
+            </div>
+            <div class="s-right"><span class="pill idle">idle</span><span class="chev">›</span></div>
+          </div>
+        </div></div>
+
+        <div class="hint">
+          <span><b>↵</b> open session sheet</span>
+          <span><b>↑↓</b> move</span>
+          <span><b>c</b> copy snapshot</span>
+          <span><b>t</b> theme</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

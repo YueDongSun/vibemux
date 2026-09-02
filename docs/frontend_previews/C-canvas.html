@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#0E0D0C; --hair:rgba(255,255,255,.09); --hair2:rgba(255,255,255,.05);
+    --txt:#EDEAE2; --mut:#A5A196; --mut2:#716D63;
+    --acc:#D97757; --acc2:#E7C6B4;
+    --ok:#8AB487; --warn:#D9A85F; --err:#CB6D63;
+    --mono:"Consolas","Cascadia Code",ui-monospace,monospace;
+    --sans:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+    --serif:Georgia,"Times New Roman",serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#070606}
+  body{font-family:var(--sans);color:var(--txt);-webkit-font-smoothing:antialiased}
+  .stage{width:1440px;height:900px;background:var(--bg);overflow:hidden;display:flex;flex-direction:column}
+
+  /* hairline top */
+  .top{height:46px;flex:0 0 auto;display:flex;align-items:center;padding:0 34px;border-bottom:1px solid var(--hair)}
+  .brand{display:flex;align-items:baseline;gap:10px}
+  .brand .mark{color:var(--acc);font-family:var(--serif);font-size:19px;line-height:1}
+  .brand b{font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .spacer{flex:1}
+  .meta{display:flex;gap:22px;font-family:var(--mono);font-size:10px;color:var(--mut2);letter-spacing:.05em}
+  .meta .ok{color:var(--ok)}
+  .themes{display:flex;gap:2px}
+  .themes span{font-family:var(--mono);font-size:10px;padding:5px 10px;color:var(--mut2)}
+  .themes span.on{color:var(--txt);background:rgba(255,255,255,.06);border-radius:6px}
+
+  .body{flex:1;display:flex;min-height:0}
+
+  /* overview column */
+  .overview{flex:1;display:flex;flex-direction:column;padding:44px 72px 20px;min-width:0}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--acc);
+    text-transform:uppercase}
+  .h1{font-family:var(--serif);font-size:34px;line-height:1.05;font-weight:600;margin-top:10px;
+    max-width:14ch}
+  .h1 i{font-style:italic;font-weight:500;color:var(--acc2)}
+  .sub{margin-top:12px;color:var(--mut);font-size:13px;max-width:52ch;line-height:1.55}
+
+  .tbl{margin-top:34px;border-top:1px solid var(--hair)}
+  .row{display:grid;grid-template-columns:210px 150px 1fr 150px 150px;gap:16px;
+    align-items:center;padding:13px 6px;border-bottom:1px solid var(--hair)}
+  .row .agent{display:flex;align-items:center;gap:12px}
+  .row .giant{font-family:var(--serif);font-size:19px;color:var(--mut2);width:22px;text-align:right}
+  .row .nm{font-size:13.5px;font-weight:600}
+  .row .bin{font-family:var(--mono);font-size:9.5px;color:var(--mut2);display:block;margin-top:2px}
+  .row .st{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px}
+  .row .st .d{width:7px;height:7px;border-radius:50%}
+  .st.dim .d{background:var(--mut2)}
+  .st.run .d{background:var(--ok);box-shadow:0 0 0 3px rgba(138,180,135,.15)}
+  .row .line{font-family:var(--mono);font-size:11px;color:var(--mut);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .line .cmd{color:var(--txt)}
+  .row .col{font-family:var(--mono);font-size:10.5px;color:var(--mut2)}
+  .row .route{justify-self:end}
+  .row:hover{background:rgba(255,255,255,.018)}
+
+  .sys{margin-top:18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;
+    font-family:var(--mono);font-size:10.5px;color:var(--mut2);line-height:1.7}
+  .sys b{display:block;color:var(--mut);font-weight:600;font-size:9.5px;letter-spacing:.16em;margin-bottom:2px;
+    text-transform:uppercase}
+  .sys .g{color:var(--ok)}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="top">
+    <div class="brand"><span class="mark">✳</span><b>vibemux</b></div>
+    <div class="spacer"></div>
+    <div class="meta">
+      <span>gateway <span class="ok">127.0.0.1:15721</span></span>
+      <span>schema v1</span>
+      <span>E:\lab\vibemux</span>
+    </div>
+    <div class="themes"><span class="on">claude</span><span>github</span><span>vscode</span></div>
+  </div>
+
+  <div class="body">
+    <div class="overview">
+      <div class="kicker">Command</div>
+      <div class="h1">Five agents, <i>one machine.</i></div>
+      <div class="sub">A quiet place to see what each coding agent is doing and step in when
+        one of them is yours. All local, nothing leaves the worktree.</div>
+
+      <div class="tbl">
+        <div class="row">
+          <div class="agent"><span class="giant">C</span><div><span class="nm">Claude</span><span class="bin">claude · v1.2.3</span></div></div>
+          <div class="st run"><span class="d"></span>ready</div>
+          <div class="line"><span class="cmd">›</span> ready · 0 in / 0 out</div>
+          <div class="col">direct</div>
+          <div class="col route">ws: main</div>
+        </div>
+        <div class="row">
+          <div class="agent"><span class="giant">X</span><div><span class="nm">Codex</span><span class="bin">codex · v0.1</span></div></div>
+          <div class="st run"><span class="d"></span>working</div>
+          <div class="line"><span class="cmd">›</span> sweeping tests — 3 files touched</div>
+          <div class="col">gateway</div>
+          <div class="col route">ws: feat/…</div>
+        </div>
+        <div class="row">
+          <div class="agent"><span class="giant">O</span><div><span class="nm">OpenCode</span><span class="bin">opencode · v1.18</span></div></div>
+          <div class="st dim"><span class="d"></span>idle</div>
+          <div class="line"><span class="cmd">›</span> idle · provider openai</div>
+          <div class="col">direct</div>
+          <div class="col route">ws: main</div>
+        </div>
+        <div class="row">
+          <div class="agent"><span class="giant">K</span><div><span class="nm">Copilot</span><span class="bin">gh-copilot · v1.0</span></div></div>
+          <div class="st dim"><span class="d"></span>idle</div>
+          <div class="line"><span class="cmd">›</span> no cli session</div>
+          <div class="col">—</div>
+          <div class="col route">ws: main</div>
+        </div>
+        <div class="row">
+          <div class="agent"><span class="giant">G</span><div><span class="nm">Grok</span><span class="bin">grok · v0.2</span></div></div>
+          <div class="st dim"><span class="d"></span>idle</div>
+          <div class="line"><span class="cmd">›</span> ask anything.</div>
+          <div class="col">gateway</div>
+          <div class="col route">ws: main</div>
+        </div>
+      </div>
+
+      <div class="sys">
+        <div><b>Telemetry</b>claude-desktop 339 req · <span class="g">0 fail</span><br>codex 14 req · 0 fail</div>
+        <div><b>Gateway</b>tcp reachable · health 200<br>a2a local · listener closed</div>
+        <div><b>Runtime</b>schema v1 · observed 22:41:07Z<br>windows · x86_64</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

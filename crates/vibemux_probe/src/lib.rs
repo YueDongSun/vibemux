@@ -309,6 +309,11 @@ async fn probe_version(launcher: &LauncherSpec, deadline: Duration) -> Result<St
     }
     command.kill_on_drop(true);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Windows: probe children (harness shims, powershell/pwsh wrappers
+    // for .ps1 launchers) must never flash a console window of their
+    // own, even when the parent is a GUI-subsystem process.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     let mut child = command.spawn().map_err(|_| ())?;
     let stdout = child.stdout.take().ok_or(())?;
     let stderr = child.stderr.take().ok_or(())?;

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --bg:#0D0C0B; --rail:#131210; --surface:#161514; --surface2:#1D1C1A;
+    --hair:rgba(255,255,255,.07); --hair2:rgba(255,255,255,.05);
+    --txt:#ECE9E1; --mut:#A19E94; --mut2:#6E6B62;
+    --acc:#D97757; --acc-dim:rgba(217,119,87,.13);
+    --ok:#7BA97A; --warn:#D2A35E; --err:#C96A63;
+    --mono:"Consolas","Cascadia Code",ui-monospace,monospace;
+    --sans:"Segoe UI Variable","Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#060606}
+  body{font-family:var(--sans);color:var(--txt);-webkit-font-smoothing:antialiased}
+  .stage{width:1440px;height:900px;background:var(--bg);position:relative;overflow:hidden;
+    display:flex;flex-direction:column}
+
+  .top{height:48px;flex:0 0 auto;display:flex;align-items:center;gap:16px;padding:0 16px 0 8px;
+    border-bottom:1px solid var(--hair)}
+  .burger{width:40px;height:40px;display:grid;place-items:center;color:var(--mut2);font-size:16px}
+  .brand{display:flex;align-items:center;gap:8px}
+  .brand .mark{color:var(--acc);font-weight:700;font-size:15px}
+  .brand b{font-size:12.5px;letter-spacing:.16em;font-weight:650;color:var(--txt)}
+  .search{margin-left:14px;background:var(--surface);border:1px solid var(--hair);border-radius:7px;
+    display:flex;align-items:center;gap:8px;padding:6px 11px;width:300px}
+  .search .k{font-family:var(--mono);color:var(--mut2);font-size:10px}
+  .search .ph{color:var(--mut2);font-size:12px}
+  .spacer{flex:1}
+  .where{font-family:var(--mono);font-size:10.5px;color:var(--mut2)}
+  .themes{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+  .themes span{font-size:10.5px;padding:6px 11px;color:var(--mut2)}
+  .themes span.on{background:var(--surface2);color:var(--txt)}
+
+  .body{flex:1;display:flex;min-height:0}
+
+  /* rail */
+  .rail{width:64px;flex:0 0 auto;background:var(--rail);border-right:1px solid var(--hair);
+    display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:6px}
+  .rail .mono{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+    font-family:var(--mono);font-weight:700;font-size:14px;color:var(--mut);position:relative}
+  .rail .mono.on{background:var(--acc-dim);color:var(--acc)}
+  .rail .mono .dot{position:absolute;right:-1px;bottom:-1px;width:9px;height:9px;border-radius:50%;
+    background:var(--ok);border:2px solid var(--rail)}
+  .rail .mono .dot.off{background:var(--mut2)}
+  .rail .gap{flex:1}
+  .rail .geo{color:var(--mut2);font-size:16px}
+
+  /* main : stage + sheet */
+  .main{flex:1;display:flex;min-width:0}
+
+  .stage{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .stage-head{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--hair)}
+  .stage-id{font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .stage-id .bin{font-family:var(--mono);font-size:10px;color:var(--mut2);font-weight:400;margin-left:8px}
+  .pill{font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:20px;color:var(--ok);
+    background:rgba(123,169,122,.12);border:1px solid rgba(123,169,122,.3)}
+  .stage .route{font-family:var(--mono);font-size:10.5px;color:var(--mut2)}
+  .spacer{flex:1}
+  .seg{display:flex;gap:4px;background:var(--surface);padding:3px;border-radius:8px;border:1px solid var(--hair)}
+  .seg button{font-size:11px;padding:6px 12px;border-radius:6px;border:none;background:transparent;color:var(--mut)}
+  .seg button.on{background:var(--surface2);color:var(--txt)}
+
+  /* terminal */
+  .tstage{flex:1;padding:20px 26px;display:flex;flex-direction:column;min-height:0}
+  .term{flex:1;background:#0A0908;border:1px solid var(--hair2);border-radius:10px;
+    font-family:var(--mono);font-size:12.5px;line-height:1.7;padding:18px 20px;overflow:hidden;color:#D8D5CB}
+  .term .p{color:#8F8C82}
+  .term .acc{color:var(--acc)}
+  .term .dim{color:#5D5A52}
+  .term .warn{color:var(--warn)}
+  .term .ok{color:#93B792}
+  .term .user{color:#F0EEE6;font-weight:700}
+  .termrow{white-space:nowrap}
+  .termrow.pad{padding-left:1.6em}
+  .caret-line{white-space:nowrap}
+  .caret-line .blk{background:var(--acc);color:#17110C;display:inline-block;width:7px}
+
+  /* composer */
+  .comp{padding:12px 26px 20px}
+  .comp-bar{display:flex;align-items:center;gap:10px;background:var(--surface2);
+    border:1px solid var(--hair);border-radius:11px;padding:8px 12px;box-shadow:0 6px 22px rgba(0,0,0,.28)}
+  .comp-bar .carat{font-family:var(--mono);color:var(--acc);font-size:13px}
+  .comp-bar input{flex:1;background:transparent;border:none;outline:none;color:var(--txt);
+    font-size:13px;font-family:var(--sans)}
+  .comp-bar input::placeholder{color:var(--mut2)}
+  .btn{font-size:12px;font-weight:600;padding:8px 16px;border-radius:9px;border:none;cursor:default}
+  .btn.pri{background:var(--acc);color:#1A0E09}
+  .btn.ico{background:transparent;color:var(--mut2);font-size:13px;padding:6px 8px}
+  .comp-note{margin-top:7px;font-family:var(--mono);font-size:9.5px;color:var(--mut2);
+    display:flex;gap:14px;justify-content:flex-end}
+
+  /* sheet */
+  .sheet{width:300px;flex:0 0 auto;background:var(--surface);border-left:1px solid var(--hair);
+    overflow-y:auto;padding:0}
+  .sheet h3{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--acc);
+    text-transform:uppercase;padding:18px 18px 10px}
+  .def{display:flex;justify-content:space-between;align-items:baseline;padding:9px 18px;font-size:12px}
+  .def .k{color:var(--mut2)}
+  .def .v{color:var(--txt);font-family:var(--mono);font-size:11px}
+  .def .v.ok{color:var(--ok)} .def .v.bad{color:var(--err)} .def .v.na{color:var(--mut2)}
+  .rule{border-top:1px solid var(--hair2);margin:6px 18px}
+  .endpoint{font-family:var(--mono);font-size:10.5px;color:var(--mut);padding:4px 18px;line-height:1.5;
+    word-break:break-all}
+  .env{font-family:var(--mono);font-size:10px;color:var(--mut2);padding:3px 18px;line-height:1.7}
+  .env b{color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="top">
+    <div class="burger">≡</div>
+    <div class="brand"><span class="mark">✳</span><b>vibemux</b></div>
+    <div class="search"><span class="k">⌘K</span><span class="ph">jump to agent, action…</span></div>
+    <div class="spacer"></div>
+    <span class="where">E:\lab\vibemux · main</span>
+    <div class="themes"><span class="on">claude</span><span>github</span><span>vscode</span></div>
+  </div>
+
+  <div class="body">
+    <!-- rail -->
+    <div class="rail">
+      <div class="mono on">C<span class="dot"></span></div>
+      <div class="mono">X</div>
+      <div class="mono">O</div>
+      <div class="mono">K<span class="dot off"></span></div>
+      <div class="mono">G</div>
+      <div class="gap"></div>
+      <div class="geo">⚙</div>
+    </div>
+
+    <div class="main">
+      <div class="stage">
+        <div class="stage-head">
+          <span class="stage-id">Claude Code<span class="bin">claude · v1.2.3</span></span>
+          <span class="pill">● ready</span>
+          <span class="route">route direct · ws main</span>
+          <div class="spacer"></div>
+          <div class="seg"><button class="on">Transcript</button><button>Files</button><button>Log</button></div>
+        </div>
+
+        <div class="tstage">
+          <div class="term">
+            <div class="termrow"><span class="acc">Claude Code v1.2.3</span> <span class="dim">·</span> <span class="p">local session</span></div>
+            <div class="termrow"><span class="p">› thinking…</span></div>
+            <div class="termrow pad">considering 3 options</div>
+            <div class="termrow"><span class="p">›</span> <span class="ok">✓ ready</span> <span class="dim">· model claude · 0 in / 0 out</span></div>
+            <div class="termrow">&nbsp;</div>
+            <div class="termrow"><span class="user">Claude&gt;</span> why is this crate failing to link on MSVC?</div>
+            <div class="termrow pad"><span class="warn">╷</span> read crates/vibemux_probe/src/lib.rs</div>
+            <div class="termrow pad"><span class="warn">╷</span> run cargo check -p vibemux_probe</div>
+            <div class="termrow"><span class="p">› thinking…</span></div>
+            <div class="termrow pad">looks like a <span class="acc">cfg(windows)</span> gate ordering issue</div>
+            <div class="termrow"><span class="p">›</span> applying fix to 2 files</div>
+            <div class="termrow">&nbsp;</div>
+            <div class="termrow"><span class="user">Claude&gt;</span></div>
+          </div>
+          <div class="comp">
+            <div class="comp-bar">
+              <span class="carat">&gt;</span>
+              <input placeholder="Message Claude Code …" value="">
+              <button class="btn ico">⌃C</button>
+              <button class="btn pri">Send</button>
+            </div>
+            <div class="comp-note">
+              <span>↵ send</span><span>⌃C interrupt</span><span>esc console</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- inspector -->
+      <div class="sheet">
+        <h3>Claude</h3>
+        <div class="def"><span class="k">launcher</span><span class="v ok">verified</span></div>
+        <div class="def"><span class="k">auth</span><span class="v na">not run</span></div>
+        <div class="def"><span class="k">inference</span><span class="v na">not run</span></div>
+        <div class="def"><span class="k">version</span><span class="v">1.2.3</span></div>
+        <div class="def"><span class="k">route</span><span class="v">direct</span></div>
+        <div class="def"><span class="k">schema</span><span class="v">1</span></div>
+        <div class="rule"></div>
+        <h3>Environment</h3>
+        <div class="env"><b>PATH</b> ok <span class="dim">…64 entries</span></div>
+        <div class="env"><b>ANTHROPIC_API_KEY</b> hidden</div>
+        <div class="env"><b>HOME</b> C:\Users\ydsun</div>
+        <div class="rule"></div>
+        <h3>Endpoints</h3>
+        <div class="endpoint">→ direct executable</div>
+        <div class="endpoint">→ gateway 127.0.0.1:15721</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
