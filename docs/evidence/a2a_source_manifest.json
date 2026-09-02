@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "classification": "tested_implementation_input_fingerprint",
+  "baseline_head": "85697d6743b01b8e0aa10c48d79837dcc56c007c",
+  "state": "uncommitted_working_tree",
+  "aggregate_sha256": "cad8021c5ef903ee83819b03cf50a55bd4bb9a15bcbf60de41bfb159b076bd6e",
+  "algorithm": "SHA-256 of UTF-8 lines: file_sha256 + two spaces + relative POSIX path + LF, sorted by path",
+  "scope": "All Git-listed crate files plus root Cargo manifests/lockfile, toolchain, pyproject and Python/Go validation tools; documentation is excluded.",
+  "ownership_note": "The rust-analyzer component addition in rust-toolchain.toml was observed as an unrelated concurrent edit and preserved, not authored by this task.",
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "526df9c41744f1b9eee9a8ab3c80ac6e584fd642c0e9941b2a34fb25586d69c6"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "764498cccc82c5d77da6c4818eca67ccdfea21ce8b853ed0042b61a337e8194a"
+    },
+    {
+      "path": "crates/vibemux_a2a/Cargo.toml",
+      "sha256": "97f17c5a8538af7ea55d5f52e02eeca1fd524401c4f704ee3d05df9bc935d0ea"
+    },
+    {
+      "path": "crates/vibemux_a2a/examples/task_interop_client.rs",
+      "sha256": "067b73db603ecf653b16834d477c54b90cec12589ee26fb6a1cf4ee8f2dec87b"
+    },
+    {
+      "path": "crates/vibemux_a2a/examples/task_tck_fixture.rs",
+      "sha256": "02e1ece3e1770b0e75ca75561fa1bc099c6372b6d3b84dac550ea55d96f8f669"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/lib.rs",
+      "sha256": "9a96d10343c92b2d52da9712fa215d8d06b4ee7ac2c2a1f69a6e392a0b4941a5"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/task_client.rs",
+      "sha256": "5d39bd0f7fa5a1a517e73917f205b0024868dd47202ad597bc22a281505c56bd"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/task_contract.rs",
+      "sha256": "3e3354168a47472b42b3aaf1a40b16b1f2d8573365911cc80089ee775f13a646"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/task_grpc.rs",
+      "sha256": "e119dd1238a57af52352f338240d59db6e35f713deb1c551e900881d4393d28a"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/task_runtime.rs",
+      "sha256": "1bf7529bf2f0e9792c493dc67f34650409e94bcacc50f18c57adf7fefe1f6de5"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/task_server.rs",
+      "sha256": "1eab58b4c55c358ee9ddcbd1a0d6c826ca9990a0790dae10abab6ef08aeb2d90"
+    },
+    {
+      "path": "crates/vibemux_a2a/src/task_wire.rs",
+      "sha256": "506dd43ee715948dbcd2a2275a33078255d58300f5fd474aded90d3bdd5fe8ae"
+    },
+    {
+      "path": "crates/vibemux_a2a/tests/basic_information_share.rs",
+      "sha256": "0d3a6c937cf3c7a7ddfe1cd9882f1ebf5ab32244b8dd847d776d41fb25e76440"
+    },
+    {
+      "path": "crates/vibemux_a2a/tests/task_gateway.rs",
+      "sha256": "2ba25feded84b70fee3e8c2f141e7f4aa7da8e8b72ecf0646d7e8a937351f10e"
+    },
+    {
+      "path": "crates/vibemux_a2a/tests/task_grpc.rs",
+      "sha256": "f44d30d36869d3afd4539b52315d6985a305d63e541356a91a35c5071f186a47"
+    },
+    {
+      "path": "crates/vibemux_a2a/tests/task_runtime.rs",
+      "sha256": "433915eabfe957ea02d20b1e2b073661581acf9e722b923afc66b18d3207b2f9"
+    },
+    {
+      "path": "crates/vibemux_cli/Cargo.toml",
+      "sha256": "ddc288bcb933c60c64c101a6431f5b6cf783f6ed369b5f22263be0c3bdb6fecf"
+    },
+    {
+      "path": "crates/vibemux_cli/src/bin/vibemux_hang_fixture.rs",
+      "sha256": "39c93c8aba214f8e4bf5438e1fe7bc2b795b38959a06627ef5d4160076c94c5f"
+    },
+    {
+      "path": "crates/vibemux_cli/src/bin/vibemux_recovery_fixture.rs",
+      "sha256": "94fb6c06263af5e46b544b06aca3421bc4f5f816ef8c8fd06e2b2e69f7169da5"
+    },
+    {
+      "path": "crates/vibemux_cli/src/lib.rs",
+      "sha256": "462ca1580194214bcc0164b6237433df7e37d38923ef22426b60409d972a3ca3"
+    },
+    {
+      "path": "crates/vibemux_cli/src/main.rs",
+      "sha256": "587f8ec3bc684a3eba96f74e740fa8d2e0779da27121665a985d7d1f25581b0c"
+    },
+    {
+      "path": "crates/vibemux_cli/src/recovery.rs",
+      "sha256": "cd1f41ca21e4c2f6603ab17110d80a5e57ba25fd2ebee0d563767bb2b8ab2543"
+    },
+    {
+      "path": "crates/vibemux_cli/tests/bootstrap_process.rs",
+      "sha256": "9c2ae371833a43ae7f0aeab5fa8cca0ee438054f5cde5e405608374395b9e5e8"
+    },
+    {
+      "path": "crates/vibemux_events/Cargo.toml",
+      "sha256": "3d26907be44f29a7a4ba889f9ece413ea6774a1e664480a1ffb05271b25238ca"
+    },
+    {
+      "path": "crates/vibemux_events/src/lib.rs",
+      "sha256": "04ebb9093e2781a5c4c0fc65f3ef8d2f5ec7f1e4bcf57f2388e824894380e05a"
+    },
+    {
+      "path": "crates/vibemux_frontend/Cargo.toml",
+      "sha256": "13af2e5b1cf31ee5717afadb7db3ca5f36cc0c5333eda3b31ff127a576b63d54"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend.rs",
+      "sha256": "09008b45df1d6717b5c4d1aa60e19207322df7284674fabce927618fb52c55b1"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/lib.rs",
+      "sha256": "3f1d333d4e537879d21778431267c1f3cf6b6f5033af03416b3ce770eee25e84"
+    },
+    {
+      "path": "crates/vibemux_model_peer/Cargo.toml",
+      "sha256": "6bb44d4cdcabb6632eed31a6176d2974af5a728b8a07d03fc693cc9ef6fbd3d7"
+    },
+    {
+      "path": "crates/vibemux_model_peer/src/executor.rs",
+      "sha256": "bd49b7733bdc483b969a99511628cbfc0d66cd0658d1f96fb947799d05b4d5b9"
+    },
+    {
+      "path": "crates/vibemux_model_peer/src/lib.rs",
+      "sha256": "f5c3ea98b4e2bcca9aa7446296a2ede5049945a9f8a13ebe268b2e9da0070227"
+    },
+    {
+      "path": "crates/vibemux_model_peer/src/main.rs",
+      "sha256": "c2a19031444c492c0068ea4fa5c58501a0f1a9b346f5fc9dd164ec24d9db97c8"
+    },
+    {
+      "path": "crates/vibemux_model_peer/src/provider.rs",
+      "sha256": "5e5bc377196e8e5f0d224f34b1f4a7a4687d8eda267cdadb21ce946f2a64552c"
+    },
+    {
+      "path": "crates/vibemux_platform/Cargo.toml",
+      "sha256": "b8899beae6bef6e799a4fa764b37d13ec046cda5b917e08d8f78299eb00b8491"
+    },
+    {
+      "path": "crates/vibemux_platform/examples/verify_acl.rs",
+      "sha256": "6019a70f4a1bd1066d129c84b61412c985cee8f82739caa45febda3e180778ef"
+    },
+    {
+      "path": "crates/vibemux_platform/src/lib.rs",
+      "sha256": "d71d9f3d319ea66c949608d78939da6ac88c9e7ef6eec7af336f2155041372d4"
+    },
+    {
+      "path": "crates/vibemux_platform/src/windows_security.rs",
+      "sha256": "8275d534f30b9b83bfa54f09838629196b8765d265186e4327f7fb0172892e92"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/Cargo.toml",
+      "sha256": "c82aba144702bdf224efb7af54f44364cc34f1c93ce246bec4f6abe92b3eb7df"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/build.rs",
+      "sha256": "ba2a37991ccf40ef4168713c1ec840797521b2cf72cba43bee4a4d3b53bc2c51"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/examples/generate_contract_fixture.rs",
+      "sha256": "f70db448e2fd77fe45fa1f7c190d2f37f2c2e1843238cd510750acc38fbc0b3f"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/proto/vibemux_plugin_v1.proto",
+      "sha256": "4b11a7443d81bab75736357ccab2996177e0ac280e15cfcdd4d28b19628e8606"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/error.rs",
+      "sha256": "ad1ac7d45412dd1199e4d9aa1aecb7dac03bbf4826dc475d12da941343a20054"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/frame.rs",
+      "sha256": "474e642d231867c285de589c7479dc65506d133f5251db8761fd6c56927e352f"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/lib.rs",
+      "sha256": "6ededc5e6d6bbb93e36fa723d6e1da9a088dfb5c58a9802fa82da10dfe268122"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/lifecycle.rs",
+      "sha256": "a0e3800a950694889908892a368af2f712127850ee75148b1dff8c14874aa795"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/limits.rs",
+      "sha256": "14f775d3c0bf5b1eb0ee73b2bae15bb786d3228e3ad9c1dfb6b58397d0b0296b"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/manifest.rs",
+      "sha256": "f7ab8dec72cf451486935e9b8575c9e2e95498b9860d929a96097e9f12ee8678"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/negotiation.rs",
+      "sha256": "98c4b2e6359feda0f1396d1ba5ddf41269ec5bff862be387151b44a30cb22d6e"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/src/wire.rs",
+      "sha256": "d48e05f760d0b730c360d9b00c45e49b5ecccb163ed0231e54739c3153646558"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/tests/contract_fixtures.rs",
+      "sha256": "607d196df0b8ff1e3e7f81d87f8c2d12480204210e55ac6756cea4f4219d62c6"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/tests/fixtures/hello_envelope_v1.hex",
+      "sha256": "5bb7ac44625466b15e4782f35d8b76f11ba70353f9282ce88f302f9f14b51bd9"
+    },
+    {
+      "path": "crates/vibemux_plugin_protocol/tests/fixtures/plugin_manifest_v1.toml",
+      "sha256": "c9a91f0c951b8f19ec2e07815100cc69792a64e0258453944edddeedc4244395"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/Cargo.toml",
+      "sha256": "51b0df51ef2c080fcfbb8d80205cf2357079bb7ead77558ef764f100e6c1be3f"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/src/bin/vibemux_mock_plugin.rs",
+      "sha256": "d47a245d99b00caa28af7c81656a4f3684e24ef4c23954ed6971f7b610c3d1e8"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/src/error.rs",
+      "sha256": "4b4906912f14c2cac02bf0912de84c72ed735b6bfd92e3e3bdf81a5efa17aebd"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/src/launch.rs",
+      "sha256": "1bfaa35ba37d239b7757eb342390d914232739a0e74173564fc5f6a3e01cd658"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/src/lib.rs",
+      "sha256": "6947d7bd541d1d0ddbd79c11fd2198ff12c2ad07cf2b5b357ac0825c67d0840b"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/src/report.rs",
+      "sha256": "ec8f43779afed6a0da5496020ae8841c478421842fa38343214b88f6585f0e86"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/src/supervisor.rs",
+      "sha256": "3a686a4bcf0eb4e24b0cd828967aed34416dda4be17c5cf877cba8ff3f96d5e5"
+    },
+    {
+      "path": "crates/vibemux_plugin_supervisor/tests/process_supervisor.rs",
+      "sha256": "c9958bbd799a37d0f25cc911412d8853f0a42f9aa898a4bd50b4ae9cdfe8144c"
+    },
+    {
+      "path": "crates/vibemux_probe/Cargo.toml",
+      "sha256": "206c62562ffd59938ff11f7e6f38641e97384d38defc43bab6570d4023ef84ca"
+    },
+    {
+      "path": "crates/vibemux_probe/src/bin/vibemux_probe.rs",
+      "sha256": "5a4760ec48557f3cf22b746d3af437db1cbade9cbfb340b2efd546149b4ce145"
+    },
+    {
+      "path": "crates/vibemux_probe/src/lib.rs",
+      "sha256": "b920a42078fce5e1782f5ee07f6039d41bc726360346bf8a362a448ea8b0f33d"
+    },
+    {
+      "path": "crates/vibemux_probe/tests/fixtures/probe_report_v1.json",
+      "sha256": "e1379bce697588a942e6af5064c978bad97bbac81698a19cf6e1f728140d2b3b"
+    },
+    {
+      "path": "crates/vibemux_store/Cargo.toml",
+      "sha256": "736358a15ac337597d9007eb0dafd0445cd174fc7c8e4f86777f6b3099e14ec7"
+    },
+    {
+      "path": "crates/vibemux_store/src/a2a.rs",
+      "sha256": "fd0e7169ad0673a385296a89ffa5859e513505bf0e03667dd1d96372cb15c2a4"
+    },
+    {
+      "path": "crates/vibemux_store/src/lib.rs",
+      "sha256": "2884144f8b825ed91f02e8a8cc1697470140f2fd734a98b08ce80be0a3fe9eeb"
+    },
+    {
+      "path": "crates/vibemux_types/Cargo.toml",
+      "sha256": "37752577d3b98f13f902176b449624b10dda74510a22b0c8174e2ad571ec920b"
+    },
+    {
+      "path": "crates/vibemux_types/src/a2a.rs",
+      "sha256": "25de84ed5db4a7ac6a92261d6ca520ba73971b8124bd890b97b46d3039b1a68c"
+    },
+    {
+      "path": "crates/vibemux_types/src/lib.rs",
+      "sha256": "93172169414a930582c6db47c2ea990cb605cd97cd52c3a1cecfb44a0c47d2b1"
+    },
+    {
+      "path": "crates/vibemux_types/src/restore.rs",
+      "sha256": "e99e7199af373917faddcc8a3d06540cfb71d4f9b7a41760a1d7e6ec0e670c45"
+    },
+    {
+      "path": "crates/vibemux_workspace/Cargo.toml",
+      "sha256": "1a90f9ab2c67bb0ada3bbf94ebc9670e17e396bf71cd361342a7cc53b1a26794"
+    },
+    {
+      "path": "crates/vibemux_workspace/src/lib.rs",
+      "sha256": "a42a8df7b4c593c01dc394cb3f1dfe30cc4c9cfa7f7b3174f40eb38738b672ed"
+    },
+    {
+      "path": "crates/vibemux_workspace/tests/workspace_safety.rs",
+      "sha256": "47150d052df74061ca19d57dd234b8feb9bc5f53902d9022ae7b417d5dfa6d1e"
+    },
+    {
+      "path": "crates/vibemuxd/Cargo.toml",
+      "sha256": "f9798cbe09c0466a8f3d916d913f15c4addb1d869526e9964b20ea84133b4244"
+    },
+    {
+      "path": "crates/vibemuxd/src/bin/vibemux_model_fixture.rs",
+      "sha256": "9198c96d8bebf69996fee201076b3bd5ee4df6984011bd828cb63b395969eb63"
+    },
+    {
+      "path": "crates/vibemuxd/src/bin/vibemux_supervisor.rs",
+      "sha256": "f96272a9ff1f7093319c72aa27af47974082c59d060e013f4472188b0ac0e424"
+    },
+    {
+      "path": "crates/vibemuxd/src/bin/vibemuxd.rs",
+      "sha256": "67c70fa246b6685149df1f86e0b9b5a645d3f7796833f95b8f01885ebe2fcefe"
+    },
+    {
+      "path": "crates/vibemuxd/src/control.rs",
+      "sha256": "dc7e2d36bed3f90e9acb0ae2cf7d0e633673cc5d82f4a6b3b614e0ae597f225b"
+    },
+    {
+      "path": "crates/vibemuxd/src/lib.rs",
+      "sha256": "e7984061f62f44a2b51029929c5493e141a914e5092aabcc58523a98a3cf0f47"
+    },
+    {
+      "path": "crates/vibemuxd/src/model_peer_process.rs",
+      "sha256": "7668f4b5906b86dedad0afc91c602c25da69e6f7f2053b951004c880d7b1a9e2"
+    },
+    {
+      "path": "crates/vibemuxd/src/plugin_configuration.rs",
+      "sha256": "c709bf46bc7216e6695e3828f9fc32c50330d3793f0ef18393ba097ec708ef3a"
+    },
+    {
+      "path": "crates/vibemuxd/src/plugin_registry.rs",
+      "sha256": "90f3fc387563785ba8ca341274030b5ed25a714ccf0a6fdcc678f53ba83e6d99"
+    },
+    {
+      "path": "crates/vibemuxd/src/process.rs",
+      "sha256": "b55832b6c063af1140922d5200940eea98e0c880eff5982bea1527c2da304701"
+    },
+    {
+      "path": "crates/vibemuxd/src/recovery.rs",
+      "sha256": "c37f504ef19da7c5f09a2a95e9e8c5255e29f50f87151175b8c8b723cae81364"
+    },
+    {
+      "path": "crates/vibemuxd/src/supervisor_service.rs",
+      "sha256": "983bbe67a6f6d238dfa564985004e0139a114a3efa58b162e0248be383d30587"
+    },
+    {
+      "path": "crates/vibemuxd/src/supervisor_workflow.rs",
+      "sha256": "2551f08e13d9763bf61fcf814ffe41f1639bcd9ecbd1a3044130ebf25a9acc9c"
+    },
+    {
+      "path": "crates/vibemuxd/tests/daemon_process.rs",
+      "sha256": "b44ca05471f8c1129de97073f37a19c78f0cbd14b95ac0574632ab6096e13712"
+    },
+    {
+      "path": "crates/vibemuxd/tests/plugin_registry.rs",
+      "sha256": "6630b213084c98bd96e1d0fd8fcf8625d710361be39351ff69cff715d2828942"
+    },
+    {
+      "path": "crates/vibemuxd/tests/supervisor_grpc.rs",
+      "sha256": "cfdd6031714f936a10575111e7a7602c46f362a8d067a409431ed15efd50b570"
+    },
+    {
+      "path": "crates/vibemuxd/tests/supervisor_workflow.rs",
+      "sha256": "4ae8f43a48e500b4e12a033a6b4e392803d1059fb3cb6e7537f179ed9a65b129"
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "927833f0e8c43d0fa21ca9ab5d16d0c9c3fce16403dabfe3f22c5f53acb48da4"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "c9995793d9328af36f85052f38407dc5deba49a3494fee13ef610eda6b755e07"
+    },
+    {
+      "path": "tools/a2a_go_interop/go.mod",
+      "sha256": "827772947b6b79eb4d84a0d5f355fc7ecb863a02ca59e0c4d8a88f59ebd54949"
+    },
+    {
+      "path": "tools/a2a_go_interop/go.sum",
+      "sha256": "679682bfe907aa4e8241c53a3a508cb73b62857884b6f97606d967ee020fae97"
+    },
+    {
+      "path": "tools/a2a_go_interop/interop_test.go",
+      "sha256": "4a2fd603d4e4228b175dc25baad9eec6a73db5fbfb29b6e4c7f72a321ae74a8a"
+    },
+    {
+      "path": "tools/a2a_go_interop/main.go",
+      "sha256": "d2f5217465ce68c5d3d922ae11325b41577470ba30ffe3da9ed727fd2c766fe9"
+    },
+    {
+      "path": "tools/a2a_go_interop/process_unix.go",
+      "sha256": "177504899bc8109df21e0105267ea0c51085b88e154c11a36ba8b569c013e28f"
+    },
+    {
+      "path": "tools/a2a_go_interop/process_windows.go",
+      "sha256": "1ead67435fe157c5a8f96b5af6855e40bfef5f6af79753935ad478e97999e5fc"
+    },
+    {
+      "path": "tools/a2a_python_interop.py",
+      "sha256": "9f2bcb257c28f34e964e6496cf63f48b3e7b56ee2ec3b28ffc3dcd4773f3e6e4"
+    },
+    {
+      "path": "tools/a2a_tck_auth.py",
+      "sha256": "2cc612d38df60ade4fd724235e0ff56b037dfbfa267e6551a00e9af7edc3f24a"
+    },
+    {
+      "path": "tools/run_a2a_tck.py",
+      "sha256": "7cadc3c6d738d0a29a389b68f9de5952708ac0a89308aadf5085d787f7e82443"
+    }
+  ]
+}

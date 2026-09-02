@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-08-30T13:32:41.8366133Z",
+  "status": "passed",
+  "evidence_kind": "custom_cross_language_interoperability",
+  "official_itk": false,
+  "official_tck": false,
+  "environment": {
+    "os": "Windows",
+    "architecture": "amd64",
+    "go": "go1.26.4"
+  },
+  "official_go_sdk": {
+    "module": "github.com/a2aproject/a2a-go/v2",
+    "version": "v2.5.0",
+    "commit": "9d95b95445f4208ba77f48a137a278067937adb7",
+    "protocol": "1.0",
+    "checksum": "h1:ZdcFoxv+nZTUV0i2ue5hES76YCANFPG9vjqd7vK8yWM="
+  },
+  "fixture_sha256": {
+    "task_tck_fixture": "95688d50fda863f307a9a0f07bc4101f97a9e5b9464495b0b04f45d72f816465",
+    "task_interop_client": "eb2e00033f0c72f1e219659d446152f46fd1c31fa608cb7ae44d98e24c39c6fd"
+  },
+  "source_sha256": {
+    "main.go": "d2f5217465ce68c5d3d922ae11325b41577470ba30ffe3da9ed727fd2c766fe9",
+    "interop_test.go": "4a2fd603d4e4228b175dc25baad9eec6a73db5fbfb29b6e4c7f72a321ae74a8a",
+    "process_windows.go": "1ead67435fe157c5a8f96b5af6855e40bfef5f6af79753935ad478e97999e5fc",
+    "process_unix.go": "177504899bc8109df21e0105267ea0c51085b88e154c11a36ba8b569c013e28f",
+    "go.mod": "827772947b6b79eb4d84a0d5f355fc7ecb863a02ca59e0c4d8a88f59ebd54949",
+    "go.sum": "679682bfe907aa4e8241c53a3a508cb73b62857884b6f97606d967ee020fae97"
+  },
+  "tests_passed": [
+    "Test_go_sdk_to_rust_sut",
+    "Test_rust_client_to_go_reference",
+    "Test_loopback_only_bootstrap_rejects_external_destinations"
+  ],
+  "tests_skipped": [],
+  "bindings": [
+    "HTTP+JSON",
+    "JSONRPC",
+    "GRPC"
+  ],
+  "directions": [
+    "official_go_sdk_client_to_rust_task_server",
+    "rust_task_client_to_independent_go_sdk_fixture"
+  ],
+  "verified": [
+    "agent_card_discovery",
+    "send_get_task_identity",
+    "send_get_context_identity",
+    "cancel_terminal_state",
+    "forward_post_cancel_get",
+    "owned_process_shutdown",
+    "closed_listeners"
+  ],
+  "commands": [
+    "go build -o <task_cache>/a2a_go_interop.exe .",
+    "go test -count=1 -json .",
+    "go vet .",
+    "go mod verify"
+  ],
+  "limits": [
+    "synthetic_loopback_fixtures_only",
+    "no_model_calls",
+    "no_core_database_access",
+    "no_official_itk_or_tck_claim",
+    "linux_not_run",
+    "no_tls_or_remote_acceptance"
+  ]
+}

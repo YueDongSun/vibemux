@@ -53,6 +53,11 @@ impl CorePluginPolicy {
     }
 
     #[must_use]
+    pub const fn heartbeat_interval_ms(&self) -> u64 {
+        self.heartbeat_interval_ms
+    }
+
+    #[must_use]
     pub const fn frame_config(&self) -> FrameCodecConfig {
         self.frame_config
     }

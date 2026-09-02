@@ -1,0 +1,391 @@
+{
+  "schema_version": 2,
+  "classification": "native_windows_local_a2a_supervisor_validation",
+  "platform": {
+    "os": "Windows 11 Pro",
+    "build": "26200",
+    "architecture": "x86_64",
+    "rust": "1.85.0",
+    "python": "3.13.12",
+    "go": "1.26.4"
+  },
+  "rust_workspace": {
+    "command": "cargo test --locked --offline --workspace --all-features -j 2",
+    "passed": 184,
+    "failed": 0,
+    "ignored": 1,
+    "ignored_explanation": "One subprocess entry helper is ignored standalone and invoked explicitly by its parent test.",
+    "status": "passed",
+    "groups": 49,
+    "log_sha256": "aadba3bd69222642c93fdc54c53c9765749267da191bd4dd31ee2f3b5c225419",
+    "exit_code": 0
+  },
+  "python": {
+    "pytest_passed": 27,
+    "mypy_sources": 21,
+    "ruff": "passed",
+    "format": "passed"
+  },
+  "tck": {
+    "tck_commit": "5996b79f9cefa6fc390980e383e358a66fb9e49e",
+    "level": "all",
+    "transports": [
+      "http_json",
+      "jsonrpc",
+      "grpc"
+    ],
+    "pytest_exit_code": 0,
+    "fixture_exit_code": 0,
+    "junit": {
+      "tests": 265,
+      "passed": 207,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 53,
+      "xfailed": 5,
+      "passed_by_binding": {
+        "http_json": 54,
+        "jsonrpc": 56,
+        "grpc": 51
+      }
+    },
+    "passed": true,
+    "fixture_sha256": "2d182eb5fd8cc37f6ce57cbf0b88b248ba13ddacbf0fd1b24b63e237b238efce",
+    "auth_adapter_sha256": "2cc612d38df60ade4fd724235e0ff56b037dfbfa267e6551a00e9af7edc3f24a",
+    "completed_at": "2026-08-30T14:35:34.786369+00:00"
+  },
+  "cross_language": {
+    "official_itk": false,
+    "python": {
+      "schema_version": 1,
+      "classification": "custom_bidirectional_official_python_sdk_interoperability",
+      "official_itk": false,
+      "python_sdk": "1.1.3",
+      "python_sdk_commit": "4e71245bf2bf4b31f6429f12d97991f1f3d4b3f4",
+      "fixture_sha256": "2d182eb5fd8cc37f6ce57cbf0b88b248ba13ddacbf0fd1b24b63e237b238efce",
+      "rust_client_sha256": "93eab9d7a482fc10a0b01998231251e5a58e323cc1780de27f96623229294d2b",
+      "python_helper_sha256": "9f2bcb257c28f34e964e6496cf63f48b3e7b56ee2ec3b28ffc3dcd4773f3e6e4",
+      "results": [
+        {
+          "direction": "python_sdk_to_rust",
+          "client_exit": 0,
+          "server_exit": 0,
+          "result": {
+            "direction": "official_python_sdk_to_vibemux",
+            "sdk_version": "1.1.3",
+            "checks": [
+              {
+                "binding": "HTTP+JSON",
+                "discovery": true,
+                "send_get_identity": true,
+                "cancel_terminal": true
+              },
+              {
+                "binding": "JSONRPC",
+                "discovery": true,
+                "send_get_identity": true,
+                "cancel_terminal": true
+              },
+              {
+                "binding": "GRPC",
+                "discovery": true,
+                "send_get_identity": true,
+                "cancel_terminal": true
+              }
+            ]
+          }
+        },
+        {
+          "direction": "rust_to_python_sdk",
+          "client_exit": 0,
+          "server_exit": 0,
+          "result": {
+            "checks": [
+              {
+                "binding": "http_json",
+                "cancel_terminal": true,
+                "discovery": true,
+                "send_get_identity": true
+              },
+              {
+                "binding": "jsonrpc",
+                "cancel_terminal": true,
+                "discovery": true,
+                "send_get_identity": true
+              },
+              {
+                "binding": "grpc",
+                "cancel_terminal": true,
+                "send_get_identity": true
+              }
+            ],
+            "direction": "vibemux_to_independent_sdk"
+          }
+        }
+      ],
+      "passed": true
+    },
+    "go": {
+      "sdk": "v2.5.0",
+      "commit": "9d95b95445f4208ba77f48a137a278067937adb7",
+      "tests_passed": 3,
+      "tests_skipped": 0,
+      "bindings": [
+        "HTTP+JSON",
+        "JSONRPC",
+        "GRPC"
+      ],
+      "directions": [
+        "go_to_rust",
+        "rust_to_go"
+      ],
+      "go_vet": "passed",
+      "go_mod_verify": "passed",
+      "fixture_sha256": "2d182eb5fd8cc37f6ce57cbf0b88b248ba13ddacbf0fd1b24b63e237b238efce",
+      "rust_client_sha256": "93eab9d7a482fc10a0b01998231251e5a58e323cc1780de27f96623229294d2b"
+    }
+  },
+  "live_provider_probes": {
+    "total_profiles": 14,
+    "passed_profiles": 9,
+    "profiles": [
+      {
+        "profile_alias": "anthropic_01",
+        "interface": "anthropic_messages",
+        "passed": false,
+        "http_status": 403,
+        "error_code": "provider_http_error",
+        "requested_model_alias": "model_01"
+      },
+      {
+        "profile_alias": "anthropic_02",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_02"
+      },
+      {
+        "profile_alias": "anthropic_03",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_03"
+      },
+      {
+        "profile_alias": "anthropic_04",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_04"
+      },
+      {
+        "profile_alias": "anthropic_05",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_05"
+      },
+      {
+        "profile_alias": "anthropic_06",
+        "interface": "anthropic_messages",
+        "passed": false,
+        "http_status": 401,
+        "error_code": "provider_http_error",
+        "requested_model_alias": "model_04"
+      },
+      {
+        "profile_alias": "anthropic_07",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_06"
+      },
+      {
+        "profile_alias": "anthropic_08",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_04"
+      },
+      {
+        "profile_alias": "anthropic_09",
+        "interface": "anthropic_messages",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_07"
+      },
+      {
+        "profile_alias": "anthropic_10",
+        "interface": "anthropic_messages",
+        "passed": false,
+        "http_status": 404,
+        "error_code": "provider_http_error",
+        "requested_model_alias": "model_08"
+      },
+      {
+        "profile_alias": "openai_compatible_01",
+        "interface": "chat_completions",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_09"
+      },
+      {
+        "profile_alias": "openai_compatible_02",
+        "interface": "chat_completions",
+        "passed": true,
+        "http_status": null,
+        "error_code": null,
+        "requested_model_alias": "model_03"
+      },
+      {
+        "profile_alias": "openai_compatible_03",
+        "interface": "chat_completions",
+        "passed": false,
+        "http_status": 429,
+        "error_code": "provider_http_error",
+        "requested_model_alias": "model_05"
+      },
+      {
+        "profile_alias": "openai_compatible_04",
+        "interface": "chat_completions",
+        "passed": false,
+        "http_status": null,
+        "error_code": "provider_invalid_response",
+        "requested_model_alias": "model_02"
+      }
+    ],
+    "limits": "Selected configured API profiles only; OAuth-only, unsupported interfaces and the local large-model profile were not probed. No quality ranking or billing estimate is inferred."
+  },
+  "supervisor_live": {
+    "scenario_matrix": [
+      {
+        "scenario": "final_primary",
+        "exit_code": 0,
+        "ok": true,
+        "daemon_shutdown_joined": true,
+        "elapsed_seconds": 39.359,
+        "receipt_sha256": "4189130755de95533a8410f104c01cec144eaadf59d802519838b8e4fa90afee",
+        "canonical_task_status": "done",
+        "attempts": 1,
+        "requested_model_aliases": [
+          "model_02",
+          "model_06",
+          "model_05"
+        ]
+      },
+      {
+        "scenario": "final_secondary",
+        "exit_code": 0,
+        "ok": true,
+        "daemon_shutdown_joined": true,
+        "elapsed_seconds": 52.469,
+        "receipt_sha256": "11770e9996ea3ee1b5c557348cafad87456c2bd32ffef16f72eb65ca0f5ae081",
+        "canonical_task_status": "done",
+        "attempts": 1,
+        "requested_model_aliases": [
+          "model_04",
+          "model_03",
+          "model_07"
+        ]
+      },
+      {
+        "scenario": "final_tertiary",
+        "exit_code": 0,
+        "ok": true,
+        "daemon_shutdown_joined": true,
+        "elapsed_seconds": 51.75,
+        "receipt_sha256": "c3de507b27e4c05e9e5540a6d4928e0f78766bc5d55f0dc9a9257fb687c9e822",
+        "canonical_task_status": "done",
+        "attempts": 1,
+        "requested_model_aliases": [
+          "model_04",
+          "model_02",
+          "model_06"
+        ]
+      }
+    ],
+    "post_api_root_fix_passed": true,
+    "post_api_root_fix_exit_code": 0,
+    "final_binary_sha256": {
+      "vibemux_supervisor": "e3c8d44cb3a544aa589edbfd5b54fb4779d9013323fbf0bb6bcc077999e9bb27",
+      "vibemux_model_peer": "f59bbdb19481f4ce1c8c20713a6e1b89c7dbab5ec7f0bd31573b596e961d34b5"
+    },
+    "final_receipt_sha256": "90386ec7bf799dc976b2d1b7c0b73011259f41c901bc432e58e3487707eb45d1",
+    "final_canonical_task_status": "done",
+    "final_result": {
+      "sum": 12.0,
+      "values": [
+        -3.0,
+        0.0,
+        1.0,
+        5.0,
+        9.0
+      ]
+    },
+    "final_verification_receipt": {
+      "accepted": true,
+      "artifact_sha256": "f368b6b4aae5bb58286c8321117fb6b791e96fc5bcfbeb1d1be7a29a2dec582e",
+      "review_sha256": "40e284205474b17726dcf3a586299c3415128796c5cf2001a7323275a3aa92a5",
+      "reviewer_expected_version": 3.0,
+      "verification_sha256": "c0789fdd3d37b61e3e868b818b67713c47375a2ea6734d1e15e80800520cd17e",
+      "reviewer_run_alias": "final_reviewer_run"
+    },
+    "daemon_shutdown_joined": true
+  },
+  "limitations": [
+    "remote_or_tls_server_deployment_not_verified",
+    "full_official_itk_not_run",
+    "message_history_and_inbound_cross_restart_recovery_not_implemented",
+    "nextest_deny_audit_not_installed",
+    "live_terminal_or_vendor_cli_harness_not_validated",
+    "model_values_are_redacted_aliases_not_provider_routing_attestation"
+  ],
+  "artifact_status": "verified_with_explicit_limitations",
+  "rust_checks": {
+    "fmt": "passed",
+    "clippy_all_targets_all_features": "passed",
+    "nextest": "unavailable_exit_101",
+    "deny": "unavailable_exit_101",
+    "audit": "unavailable_exit_101"
+  },
+  "source_baseline": {
+    "head": "85697d6743b01b8e0aa10c48d79837dcc56c007c",
+    "branch": "codex/m7_a2a_supervisor",
+    "state": "uncommitted_working_tree",
+    "note": "HEAD is the baseline, not the final tested source. See a2a_source_manifest.json for the implementation input fingerprint.",
+    "aggregate_sha256": "cad8021c5ef903ee83819b03cf50a55bd4bb9a15bcbf60de41bfb159b076bd6e"
+  },
+  "final_static_checks": {
+    "git_diff_check": "passed",
+    "git_cached_diff_check": "passed",
+    "markdown_files_checked": 13,
+    "missing_local_links": 0,
+    "json_files_parsed": 5,
+    "added_private_signature_findings": 0,
+    "source_manifest_files_verified": 102,
+    "source_manifest_mismatches": 0
+  },
+  "resource_disposition": {
+    "developer_worktrees_archived_and_removed_without_force": 3,
+    "developer_branches_retained": true,
+    "root_registered_worktrees_remaining": 1,
+    "live_fixture_artifacts_and_failed_receipts": "intentionally_retained_in_private_temporary_evidence",
+    "committed": false,
+    "pushed": false,
+    "provider_configuration_changed": false
+  },
+  "sanitization": {
+    "performed_on": "2026-08-31",
+    "policy": "Provider selections, model IDs and generated Run IDs are represented only by opaque aliases. No original mapping is published. Counts, error categories, protocol versions and result values are retained.",
+    "original_receipts": "Private original receipts are retained separately; receipt_sha256 values refer to those original bytes, not the redacted public projection.",
+    "source_fingerprints": "The source manifest records the historical tested input bytes, including the explicitly excluded local toolchain component addition. The publication ledger distinguishes this from the staged source."
+  }
+}

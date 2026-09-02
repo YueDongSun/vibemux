@@ -1,0 +1,23 @@
+{
+  "supervisor": {
+    "project_id": "11111111-1111-4111-8111-111111111111",
+    "project_root": "C:/path/to/owned_project",
+    "git_executable": "C:/path/to/git.exe",
+    "base_commit": "<full-base-commit>",
+    "model_peer_executable": "C:/path/to/vibemux_model_peer.exe",
+    "cc_switch_database": "C:/path/to/cc-switch.db",
+    "planner": {
+      "selection": {"app_type": "claude", "provider_id": "<planner-provider-id>"},
+      "binding": "http_json"
+    },
+    "worker": {
+      "selection": {"app_type": "claude", "provider_id": "<worker-provider-id>"},
+      "binding": "json_rpc"
+    },
+    "reviewer": {
+      "selection": {"app_type": "claude", "provider_id": "<different-reviewer-provider-id>"},
+      "binding": "http_json"
+    }
+  },
+  "bearer_token": "<generate-an-unpredictable-token-of-at-least-32-characters>"
+}

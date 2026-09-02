@@ -23,9 +23,15 @@ use uuid::Uuid;
 #[cfg(windows)]
 use tokio::time::{Instant, sleep};
 
+use crate::plugin_configuration::PluginStartup;
+use crate::plugin_registry::{
+    PluginRegistry, PluginRegistryError, PluginStatus, PluginStatusReader,
+};
+use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::{WriterError, WriterHealth, WriterWorker};
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = 1;
+pub const CONTROL_PROTOCOL_VERSION: u32 = 2;
+pub const LEGACY_CONTROL_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_CONTROL_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024;
 pub const CONTROL_DEADLINE: Duration = Duration::from_secs(10);
@@ -36,6 +42,7 @@ const PEER_CLOSE_DEADLINE: Duration = Duration::from_secs(1);
 #[serde(rename_all = "snake_case")]
 pub enum ControlOperation {
     Health,
+    PluginStatus,
     Shutdown,
 }
 
@@ -83,6 +90,7 @@ impl fmt::Debug for ControlRequest {
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum ControlPayload {
     Health(DaemonHealth),
+    PluginStatus(Vec<PluginStatus>),
     ShutdownAccepted,
 }
 
@@ -268,6 +276,8 @@ pub enum ControlError {
     RuntimeGenerationConflict,
     #[error("daemon writer operation failed: {code}")]
     Writer { code: String },
+    #[error("daemon plugin operation failed: {code}")]
+    Plugin { code: String },
     #[error("local control operation exceeded its deadline")]
     Deadline,
     #[error("local control server terminated unexpectedly")]
@@ -293,7 +303,7 @@ impl ControlError {
             Self::ArtifactChanged => "control_artifact_changed",
             Self::ArtifactCleanupFailed => "control_artifact_cleanup_failed",
             Self::RuntimeGenerationConflict => "control_runtime_generation_conflict",
-            Self::Writer { code } | Self::Remote { code } => code,
+            Self::Writer { code } | Self::Plugin { code } | Self::Remote { code } => code,
             Self::Deadline => "control_deadline_exceeded",
             Self::ServerTerminated => "control_server_terminated",
         }
@@ -303,6 +313,14 @@ impl ControlError {
 impl From<WriterError> for ControlError {
     fn from(error: WriterError) -> Self {
         Self::Writer {
+            code: error.code().to_string(),
+        }
+    }
+}
+
+impl From<PluginRegistryError> for ControlError {
+    fn from(error: PluginRegistryError) -> Self {
+        Self::Plugin {
             code: error.code().to_string(),
         }
     }
@@ -405,6 +423,7 @@ impl Drop for SocketPathGuard {
 
 struct ServerState {
     writer: Mutex<Option<WriterWorker>>,
+    plugins: PluginStatusReader,
     process_id: u32,
     token: String,
 }
@@ -413,31 +432,54 @@ pub struct DaemonControlServer {
     descriptor_path: PathBuf,
     writer_lock_path: PathBuf,
     task: Option<JoinHandle<Result<(), ControlError>>>,
+    stop: tokio::sync::watch::Sender<bool>,
+    a2a_base_url: Option<String>,
+    a2a_grpc_base_url: Option<String>,
 }
 
 impl DaemonControlServer {
     pub async fn start_for_paths(
         paths: &crate::process::DaemonPaths,
     ) -> Result<Self, ControlError> {
+        Self::start_for_paths_with_plugins(paths, PluginStartup::default()).await
+    }
+
+    pub async fn start_for_paths_with_plugins(
+        paths: &crate::process::DaemonPaths,
+        plugins: PluginStartup,
+    ) -> Result<Self, ControlError> {
         paths
             .validate_daemon_start()
             .map_err(|_| ControlError::RuntimeGenerationConflict)?;
-        if paths.has_distinct_legacy_runtime() {
-            Self::start_with_writer_and_compatibility_lock(
-                paths.database_path(),
-                paths.runtime_dir(),
-                paths.writer_lock_path(),
-                paths.legacy_writer_lock_path(),
-            )
-            .await
-        } else {
-            Self::start_with_writer_lock(
-                paths.database_path(),
-                paths.runtime_dir(),
-                paths.writer_lock_path(),
-            )
-            .await
-        }
+        Self::start_with_writer_locks(
+            paths.database_path(),
+            paths.runtime_dir(),
+            paths.writer_lock_path(),
+            paths
+                .has_distinct_legacy_runtime()
+                .then(|| paths.legacy_writer_lock_path()),
+            plugins,
+            None,
+        )
+        .await
+    }
+
+    /// Explicit trusted startup configuration; never called from status IPC.
+    pub async fn start_with_plugins(
+        database_path: &Path,
+        runtime_dir: &Path,
+        plugins: PluginStartup,
+    ) -> Result<Self, ControlError> {
+        let writer_lock_path = crate::writer_lock_path_for_database(database_path);
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            &writer_lock_path,
+            None,
+            plugins,
+            None,
+        )
+        .await
     }
 
     pub async fn start(database_path: &Path, runtime_dir: &Path) -> Result<Self, ControlError> {
@@ -450,7 +492,15 @@ impl DaemonControlServer {
         runtime_dir: &Path,
         writer_lock_path: &Path,
     ) -> Result<Self, ControlError> {
-        Self::start_with_writer_locks(database_path, runtime_dir, writer_lock_path, None).await
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            writer_lock_path,
+            None,
+            PluginStartup::default(),
+            None,
+        )
+        .await
     }
 
     pub async fn start_with_writer_and_compatibility_lock(
@@ -464,6 +514,34 @@ impl DaemonControlServer {
             runtime_dir,
             writer_lock_path,
             Some(compatibility_lock_path),
+            PluginStartup::default(),
+            None,
+        )
+        .await
+    }
+
+    pub async fn start_for_paths_with_supervisor(
+        paths: &crate::process::DaemonPaths,
+        plugins: PluginStartup,
+        supervisor: SupervisorServiceConfig,
+    ) -> Result<Self, ControlError> {
+        let configured_root = std::fs::canonicalize(&supervisor.supervisor.project_root)
+            .map_err(|_| ControlError::InvalidRequest)?;
+        if configured_root != paths.project_root() {
+            return Err(ControlError::InvalidRequest);
+        }
+        paths
+            .validate_daemon_start()
+            .map_err(|_| ControlError::RuntimeGenerationConflict)?;
+        Self::start_with_writer_locks(
+            paths.database_path(),
+            paths.runtime_dir(),
+            paths.writer_lock_path(),
+            paths
+                .has_distinct_legacy_runtime()
+                .then(|| paths.legacy_writer_lock_path()),
+            plugins,
+            Some(supervisor),
         )
         .await
     }
@@ -473,7 +551,10 @@ impl DaemonControlServer {
         runtime_dir: &Path,
         writer_lock_path: &Path,
         compatibility_lock_path: Option<&Path>,
+        plugins: PluginStartup,
+        supervisor: Option<SupervisorServiceConfig>,
     ) -> Result<Self, ControlError> {
+        plugins.validate()?;
         std::fs::create_dir_all(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
         let runtime_dir =
             std::fs::canonicalize(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -510,19 +591,54 @@ impl DaemonControlServer {
                 .create(&endpoint)
                 .map_err(|_| ControlError::EndpointUnavailable)?;
             let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
+            let mut registry = PluginRegistry::new(plugins.registry_config.clone())?;
+            for (config, policy) in plugins.registrations {
+                if let Err(error) = registry.register(config, policy) {
+                    let _ = registry.shutdown().await;
+                    return Err(error.into());
+                }
+            }
+            let supervisor = match supervisor {
+                Some(config) => match SupervisorService::start(writer.handle()?, config).await {
+                    Ok(service) => Some(service),
+                    Err(error) => {
+                        let _ = registry.shutdown().await;
+                        return Err(ControlError::Plugin {
+                            code: error.code().to_string(),
+                        });
+                    }
+                },
+                None => None,
+            };
+            let a2a_base_url = supervisor
+                .as_ref()
+                .map(|service| service.base_url().to_string());
+            let a2a_grpc_base_url = supervisor.as_ref().map(SupervisorService::grpc_base_url);
+            let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 writer: Mutex::new(Some(writer)),
+                plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
                 token: descriptor.token,
             });
             let task = tokio::spawn(async move {
                 let _descriptor_guard = descriptor_guard;
-                run_server(listener, endpoint, state).await
+                serve_owned(
+                    run_server(listener, endpoint, state.clone()),
+                    state,
+                    registry,
+                    stop_receiver,
+                    supervisor,
+                )
+                .await
             });
             return Ok(Self {
                 descriptor_path,
                 writer_lock_path,
                 task: Some(task),
+                stop,
+                a2a_base_url,
+                a2a_grpc_base_url,
             });
         }
 
@@ -536,20 +652,55 @@ impl DaemonControlServer {
             let mut socket_guard = SocketPathGuard::unpublished(socket_path);
             let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
             socket_guard.bind_owner(descriptor_path.clone(), descriptor.clone());
+            let mut registry = PluginRegistry::new(plugins.registry_config.clone())?;
+            for (config, policy) in plugins.registrations {
+                if let Err(error) = registry.register(config, policy) {
+                    let _ = registry.shutdown().await;
+                    return Err(error.into());
+                }
+            }
+            let supervisor = match supervisor {
+                Some(config) => match SupervisorService::start(writer.handle()?, config).await {
+                    Ok(service) => Some(service),
+                    Err(error) => {
+                        let _ = registry.shutdown().await;
+                        return Err(ControlError::Plugin {
+                            code: error.code().to_string(),
+                        });
+                    }
+                },
+                None => None,
+            };
+            let a2a_base_url = supervisor
+                .as_ref()
+                .map(|service| service.base_url().to_string());
+            let a2a_grpc_base_url = supervisor.as_ref().map(SupervisorService::grpc_base_url);
+            let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 writer: Mutex::new(Some(writer)),
+                plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
                 token: descriptor.token,
             });
             let task = tokio::spawn(async move {
                 let _descriptor_guard = descriptor_guard;
                 let _socket_guard = socket_guard;
-                run_server(listener, state).await
+                serve_owned(
+                    run_server(listener, state.clone()),
+                    state,
+                    registry,
+                    stop_receiver,
+                    supervisor,
+                )
+                .await
             });
             return Ok(Self {
                 descriptor_path,
                 writer_lock_path,
                 task: Some(task),
+                stop,
+                a2a_base_url,
+                a2a_grpc_base_url,
             });
         }
 
@@ -558,6 +709,15 @@ impl DaemonControlServer {
     }
 
     #[must_use]
+    pub fn a2a_base_url(&self) -> Option<&str> {
+        self.a2a_base_url.as_deref()
+    }
+
+    #[must_use]
+    pub fn a2a_grpc_base_url(&self) -> Option<&str> {
+        self.a2a_grpc_base_url.as_deref()
+    }
+
     pub fn descriptor_path(&self) -> &Path {
         &self.descriptor_path
     }
@@ -568,29 +728,59 @@ impl DaemonControlServer {
     }
 
     pub async fn shutdown(mut self) -> Result<(), ControlError> {
-        ControlClient::from_descriptor(&self.descriptor_path)?
-            .shutdown()
-            .await?;
-        let task = self.task.take().ok_or(ControlError::ServerTerminated)?;
-        match timeout(CONTROL_DEADLINE, task).await {
-            Err(_) => Err(ControlError::Deadline),
-            Ok(Err(_)) => Err(ControlError::ServerTerminated),
-            Ok(Ok(result)) => result,
-        }
+        self.stop.send_replace(true);
+        self.join().await
     }
 
     pub async fn wait(mut self) -> Result<(), ControlError> {
-        let task = self.task.take().ok_or(ControlError::ServerTerminated)?;
-        task.await.map_err(|_| ControlError::ServerTerminated)?
+        self.join().await
+    }
+
+    async fn join(&mut self) -> Result<(), ControlError> {
+        // Keep ownership during await: cancellation drops Self and signals stop.
+        let task = self.task.as_mut().ok_or(ControlError::ServerTerminated)?;
+        let result = task.await.map_err(|_| ControlError::ServerTerminated)?;
+        self.task.take();
+        result
     }
 }
 
 impl Drop for DaemonControlServer {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        // Never abort the owner while it is reaping children. Explicit wait/shutdown
+        // joins cleanup; Drop is a cancellation signal, not a completion receipt.
+        self.stop.send_replace(true);
     }
+}
+
+async fn serve_owned(
+    server: impl std::future::Future<Output = Result<(), ControlError>>,
+    state: Arc<ServerState>,
+    mut registry: PluginRegistry,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+    supervisor: Option<SupervisorService>,
+) -> Result<(), ControlError> {
+    let result = tokio::select! {
+        biased;
+        _ = stop.changed() => Ok(()),
+        result = server => result,
+    };
+    // Signal all plugins together, join their cleanup, then release the one writer.
+    let supervisor_result = match supervisor {
+        Some(service) => service
+            .shutdown()
+            .await
+            .map_err(|error| ControlError::Plugin {
+                code: error.code().to_string(),
+            }),
+        None => Ok(()),
+    };
+    let plugins_result = registry.shutdown().await.map_err(ControlError::from);
+    let writer_result = shutdown_writer(state).await;
+    result
+        .and(supervisor_result)
+        .and(plugins_result)
+        .and(writer_result)
 }
 
 #[derive(Clone, Debug)]
@@ -601,7 +791,7 @@ pub struct ControlClient {
 impl ControlClient {
     pub fn from_descriptor(path: &Path) -> Result<Self, ControlError> {
         let descriptor = read_descriptor(path)?;
-        if descriptor.version != CONTROL_PROTOCOL_VERSION {
+        if !supported_control_version(descriptor.version) {
             return Err(ControlError::UnsupportedVersion);
         }
         Ok(Self { descriptor })
@@ -617,7 +807,20 @@ impl ControlClient {
     ) -> Result<DaemonHealth, ControlError> {
         match self.request(ControlOperation::Health, deadline).await? {
             ControlPayload::Health(health) => Ok(health),
-            ControlPayload::ShutdownAccepted => Err(ControlError::InvalidFrame),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
+    pub async fn plugin_status(&self) -> Result<Vec<PluginStatus>, ControlError> {
+        if self.descriptor.version < CONTROL_PROTOCOL_VERSION {
+            return Err(ControlError::UnsupportedVersion);
+        }
+        match self
+            .request(ControlOperation::PluginStatus, CONTROL_DEADLINE)
+            .await?
+        {
+            ControlPayload::PluginStatus(statuses) => Ok(statuses),
+            _ => Err(ControlError::InvalidFrame),
         }
     }
 
@@ -628,7 +831,7 @@ impl ControlClient {
     pub async fn shutdown_with_deadline(&self, deadline: Duration) -> Result<(), ControlError> {
         match self.request(ControlOperation::Shutdown, deadline).await? {
             ControlPayload::ShutdownAccepted => Ok(()),
-            ControlPayload::Health(_) => Err(ControlError::InvalidFrame),
+            _ => Err(ControlError::InvalidFrame),
         }
     }
 
@@ -639,7 +842,7 @@ impl ControlClient {
     ) -> Result<ControlPayload, ControlError> {
         self.request_raw_with_deadline(
             ControlRequest {
-                version: CONTROL_PROTOCOL_VERSION,
+                version: self.descriptor.version,
                 request_id: Uuid::new_v4().to_string(),
                 token: self.descriptor.token.clone(),
                 operation,
@@ -666,7 +869,7 @@ impl ControlClient {
         )
         .await
         .map_err(|_| ControlError::Deadline)??;
-        if response.version != CONTROL_PROTOCOL_VERSION {
+        if response.version != request.version {
             return Err(ControlError::UnsupportedVersion);
         }
         if response.request_id != request.request_id {
@@ -699,24 +902,31 @@ where
         }
     };
     if !constant_time_token_eq(&state.token, &request.token) {
-        let response = ControlResponse::error(request.request_id, &ControlError::Unauthorized);
+        let mut response = ControlResponse::error(request.request_id, &ControlError::Unauthorized);
+        response.version = request.version;
         send_response(stream, &response).await;
         return false;
     }
     if !valid_request_id(&request.request_id) {
-        let response = ControlResponse::error(request.request_id, &ControlError::InvalidRequest);
+        let mut response =
+            ControlResponse::error(request.request_id, &ControlError::InvalidRequest);
+        response.version = request.version;
         send_response(stream, &response).await;
         return false;
     }
-    if request.version != CONTROL_PROTOCOL_VERSION {
-        let response =
+    if !supported_control_version(request.version)
+        || (request.version == LEGACY_CONTROL_PROTOCOL_VERSION
+            && request.operation == ControlOperation::PluginStatus)
+    {
+        let mut response =
             ControlResponse::error(request.request_id, &ControlError::UnsupportedVersion);
+        response.version = request.version;
         send_response(stream, &response).await;
         return false;
     }
 
     let request_id = request.request_id;
-    let (response, should_shutdown) = match request.operation {
+    let (mut response, should_shutdown) = match request.operation {
         ControlOperation::Health => match writer_health(state).await {
             Ok(health) => (
                 ControlResponse::success(request_id, ControlPayload::Health(health)),
@@ -724,14 +934,20 @@ where
             ),
             Err(error) => (ControlResponse::error(request_id, &error), false),
         },
-        ControlOperation::Shutdown => match shutdown_writer(state).await {
-            Ok(()) => (
-                ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
-                true,
+        ControlOperation::PluginStatus => (
+            ControlResponse::success(
+                request_id,
+                ControlPayload::PluginStatus(state.plugins.statuses()),
             ),
-            Err(error) => (ControlResponse::error(request_id, &error), true),
-        },
+            false,
+        ),
+        // Acceptance only. The owner joins plugins before releasing the writer.
+        ControlOperation::Shutdown => (
+            ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
+            true,
+        ),
     };
+    response.version = request.version;
     send_response(stream, &response).await;
     should_shutdown
 }
@@ -979,6 +1195,13 @@ fn valid_endpoint(endpoint: &str) -> bool {
 #[cfg(unix)]
 fn endpoint_kind(_endpoint: &str) -> ControlEndpointKind {
     ControlEndpointKind::UnixSocket
+}
+
+fn supported_control_version(version: u32) -> bool {
+    matches!(
+        version,
+        LEGACY_CONTROL_PROTOCOL_VERSION | CONTROL_PROTOCOL_VERSION
+    )
 }
 
 fn valid_request_id(request_id: &str) -> bool {
@@ -1288,5 +1511,87 @@ mod tests {
             assert!(!socket_path.exists());
             assert!(tokio::net::UnixStream::connect(&socket_path).await.is_err());
         }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plugin_status_requires_auth_and_legacy_health_remains_compatible() {
+        let temp = tempfile::tempdir().expect("temp");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        assert!(
+            client
+                .plugin_status()
+                .await
+                .expect("empty status")
+                .is_empty()
+        );
+        let error = client
+            .request_raw(ControlRequest {
+                version: CONTROL_PROTOCOL_VERSION,
+                request_id: "status_denied".to_string(),
+                token: "wrong".to_string(),
+                operation: ControlOperation::PluginStatus,
+            })
+            .await
+            .expect_err("unauthenticated status");
+        assert_eq!(error, ControlError::Unauthorized);
+        let mut legacy = client.clone();
+        legacy.descriptor.version = LEGACY_CONTROL_PROTOCOL_VERSION;
+        assert!(
+            legacy
+                .health()
+                .await
+                .expect("v1 health request and response")
+                .healthy
+        );
+        assert_eq!(
+            legacy
+                .plugin_status()
+                .await
+                .expect_err("status requires v2"),
+            ControlError::UnsupportedVersion
+        );
+        let error = legacy
+            .request_raw(ControlRequest {
+                version: LEGACY_CONTROL_PROTOCOL_VERSION,
+                request_id: "legacy_auth".to_string(),
+                token: "wrong".to_string(),
+                operation: ControlOperation::Health,
+            })
+            .await
+            .expect_err("v1 auth failure");
+        assert_eq!(error, ControlError::Unauthorized);
+        legacy.shutdown().await.expect("v1 shutdown");
+        server.wait().await.expect("joined shutdown");
+    }
+
+    #[test]
+    fn control_contract_has_no_plugin_or_task_mutation_operations() {
+        for operation in [
+            "plugin_start",
+            "plugin_stop",
+            "plugin_cancel",
+            "task_create",
+            "run_update",
+        ] {
+            let request = serde_json::json!({"version":2,"request_id":"denied","token":"redacted","operation":operation});
+            assert!(serde_json::from_value::<ControlRequest>(request).is_err());
+        }
+        let status = PluginStatus {
+            plugin_id: "p".repeat(128),
+            state: crate::plugin_registry::PluginState::Quarantined,
+            restarts: 16,
+            max_restarts: 16,
+            session_id: Some("s".repeat(128)),
+            process_id: Some(u32::MAX),
+            last_error_code: Some("plugin_registry_unsupported_message".to_string()),
+            graceful_shutdown: Some(false),
+        };
+        let payload = ControlResponse::success(
+            "r".repeat(128),
+            ControlPayload::PluginStatus(vec![status; crate::plugin_registry::HARD_MAX_PLUGINS]),
+        );
+        assert!(serde_json::to_vec(&payload).expect("status JSON").len() < MAX_CONTROL_FRAME_BYTES);
     }
 }

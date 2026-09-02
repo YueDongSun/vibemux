@@ -8,6 +8,17 @@ repository.workspace = true
 
 [dependencies]
 a2a.workspace = true
+a2a-pb.workspace = true
+a2a-grpc.workspace = true
+tonic.workspace = true
+tonic-types.workspace = true
+tokio-stream.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+subtle.workspace = true
+sha2.workspace = true
+httpdate.workspace = true
+uuid.workspace = true
 a2a-client.workspace = true
 a2a-server.workspace = true
 axum.workspace = true
@@ -19,5 +30,4 @@ tokio.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-reqwest.workspace = true
-uuid.workspace = true
+tempfile.workspace = true

@@ -1,8 +1,8 @@
 # Contributing
 
-1. 创建本地 `.venv` 并执行 `python -m pip install -e ".[dev]"`。
-2. 运行 `python -m pytest` 和 `python -m ruff check .`。
-3. 使用 Conventional Commits；每个 commit 保持单一阶段。
-4. 不提交 `.env`、凭据、`.vibemux/` 或用户机器绝对路径。
-5. backend 行为应同时覆盖 Mock 合约，并在可用平台运行 tmux/WezTerm contract tests。
-
+1. Create a local `.venv` and run `python -m pip install -e ".[dev]"`.
+2. Run `python -m ruff format --check .`, `python -m ruff check .`, `python -m mypy .`, `python -m pytest`, and `python scripts/smoke_test.py`.
+3. Use Conventional Commits; keep each commit to a single concern.
+4. Never commit `.env`, credentials, `.vibemux/`, or user-machine absolute paths.
+5. Backend behavior should also cover the Mock contract and run tmux/WezTerm contract tests on platforms where they are available.
+6. For Rust changes, run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.

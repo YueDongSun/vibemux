@@ -284,3 +284,97 @@ async fn zero_queue_bound_is_rejected_before_spawn() {
     };
     assert_eq!(error, PluginSupervisorError::InvalidConfiguration);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_accepts_queued_heartbeat_and_cancel_event() {
+    let mut session = spawn_plugin(config("normal", 1024))
+        .await
+        .expect("spawn plugin with queued initial heartbeat");
+    session
+        .try_cancel("pending_cancel", "core:cancelled")
+        .expect("queue cancellation before drain");
+    let report = session.shutdown().await.expect("drain queued traffic");
+    assert!(report.graceful);
+    assert!(report.success);
+    assert_eq!(report.exit_code, Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_termination_reaps_unresponsive_child() {
+    let mut session = spawn_plugin(config("quiet", 1024))
+        .await
+        .expect("spawn unresponsive plugin");
+    session.receive().await.expect("initial heartbeat");
+    let report = tokio::time::timeout(Duration::from_secs(3), session.terminate())
+        .await
+        .expect("termination remains bounded")
+        .expect("exact child exit report after forced termination");
+    assert!(!report.graceful);
+    assert!(!report.success);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_rejects_wrong_session_acknowledgement() {
+    let mut session = spawn_plugin(config("wrong_shutdown_ack", 1024))
+        .await
+        .expect("spawn wrong-acknowledgement plugin");
+    session.receive().await.expect("initial heartbeat");
+    let error = tokio::time::timeout(Duration::from_secs(3), session.shutdown())
+        .await
+        .expect("rejected acknowledgement cleanup remains bounded")
+        .expect_err("shutdown acknowledgement must match the session");
+    assert_eq!(error.code(), "plugin_invalid_transition");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_termination_after_exit_report_returns_closed_without_panicking() {
+    let mut session = spawn_plugin(config("crash", 1024))
+        .await
+        .expect("spawn crashing plugin");
+    let report = session
+        .wait_for_exit(Duration::from_secs(2))
+        .await
+        .expect("reap child crash");
+    assert_eq!(report.exit_code, Some(7));
+    assert_eq!(
+        session.terminate().await.expect_err("already reaped child"),
+        PluginSupervisorError::SessionClosed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_heartbeat_crash_and_unsolicited_event_fixtures_use_real_wire_frames() {
+    let mut crashing = spawn_plugin(config("crash_after_heartbeat", 1024))
+        .await
+        .expect("spawn delayed crash plugin");
+    crashing.receive().await.expect("heartbeat before crash");
+    let report = crashing
+        .wait_for_exit(Duration::from_secs(2))
+        .await
+        .expect("delayed crash report");
+    assert_eq!(report.exit_code, Some(7));
+    assert!(!report.graceful);
+
+    let mut unsolicited = spawn_plugin(config("unsolicited_event", 1024))
+        .await
+        .expect("spawn unsolicited event plugin");
+    unsolicited.receive().await.expect("initial heartbeat");
+    let event = unsolicited.receive().await.expect("unsolicited event");
+    let Some(envelope::Body::Event(event)) = event.body else {
+        panic!("event body");
+    };
+    assert_eq!(event.event_type, "task:completed");
+    assert!(
+        event
+            .payload
+            .windows(b"private_mock_prompt".len())
+            .any(|window| window == b"private_mock_prompt")
+    );
+    assert!(
+        unsolicited
+            .shutdown()
+            .await
+            .expect("graceful shutdown")
+            .graceful
+    );
+}

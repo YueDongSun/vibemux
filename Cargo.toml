@@ -6,10 +6,12 @@ members = [
     "crates/vibemux_frontend",
     "crates/vibemux_platform",
     "crates/vibemux_plugin_protocol",
+    "crates/vibemux_model_peer",
     "crates/vibemux_plugin_supervisor",
     "crates/vibemux_probe",
     "crates/vibemux_store",
     "crates/vibemux_types",
+    "crates/vibemux_workspace",
     "crates/vibemuxd",
 ]
 resolver = "3"
@@ -25,17 +27,24 @@ repository = "https://github.com/YueDongSun/vibemux"
 a2a = { package = "a2a-lf", version = "=0.3.0" }
 a2a-client = { package = "a2a-client-lf", version = "=0.2.1", default-features = false }
 a2a-server = { package = "a2a-server-lf", version = "=0.4.1", default-features = false }
+a2a-pb = "=0.2.0"
+a2a-grpc = { version = "=0.3.1", default-features = false }
+tonic-types = "=0.14.5"
+tonic = { version = "=0.14.5", default-features = false, features = ["transport"] }
+tokio-stream = { version = "=0.1.19", features = ["net"] }
+async-trait = "=0.1.92"
 axum = "=0.8.7"
 base64 = "=0.22.1"
 crossterm = "=0.28.1"
 futures = "=0.3.31"
 getrandom = "=0.4.3"
+httpdate = "=1.0.3"
 proptest = "=1.11.0"
 prost = "=0.14.4"
 prost-build = "=0.14.4"
 protoc-bin-vendored = "=3.2.0"
 ratatui = { version = "=0.29.0", default-features = false, features = ["crossterm"] }
-reqwest = { version = "=0.13.1", default-features = false, features = ["json"] }
+reqwest = { version = "=0.13.1", default-features = false, features = ["json", "stream", "rustls"] }
 rusqlite = { version = "=0.37.0", default-features = false, features = ["bundled"] }
 same-file = "=1.0.6"
 semver = "=1.0.28"

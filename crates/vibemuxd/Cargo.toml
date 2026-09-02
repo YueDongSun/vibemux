@@ -6,7 +6,26 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+test_helpers = []
+
+[[bin]]
+name = "vibemux_registry_mock"
+path = "../vibemux_plugin_supervisor/src/bin/vibemux_mock_plugin.rs"
+required-features = ["test_helpers"]
+
+[[bin]]
+name = "vibemux_model_fixture"
+path = "src/bin/vibemux_model_fixture.rs"
+required-features = ["test_helpers"]
+
 [dependencies]
+async-trait.workspace = true
+futures.workspace = true
+time.workspace = true
+vibemux_a2a = { path = "../vibemux_a2a" }
+vibemux_model_peer = { path = "../vibemux_model_peer" }
+vibemux_workspace = { path = "../vibemux_workspace" }
 getrandom.workspace = true
 same-file.workspace = true
 serde.workspace = true
@@ -18,9 +37,11 @@ tokio.workspace = true
 uuid.workspace = true
 vibemux_events = { path = "../vibemux_events" }
 vibemux_platform = { path = "../vibemux_platform" }
+vibemux_plugin_protocol = { path = "../vibemux_plugin_protocol" }
+vibemux_plugin_supervisor = { path = "../vibemux_plugin_supervisor" }
 vibemux_store = { path = "../vibemux_store" }
 vibemux_types = { path = "../vibemux_types" }
 
 [dev-dependencies]
+sysinfo.workspace = true
 tempfile.workspace = true
-time.workspace = true

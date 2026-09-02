@@ -24,6 +24,7 @@ build/
 # Local agent and provider configuration
 /.claude/
 /.codex/
+/.weave/
 /.grok/
 /.cc-switch/
 /.config/opencode/

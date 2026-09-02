@@ -1,10 +1,10 @@
 # Protocol boundaries
 
-- Internal Event：SQLite append-only canonical model，独立于终端输出。
-- Local control IPC：`vibemuxd::control` 已实现 private pre-alpha v1 的 authenticated Windows named-pipe/POSIX UDS transport，仅开放 `health`/`shutdown`。Windows descriptor/lock位于protected per-user hashed runtime且pipe拒绝remote clients；POSIX descriptor为`0600`。没有TCP fallback。`vibemuxctl`只负责standalone daemon lifecycle与显式stale metadata recovery，不直接访问SQLite或暴露token/endpoint path。
-- PTY：只提供交互输入输出，不推断 completion/approval。
-- ACP/MCP：未来协议边界，当前不创建 fake gateway。
-- Plugin stdio：`vibemux_plugin_protocol` 已实现private pre-alpha Protobuf v1 schema、固定上限framing、manifest/negotiation与session lifecycle；该wire crate本身保持无process依赖，SDK与真实plugin仍未实现。
-- Plugin supervisor：`vibemux_plugin_supervisor` 已用真实Windows/Linux mock child验证stdout-only framing、独立bounded stderr metadata、bounded queues、deadline/heartbeat/cancel/drain/shutdown/crash；尚无daemon registry、restart policy、SDK或真实plugin。
-- A2A：`vibemux_a2a` 已验证一个隔离的 A2A v1 HTTP+JSON 本地 loopback information-share slice：官方 Agent Card discovery、官方 client/server transport、bounded Message/DataPart 和 correlation-preserving acknowledgement。该 slice 不读写 canonical store，不创建 VibeMux Task/Run，不支持 remote bind、JSON-RPC、gRPC、streaming、artifact、authentication 或 TCK；这些能力不得从本地 smoke 推断。
-- Git artifact：worktree、diff、commit 是可审计产物，不自动 merge。
+- **Internal Event**: append-only canonical SQLite model, independent of terminal output.
+- **Local control IPC**: `vibemuxd::control` implements the private pre-alpha v2 authenticated Windows named-pipe/POSIX UDS transport and exposes `health`/`shutdown` plus read-only `plugin_status` (v1 health/shutdown requests remain compatible). On Windows the descriptor/lock lives in a protected per-user hashed runtime and the pipe rejects remote clients; on POSIX the descriptor is `0600`. There is no TCP fallback. `vibemuxctl` only manages the standalone daemon lifecycle and explicit stale metadata recovery; it does not directly touch SQLite and never exposes token/endpoint path.
+- **PTY**: provides interactive input/output only and never infers completion/approval.
+- **ACP/MCP**: future protocol boundary; the current code does not create a fake gateway.
+- **Plugin stdio**: `vibemux_plugin_protocol` implements the private pre-alpha Protobuf v1 schema, fixed-ceiling framing, manifest/negotiation, and session lifecycle; the wire crate itself has no process dependency, and the SDK and real plugins are still unimplemented.
+- **Plugin supervisor**: `vibemux_plugin_supervisor` has been validated with real Windows/Linux mock children for stdout-only framing, independent bounded stderr metadata, bounded queues, deadline/heartbeat/cancel/drain/shutdown/crash; M4.2 adds a daemon-owned registry, bounded restart budgets and quarantine with native Windows mock evidence. SDKs and real vendor plugins remain absent. See [registry protocol](plugin_registry_protocol.md) for ephemeral status, startup configuration and shutdown limits.
+- **A2A**: the original information-share API remains available. The new authenticated local task gateway implements HTTP+JSON/JSONRPC/gRPC through official SDK boundaries, bounded task/artifact/status/cancel/subscription mapping, and a daemon-owned supervisor backend with atomic canonical bindings and independent verifier gates. Remote bind/TLS, push, complete message history and full official ITK are not claimed. See [stateful protocol](a2a_supervisor_protocol.md) and [conformance evidence](a2a_conformance_validation.md).
+- **Git artifact**: worktree, diff, and commit are auditable artifacts; merge is never automatic.
