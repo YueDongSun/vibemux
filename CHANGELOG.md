@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix unified frontend agent-table truncation: split the combined launcher/auth/inference cell into per-state columns (no more clipped `I:not_r` on verified agents), raised the side-by-side layout threshold to 160 columns so the table keeps full width on common terminals, and added a real-data rendering regression test.
 - Add local stateful A2A HTTP+JSON/JSONRPC/gRPC, atomic schema-2 binding/verification commands, owned Run workspaces, and an explicit supervisor workflow using separate model peers. Add official TCK tooling and bidirectional Python/Go SDK interoperability fixtures; remote/TLS and full ITK remain outside verified scope.
 
 - Add M4.2 daemon-owned plugin registry: explicit bounded startup configuration, lifetime restart budgets/backoff/quarantine, read-only IPC v2 status with v1 health/shutdown compatibility, and joined plugin cleanup before writer shutdown. No Task/Run mutation or SQLite/plugin-wire migration.

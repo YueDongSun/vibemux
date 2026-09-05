@@ -1841,3 +1841,15 @@ Non-goals:
 Publication authorization does not resolve the documented Linux/WSL, full ITK, remote/TLS, terminal/vendor-CLI, recovery, fuzz/soak or auxiliary-tooling gaps. See [publication evidence](docs/evidence/publication_validation.json) for the prepared snapshot and validation identity; the observed remote SHA is reported only after the push is verified.
 
 - Final exact-index checks: 77 intended files; 13 Markdown files and six JSON files validated; no broken staged local links; diff/cached-diff whitespace and ignore/example checks passed. Independent review in a separate worktree found no newly introduced operational credentials, private endpoints/profile IDs, machine-user paths or raw runtime/config artifacts. The only unstaged file is the unrelated toolchain component edit.
+
+### 2026-09-04 - Frontend agent-table truncation fix
+
+**Bug**
+- On any machine with verified agents, the unified dashboard's combined `L:.. A:.. I:..` cell (30-31 chars of real data) rendered into a fixed 28-char column, truncating the inference state to `I:not_r` for all five agents; long vendor version strings were clipped as well. Unit tests masked this because their toy strings were exactly 28 chars.
+
+**Fix**
+- Split the agent table into per-state columns (`Launcher`/`Auth`/`Infer`, each 11 chars so `unavailable` fits whole) with `Version` taking remaining width and `Route` unchanged.
+- Raised the side-by-side layout threshold from 110 to 160 columns so common 80-132 column terminals stack vertically and the table keeps full width.
+- Added `real_probe_states_and_versions_are_never_clipped` regression test covering real version shapes at 80/120/160 widths; verified live on a 120-column Windows console.
+
+**No contract change**: `ProbeReport`, `DashboardModel::plain_snapshot`, `--once` output, and slot semantics are untouched.

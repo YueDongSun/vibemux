@@ -184,7 +184,10 @@ pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, areas[0]);
 
-    let body = if areas[1].width >= 110 {
+    // Side-by-side only when the table keeps enough width for the longest
+    // real version strings; narrower terminals stack vertically so the table
+    // spans the full width and no state text is clipped.
+    let body = if areas[1].width >= 160 {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
@@ -198,10 +201,9 @@ pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
     let rows = model.agents.iter().map(|agent| {
         Row::new(vec![
             Cell::from(agent.name.clone()),
-            Cell::from(format!(
-                "L:{} A:{} I:{}",
-                agent.launcher_state, agent.authentication_state, agent.inference_state
-            )),
+            Cell::from(agent.launcher_state.clone()),
+            Cell::from(agent.authentication_state.clone()),
+            Cell::from(agent.inference_state.clone()),
             Cell::from(agent.version.clone()),
             Cell::from(agent.route.clone()),
         ])
@@ -209,14 +211,16 @@ pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(12),
-            Constraint::Length(28),
-            Constraint::Min(18),
-            Constraint::Length(14),
+            Constraint::Length(9),
+            Constraint::Length(11),
+            Constraint::Length(11),
+            Constraint::Length(11),
+            Constraint::Min(14),
+            Constraint::Length(13),
         ],
     )
     .header(
-        Row::new(["Agent", "Launcher/Auth/Inference", "Version", "Route"])
+        Row::new(["Agent", "Launcher", "Auth", "Infer", "Version", "Route"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(Block::default().title("Agent probes").borders(Borders::ALL));
@@ -392,6 +396,97 @@ mod tests {
             .collect::<String>();
         for expected in ["Claude", "Codex", "OpenCode", "Copilot", "Grok", "reserved"] {
             assert!(rendered.contains(expected), "missing {expected}");
+        }
+    }
+
+    fn render_text(model: &DashboardModel, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| render_dashboard(frame, model))
+            .expect("render dashboard");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    fn real_report() -> ProbeReport {
+        // Shapes captured from a real Windows probe run: verified launchers,
+        // not_run auth/inference, and vendor-length version strings.
+        let versions: [(AgentKind, &str, RouteKind); 5] = [
+            (
+                AgentKind::Claude,
+                "2.1.259 (Claude Code)",
+                RouteKind::LocalGateway,
+            ),
+            (AgentKind::Codex, "codex-cli 0.153.0", RouteKind::Unknown),
+            (AgentKind::OpenCode, "1.18.21", RouteKind::Direct),
+            (
+                AgentKind::Copilot,
+                "GitHub Copilot CLI 1.0.75.",
+                RouteKind::Unknown,
+            ),
+            (
+                AgentKind::Grok,
+                "grok 1.0.13 (5e9a58528b76) [stable]",
+                RouteKind::LocalGateway,
+            ),
+        ];
+        let mut probe = report();
+        probe.agents = versions
+            .into_iter()
+            .map(|(agent, version, route)| AgentProbe {
+                agent,
+                launcher_state: ProbeState::Verified,
+                authentication_state: ProbeState::NotRun,
+                inference_state: ProbeState::NotRun,
+                launcher: vibemux_probe::LauncherKind::DirectExecutable,
+                version: Some(version.to_string()),
+                route,
+                endpoints: Vec::new(),
+                code: "version_verified".to_string(),
+            })
+            .collect();
+        probe
+    }
+
+    #[test]
+    fn real_probe_states_and_versions_are_never_clipped() {
+        let model = DashboardModel::from_report(&real_report());
+        // Regression: the combined "L:.. A:.. I:.." cell needed 30-31 chars
+        // but had a fixed 28-char column, so verified agents rendered a
+        // truncated inference state like "I:not_r" on real machines.
+        let narrow = render_text(&model, 80, 24);
+        for expected in [
+            "verified",
+            "not_run",
+            "local_gateway",
+            "2.1.259",
+            "codex-cli 0.153.0",
+            "GitHub Copilot",
+        ] {
+            assert!(narrow.contains(expected), "missing {expected} at 80x24");
+        }
+        for (width, height) in [(120u16, 32u16), (160, 40)] {
+            let rendered = render_text(&model, width, height);
+            for expected in [
+                "verified",
+                "not_run",
+                "2.1.259 (Claude Code)",
+                "codex-cli 0.153.0",
+                "GitHub Copilot CLI 1.0.75.",
+                "grok 1.0.13 (5e9a58528b76) [stable]",
+                "local_gateway",
+            ] {
+                assert!(
+                    rendered.contains(expected),
+                    "missing {expected} at {width}x{height}"
+                );
+            }
         }
     }
 
