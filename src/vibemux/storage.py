@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from .errors import StorageError
-from .models import Event, Project, Run, RunStatus, Task, TaskStatus, TerminalLocation
+from .models import Event, Project, Run, RunRole, RunStatus, Task, TaskStatus, TerminalLocation
 
 CURRENT_SCHEMA_VERSION = 2
 SQLITE_BUSY_TIMEOUT_MS = 5_000
@@ -244,7 +244,7 @@ class Storage:
             task_id=UUID(row["task_id"]),
             project_id=UUID(row["project_id"]),
             harness=row["harness"],
-            role=row["role"],
+            role=RunRole(row["role"]),
             protocol=row["protocol"],
             execution_backend=row["execution_backend"],
             terminal_backend=row["terminal_backend"],

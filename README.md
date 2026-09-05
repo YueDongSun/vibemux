@@ -99,6 +99,30 @@ vibemux trace
 vibemux stop $run
 ```
 
+## Harness switching
+
+Besides mock and opencode/claude/copilot/pi/grok/gemini, the built-in harness registry includes Chinese CLI agents:
+
+| name | product | vendor | command |
+| --- | --- | --- | --- |
+| `qwen` | Qwen Code | Alibaba | `qwen` |
+| `iflow` | iFlow CLI | Alibaba (iFlow) | `iflow` |
+| `trae` | TRAE CLI | ByteDance | `trae` |
+| `codebuddy` | CodeBuddy Code | Tencent | `codebuddy` |
+| `kimi` | Kimi Code CLI | Moonshot AI | `kimi` |
+
+`vibemux harnesses` probes every harness and persists the snapshot to `.vibemux/harnesses.json` (`--cached` reads the snapshot, `--json` prints JSON) while recording a `harness_probed` event; `vibemux switch <name>` writes the project default harness into `.vibemux/config.json` and records a `harness_switched` event. **Detection gating: both `switch` and `spawn` require the command to be detected locally; an undetected harness is rejected outright** — spawn fails before creating any worktree, leaving only a `run_failed` event and no orphan worktree or pane. The mock harness is always available, so offline flows are unaffected.
+
+```powershell
+vibemux harnesses
+vibemux switch qwen                 # errors out if qwen is not installed locally
+$task = vibemux task "Refactor login module"
+$run = vibemux spawn $task          # uses the project default harness (qwen)
+$run2 = vibemux spawn $task --harness iflow   # one-off override to iflow (must also be installed)
+```
+
+Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` stores the role on the Run and in `run_prepared`/`run_started` events, and accumulates it into the harness snapshot's `roles` field (visible via `vibemux harnesses`); `vibemux status` shows each run's role. Unknown roles are rejected.
+
 ## Development commands
 
 ```powershell

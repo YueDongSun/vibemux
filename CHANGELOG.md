@@ -22,6 +22,10 @@
 - Add Windows protected per-user control runtime, remote-pipe rejection, dual-generation writer locks, and legacy health/recovery compatibility.
 - Add M4.0 plugin protocol foundation: checked-in Protobuf v1, bounded framing, validated manifest, policy negotiation, session lifecycle, and contract fixtures.
 - Add M4.1 process supervisor foundation: clean argv spawn, real stdio handshake, bounded queues/stderr, deadline/heartbeat/cancel/shutdown, and crash containment.
+- Add built-in Chinese CLI agent harnesses: qwen (Qwen Code), iflow (iFlow CLI), trae (TRAE CLI), codebuddy (CodeBuddy Code), and kimi (Kimi Code CLI).
+- Add `vibemux harnesses` (registry + availability) and `vibemux switch` (project default harness with `harness_switched` event); `spawn` falls back to the project default harness.
+- Persist probes: `vibemux harnesses` writes the detection snapshot to `.vibemux/harnesses.json` (`--cached` reads it, `harness_probed` event recorded); `switch`/`spawn` gate on detection, rejecting undetected harnesses before any worktree is created.
+- Persist run roles: `spawn --role worker|reviewer|orchestrator` stores the role on the Run and in events, shows it in `status`, and accumulates it into the harness snapshot (ADR 013).
 
 ## 0.1.0a0
 
