@@ -193,6 +193,18 @@ def test_registry_rejects_corrupt_payloads(tmp_path: Path) -> None:
     assert registry.harnesses["qwen"].roles == ()
 
 
+def test_cached_snapshot_reports_nothing_before_first_refresh(tmp_path: Path) -> None:
+    make_repo(tmp_path)
+    ProjectService(tmp_path).initialize("mock")
+
+    rows = HarnessService(tmp_path).cached()
+
+    assert rows, "cached view still lists every registered harness"
+    assert all(row["available"] is False for row in rows)
+    assert all(row["roles"] == [] for row in rows)
+    assert not tmp_path.joinpath(".vibemux", "harnesses.json").exists()
+
+
 def test_spawn_falls_back_to_project_default_harness(tmp_path: Path) -> None:
     make_repo(tmp_path)
     ProjectService(tmp_path).initialize("mock")
