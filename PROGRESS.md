@@ -2139,3 +2139,8 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Verified**
 - Local runs now match the CI Rust job exactly: `cargo clippy --workspace --all-targets --all-features -- -D warnings` reports zero diagnostics and `cargo test --workspace --all-features` passes 217 tests - 31 feature-gated tests beyond the 186 exercised by the loop's default-feature runs. No divergence existed; the loop's verification baseline now uses the all-features variant.
+
+### 2026-09-13 (28) - Theme signature refresh after layout changes
+
+**Verified**
+- Live Windows ANSI captures with the current binary (after the slot-panel wrap and height rebalance): classic emits 256-color indices (2/3/6/8), high-contrast the bright variants (10/11/14/15), mono emits no foreground sequences at all, and light emits the WCAG-corrected truecolor palette (0,110,0 / 0,110,110 / 150,75,0 / 96,96,96). All four signatures match the designed palettes; the layout changes did not disturb theme styling.
