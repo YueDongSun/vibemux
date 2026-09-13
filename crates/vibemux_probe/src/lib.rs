@@ -57,17 +57,27 @@ pub enum AgentKind {
     OpenCode,
     Copilot,
     Grok,
+    Qwen,
+    Iflow,
+    Trae,
+    Codebuddy,
+    Kimi,
 }
 
 impl AgentKind {
     #[must_use]
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 10] {
         [
             Self::Claude,
             Self::Codex,
             Self::OpenCode,
             Self::Copilot,
             Self::Grok,
+            Self::Qwen,
+            Self::Iflow,
+            Self::Trae,
+            Self::Codebuddy,
+            Self::Kimi,
         ]
     }
 
@@ -79,6 +89,11 @@ impl AgentKind {
             Self::OpenCode => "opencode",
             Self::Copilot => "copilot",
             Self::Grok => "grok",
+            Self::Qwen => "qwen",
+            Self::Iflow => "iflow",
+            Self::Trae => "trae",
+            Self::Codebuddy => "codebuddy",
+            Self::Kimi => "kimi",
         }
     }
 
@@ -90,6 +105,11 @@ impl AgentKind {
             Self::OpenCode => "OpenCode",
             Self::Copilot => "Copilot",
             Self::Grok => "Grok",
+            Self::Qwen => "Qwen",
+            Self::Iflow => "iFlow",
+            Self::Trae => "TRAE",
+            Self::Codebuddy => "CodeBuddy",
+            Self::Kimi => "Kimi",
         }
     }
 }
@@ -225,21 +245,29 @@ struct LauncherSpec {
 }
 
 pub async fn run_probe(config: &ProbeConfig) -> ProbeReport {
-    let gateway = probe_gateway(config).await;
-    let mut agents = Vec::new();
-    for agent in AgentKind::all() {
-        agents.push(probe_agent(agent, config).await);
-    }
-    let a2a = if config.run_a2a_self_test {
-        probe_a2a().await
-    } else {
-        A2aSelfTestProbe {
-            state: ProbeState::NotRun,
-            correlation_preserved: false,
-            listener_closed: false,
-            code: "a2a_not_run".to_string(),
+    // Agent version probes are independent (own launcher resolution, own
+    // child process, own deadline), so they run concurrently instead of
+    // serializing five worst-case timeouts. join_all preserves the
+    // AgentKind::all() order the dashboard and fixtures rely on.
+    let gateway = probe_gateway(config);
+    let a2a = async {
+        if config.run_a2a_self_test {
+            probe_a2a().await
+        } else {
+            A2aSelfTestProbe {
+                state: ProbeState::NotRun,
+                correlation_preserved: false,
+                listener_closed: false,
+                code: "a2a_not_run".to_string(),
+            }
         }
     };
+    let agent_probes = futures::future::join_all(
+        AgentKind::all()
+            .into_iter()
+            .map(|agent| probe_agent(agent, config)),
+    );
+    let (gateway, a2a, agents) = tokio::join!(gateway, a2a, agent_probes);
     ProbeReport {
         schema_version: PROBE_SCHEMA_VERSION,
         observed_at_epoch_seconds: now_epoch_seconds(),
@@ -433,6 +461,15 @@ fn discover_endpoints(agent: AgentKind, config: &ProbeConfig) -> Vec<SafeEndpoin
             &["baseURL", "base_url"],
             &mut values,
         ),
+        // The domestic CLI agents expose their endpoints through their own
+        // onboarding flows; discovery lands here once those paths are
+        // validated. Absence of endpoints keeps the route `unknown` and the
+        // launcher/version probe still runs.
+        AgentKind::Qwen
+        | AgentKind::Iflow
+        | AgentKind::Trae
+        | AgentKind::Codebuddy
+        | AgentKind::Kimi => {}
         AgentKind::Copilot => {}
         AgentKind::Grok => collect_toml_endpoints(
             &config.home_dir.join(".grok/config.toml"),
