@@ -1358,6 +1358,9 @@ A status must not move to `VERIFIED` without a repeatable evidence path.
 **Status change**
 - M5.0 read-only probe and unified frontend shell: `PLANNED` -> `PARTIAL`
 
+**Status refresh (2026-09-13)**
+- The probe and frontend now cover ten agent families (adding qwen, iflow, trae, codebuddy, kimi) with live-verified unavailable reporting for uninstalled launchers; the dashboard ships four selectable themes (classic, high-contrast, mono, light) whose every accent color passes a WCAG AA contrast audit test against its background, supports `t`-key live theme switching and `--json` machine output, and holds golden render fixtures per theme at two sizes. Native-TUI attachment stays intentionally disabled as deferred.
+
 **Implemented**
 - Added `vibemux_probe` with a versioned JSON report for five agent launchers, safe endpoint routing, CC Switch health/telemetry, and the A2A loopback self-test.
 - Added Windows direct-executable and same-name PowerShell-companion resolution; `.cmd` contents are never executed.
@@ -1841,3 +1844,293 @@ Non-goals:
 Publication authorization does not resolve the documented Linux/WSL, full ITK, remote/TLS, terminal/vendor-CLI, recovery, fuzz/soak or auxiliary-tooling gaps. See [publication evidence](docs/evidence/publication_validation.json) for the prepared snapshot and validation identity; the observed remote SHA is reported only after the push is verified.
 
 - Final exact-index checks: 77 intended files; 13 Markdown files and six JSON files validated; no broken staged local links; diff/cached-diff whitespace and ignore/example checks passed. Independent review in a separate worktree found no newly introduced operational credentials, private endpoints/profile IDs, machine-user paths or raw runtime/config artifacts. The only unstaged file is the unrelated toolchain component edit.
+
+### 2026-09-04 - Frontend agent-table truncation fix
+
+**Bug**
+- On any machine with verified agents, the unified dashboard's combined `L:.. A:.. I:..` cell (30-31 chars of real data) rendered into a fixed 28-char column, truncating the inference state to `I:not_r` for all five agents; long vendor version strings were clipped as well. Unit tests masked this because their toy strings were exactly 28 chars.
+
+**Fix**
+- Split the agent table into per-state columns (`Launcher`/`Auth`/`Infer`, each 11 chars so `unavailable` fits whole) with `Version` taking remaining width and `Route` unchanged.
+- Raised the side-by-side layout threshold from 110 to 160 columns so common 80-132 column terminals stack vertically and the table keeps full width.
+- Added `real_probe_states_and_versions_are_never_clipped` regression test covering real version shapes at 80/120/160 widths; verified live on a 120-column Windows console.
+
+**No contract change**: `ProbeReport`, `DashboardModel::plain_snapshot`, `--once` output, and slot semantics are untouched.
+
+### 2026-09-12 - Frontend themes, writer observability, concurrent control plane
+
+**Implemented**
+- Added `vibemux_frontend` dashboard themes: classic, high-contrast, and mono (no foreground colors), selectable via `--theme` or `VIBEMUX_FRONTEND_THEME`; footer shows the active theme.
+- Added writer scheduling observability: `WriterHealth` reports `queue_depth`, `queue_high_watermark`, and `queue_saturated`; a saturated queue answers health from an atomic snapshot without a worker round trip; `vibemuxctl daemon health` exposes the metrics.
+- Fixed control-plane head-of-line blocking: control connections are handled concurrently with a per-connection task; graceful shutdown drains in-flight connections via `JoinSet` before the writer closes; Windows pipe instance ceiling raised to 16.
+
+**Evidence**
+- Frontend: golden render fixtures for all themes at 80x24 and 120x32 guard against visual drift; real-terminal ANSI captures verified per-theme color signatures; Rust workspace 174 tests green.
+- Daemon: regression test `idle_client_does_not_block_other_control_traffic` fails against the old serial accept and passes after the fix.
+- Live Windows e2e via `vibemuxctl`: daemon start reported `queue_depth=0`, `queue_high_watermark=1` (sampling floor), `queue_saturated=false`; five concurrent health clients all answered with identical metrics; stop removed the endpoint and subsequent health returned `daemon_not_running`.
+
+### 2026-09-12 (2) - Scheduling audit rounds 5-8
+
+**Implemented**
+- Event-driven `wait_remote`: supervisor waits on the A2A SSE subscription instead of polling; subscription rejection, transport errors, and streams ending without a terminal event degrade to the bounded polling path (250ms), preserving the wait contract.
+- Extracted `POLL_INTERVAL` (250ms) for the fallback polling cadence, cutting poll RPC volume roughly 60% versus 100ms.
+- `vibemux-frontend --json` emits the versioned probe report for scripts and CI; CLI integration tests cover the flag matrix and error paths.
+- Live Windows e2e recorded: five concurrent `vibemuxctl daemon health` clients with consistent queue metrics; clean stop.
+
+**Reviewed, no change needed**
+- Supervisor repair-loop budget: `max_repairs <= 2` is enforced in work-order validation (at most three worker/reviewer rounds), each role run carries the 300s deadline, cancellation is checked per round, and peer cleanup failures surface as errors. No unbounded-loop risk.
+
+### 2026-09-12 (3) - Probe parallelism, visual polish, mock terminal audit
+
+**Implemented**
+- `run_probe` runs the five agent version probes concurrently (`join_all`, order-preserving) instead of serially; worst-case startup drops from the sum of five 10s deadlines to the slowest single probe. Measured `--once` wall time on a live Windows machine: 2.1-3.1s.
+- Diagnostics panel colors the Gateway and A2A summary lines by probe state; `DashboardModel` retains both states for the renderer. Text content unchanged, so golden fixtures still pass.
+- Agent table version cells ellipsize against the real column budget (fixed columns 55 + five 1-cell gaps + borders subtracted from the table interior) instead of a hard mid-token cut; wide tables keep full version strings. 80-column golden fixtures regenerated.
+- Frontend `--json` mode and CLI integration tests recorded under the frontend theme entry.
+
+**Reviewed, no change needed**
+- Python mock terminal backend: pane inventory persists through a temp-file atomic replace with schema validation and explicit corruption errors; concurrent last-writer-wins is acceptable for the offline mock test facility and does not touch authoritative SQLite state.
+
+### 2026-09-12 (4) - Terminal backend command scheduling review
+
+**Reviewed, no change needed**
+- WezTerm backend: every operation is one `wezterm cli` invocation (spawn/list/send/kill/activate), which is the supported control path; `stop` verifies pane existence via `list` before killing, and probes never run user text through a shell.
+- `send_text` with `submit=True` issues two invocations (text, then Enter). Merging into one `send-text` call with an appended carriage return would halve submit latency but changes byte-chunk boundaries seen by the target program; the Python reference and Rust backend lock this contract, so the change needs a dedicated cross-language review rather than a loop iteration.
+- Mock terminal backend: temp-file atomic replace with schema validation (audited separately, no change needed).
+
+### 2026-09-12 (5) - Probe endpoint discovery audit
+
+**Reviewed, no change needed**
+- Endpoint discovery reads only fixed, allowlisted configuration paths per agent (Claude/Codex/OpenCode/Grok) and only allowlisted keys; Copilot declares none. `SafeEndpoint` parsing rejects credential-bearing URLs, and route classification treats loopback case-insensitively via `IpAddr::is_loopback` with empty sets mapping to `unknown`.
+- Gateway probing targets fixed `127.0.0.1` with `no_proxy` and a bounded timeout; no user-controlled URL enters the transport. Consistent with the M5.0 acceptance gate on SSRF-safe, read-only evidence collection.
+
+### 2026-09-12 (6) - Visual polish rounds 18-22 summary
+
+**Implemented**
+- Telemetry line colored by failure semantics (absent muted, zero failures green, any failure bright red); failed agent rows render bold for scan visibility.
+- WCAG AA contrast audit as a permanent test: every state color, title, tabs, route, and muted color must hold 4.5:1 on dark backgrounds. The audit caught the classic dark red at 3.60:1, fixed to the bright red (5.25:1) across agent states, health, and telemetry.
+- Mono theme emphasis ladder extended from the state columns to the slot panel (reserved bold, unavailable dim), keeping the no-foreground-color invariant.
+- README documents themes, `--json`/`--once` output, and golden fixture regeneration.
+- Light theme live-verified on Windows: real-terminal ANSI capture shows the truecolor dark palette (`38;2;0;110;0`, `38;2;150;75;0`, `38;2;96;96;96`) instead of the 256-color indices the dark themes use, confirming the palette ships as designed.
+
+### 2026-09-12 (7) - Ten-agent probe live verification
+
+**Evidence**
+- `vibemux-frontend --once` on Windows: Claude/Codex/OpenCode/Copilot/Grok verified with real versions and routes; Qwen/iFlow/TRAE/CodeBuddy/Kimi report `launcher_unavailable` + `unknown` (not installed on this machine); overall aggregates `5 verified, 5 unavailable`; ten reserved native-TUI slots render.
+- Ledger catch-up: rounds 18-25 committed telemetry failure coloring, failed-row emphasis, WCAG contrast audit (classic dark red fixed, light theme), mono emphasis ladder, light theme, README theme docs, and ten-agent probe extension.
+- Round 28-29 fixes: narrow-layout height rebalance keeps all ten agent rows visible at 120x32+ (80x24 fits six, physical limit recorded in golden fixtures), and the slot panel renders wrapped per-slot styled lines at every width (the single-row Tabs truncated ten reservations).
+- Round 37: interactive theme hot-switching via the `t` key (`Theme::next` cycles all four themes in place; footer shows the hint), plus the flag-matrix CLI tests.
+- Rounds 30-32: light theme completed with the dark-cyan correction (title/route/slot cyan at 1.57:1 on white replaced by Rgb(0,110,110) at 7.4:1), the WCAG audit now covers every accent of all four themes against their backgrounds, and CLI integration tests pin the `--theme` x `--json`/`--once` flag matrix.
+
+### 2026-09-12 (8) - Supervisor service and model peer audit
+
+**Reviewed, no change needed**
+- `SupervisorService`: dual HTTP+gRPC transports start with full cleanup on partial failure and shut down in order (accept surfaces, then executor runtime); credentials validate before use; the supervisor config reader enforces a 64 KiB bound and rejects non-regular files.
+- `TaskRuntime::start` concurrency of 1 serializes supervisor workflows by design; raising it is a configuration decision, not a defect.
+- `vibemux_model_peer` bootstrap: single-line stdin with a 32 KiB take plus 16 KiB line cap, `deny_unknown_fields`, and CC Switch reads off-runtime via `spawn_blocking`.
+
+### 2026-09-12 (9) - Python command boundary audit
+
+**Reviewed, no change needed**
+- `command_runner.py`: the single execution boundary enforces shell=False, argv/stdin null-byte rejection, an environment-key allowlist pattern, positive deadlines, and typed OSError vs timeout errors.
+- `agent_host.py`: harness hosting passes argv directly (no shell), caps environment JSON at 16 KiB with full type validation, and documents its two deliberate compat decisions (inherited environment, no timeout for long-lived harness processes) as temporary boundaries the Rust plugin permission model will replace.
+
+### 2026-09-12 (10) - Model peer process lifecycle audit
+
+**Reviewed, no change needed**
+- `model_peer_process.rs`: peer processes spawn with `kill_on_drop`, the bootstrap handshake validates peer_id and OS process identity against a 4 KiB response cap under a start deadline, graceful shutdown escalates to kill after `PEER_STOP_DEADLINE`, stderr diagnostics tasks are aborted and joined on every exit path, and `Drop` is a backstop rather than the cleanup plan. Ownership, cancellation, and join paths all meet the repository's long-lived-task rules.
+- With this audit the scheduling review matrix covers every lifecycle owner in the workspace: writer, control plane, supervisor workflow/service/runtime, model peer process and provider, probe, terminal backends, and both Python boundaries.
+
+### 2026-09-12 (11) - Live daemon start benchmark on Windows
+
+**Measured**
+- `scripts/benchmark_daemon_start.ps1` with release binaries, 10 samples plus warmup, on Windows (I:/VibeMux): daemon start p50 473.23 ms, p95 550.99 ms, mean 476.14 ms, min 407.82 ms, max 550.99 ms; daemon stop p95 52.07 ms; all start/stop status checks passed.
+- The workload covers process spawn, lifecycle locks, SQLite migration check, writer startup, named-pipe listener, and authenticated health. Values are first-party measurements on the developer machine, not performance targets.
+- Disk note: the workspace build cache had grown to 44 GB and filled the drive; it was removed and rebuilt cleanly (all 184 Rust tests still green). Drive I: remains at 82% occupancy from other data; large builds need headroom.
+
+### 2026-09-12 (12) - Workspace crate audit
+
+**Reviewed, no change needed**
+- `vibemux_workspace` ownership validation: run worktree paths must sit directly under the managed directory (parent equality, not prefix matching), both the worktree path and its git-dir canonicalize to their recorded forms, the `.git` pointer file is size-capped UTF-8 whose target resolves to the expected git-dir, and the managed directory itself must be a plain directory (junction/symlink refusal has a dedicated Windows junction fixture test).
+- All nine workspace-safety tests pass; the crate meets the repository's path-safety rules including the worktrees-vs-worktrees-evil prefix trap.
+
+### 2026-09-12 (13) - Plugin protocol limits audit
+
+**Reviewed, no change needed**
+- `vibemux_plugin_protocol`: frame sizing is double-bounded (1 MiB default, 16 MiB hard ceiling that rejects oversized configuration outright), in-flight requests default to 32 with a 4096 hard cap, heartbeat intervals cap at 300 s, and manifests use `deny_unknown_fields` with policy-identifier and entry-point validation.
+- A proptest drives every length above the default limit through the codec and asserts rejection, so the bound cannot regress silently. All 16 contract-fixture tests plus the property suite pass.
+
+### 2026-09-12 (14) - Events crate audit
+
+**Reviewed, no change needed**
+- `vibemux_events` enforces the canonical event discipline at the wire: tiered byte limits (type/actor 128, idempotency key 256, payload 64 KiB, envelope 96 KiB), mandatory lowercase snake_case for event types and actors, hard rejection of unknown schema versions, and recursive payload validation that case-insensitively rejects forbidden keys - the executable form of the "secrets never enter the default log" invariant.
+- The Python reference event fixture round-trips through the Rust decoder, keeping the cross-language contract locked.
+
+### 2026-09-12 (15) - A2A client transport audit
+
+**Reviewed, no change needed**
+- `vibemux_a2a` task client: the base URL must normalize to an entry in `allowed_origins` (loopback-normalized) or the connect is forbidden; redirects are disabled outright so a response cannot pull a request off the allowlist; proxying is off; three timeout layers cover connect, call, and per-chunk stream reads; responses are double-bounded by content-length precheck and `bounded_json`; the bearer token travels only in the authorization header.
+- Subscribe semantics reviewed earlier (terminal-event termination, explicit disconnect errors, no silent retry) hold for the rest of the client surface.
+
+### 2026-09-12 (16) - Recovery artifact audit
+
+**Reviewed, no change needed**
+- `vibemuxd::recovery`: writer-lock snapshots bind the exact bytes inspected, `remove_if_unchanged` re-reads and compares before deleting (TOCTOU closed), symlinks/non-regular/empty/oversized artifacts are all rejected, the lock format parses as exactly three strict fields with a non-zero PID, the SHA-256 confirmation digest is domain-separated, and Debug output is redacted with a test asserting the nonce never appears.
+- Recovery remains fail-closed end to end: any deviation surfaces as a typed error instead of a best-effort cleanup.
+
+### 2026-09-12 (17) - Daemon spawn and paths audit
+
+**Reviewed, no change needed**
+- `vibemux_cli::spawn_daemon_process`: Unix detaches via `process_group(0)` with all stdio nulled; Windows launches the checked-in PowerShell companion through a base64 `-EncodedCommand` (no string concatenation into the script), non-interactive, in a new process group without a window, and the helper protocol (PID line + terminate control) has timeouts and a kill escalation on both startup and shutdown.
+- `vibemuxd::process::DaemonPaths`: runtime/state directories validate as plain directories, legacy dual-runtime compatibility is explicit, and the control runtime plus artifacts verify Windows ACLs before use.
+
+### 2026-09-12 (18) - Store transactional audit
+
+**Reviewed, no change needed**
+- `vibemux_store`: every commit runs in an `Immediate` transaction; the idempotency key is required for state-changing commits, UNIQUE at the schema level, and checked inside the transaction so duplicate requests deterministically return the original event with `duplicate: true`; WAL and busy_timeout are set deliberately; projections upsert by (kind, id) as rebuildable state; A2A run updates use expected-version CAS and reject double binding; sequences validate through `EventSequence`.
+- This is the executable form of the atomic state-and-event invariant: a crash between the event insert and the projection update rolls both back together.
+
+### 2026-09-12 (19) - Types crate audit
+
+**Reviewed, no change needed**
+- `vibemux_types` defines every domain identifier through one `define_id!` macro: opaque newtypes with a private inner UUID, construction only via `new()` (v4) or `from_uuid` (nil-rejecting), serde-transparent string representation, and `FromStr` routed through the validating constructor - exactly the opaque-ID discipline the architecture rules require.
+
+### 2026-09-12 (20) - Plugin registry audit
+
+**Reviewed, no change needed**
+- `vibemuxd::plugin_registry`: lifetime restart budgets default to 3 (hard cap 16) and successful handshakes never reset consumed budget, so a crash loop cannot extend its own lease; exponential backoff uses a checked shift and validates against a 60 s ceiling; registration enforces capacity, duplicate, and stopped-state checks; shutdown signals every lifetime before joining each one and cleanup continues past individual errors; cancelled joins retain the worker as ownership evidence and failed joins quarantine it - both pinned by tests.
+
+### 2026-09-13 - Tmux backend deep audit
+
+**Reviewed, no change needed**
+- `TmuxBackend`: sessions live on a named `-L` socket (the user's default server is never touched), `new-session` separates the command with `--` so command text cannot become tmux options, `send_text` stages text through a `NamedTemporaryFile` (0600) that is unlinked in a `finally`, and `list` parses tmux's dead-pane flag.
+- Observation (kept as-is): `stop` does not check the `kill-pane` return code; the operation is intentionally idempotent - killing an already-dead pane reports failure to tmux but means success for the caller, so an error check would add noise without changing semantics.
+
+### 2026-09-13 (2) - Workspace cleanup audit
+
+**Reviewed, no change needed**
+- `vibemux_workspace::plan_cleanup/cleanup`: the plan verifies ownership, then runs `git status --porcelain -z --untracked-files=all --ignored=matching` and refuses on ANY output - ignored and untracked files count as user data; cleanup re-inspects ownership immediately before `git worktree remove --` (closing the plan-to-execute window), and the branch is always retained.
+
+### 2026-09-13 (3) - gRPC transport audit
+
+**Reviewed, no change needed**
+- `vibemux_a2a::task_grpc`: the listener binds `Ipv4Addr::LOCALHOST` on an ephemeral port only; a connection-budget semaphore rejects overflow immediately and each held permit lives exactly as long as its socket; decoding/encoding sizes, per-connection concurrency, stream count, and a server-level timeout are all bounded; the client validates endpoints with no discovery, no implicit redirection, no non-loopback targets, and no automatic retry; shutdown joins under a deadline with abort and Drop backstops.
+
+### 2026-09-13 (4) - A2A wire layer audit
+
+**Reviewed, no change needed**
+- `vibemux_a2a::task_wire`: every wire-to-native conversion (request, part, snapshot, artifact, reply) validates after mapping, so no wire object becomes internal state unchecked. Stream application requires an existing previous snapshot, binds task_id and context_id on every update, merges artifacts by id instead of appending, and the SSE loop rejects any event whose task id differs from the subscription.
+
+### 2026-09-13 (5) - A2A server admission and types restore audit
+
+**Reviewed, no change needed**
+- `task_server::begin`: stopped-state rejection, explicit a2a-version header check, exactly-one authorization header with constant-time bearer comparison (subtle), and a 32-permit admission semaphore returning Busy when saturated - permits are owned for the request lifetime.
+- `vibemux_types::restore`: persisted records deserialize with `deny_unknown_fields` and explicit per-field length validation, preserving the stored JSON shape without weakening domain invariants.
+
+### 2026-09-13 (6) - Task runtime audit
+
+**Reviewed, no change needed**
+- `vibemux_a2a::task_runtime`: every channel and pool is bounded (requests 32, events 16, tasks 64, cancel waiters 8, subscriptions 32) and overflow rejects with Busy instead of queueing; the state machine is Submitted -> Working -> terminal with idempotent cancellation; entries are subject-scoped so one caller cannot observe another's tasks; the crate documents itself as non-authoritative - executors receive explicit capabilities and canonical state never flows through it, consistent with the single-writer architecture.
+
+### 2026-09-13 (7) - Worktree creation audit
+
+**Reviewed, no change needed**
+- `vibemux_workspace::create`: the target path must not exist (symlink metadata checked), the branch name derives from the RunId so user input never enters branch names, `git worktree add` pins the explicit base commit, an ownership token is generated at creation, and the owner receipt is written with create-new semantics, synced to disk, and verified by a final inspect. Windows extended-length path prefixes are stripped before invoking Git.
+
+### 2026-09-13 (8) - Control frame protocol audit
+
+**Reviewed, no change needed**
+- `vibemuxd::control`: length-prefixed frames reject zero and oversize lengths (64 KiB cap with a dedicated test), the bearer token is 32 OS-random bytes rendered as 64 hex chars and compared in constant time, protocol versions are negotiated explicitly with unsupported versions rejected, every request runs under a 10 s deadline, and descriptor files cap at 4 KiB.
+- Combined with the concurrent-connection fix (round 44) and the writer metrics (round 45), the control plane's security and scheduling surfaces are fully audited.
+
+### 2026-09-13 (9) - A2A server send semantics audit
+
+**Reviewed, no change needed**
+- `task_server::send_message` and `send_streaming_message`: admission through `begin`, wire-to-native validation, response context_id must match the request or the exchange fails as a protocol error, and non-immediate sends subscribe to the task stream until a terminal state, validating every update's task and context binding. The streaming variant moves the admission permit into the response stream, and the server's stop watch terminates streams on shutdown.
+
+### 2026-09-13 (10) - Supervisor finalization audit
+
+**Reviewed, no change needed**
+- `supervisor_workflow::fail_open_runs/finalize_cancelled_task`: only non-terminal runs (Preparing/Running/Stale) are marked failed with the `supervisor_not_verified` code, terminal records are never rewritten, cancellation finalization is idempotent, all canonical writes go through the single writer via spawn_blocking, and errors propagate instead of being swallowed.
+
+### 2026-09-13 (11) - Artifact write audit
+
+**Reviewed, no change needed**
+- `vibemux_workspace::write_artifact`: artifact names are a three-value whitelist (result/review/verification.json) so path injection is structurally impossible, payloads pass a 32 KiB JSON bound, ownership is verified immediately before writing, files open with create-new semantics (no overwrite or clobber race), and each reference records sha256 and size with a sync-to-disk completion.
+
+### 2026-09-13 (12) - Push notifications and status reader audit
+
+**Reviewed, no change needed**
+- Push notification configs are explicitly rejected at the wire layer (`Unsupported`) and the gRPC surface maps that to the standard `Unimplemented`/`PUSH_NOTIFICATION_NOT_SUPPORTED` status - an explicit capability boundary instead of a silent ignore. Tenant fields are rejected the same way.
+- `plugin_registry::status_reader` exposes read-only snapshots through a watch channel; plugin cancellation is deliberately not exposed over IPC, and terminal entries cannot be silently re-registered.
+
+### 2026-09-13 (13) - A2A domain types audit
+
+**Reviewed, no change needed**
+- `vibemux_types::a2a`: cross-entity identity consistency (task/run/binding/workspace must agree on ids and base_commit), schema-version enforcement, ordered timestamps, `Succeeded` requiring a verification receipt (matching the RunCompletionAuthority rule), `A2aRunStart` restricted to Preparing status with a role allowlist, bounded artifact and run counts, and `deny_unknown_fields` throughout.
+
+### 2026-09-13 (14) - A2A contract audit
+
+**Reviewed, no change needed**
+- `vibemux_a2a::task_contract`: tiered size bounds (wire 64 KiB, payload 16 KiB, 16 parts, 16 artifacts, 32 identities), bounded JSON payloads, media-type validation, and peer credentials constrained to 32-256 ASCII alphanumeric/hyphen/underscore/dot characters (blocking header injection and control characters) with a redacted Debug implementation.
+
+### 2026-09-13 (15) - Python diff semantics audit
+
+**Reviewed, no change needed**
+- `workspace.py::diff`: tracked changes diff against the pinned base commit (`--no-ext-diff --binary` blocks external diff tools and preserves binaries), untracked files are enumerated NUL-delimited (`-z` blocks newline injection) and patched via `--no-index` against `/dev/null` with exit code 1 treated as success, and the base commit is verified to exist before any diffing. Ownership is checked first.
+
+### 2026-09-13 (16) - Context inference audit
+
+**Reviewed, no change needed**
+- `task_server::infer_context`: task identifiers validate before lookup, the snapshot is fetched by the authenticated subject (other subjects' tasks are simply not found), the fetched task id is re-verified, and a client-supplied context_id that disagrees with the real snapshot is rejected as an invalid request - blocking forged-context attachment to another conversation.
+
+### 2026-09-13 (17) - Git process execution audit
+
+**Reviewed, no change needed**
+- `workspace::git_output`: git runs with a fully cleared environment (only SystemRoot/WINDIR/TEMP/TMP/PATH re-imported), system and global git configs blocked, hooks disabled via `core.hooksPath`, autocrlf and fsmonitor pinned off, `kill_on_drop` plus Windows no-window flags set; stdout and stderr are read concurrently under a 1 MiB bound each (no pipe-full deadlock), the whole operation runs under a 30 s deadline, and every failure path terminates and reaps the child within `REAP_DEADLINE`.
+
+### 2026-09-13 (18) - Python path safety audit
+
+**Reviewed, no change needed**
+- `vibemux::paths`: containment uses `os.path.commonpath` equality (prefix matching and the worktrees-evil trap are structurally excluded, cross-drive ValueError fails closed), case normalization runs on Windows via `normcase`, and managed-worktree checks layer normalized containment, main-repository protection, symlink/reparse refusal, and a resolve-based re-verification that tolerates not-yet-created paths by validating the parent.
+
+### 2026-09-13 (19) - gRPC status compatibility audit
+
+**Reviewed, no change needed**
+- `compatible_grpc_status`: SDK-internal error messages map explicitly to the A2A-standard gRPC codes (TASK_NOT_FOUND, PUSH_NOTIFICATION_NOT_SUPPORTED, UNSUPPORTED_OPERATION, VERSION_NOT_SUPPORTED, TASK_NOT_CANCELABLE), auth failures map to unauthenticated/permission-denied so they cannot be downgraded to generic Unknown, unmatched statuses pass through unchanged, and every rewritten status carries standard error-info details.
+
+### 2026-09-13 (20) - Probe version parsing audit
+
+**Reviewed, no change needed**
+- `vibemux_probe` version extraction is deliberately generic: the first non-empty line of stdout (falling back to stderr) becomes the version text, so the ten registered agents - including the Chinese CLI families - are all handled by one code path with no per-vendor format assumptions. Output size is bounded on both streams, the version text is length-capped and sanitized, and Windows launcher resolution distinguishes executables it may run (.exe/.com) from scripts it never executes (.cmd/.ps1).
+
+### 2026-09-13 (21) - Mock harness audit
+
+**Reviewed, no change needed**
+- `mock_harness.py`: the WRITE command applies the same three-layer path defense as production (absolute-path rejection, `..` segment rejection, resolve-then-commonpath equality), unknown commands answer with an explicit UNKNOWN line instead of silence, every response flushes for pipe interaction, and EXIT carries an explicit status code. The offline harness therefore exercises the real safety semantics rather than a lax copy.
+
+### 2026-09-13 (22) - PowerShell companion launcher audit
+
+**Reviewed, no change needed**
+- `harness.py::_resolve_command`: Windows script launchers (.cmd/.bat/.ps1) are never executed directly. A .ps1 is wrapped as `powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script> -- <args>`, .cmd/.bat require a same-name .ps1 companion or registration fails, and only .exe/.com resolve as direct executables. The whole launch then flows through `vibemux.agent_host` (-- separated argv, JSON environment), so no user-controlled text ever reaches a shell string. The probe path mirrors the same resolution, so availability reflects the controlled launcher, not a raw script path.
+
+### 2026-09-13 (23) - A2A store CAS audit
+
+**Reviewed, no change needed**
+- `vibemux_store::a2a`: run updates carry double-layer compare-and-swap - an application-level `expected_version` check plus the SQL `UPDATE ... WHERE version=?` conditional whose zero-row result maps to `A2aVersionConflict`, closing the read-check-write race even under concurrent writers. Idempotency fingerprints are domain-separated SHA-256 (kind, NUL, payload) so a reused key with different content surfaces as `A2aIdempotencyConflict` rather than silently matching. Terminal records reject every action except `FinalizeCancellation`, timestamps must be monotonic, and the whole path runs in an `Immediate` transaction.
+
+### 2026-09-13 (24) - Control descriptor security audit
+
+**Reviewed, no change needed**
+- Descriptor files carrying the bearer token are created with `create_new` (an existing descriptor blocks a second daemon), cap at 4 KiB, and open with 0o600 permissions on Unix; on Windows the control runtime directory is secured through `vibemux_platform::secure_user_directory` with an ACL marker file that is validated and persisted so the tightening is enforced on every start.
+
+### 2026-09-13 (25) - Platform ACL hardening audit
+
+**Reviewed, no change needed**
+- `vibemux_platform::windows_security`: the ACL script runs base64-encoded through the system PowerShell resolved by absolute path (PATH hijacking is irrelevant); the target path travels only via an environment variable, never through script text. The directory drops inheritance and is rewritten with exactly three FullControl ACEs (current user, SYSTEM, Administrators); the script then reads the ACL back and verifies protection, rule count, non-inheritance, allow-type, and rights before reporting success. The helper runs under a 5 s deadline with kill-and-reap, bounded output, and staged error codes for diagnostics.
+
+### 2026-09-13 (26) - Plugin supervisor audit
+
+**Reviewed, no change needed**
+- `vibemux_plugin_supervisor`: plugin processes spawn with a cleared environment plus an explicit session variable, `kill_on_drop`, and platform detachment flags; all three pipes are owned (stderr is collected under a byte limit with an atomic truncation flag); the Hello -> CoreHello -> Ready handshake runs through the lifecycle state machine under a deadline, and every handshake failure terminates and reaps the child plus aborts and joins the stderr task; reader/writer tasks communicate through bounded mpsc channels; the config rejects zero-valued timeouts.
+- With this, every crate in the workspace has been audited or improved at least once by the optimization loop.

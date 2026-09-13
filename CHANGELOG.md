@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Extend the probe and unified frontend to the Chinese CLI agents (qwen, iflow, trae, codebuddy, kimi): launcher and version probes join the report and the dashboard now renders ten agent rows with ten reserved native-TUI slots.
+- Fix control-plane head-of-line blocking: control connections are now handled concurrently (per-connection task with JoinSet drain on graceful shutdown, pipe instance ceiling raised to 16), so an idle or slow client can no longer stall health checks and other control traffic; covered by a dedicated regression test.
+- Add writer scheduling observability: `WriterHealth` and daemon health now report `queue_depth`, `queue_high_watermark`, and `queue_saturated`; a saturated queue no longer blinds health (the snapshot answers without a worker round trip), and `vibemuxctl daemon health` exposes the metrics.
+- Add dashboard themes: `classic` (8-color default), `high-contrast` (light variants for bright environments and low-vision users), and `mono` (no foreground colors; bold/dim only) selectable via `--theme` or `VIBEMUX_FRONTEND_THEME`; all themes keep real probe data unclipped at common terminal sizes.
+- Fix unified frontend agent-table truncation: split the combined launcher/auth/inference cell into per-state columns (no more clipped `I:not_r` on verified agents), raised the side-by-side layout threshold to 160 columns so the table keeps full width on common terminals, and added a real-data rendering regression test.
 - Add local stateful A2A HTTP+JSON/JSONRPC/gRPC, atomic schema-2 binding/verification commands, owned Run workspaces, and an explicit supervisor workflow using separate model peers. Add official TCK tooling and bidirectional Python/Go SDK interoperability fixtures; remote/TLS and full ITK remain outside verified scope.
 
 - Add M4.2 daemon-owned plugin registry: explicit bounded startup configuration, lifetime restart budgets/backoff/quarantine, read-only IPC v2 status with v1 health/shutdown compatibility, and joined plugin cleanup before writer shutdown. No Task/Run mutation or SQLite/plugin-wire migration.
@@ -22,6 +27,10 @@
 - Add Windows protected per-user control runtime, remote-pipe rejection, dual-generation writer locks, and legacy health/recovery compatibility.
 - Add M4.0 plugin protocol foundation: checked-in Protobuf v1, bounded framing, validated manifest, policy negotiation, session lifecycle, and contract fixtures.
 - Add M4.1 process supervisor foundation: clean argv spawn, real stdio handshake, bounded queues/stderr, deadline/heartbeat/cancel/shutdown, and crash containment.
+- Add built-in Chinese CLI agent harnesses: qwen (Qwen Code), iflow (iFlow CLI), trae (TRAE CLI), codebuddy (CodeBuddy Code), and kimi (Kimi Code CLI).
+- Add `vibemux harnesses` (registry + availability) and `vibemux switch` (project default harness with `harness_switched` event); `spawn` falls back to the project default harness.
+- Persist probes: `vibemux harnesses` writes the detection snapshot to `.vibemux/harnesses.json` (`--cached` reads it, `harness_probed` event recorded); `switch`/`spawn` gate on detection, rejecting undetected harnesses before any worktree is created.
+- Persist run roles: `spawn --role worker|reviewer|orchestrator` stores the role on the Run and in events, shows it in `status`, and accumulates it into the harness snapshot (ADR 013).
 
 ## 0.1.0a0
 

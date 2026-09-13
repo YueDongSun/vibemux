@@ -45,3 +45,7 @@ The initial frontend is a shell and renderable view model. Real native-TUI attac
 - Reimplement each agent's TUI in React/Ratatui: rejected because it duplicates vendor UI behavior and encourages terminal-text state inference.
 - Embed unrestricted shell commands in frontend panels: rejected because user or remote text must never become a shell command string.
 - Build a browser-only frontend first: deferred because native CLI TUIs require a supervised terminal surface that a browser page alone does not provide.
+
+## Amendment (2026-09-12): dashboard themes and color-independence
+
+Decision: the renderer exposes classic, high-contrast, and mono themes selected by `--theme` or `VIBEMUX_FRONTEND_THEME` (classic is default). Consequences: no foreground colors in mono (emphasis via bold/dim only); state information is always carried by full-word text labels (`verified`/`failed`/`unavailable`/`not_run`), so color is an enhancement rather than the only channel and the dashboard stays usable under deuteranopia/protanopia and on colorless terminals (WCAG 1.4.1 Use of Color). Golden render fixtures per theme guard visual drift. Alternatives: symbol prefixes on every cell (noisier, rejected for now).
