@@ -49,6 +49,20 @@ fn theme_combines_with_once_and_json_flags() {
 }
 
 #[test]
+fn invalid_theme_environment_falls_back_to_classic() {
+    // An unparsable VIBEMUX_FRONTEND_THEME must degrade to the default
+    // theme instead of failing the run; only the CLI flag errors hard.
+    let output = Command::new(env!("CARGO_BIN_EXE_vibemux_frontend"))
+        .args(["--once"])
+        .env("VIBEMUX_FRONTEND_THEME", "neon-does-not-exist")
+        .output()
+        .expect("frontend binary runs");
+    assert!(output.status.success(), "invalid env theme must not fail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("VibeMux Unified Frontend"));
+}
+
+#[test]
 fn unknown_arguments_exit_with_code_four() {
     let (code, stdout, stderr) = run_frontend(&["--bogus"]);
     assert_eq!(code, 4);
