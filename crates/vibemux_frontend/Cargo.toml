@@ -9,5 +9,9 @@ repository.workspace = true
 [dependencies]
 crossterm.workspace = true
 ratatui.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 vibemux_probe = { path = "../vibemux_probe" }
+
+[dev-dependencies]
+serde_json.workspace = true
