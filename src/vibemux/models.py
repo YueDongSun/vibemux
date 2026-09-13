@@ -32,6 +32,12 @@ class RunStatus(StrEnum):
     STALE = "stale"
 
 
+class RunRole(StrEnum):
+    WORKER = "worker"
+    REVIEWER = "reviewer"
+    ORCHESTRATOR = "orchestrator"
+
+
 class RunCompletionAuthority(StrEnum):
     STRUCTURED_ADAPTER = "structured_adapter"
     VERIFIER = "verifier"
@@ -96,7 +102,7 @@ class Run:
     task_id: UUID
     project_id: UUID
     harness: str
-    role: str = "worker"
+    role: RunRole = RunRole.WORKER
     protocol: str = "mock"
     execution_backend: str = "native"
     terminal_backend: str = "auto"

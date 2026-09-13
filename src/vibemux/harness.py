@@ -180,6 +180,12 @@ DEFAULT_PROFILES = {
     "pi": HarnessProfile("pi", ("pi",)),
     "grok": HarnessProfile("grok", ("grok",)),
     "gemini": HarnessProfile("gemini", ("gemini",)),
+    # Chinese CLI agents: executable name and vendor only; interactive protocol is always PTY.
+    "qwen": HarnessProfile("qwen", ("qwen",), provider="alibaba"),
+    "iflow": HarnessProfile("iflow", ("iflow",), provider="alibaba"),
+    "trae": HarnessProfile("trae", ("trae",), provider="bytedance"),
+    "codebuddy": HarnessProfile("codebuddy", ("codebuddy",), provider="tencent"),
+    "kimi": HarnessProfile("kimi", ("kimi",), provider="moonshot"),
 }
 
 
@@ -188,3 +194,9 @@ def profile_for(name: str) -> HarnessProfile:
         return DEFAULT_PROFILES[name]
     except KeyError as exc:
         raise HarnessNotFoundError(name) from exc
+
+
+def adapter_for(profile: HarnessProfile) -> HarnessAdapter:
+    if profile.protocol is HarnessProtocol.MOCK:
+        return MockHarnessAdapter()
+    return GenericCommandAdapter()

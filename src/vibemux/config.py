@@ -11,6 +11,7 @@ from .errors import ConfigurationError, NotInitializedError
 CONFIG_DIR = ".vibemux"
 CONFIG_FILE = "config.json"
 DATABASE_FILE = "vibemux.sqlite3"
+HARNESS_REGISTRY_FILE = "harnesses.json"
 WORKTREE_DIR = "worktrees"
 
 
@@ -21,6 +22,7 @@ class Config:
     terminal_backend: str = "auto"
     execution_backend: str = "native"
     managed_worktree_root: str | None = None
+    default_harness: str = "mock"
     schema_version: int = 1
 
     def write(self, path: Path) -> None:
@@ -48,6 +50,10 @@ def config_path(repo_root: Path) -> Path:
 
 def database_path(repo_root: Path) -> Path:
     return config_dir(repo_root) / DATABASE_FILE
+
+
+def harness_registry_path(repo_root: Path) -> Path:
+    return config_dir(repo_root) / HARNESS_REGISTRY_FILE
 
 
 def require_config(repo_root: Path) -> Config:

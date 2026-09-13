@@ -1,0 +1,3 @@
+# ADR 013: Detection-gated harness enablement
+
+Context: switch/spawn must not enable harnesses missing on the machine, and probe results plus role usage should outlive a single command. Decision: probe at switch and spawn; persist the detection snapshot and accumulated run roles in `.vibemux/harnesses.json` (refreshed by `vibemux harnesses`, `--cached` reads it); roles are a closed set (worker/reviewer/orchestrator) stored on each Run. Consequences: undetected harness fails fast before worktree creation and is recorded as run_failed; offline mock is unaffected; role set changes require a migration. Alternatives: trust config without probing (stale), or gate spawn on the persisted snapshot only (misses installs after last refresh), rejected.

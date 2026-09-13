@@ -9,16 +9,43 @@ from urllib.parse import unquote, urlparse
 from uuid import UUID
 
 from .command_runner import CommandRunner, SubprocessCommandRunner
-from .config import WORKTREE_DIR, Config, config_dir, config_path, database_path, require_config
+from .config import (
+    WORKTREE_DIR,
+    Config,
+    config_dir,
+    config_path,
+    database_path,
+    harness_registry_path,
+    require_config,
+)
 from .errors import (
+    HarnessNotDetectedError,
+    InvalidRoleError,
     NotInitializedError,
     ReconciliationError,
     TerminalBackendError,
     VibeMuxError,
 )
-from .harness import GenericCommandAdapter, LaunchContext, MockHarnessAdapter, profile_for
-from .models import Event, Project, Run, RunStatus, Task, TaskStatus, TerminalLocation
+from .harness import (
+    DEFAULT_PROFILES,
+    HarnessProfile,
+    LaunchContext,
+    adapter_for,
+    profile_for,
+)
+from .models import (
+    Event,
+    Project,
+    Run,
+    RunRole,
+    RunStatus,
+    Task,
+    TaskStatus,
+    TerminalLocation,
+    utc_now,
+)
 from .paths import is_within, normalized
+from .registry import HarnessRegistry, HarnessState, record_role
 from .storage import Storage
 from .terminal import MockTerminalBackend, SendReceipt, TerminalBackend, TmuxBackend, WezTermBackend
 from .workspace import WorkspaceManager, WorktreeRecord, ensure_clean_with_commit
@@ -100,6 +127,85 @@ class TaskService:
         return self.storage.list_tasks(self.project_id)
 
 
+class HarnessService:
+    """Probes harnesses, persists the detection snapshot, and owns the project default."""
+
+    def __init__(self, repo_root: Path):
+        self.repo_root = repo_root.resolve()
+        self.config = require_config(self.repo_root)
+        self.storage = Storage(database_path(self.repo_root))
+        self.project_id = UUID(self.config.project_id)
+        self.registry_path = harness_registry_path(self.repo_root)
+
+    def _row(
+        self,
+        name: str,
+        profile: HarnessProfile,
+        available: bool,
+        path: str | None,
+        roles: tuple[str, ...],
+    ) -> dict[str, object]:
+        return {
+            "name": name,
+            "command": list(profile.command),
+            "protocol": profile.protocol.value,
+            "provider": profile.provider,
+            "available": available,
+            "path": path,
+            "roles": list(roles),
+            "default": name == self.config.default_harness,
+        }
+
+    def refresh(self) -> list[dict[str, object]]:
+        previous = HarnessRegistry.read(self.registry_path)
+        states: dict[str, HarnessState] = {}
+        rows: list[dict[str, object]] = []
+        for name, profile in DEFAULT_PROFILES.items():
+            capabilities = adapter_for(profile).probe(profile)
+            roles = previous.harnesses.get(name, HarnessState(False)).roles
+            states[name] = HarnessState(capabilities.available, capabilities.path, roles)
+            rows.append(self._row(name, profile, capabilities.available, capabilities.path, roles))
+        HarnessRegistry(utc_now().isoformat(), states).write(self.registry_path)
+        self.storage.append_event(
+            Event(
+                "harness_probed",
+                self.project_id,
+                payload={
+                    "detected": sorted(name for name, state in states.items() if state.detected),
+                    "missing": sorted(name for name, state in states.items() if not state.detected),
+                },
+            )
+        )
+        return rows
+
+    def cached(self) -> list[dict[str, object]]:
+        registry = HarnessRegistry.read(self.registry_path)
+        rows: list[dict[str, object]] = []
+        for name, profile in DEFAULT_PROFILES.items():
+            state = registry.harnesses.get(name, HarnessState(False))
+            rows.append(self._row(name, profile, state.detected, state.path, state.roles))
+        return rows
+
+    def switch(self, harness_name: str) -> Config:
+        profile = profile_for(harness_name)
+        capabilities = adapter_for(profile).probe(profile)
+        if not capabilities.available:
+            raise HarnessNotDetectedError(
+                f"harness not detected on this machine: {harness_name} (see 'vibemux harnesses')"
+            )
+        previous = self.config.default_harness
+        self.config.default_harness = harness_name
+        self.config.write(config_path(self.repo_root))
+        self.storage.append_event(
+            Event(
+                "harness_switched",
+                self.project_id,
+                payload={"from": previous, "to": harness_name},
+            )
+        )
+        return self.config
+
+
 class RunService:
     def __init__(self, repo_root: Path, runner: CommandRunner | None = None):
         self.repo_root = repo_root.resolve()
@@ -130,7 +236,7 @@ class RunService:
     def spawn(
         self,
         task_id: UUID,
-        harness_name: str = "mock",
+        harness_name: str | None = None,
         *,
         role: str = "worker",
         terminal_backend: str | None = None,
@@ -138,16 +244,23 @@ class RunService:
         task = self.storage.get_task(task_id)
         if task is None:
             raise NotInitializedError(f"task not found: {task_id}")
+        try:
+            safe_role = RunRole(role)
+        except ValueError as exc:
+            raise InvalidRoleError(
+                f"unknown run role: {role} (expected one of {', '.join(item.value for item in RunRole)})"
+            ) from exc
         if task.status == TaskStatus.OPEN:
             task.transition(TaskStatus.IN_PROGRESS)
             self.storage.save_task(task)
         backend_name = terminal_backend or self.config.terminal_backend
+        harness_name = harness_name or self.config.default_harness
         base_commit = ensure_clean_with_commit(self.repo_root, self.runner)
         run = Run(
             task_id,
             self.project_id,
             harness_name,
-            role=role,
+            role=safe_role,
             terminal_backend=backend_name,
             execution_backend=self.config.execution_backend,
             base_commit=base_commit,
@@ -159,19 +272,24 @@ class RunService:
                 self.project_id,
                 task_id,
                 run.run_id,
-                payload={"harness": harness_name},
+                payload={"harness": harness_name, "role": safe_role.value},
             ),
         )
         worktree: WorktreeRecord | None = None
         location: TerminalLocation | None = None
         backend = self._backend(backend_name)
         try:
+            profile = profile_for(harness_name)
+            adapter = adapter_for(profile)
+            capabilities = adapter.probe(profile)
+            if not capabilities.available:
+                raise HarnessNotDetectedError(
+                    f"harness not detected on this machine: {harness_name} (see 'vibemux harnesses')"
+                )
             worktree = self.workspace.create_worktree(
                 run.run_id.hex[:12], f"vibemux/{run.run_id.hex[:12]}", base_commit
             )
             run.worktree, run.branch = str(worktree.path), worktree.branch
-            profile = profile_for(harness_name)
-            adapter = MockHarnessAdapter() if harness_name == "mock" else GenericCommandAdapter()
             launch = adapter.build_launch_spec(
                 profile, LaunchContext(worktree.path, str(run.run_id))
             )
@@ -197,10 +315,10 @@ class RunService:
                         "worktree": run.worktree,
                         "branch": run.branch,
                         "pane_id": location.pane_id,
+                        "role": safe_role.value,
                     },
                 ),
             )
-            return run
         except Exception:
             compensation: list[str] = []
             if location is not None:
@@ -237,6 +355,14 @@ class RunService:
                 ),
             )
             raise
+        record_role(
+            harness_registry_path(self.repo_root),
+            harness_name,
+            capabilities.available,
+            capabilities.path,
+            safe_role.value,
+        )
+        return run
 
     def get(self, run_id: UUID) -> Run:
         run = self.storage.get_run(run_id)
