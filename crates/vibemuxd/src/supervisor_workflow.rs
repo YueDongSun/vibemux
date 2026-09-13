@@ -4,6 +4,7 @@ use crate::{
     model_peer_process::{ModelPeerProcess, SupervisorConfig},
 };
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -19,6 +20,10 @@ use vibemux_types::{Run, RunSpec, RunStatus, Task, TaskId, TaskSpec, a2a::*};
 use vibemux_workspace::{WorkspaceManager, sha256};
 
 const WORKFLOW_DEADLINE: Duration = Duration::from_secs(300);
+/// Remote task polling cadence. Model completions take seconds, so 250ms
+/// keeps cancellation responsive while cutting poll RPCs by ~60% versus
+/// 100ms. Event-driven waiting over `TaskClient::subscribe` supersedes this.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
 struct RoleSubmission {
     role: &'static str,
     binding: TaskBinding,
@@ -235,7 +240,7 @@ impl SupervisorExecutor {
             if snapshot.state.is_terminal() {
                 break snapshot;
             }
-            tokio::select! {_=cancellation.changed()=>{},_=sleep(Duration::from_millis(100))=>{}}
+            tokio::select! {_=cancellation.changed()=>{},_=sleep(POLL_INTERVAL)=>{}}
         };
         if result.state == TaskState::Canceled {
             if record.binding.cancellation_state != A2aCancellationState::Requested {
@@ -462,6 +467,44 @@ async fn wait_remote(
     task_id: &str,
     cancellation: &mut watch::Receiver<bool>,
 ) -> Result<TaskSnapshot, TaskGatewayError> {
+    if *cancellation.borrow() {
+        return peer.client.cancel(task_id).await;
+    }
+    // Fast path: the SSE event stream eliminates polling entirely. The
+    // gateway rejects subscriptions for already-terminal tasks, and streams
+    // can end on transport errors, so any failure degrades to bounded
+    // polling below without changing the wait contract.
+    if let Ok(mut events) = peer.client.subscribe(task_id).await {
+        let deadline = Instant::now() + WORKFLOW_DEADLINE;
+        let mut cancelled = false;
+        loop {
+            tokio::select! {
+                biased;
+                changed = cancellation.changed() => {
+                    if changed.is_err() || *cancellation.borrow_and_update() {
+                        cancelled = true;
+                        break;
+                    }
+                }
+                event = events.next() => match event {
+                    Some(Ok(snapshot)) => {
+                        if snapshot.state.is_terminal() {
+                            return Ok(snapshot);
+                        }
+                    }
+                    // None: the stream ended without a terminal event.
+                    Some(Err(_)) | None => break,
+                },
+                _ = tokio::time::sleep_until(deadline) => {
+                    let _ = peer.client.cancel(task_id).await;
+                    return Err(TaskGatewayError::Deadline);
+                }
+            }
+        }
+        if cancelled {
+            return peer.client.cancel(task_id).await;
+        }
+    }
     let deadline = Instant::now() + WORKFLOW_DEADLINE;
     loop {
         if *cancellation.borrow() {
@@ -475,7 +518,7 @@ async fn wait_remote(
             let _ = peer.client.cancel(task_id).await;
             return Err(TaskGatewayError::Deadline);
         }
-        tokio::select! {_=cancellation.changed()=>{},_=sleep(Duration::from_millis(100))=>{}}
+        tokio::select! {_=cancellation.changed()=>{},_=sleep(POLL_INTERVAL)=>{}}
     }
 }
 

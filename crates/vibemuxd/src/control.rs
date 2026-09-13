@@ -61,6 +61,12 @@ pub struct DaemonHealth {
     pub process_id: u32,
     pub store_schema_version: u32,
     pub queue_capacity: usize,
+    #[serde(default)]
+    pub queue_depth: usize,
+    #[serde(default)]
+    pub queue_high_watermark: usize,
+    #[serde(default)]
+    pub queue_saturated: bool,
 }
 
 impl DaemonHealth {
@@ -70,6 +76,9 @@ impl DaemonHealth {
             process_id,
             store_schema_version: writer.store_schema_version,
             queue_capacity: writer.queue_capacity,
+            queue_depth: writer.queue_depth,
+            queue_high_watermark: writer.queue_high_watermark,
+            queue_saturated: writer.queue_saturated,
         }
     }
 }
@@ -1004,22 +1013,35 @@ async fn run_server(
     endpoint: String,
     state: Arc<ServerState>,
 ) -> Result<(), ControlError> {
-    loop {
-        listener
-            .connect()
-            .await
-            .map_err(|_| ControlError::EndpointUnavailable)?;
-        let should_shutdown = handle_connection(&mut listener, state.clone()).await;
-        if should_shutdown {
-            return Ok(());
+    let mut connections = tokio::task::JoinSet::new();
+    let (shutdown_request, mut shutdown_requested) = tokio::sync::watch::channel(false);
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = shutdown_requested.changed() => break Ok(()),
+            connected = listener.connect() => {
+                connected.map_err(|_| ControlError::EndpointUnavailable)?;
+                // Hand the connected instance to its own task and create the
+                // next pipe instance immediately: a slow or idle client must
+                // not stall health checks and other control traffic.
+                let mut connection = listener;
+                listener = windows_server_options(false)
+                    .create(&endpoint)
+                    .map_err(|_| ControlError::EndpointUnavailable)?;
+                let connection_state = Arc::clone(&state);
+                let shutdown_request = shutdown_request.clone();
+                connections.spawn(async move {
+                    if handle_connection(&mut connection, connection_state).await {
+                        shutdown_request.send_replace(true);
+                    }
+                });
+            }
         }
-        listener
-            .disconnect()
-            .map_err(|_| ControlError::EndpointUnavailable)?;
-        listener = windows_server_options(false)
-            .create(&endpoint)
-            .map_err(|_| ControlError::EndpointUnavailable)?;
-    }
+    };
+    // Graceful shutdown: drain in-flight requests before the writer closes.
+    // An external stop cancels this future and aborts the tasks instead.
+    while connections.join_next().await.is_some() {}
+    result
 }
 
 #[cfg(windows)]
@@ -1027,10 +1049,13 @@ fn windows_server_options(first_instance: bool) -> tokio::net::windows::named_pi
     use tokio::net::windows::named_pipe::ServerOptions;
 
     let mut options = ServerOptions::new();
+    // The server always holds one listening instance and each in-flight
+    // connection holds another; 16 bounds concurrent control clients while
+    // leaving headroom above the JoinSet drain window.
     options
         .first_pipe_instance(first_instance)
         .reject_remote_clients(true)
-        .max_instances(2);
+        .max_instances(16);
     options
 }
 
@@ -1039,15 +1064,31 @@ async fn run_server(
     listener: tokio::net::UnixListener,
     state: Arc<ServerState>,
 ) -> Result<(), ControlError> {
-    loop {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .map_err(|_| ControlError::EndpointUnavailable)?;
-        if handle_connection(&mut stream, state.clone()).await {
-            return Ok(());
+    let mut connections = tokio::task::JoinSet::new();
+    let (shutdown_request, mut shutdown_requested) = tokio::sync::watch::channel(false);
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = shutdown_requested.changed() => break Ok(()),
+            accepted = listener.accept() => {
+                let (mut stream, _) =
+                    accepted.map_err(|_| ControlError::EndpointUnavailable)?;
+                // Each connection is handled in its own task so one slow or
+                // idle client cannot stall health checks and other traffic.
+                let connection_state = Arc::clone(&state);
+                let shutdown_request = shutdown_request.clone();
+                connections.spawn(async move {
+                    if handle_connection(&mut stream, connection_state).await {
+                        shutdown_request.send_replace(true);
+                    }
+                });
+            }
         }
-    }
+    };
+    // Graceful shutdown: drain in-flight requests before the writer closes.
+    // An external stop cancels this future and aborts the tasks instead.
+    while connections.join_next().await.is_some() {}
+    result
 }
 
 #[cfg(windows)]
@@ -1512,6 +1553,53 @@ mod tests {
             assert!(tokio::net::UnixStream::connect(&socket_path).await.is_err());
         }
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_client_does_not_block_other_control_traffic() {
+        // Regression for serial accept: a client that connects and goes quiet
+        // must not stop the server from answering health on another
+        // connection.
+        let temp = tempfile::tempdir().expect("temp directory");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("start control server");
+        let descriptor_path = server.descriptor_path().to_path_buf();
+        let client = ControlClient::from_descriptor(&descriptor_path).expect("control client");
+        let endpoint = client.descriptor.endpoint.clone();
+
+        #[cfg(windows)]
+        let idle = tokio::spawn(async move {
+            let stream = tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(&endpoint)
+                .expect("idle client connects");
+            // Hold the connection without ever sending a request.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(stream);
+        });
+
+        #[cfg(unix)]
+        let idle = tokio::spawn(async move {
+            let stream = tokio::net::UnixStream::connect(&endpoint)
+                .await
+                .expect("idle client connects");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(stream);
+        });
+
+        // Give the idle client time to occupy a connection first.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let started = std::time::Instant::now();
+        let health = tokio::time::timeout(std::time::Duration::from_secs(2), client.health())
+            .await
+            .expect("health must not time out behind an idle client")
+            .expect("health response");
+        assert!(health.healthy);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        idle.abort();
+        server.shutdown().await.expect("clean shutdown");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn plugin_status_requires_auth_and_legacy_health_remains_compatible() {
         let temp = tempfile::tempdir().expect("temp");

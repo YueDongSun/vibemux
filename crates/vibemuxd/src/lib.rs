@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -24,7 +24,14 @@ use vibemux_types::{
     a2a::{A2aRunRecord, A2aRunStart, A2aRunUpdate},
 };
 
+/// Writer queue capacity: 64 absorbs burst commits from multiple CLI clients
+/// without letting a stalled store accumulate unbounded memory. Overflow is
+/// fail-fast (`QueueFull`), never silent growth, per the bounded-queue rule.
 pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 64;
+/// Per-request response deadline: comfortably above worst-case local SQLite
+/// commit latency (WAL, single-digit ms) so only a genuinely stuck writer
+/// surfaces as `ResponseTimeout`. Callers retry idempotent reads; commits
+/// surface the error instead of blind retry.
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
@@ -44,6 +51,58 @@ pub struct WriterHealth {
     pub healthy: bool,
     pub store_schema_version: u32,
     pub queue_capacity: usize,
+    /// Requests currently queued for the writer thread.
+    #[serde(default)]
+    pub queue_depth: usize,
+    /// Peak queue depth since the last health observation.
+    #[serde(default)]
+    pub queue_high_watermark: usize,
+    /// True when this snapshot was produced without a worker round trip
+    /// because the queue was full (the request itself would have been
+    /// rejected with `QueueFull`).
+    #[serde(default)]
+    pub queue_saturated: bool,
+}
+
+/// Atomic queue telemetry shared between the enqueue side and the writer
+/// thread. `pending` counts requests handed to the channel but not yet
+/// dequeued by the worker, so health snapshots report waiting requests only.
+/// `high_watermark` tracks the largest `pending` observed at enqueue time
+/// since the last health sample (the sampling request itself contributes a
+/// floor of one); the worker resets it after answering a health request.
+#[derive(Debug, Default)]
+struct SharedWriterState {
+    pending: AtomicUsize,
+    high_watermark: AtomicUsize,
+}
+
+impl SharedWriterState {
+    fn record_enqueue(&self) {
+        let depth = self.pending.fetch_add(1, Ordering::AcqRel) + 1;
+        self.high_watermark.fetch_max(depth, Ordering::AcqRel);
+    }
+
+    fn record_processed(&self) {
+        // Requests sent around the counted enqueue path (internal test
+        // channels) leave nothing to decrement; telemetry is advisory, so a
+        // clamped floor beats an arithmetic panic.
+        let _ = self
+            .pending
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_sub(1)
+            });
+    }
+
+    fn snapshot(&self) -> (usize, usize) {
+        (
+            self.pending.load(Ordering::Acquire),
+            self.high_watermark.load(Ordering::Acquire),
+        )
+    }
+
+    fn reset_watermark(&self, to: usize) {
+        self.high_watermark.store(to, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -174,14 +233,30 @@ impl Drop for LifecycleLock {
 #[derive(Clone)]
 pub struct WriterHandle {
     sender: Weak<SyncSender<WriterRequest>>,
+    shared: Weak<SharedWriterState>,
     response_timeout: Duration,
+    queue_capacity: usize,
 }
 
 impl WriterHandle {
     pub fn health(&self) -> Result<WriterHealth, WriterError> {
         let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::Health(response))?;
-        receive(receiver, self.response_timeout)
+        match self.enqueue(WriterRequest::Health(response)) {
+            Ok(()) => receive(receiver, self.response_timeout),
+            // A saturated queue must not blind health: answer without a
+            // worker round trip. The channel is full, so depth equals
+            // capacity; healthy reflects the thread consuming (it is alive,
+            // merely slow) while queue_saturated flags the true condition.
+            Err(WriterError::QueueFull) => Ok(WriterHealth {
+                healthy: true,
+                store_schema_version: STORE_SCHEMA_VERSION,
+                queue_capacity: self.queue_capacity,
+                queue_depth: self.queue_capacity,
+                queue_high_watermark: self.queue_capacity,
+                queue_saturated: true,
+            }),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn events(&self) -> Result<Vec<EventEnvelope>, WriterError> {
@@ -236,11 +311,16 @@ impl WriterHandle {
         sender.try_send(request).map_err(|error| match error {
             TrySendError::Full(_) => WriterError::QueueFull,
             TrySendError::Disconnected(_) => WriterError::WorkerStopped,
-        })
+        })?;
+        if let Some(shared) = self.shared.upgrade() {
+            shared.record_enqueue();
+        }
+        Ok(())
     }
 }
 pub struct WriterWorker {
     sender: Option<Arc<SyncSender<WriterRequest>>>,
+    shared: Arc<SharedWriterState>,
     thread: Option<JoinHandle<()>>,
     response_timeout: Duration,
     queue_capacity: usize,
@@ -251,7 +331,9 @@ impl WriterWorker {
     pub fn handle(&self) -> Result<WriterHandle, WriterError> {
         Ok(WriterHandle {
             sender: Arc::downgrade(self.sender.as_ref().ok_or(WriterError::WorkerStopped)?),
+            shared: Arc::downgrade(&self.shared),
             response_timeout: self.response_timeout,
+            queue_capacity: self.queue_capacity,
         })
     }
 
@@ -354,6 +436,8 @@ impl WriterWorker {
         let database_path = database_path.to_path_buf();
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
         let (ready_sender, ready_receiver) = mpsc::channel();
+        let shared = Arc::new(SharedWriterState::default());
+        let worker_shared = Arc::clone(&shared);
         let thread = thread::Builder::new()
             .name("vibemux_writer".to_string())
             .spawn(move || {
@@ -363,12 +447,14 @@ impl WriterWorker {
                     receiver,
                     ready_sender,
                     lifecycle_locks,
+                    worker_shared,
                 );
             })
             .map_err(|_| WriterError::ThreadTerminated)?;
         match ready_receiver.recv_timeout(response_timeout) {
             Ok(Ok(())) => Ok(Self {
                 sender: Some(Arc::new(sender)),
+                shared,
                 thread: Some(thread),
                 response_timeout,
                 queue_capacity,
@@ -463,7 +549,9 @@ impl WriterWorker {
         sender.try_send(request).map_err(|error| match error {
             TrySendError::Full(_) => WriterError::QueueFull,
             TrySendError::Disconnected(_) => WriterError::WorkerStopped,
-        })
+        })?;
+        self.shared.record_enqueue();
+        Ok(())
     }
 }
 
@@ -483,6 +571,7 @@ fn writer_loop(
     receiver: Receiver<WriterRequest>,
     ready_sender: mpsc::Sender<Result<(), WriterError>>,
     _lifecycle_locks: Vec<LifecycleLock>,
+    shared: Arc<SharedWriterState>,
 ) {
     let mut store = match SqliteStore::open(database_path) {
         Ok(store) => store,
@@ -495,6 +584,10 @@ fn writer_loop(
         return;
     }
     while let Ok(request) = receiver.recv() {
+        // A dequeued request leaves the waiting queue immediately, so health
+        // snapshots report only requests still waiting, never the one being
+        // processed.
+        shared.record_processed();
         match request {
             WriterRequest::StartA2aRun { start, response } => {
                 let result = store
@@ -521,11 +614,17 @@ fn writer_loop(
                 let _ = response.send(result);
             }
             WriterRequest::Health(response) => {
+                let (depth, watermark) = shared.snapshot();
                 let _ = response.send(Ok(WriterHealth {
                     healthy: true,
                     store_schema_version: STORE_SCHEMA_VERSION,
                     queue_capacity,
+                    queue_depth: depth,
+                    queue_high_watermark: watermark,
+                    queue_saturated: depth >= queue_capacity,
                 }));
+                // Restart the observation window from the current depth.
+                shared.reset_watermark(depth);
             }
             WriterRequest::CommitTask {
                 task,
@@ -847,6 +946,104 @@ mod tests {
     }
 
     #[test]
+    fn health_reports_queue_depth_and_high_watermark() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = directory.path().join("state.sqlite3");
+        let worker = WriterWorker::start_with_config(&database, 4, DEFAULT_RESPONSE_TIMEOUT)
+            .expect("writer");
+        let baseline = worker.health().expect("idle health");
+        assert_eq!(baseline.queue_depth, 0);
+        // The watermark floor of one is the sampling request itself.
+        assert!(baseline.queue_high_watermark <= 1);
+        assert!(!baseline.queue_saturated);
+
+        // Hold the worker so two requests stay queued simultaneously; the
+        // second health request then observes depth 2 and watermark 2.
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        worker
+            .enqueue(WriterRequest::HoldForBackpressureTest {
+                entered: entered_sender,
+                release: release_receiver,
+            })
+            .expect("enqueue barrier");
+        entered_receiver
+            .recv_timeout(DEFAULT_RESPONSE_TIMEOUT)
+            .expect("worker entered barrier");
+        let (blocked_response, blocked_receiver) = mpsc::channel();
+        worker
+            .enqueue(WriterRequest::Events(blocked_response))
+            .expect("queue events");
+        // Release the barrier from another thread once the health request is
+        // queued, so the worker drains everything and answers the health
+        // request instead of deadlocking behind the barrier.
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            let _ = release_sender.send(());
+        });
+        let loaded = worker.health().expect("loaded health");
+        assert_eq!(
+            loaded.queue_depth, 0,
+            "queue drained before health was answered"
+        );
+        assert_eq!(
+            loaded.queue_high_watermark, 2,
+            "events and health waited together behind the barrier"
+        );
+        assert!(!loaded.queue_saturated);
+        receive(blocked_receiver, DEFAULT_RESPONSE_TIMEOUT).expect("drain events");
+        releaser.join().expect("releaser");
+
+        // The watermark window restarts after the loaded sample; the drained
+        // sample itself contributes the documented floor of one.
+        let drained = worker.health().expect("drained health");
+        assert_eq!(drained.queue_depth, 0);
+        assert!(drained.queue_high_watermark <= 1);
+        worker.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn saturated_queue_still_answers_health_without_worker_round_trip() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = directory.path().join("state.sqlite3");
+        let worker = WriterWorker::start_with_config(&database, 1, DEFAULT_RESPONSE_TIMEOUT)
+            .expect("writer");
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        worker
+            .enqueue(WriterRequest::HoldForBackpressureTest {
+                entered: entered_sender,
+                release: release_receiver,
+            })
+            .expect("enqueue barrier");
+        entered_receiver
+            .recv_timeout(DEFAULT_RESPONSE_TIMEOUT)
+            .expect("worker entered barrier");
+        let (fill_response, fill_receiver) = mpsc::channel();
+        worker
+            .enqueue(WriterRequest::Health(fill_response))
+            .expect("fill queue");
+        let (overflow_sender, _overflow_receiver) = mpsc::channel();
+        assert_eq!(
+            worker.enqueue(WriterRequest::Health(overflow_sender)),
+            Err(WriterError::QueueFull)
+        );
+        // The handle-level health call must not fail while the queue is full.
+        let snapshot = worker
+            .handle()
+            .expect("handle")
+            .health()
+            .expect("saturated health");
+        assert!(snapshot.healthy);
+        assert!(snapshot.queue_saturated);
+        assert_eq!(snapshot.queue_depth, snapshot.queue_capacity);
+        assert_eq!(snapshot.queue_high_watermark, snapshot.queue_capacity);
+        release_sender.send(()).expect("release worker");
+        receive(fill_receiver, DEFAULT_RESPONSE_TIMEOUT).expect("drain queued health");
+        worker.shutdown().expect("shutdown");
+    }
+
+    #[test]
     fn dropped_handle_eventually_releases_lock() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database = directory.path().join("state.sqlite3");
@@ -868,6 +1065,9 @@ mod tests {
             healthy: true,
             store_schema_version: STORE_SCHEMA_VERSION,
             queue_capacity: DEFAULT_WRITER_QUEUE_CAPACITY,
+            queue_depth: 3,
+            queue_high_watermark: 7,
+            queue_saturated: false,
         };
         let encoded = serde_json::to_string(&health).expect("health JSON");
         assert_eq!(

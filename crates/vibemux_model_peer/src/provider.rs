@@ -48,6 +48,9 @@ pub struct ModelProvider {
     api_key: String,
     auth_header: &'static str,
     api_kind: ApiKind,
+    /// Built once so repeated completions reuse the connection pool and TLS
+    /// session instead of paying a fresh handshake per request.
+    http: reqwest::Client,
 }
 
 impl fmt::Debug for ModelProvider {
@@ -261,6 +264,12 @@ fn parse_provider(
         .or_else(|| model.strip_suffix("[1m]"))
         .unwrap_or(model)
         .to_string();
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(MODEL_DEADLINE)
+        .build()
+        .map_err(|_| ProviderError::Configuration)?;
     Ok(ModelProvider {
         label: label.to_string(),
         configured_model: model.to_string(),
@@ -269,6 +278,7 @@ fn parse_provider(
         api_key: key.to_string(),
         auth_header,
         api_kind,
+        http,
     })
 }
 fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str, ProviderError> {
@@ -292,12 +302,7 @@ impl ModelProvider {
             return Err(ProviderError::InvalidRequest);
         }
         let started = Instant::now();
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .timeout(MODEL_DEADLINE)
-            .build()
-            .map_err(|_| ProviderError::Transport)?;
+        let client = self.http.clone();
         let payload = match self.api_kind {
             ApiKind::Anthropic => {
                 json!({"model":self.wire_model,"max_tokens":max_tokens,"system":system,"messages":[{"role":"user","content":prompt}],"stream":false})

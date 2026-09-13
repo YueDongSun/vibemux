@@ -3018,6 +3018,7 @@ version = "0.2.0-alpha.0"
 dependencies = [
  "crossterm",
  "ratatui",
+ "serde_json",
  "tokio",
  "vibemux_probe",
 ]
@@ -3082,6 +3083,7 @@ dependencies = [
 name = "vibemux_probe"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "futures",
  "reqwest",
  "rusqlite",
  "serde",
