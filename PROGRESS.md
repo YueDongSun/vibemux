@@ -2134,3 +2134,8 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Reviewed, no change needed**
 - `vibemux_plugin_supervisor`: plugin processes spawn with a cleared environment plus an explicit session variable, `kill_on_drop`, and platform detachment flags; all three pipes are owned (stderr is collected under a byte limit with an atomic truncation flag); the Hello -> CoreHello -> Ready handshake runs through the lifecycle state machine under a deadline, and every handshake failure terminates and reaps the child plus aborts and joins the stderr task; reader/writer tasks communicate through bounded mpsc channels; the config rejects zero-valued timeouts.
 - With this, every crate in the workspace has been audited or improved at least once by the optimization loop.
+
+### 2026-09-13 (27) - CI parity verification
+
+**Verified**
+- Local runs now match the CI Rust job exactly: `cargo clippy --workspace --all-targets --all-features -- -D warnings` reports zero diagnostics and `cargo test --workspace --all-features` passes 217 tests - 31 feature-gated tests beyond the 186 exercised by the loop's default-feature runs. No divergence existed; the loop's verification baseline now uses the all-features variant.
