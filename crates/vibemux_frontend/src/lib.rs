@@ -1566,6 +1566,44 @@ mod tests {
     }
 
     #[test]
+    fn wide_layout_places_diagnostics_beside_the_agent_table() {
+        let model = DashboardModel::from_report(&real_report());
+        let rows_of = |width: u16, height: u16| {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("test terminal");
+            terminal
+                .draw(|frame| render_dashboard(frame, &model))
+                .expect("render dashboard");
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .chunks(width as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+        // At 160 columns the diagnostics panel shares rows with agent rows
+        // ("OpenCode" only ever appears inside the agent table).
+        // The table header row and the first diagnostics line share a row
+        // only in the side-by-side layout ("Launcher" is table-only).
+        let wide = rows_of(160, 40);
+        assert!(
+            wide.iter()
+                .any(|row| row.contains("Launcher") && row.contains("127.0.0.1:15721")),
+            "wide layout must render diagnostics beside the agent table"
+        );
+        // At and below 120 columns the panels stack: no row mixes both.
+        for narrow in [rows_of(80, 24), rows_of(120, 32)] {
+            assert!(
+                !narrow
+                    .iter()
+                    .any(|row| row.contains("Launcher") && row.contains("127.0.0.1:15721")),
+                "narrow layouts must stack the panels on separate rows"
+            );
+        }
+    }
+
+    #[test]
     fn footer_shows_active_theme_name() {
         let model = DashboardModel::from_report(&report());
         for theme in Theme::ALL {
