@@ -473,9 +473,12 @@ async fn wait_remote(
     // Fast path: the SSE event stream eliminates polling entirely. The
     // gateway rejects subscriptions for already-terminal tasks, and streams
     // can end on transport errors, so any failure degrades to bounded
-    // polling below without changing the wait contract.
+    // polling below without changing the wait contract. One deadline covers
+    // both paths: a stream that runs nearly the whole budget and then ends
+    // must not restart the clock for polling (a role would otherwise wait
+    // almost 2x WORKFLOW_DEADLINE).
+    let deadline = Instant::now() + WORKFLOW_DEADLINE;
     if let Ok(mut events) = peer.client.subscribe(task_id).await {
-        let deadline = Instant::now() + WORKFLOW_DEADLINE;
         let mut cancelled = false;
         loop {
             tokio::select! {
@@ -505,7 +508,6 @@ async fn wait_remote(
             return peer.client.cancel(task_id).await;
         }
     }
-    let deadline = Instant::now() + WORKFLOW_DEADLINE;
     loop {
         if *cancellation.borrow() {
             return peer.client.cancel(task_id).await;
