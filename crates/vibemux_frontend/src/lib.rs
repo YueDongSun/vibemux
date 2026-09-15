@@ -339,11 +339,17 @@ pub fn render_dashboard_with_theme(frame: &mut Frame<'_>, model: &DashboardModel
     let areas = Layout::default()
         .direction(Direction::Vertical)
         // Priority under height pressure: agent table, then diagnostics,
-        // then slots (the footer health summary covers their absence).
+        // then slots (the footer health summary covers their absence). The
+        // stacked body needs 13 rows for ten agent rows + header + borders
+        // plus 5 for diagnostics, so 18 guarantees none of the ten rows is
+        // cut; slots start shrinking below that. Slots use Length, not Min:
+        // a Min floor would make ratatui steal rows back from the table
+        // whenever the terminal is shorter than the full layout, and would
+        // absorb all slack (blank space) when it is taller.
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(17),
-            Constraint::Min(2),
+            Constraint::Min(18),
+            Constraint::Length(12),
             Constraint::Length(3),
         ])
         .split(frame.area());
@@ -370,12 +376,12 @@ pub fn render_dashboard_with_theme(frame: &mut Frame<'_>, model: &DashboardModel
             .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
             .split(areas[1])
     } else {
-        // Ten agent rows plus the header and borders need at least 12 rows;
-        // diagnostics needs exactly 5 (three wrapped lines + borders) before
-        // any agent row is cut.
+        // Ten agent rows plus the header and two border lines need at least
+        // 13 rows; Min(12) clips the tenth agent (Kimi). Diagnostics needs
+        // exactly 5 (three wrapped lines + borders) before any row is cut.
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(12), Constraint::Min(5)])
+            .constraints([Constraint::Min(13), Constraint::Min(5)])
             .split(areas[1])
     };
     // Fixed columns (agent + three state columns + route) take 55 cells and
@@ -470,10 +476,23 @@ pub fn render_dashboard_with_theme(frame: &mut Frame<'_>, model: &DashboardModel
     // Slots render as per-slot styled, wrapped lines in every layout: ten
     // reservations overflow a single Tabs row (which truncated silently),
     // while wrapping keeps every slot visible at any width.
+    let visible_rows = areas[2].height.saturating_sub(2) as usize;
     let lines: Vec<Line> = slot_entries
         .iter()
         .map(|(label, style)| Line::from(Span::styled(label.clone(), *style)))
         .collect();
+    // Overflowing slots announce the truncation instead of ending silently:
+    // the wrapped block shows how many reservations are cut, and the footer
+    // health summary still covers every agent.
+    let hidden = slot_entries.len().saturating_sub(visible_rows);
+    let mut lines = lines;
+    if hidden > 0 && visible_rows > 0 {
+        lines.truncate(visible_rows);
+        lines[visible_rows - 1] = Line::from(Span::styled(
+            format!("… +{hidden} more slots"),
+            muted_style(theme),
+        ));
+    }
     let slots = Paragraph::new(lines)
         .wrap(Wrap { trim: true })
         .block(slot_block);
@@ -627,7 +646,10 @@ fn health_style(theme: Theme, health: Health) -> Style {
         Theme::Classic => (Color::Green, Color::Yellow, Color::LightRed),
         Theme::HighContrast => (Color::LightGreen, Color::LightYellow, Color::LightRed),
         Theme::Mono => (Color::Reset, Color::Reset, Color::Reset),
-        Theme::Light => (Color::Green, Color::Yellow, Color::Red),
+        // Terminal Green/Yellow on a white background measure ~1.71:1, far
+        // below the WCAG AA 4.5:1 audit the light theme advertises; reuse the
+        // dark variants already audited for the light state cells.
+        Theme::Light => (Color::Rgb(0, 110, 0), Color::Rgb(150, 75, 0), Color::Red),
     };
     match health {
         Health::Ok => Style::default().fg(ok),
@@ -1478,6 +1500,62 @@ mod tests {
             let ratio = contrast_ratio(color, Color::Black);
             assert!(ratio >= 4.5, "{label} contrast {ratio:.2} < 4.5");
         }
+        // The aggregate health label in the title/footer must follow the same
+        // audit: dark themes use the classic ramps on black; the light theme
+        // uses the WCAG-corrected dark variants on white (plain terminal
+        // Green/Yellow on white measure ~1.71:1 and would fail).
+        for (label, color) in [
+            ("classic health ok", Color::Green),
+            ("classic health warning", Color::Yellow),
+            ("classic health failure", Color::LightRed),
+            ("high-contrast health ok", Color::LightGreen),
+            ("high-contrast health warning", Color::LightYellow),
+            ("high-contrast health failure", Color::LightRed),
+        ] {
+            let ratio = contrast_ratio(color, Color::Black);
+            assert!(ratio >= 4.5, "{label} on black contrast {ratio:.2} < 4.5");
+        }
+        for (label, color) in [
+            ("light health ok", Color::Rgb(0, 110, 0)),
+            ("light health warning", Color::Rgb(150, 75, 0)),
+            ("light health failure", Color::Red),
+        ] {
+            let ratio = contrast_ratio(color, Color::White);
+            assert!(ratio >= 4.5, "{label} on white contrast {ratio:.2} < 4.5");
+        }
+    }
+
+    #[test]
+    fn stacked_layout_renders_all_ten_agent_rows() {
+        // Regression: Min(12) fit only nine data rows (header + borders), so
+        // the tenth agent (Kimi) was silently cut. The outer Min(18) keeps
+        // the table at 13 + diagnostics at 5 at both golden sizes; smaller
+        // terminals shrink slots first instead.
+        let model = DashboardModel::from_report(&real_report());
+        for (width, height) in [(80u16, 24u16), (120, 32)] {
+            let rendered = render_text(&model, width, height);
+            for name in [
+                "Claude", "Codex", "OpenCode", "Copilot", "Grok", "Qwen", "iFlow", "TRAE",
+                "CodeBuddy", "Kimi",
+            ] {
+                assert!(
+                    rendered.contains(name),
+                    "missing agent {name} at {width}x{height}"
+                );
+            }
+        }
+        // Slots shrink before any agent row: at 80x24 (25-row chrome budget)
+        // the slot block collapses to its bordered title only, which the
+        // footer health summary covers.
+        let narrow = render_text(&model, 80, 24);
+        assert!(narrow.contains("Native CLI TUI surfaces"));
+        // At 120x32 six slots fit and the overflow announces itself instead
+        // of truncating silently; every slot is visible from 36 rows up
+        // (covered by dashboard_reserves_every_native_tui and the 160x40
+        // theme sweep).
+        let wide = render_text(&model, 120, 32);
+        assert!(wide.contains("Claude [reserved]"));
+        assert!(wide.contains("+4 more slots"), "overflow must be announced");
     }
 
     #[test]
