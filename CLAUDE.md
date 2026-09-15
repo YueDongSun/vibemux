@@ -47,7 +47,7 @@ crates/vibemux_a2a/                # official A2A Rust SDK adapter (loopback onl
 crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest
 crates/vibemux_plugin_supervisor/  # M4.1 child process supervision
 crates/vibemux_probe/              # M5.0 read-only launcher/gateway probe
-crates/vibemux_frontend/           # M5.0 Ratatui shell with reserved native-TUI slots
+crates/vibemux_frontend/           # M5.0 two-shell frontend: egui GUI + Ratatui TUI + ASCII dump
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC)
 crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle client
 tests/                              # Python pytest suite
@@ -88,7 +88,9 @@ MSRV is **Rust 1.85.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 - Build the pre-alpha daemon + CLI: `cargo build -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl`
 - Release build for benchmarking: `cargo build --release -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl`
 - Run the read-only probe: `cargo run -p vibemux_probe --bin vibemux_probe`
-- Render the unified frontend once (non-interactive smoke): `cargo run -p vibemux_frontend --bin vibemux_frontend -- --once`
+- Render the frontend dashboard once (non-interactive smoke): `cargo run -p vibemux_frontend --bin vibemux_frontend_dump`
+- Interactive terminal dashboard: `cargo run -p vibemux_frontend --bin vibemux_frontend_tui` (`--json`, `--theme <name>`; `t` cycles themes, `c` snapshots, `q`/`Esc` exit)
+- GUI (egui/eframe, opens a window): `cargo run -p vibemux_frontend --bin vibemux_frontend`
 
 ### Daemon lifecycle (Windows, pre-alpha)
 
@@ -131,7 +133,7 @@ Release-start benchmark (script refuses a project that already has a daemon desc
 
 - `99d1f8e` is only the **original Python audit baseline**; the current Python package remains the behavior reference while new orchestration or A2A work targets Rust. Do not let the Python prototype grow a second authoritative state writer after cutover.
 - During migration, Rust only writes `.vibemux/vibemux_rust.sqlite3`; it never opens `.vibemux/vibemux.sqlite3`. Path code refuses symlinks/hardlinks that alias the Python database.
-- The M5.0 frontend reserves native-TUI slots for Claude/Codex/OpenCode/Copilot/Grok but does **not** attach to PTYs/ConPTYs in this slice. Treat any reference to live native-TUI attach as premature.
+- The M5.0 frontend shows all ten harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) as GUI workbench seats with stub transcripts and as TUI dashboard rows, but does **not** attach to PTYs/ConPTYs in this slice. Treat any reference to live native-TUI attach as premature.
 - The M7.0 A2A slice is **loopback-only, HTTP+JSON-only, local-only**. Do not infer remote deployment, JSON-RPC, gRPC, streaming, cancellation, artifacts, authentication, or TCK conformance from it.
 - `vibemuxctl` is pre-alpha; it does not replace the installed Python `vibemux` command and it does not override a public database path.
 - Forbidden Git actions unless the user explicitly authorizes a known safe resource: `git reset --hard`, `git clean -fd`/`-fdx`, `git checkout -- .`, `git restore .`, force push, deleting unknown branches, rewriting published history, deleting worktrees outside a validated cleanup plan.

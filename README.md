@@ -123,11 +123,17 @@ $run2 = vibemux spawn $task --harness iflow   # one-off override to iflow (must 
 
 Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` stores the role on the Run and in `run_prepared`/`run_started` events, and accumulates it into the harness snapshot's `roles` field (visible via `vibemux harnesses`); `vibemux status` shows each run's role. Unknown roles are rejected.
 
-## Dashboard themes and machine-readable output
+## Frontend binaries, dashboard themes, and machine-readable output
 
-The unified frontend ships four themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), and `light` (dark variants tuned for white or very light terminal backgrounds). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against dark backgrounds, and all state information is carried by full-word text labels so color is never the only channel.
+The frontend crate builds three binaries:
 
-Machine-readable evidence for scripts and CI: `vibemux-frontend --json` prints the versioned probe report; `--once` prints a plain-text snapshot. Theme selection never affects either output.
+- `vibemux_frontend` — an egui/eframe GUI (overview canvas plus a workbench seat per harness). It takes no CLI flags and owns its own persisted hex theme palettes (`claude`/`github`/`vscode`). Harness seats display stub transcripts; there is no PTY/ConPTY attach.
+- `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
+- `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
+
+The TUI ships four themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), and `light` (dark variants tuned for white or very light terminal backgrounds). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
+
+Machine-readable evidence for scripts and CI: `vibemux_frontend_tui --json` prints the versioned probe report; `vibemux_frontend_dump` prints a plain-text snapshot. Theme selection never affects either output.
 
 Golden render fixtures per theme (80x24 and 120x32) live in `crates/vibemux_frontend/tests/fixtures/golden/`; regenerate after an intentional visual change with `cargo test -p vibemux_frontend write_golden_fixtures -- --ignored`.
 
@@ -153,9 +159,11 @@ The following commands only execute launcher version checks, explicit endpoint p
 
 ```powershell
 cargo run -p vibemux_probe --bin vibemux_probe
-cargo run -p vibemux_frontend --bin vibemux_frontend -- --once
+cargo run -p vibemux_frontend --bin vibemux_frontend_dump
+cargo run -p vibemux_frontend --bin vibemux_frontend_tui
+cargo run -p vibemux_frontend --bin vibemux_frontend
 ```
 
-The interactive Ratatui shell can be started without `--once`; press `q` / `Esc` to exit. Claude, Codex, OpenCode, Copilot, and Grok native TUIs currently display a reserved slot only; real PTY/ConPTY attach is not implemented and must not be treated as usable.
+`vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the egui GUI. All ten harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi) appear as dashboard rows and GUI seats showing stub transcripts only; real PTY/ConPTY attach is not implemented and must not be treated as usable.
 
 See [docs/architecture.md](docs/architecture.md), [docs/platform_support.md](docs/platform_support.md), [docs/protocol_boundaries.md](docs/protocol_boundaries.md), and `docs/adr/`.

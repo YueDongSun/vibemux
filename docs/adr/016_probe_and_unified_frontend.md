@@ -49,3 +49,11 @@ The initial frontend is a shell and renderable view model. Real native-TUI attac
 ## Amendment (2026-09-12): dashboard themes and color-independence
 
 Decision: the renderer exposes classic, high-contrast, and mono themes selected by `--theme` or `VIBEMUX_FRONTEND_THEME` (classic is default). Consequences: no foreground colors in mono (emphasis via bold/dim only); state information is always carried by full-word text labels (`verified`/`failed`/`unavailable`/`not_run`), so color is an enhancement rather than the only channel and the dashboard stays usable under deuteranopia/protanopia and on colorless terminals (WCAG 1.4.1 Use of Color). Golden render fixtures per theme guard visual drift. Alternatives: symbol prefixes on every cell (noisier, rejected for now).
+
+## Amendment (2026-09-15): two-shell frontend split
+
+Decision: `vibemux_frontend` now ships three binaries — an egui/eframe GUI (`vibemux_frontend`, overview canvas plus a workbench seat per harness), the Ratatui debug dashboard (`vibemux_frontend_tui`), and a one-shot ASCII snapshot (`vibemux_frontend_dump`, superseding the `--once` flag; keeping `--once` on the TUI as well would have created two snapshot paths).
+
+Consequences: the audited named-color theme system belongs to the TUI shell and grows a fourth theme, `light` (dark variants tuned for white backgrounds), beyond the three listed in the 2026-09-12 amendment; selection stays `--theme` / `VIBEMUX_FRONTEND_THEME` with `t` cycling in place and the full WCAG AA (4.5:1) audit preserved per background. The GUI owns separate persisted hex palettes (`claude`/`github`/`vscode`); the TUI no longer mirrors the GUI theme file — it is a debug view, the GUI is the human surface. `NativeTuiSlot` reservations become GUI workbench seats showing per-harness stub transcripts covering all ten harnesses; the TUI table renders ten agent rows without slots. Real PTY/ConPTY attach remains unimplemented in both shells, and the no-terminal-text-parsing rule is unchanged.
+
+Alternatives: a single shell with the GUI mirroring the TUI theme enum — rejected because forcing four terminal themes into the 20-field hex `ThemePalette` would require inventing egui palettes for Mono/Light that were never designed and would churn GUI `UserConfig` persistence.
