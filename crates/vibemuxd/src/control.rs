@@ -644,11 +644,21 @@ impl DaemonControlServer {
 
         #[cfg(unix)]
         {
+            use std::os::unix::fs::PermissionsExt;
             use tokio::net::UnixListener;
 
             let socket_path = PathBuf::from(&endpoint);
             let listener =
                 UnixListener::bind(&socket_path).map_err(|_| ControlError::EndpointUnavailable)?;
+            // The socket lives in the shared system temp dir; restrict it to
+            // the owner like the 0600 descriptor. Every frame still requires
+            // the descriptor-held token, so this is hygiene, not the boundary.
+            if std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                .is_err()
+            {
+                let _ = std::fs::remove_file(&socket_path);
+                return Err(ControlError::EndpointUnavailable);
+            }
             let mut socket_guard = SocketPathGuard::unpublished(socket_path);
             let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
             socket_guard.bind_owner(descriptor_path.clone(), descriptor.clone());
@@ -1235,8 +1245,20 @@ fn endpoint_name(_runtime_dir: &Path) -> String {
 
 #[cfg(unix)]
 fn endpoint_name(runtime_dir: &Path) -> String {
-    runtime_dir
-        .join(format!("vibemux_control_{}.sock", Uuid::new_v4().simple()))
+    // Linux caps unix socket paths at 107 usable bytes (sun_path is 108
+    // including the NUL terminator), so a socket inside the project
+    // runtime dir breaks for project roots nested deeper than ~50 chars.
+    // A fixed system-temp location with a project-scoped key plus a
+    // per-instance UUID keeps the path short (~66 bytes under /tmp) and
+    // preserves instance isolation. The descriptor (0600, in the runtime
+    // dir) remains the single source of truth for endpoint + auth token.
+    let key = crate::process::project_runtime_key(runtime_dir);
+    std::env::temp_dir()
+        .join(format!(
+            "vibemux_ctl_{}_{}.sock",
+            &key[..16],
+            Uuid::new_v4().simple()
+        ))
         .to_string_lossy()
         .into_owned()
 }
@@ -1302,6 +1324,40 @@ mod tests {
         let token = control_token().expect("OS random token");
         assert_eq!(token.len(), 64);
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    /// Regression: on Linux a project-scoped socket path exceeded the
+    /// 107-byte usable sun_path budget for project roots nested deeper
+    /// than ~50 chars (ENAMETOOLONG at bind, surfaced as
+    /// `EndpointUnavailable` on the ubuntu CI runner). The endpoint must
+    /// stay short regardless of runtime-dir depth.
+    #[cfg(unix)]
+    #[test]
+    fn unix_endpoint_fits_sun_path_for_any_runtime_dir_depth() {
+        let deep = Path::new("/")
+            .join("vibemux_depth_probe_")
+            .join("a".repeat(200));
+        let endpoint = endpoint_name(&deep);
+        assert!(
+            endpoint.len() <= 100,
+            "endpoint must fit the 107-byte sun_path budget: {endpoint}"
+        );
+        assert!(Path::new(&endpoint).is_absolute());
+        assert!(endpoint.ends_with(".sock"));
+        let temp = std::env::temp_dir();
+        let temp_prefix = temp.to_string_lossy().into_owned();
+        assert!(endpoint.starts_with(&temp_prefix));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_endpoint_names_are_unique_per_instance_and_project() {
+        let deep = Path::new("/").join("vibemux_depth_probe_").join("project");
+        let first = endpoint_name(&deep);
+        let second = endpoint_name(&deep);
+        assert_ne!(first, second, "each daemon start gets a fresh socket name");
+        let other = endpoint_name(&deep.with_file_name("other_project"));
+        assert_ne!(first, other, "different runtime dirs get different keys");
     }
 
     #[test]
@@ -1467,7 +1523,16 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(mode, 0o600);
-            PathBuf::from(&client.descriptor.endpoint)
+            let endpoint_path = PathBuf::from(&client.descriptor.endpoint);
+            // The socket lives in the system temp dir and is owner-only,
+            // mirroring the descriptor's 0600 hygiene.
+            let socket_mode = std::fs::metadata(&endpoint_path)
+                .expect("socket metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(socket_mode, 0o600);
+            endpoint_path
         };
         let health = client.health().await.expect("health response");
         assert!(health.healthy);

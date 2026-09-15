@@ -260,7 +260,7 @@ impl DaemonPaths {
     }
 }
 
-fn project_runtime_key(project_root: &Path) -> String {
+pub(crate) fn project_runtime_key(project_root: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"vibemux-project-runtime-v1\0");
     #[cfg(windows)]

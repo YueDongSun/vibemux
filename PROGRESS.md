@@ -1853,3 +1853,16 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - Added `real_probe_states_and_versions_are_never_clipped` regression test covering real version shapes at 80/120/160 widths; verified live on a 120-column Windows console.
 
 **No contract change**: `ProbeReport`, `DashboardModel::plain_snapshot`, `--once` output, and slot semantics are untouched.
+
+### 2026-09-15 (1) - Unix control socket moved to system temp (deep-root bind fix)
+
+**Bug**
+- On Linux, the unix control socket was bound inside the project runtime dir as `.vibemux/vibemux_control_<32 hex>.sock`. Linux caps unix socket paths at 107 usable bytes (`sun_path` is 108 including NUL), so any project root nested deeper than ~50 characters failed at `UnixListener::bind` with `EndpointUnavailable`. Reproduced on WSL2 (Ubuntu 22.04, the documented development environment): the supervisor integration tests run under ~100-character tempdir prefixes and failed 3/3 with the same signature as the rust-ubuntu CI runner; Windows named pipes are unaffected.
+
+**Fix**
+- `endpoint_name()` (unix arm) now returns a fixed system-temp location: `<temp_dir>/vibemux_ctl_<key16>_<uuid32>.sock`, where the key is the first 16 hex of the existing `project_runtime_key(runtime_dir)` SHA-256 (project-scoped) and the UUID preserves per-instance isolation. Total length is ~66 bytes under `/tmp`, depth-independent.
+- The bound socket is chmod 0600 (fail-closed on chmod error) since the shared temp dir is multi-user; the per-frame auth token in the 0600 descriptor remains the security boundary. The descriptor (still in the runtime dir) is the single source of truth for endpoint + token, and clients read the endpoint from it — no client change.
+- Regression tests: endpoint length/location for a 200-char-deep runtime dir, per-instance and per-project uniqueness, and socket-file mode asserted in the unix health round-trip test.
+
+**Evidence**
+- WSL2 before fix: `cargo test -p vibemuxd --all-features` — supervisor_grpc 3/3 failed (`EndpointUnavailable`), matching rust-ubuntu CI byte-for-byte. After fix: `default_daemon_has_no_a2a_endpoints` passes on WSL2; full WSL workspace gate runs at the pre-push validation step. Windows `cargo test -p vibemuxd --all-features` on this change: all control unit tests (33), daemon_process (2), plugin_registry (9), supervisor_grpc (3), supervisor_workflow (4) passed; the unix-gated tests compile only on unix.
