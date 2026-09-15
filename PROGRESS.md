@@ -2326,3 +2326,4 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Validation**
 - Windows: `cargo test -p vibemuxd --test supervisor_workflow --all-features` three consecutive runs, 4/4 each. Clippy over the crate's bins green.
 - Ubuntu 22.04 (WSL probe at `a4b3127` + this fix): `supervisor_workflow` 4/4 and `supervisor_grpc` 3/3 green.
+- CI confirmation: run `34990558402` on main tip `8509b02` is green on all four jobs (python/rust × windows-latest/ubuntu-latest) — the first fully green main CI since PR #1. `rust (ubuntu-latest)` has now passed three consecutive runs.
