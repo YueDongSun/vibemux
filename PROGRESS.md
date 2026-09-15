@@ -2286,3 +2286,17 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - `cargo test --workspace --all-features`: pass — all 52 group results ok including the golden fixture snapshots (entry (8) fix verified cross-platform) and the previously Linux-blocking grpc/workflow suites (C0a/C0b). One intermediate run hit 10 failures in the real-process `vibemux_plugin_supervisor` suite while the harness session was being torn down; isolated rerun of that crate (13/13) and the subsequent full-suite rerun were both green — same load-contention flake class already documented, no code change.
 
 **Gate decision**: both platform gates green at the integration branch tip; proceeding to the main push.
+
+### 2026-09-15 (10) - CI golden-fixture line-ending fix (rust-windows runner)
+
+**Problem**
+- The first CI run on the pushed main (`34984067454`) passed `rust (ubuntu-latest)` for the first time since the sun_path defect — both C0 fixes and the winit/golden work held — but failed `rust (windows-latest)` on `golden_render_snapshots_match_fixtures` (classic@80x24), a combination that was green on both local gates.
+
+**Root cause**
+- The repository has no `.gitattributes`; the fixtures are stored LF. GitHub's windows runners default to `core.autocrlf=true`, so checkout rewrote every fixture to CRLF, and the character-exact snapshot comparison failed before any product code ran. The local Windows clone has autocrlf off (working tree LF), which is why the identical suite passed locally. Ubuntu runners are unaffected (`i/lf` both sides).
+
+**Fix**
+- Added `.gitattributes` pinning `crates/vibemux_frontend/tests/fixtures/golden/*.txt` to `text eol=lf`, which is the documented remedy for byte-exact fixtures on autocrlf runners (fixtures are text, so `-text`/LFS are not applicable).
+
+**Validation**
+- `git ls-files --eol` shows `i/lf` for all eight fixtures (repository side already correct; the attribute fixes the checkout side). Fixtures and tests unchanged; no rerun of the local suites was needed beyond confirming the working tree stayed byte-identical. The next CI run on main is the authoritative confirmation.

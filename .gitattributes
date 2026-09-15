@@ -1,0 +1,6 @@
+# Byte-exact test fixtures. The golden render snapshots are compared
+# character-for-character against TestBackend output; GitHub's windows
+# runners default to core.autocrlf=true, which would rewrite them to
+# CRLF at checkout and fail the snapshot test before any code runs.
+# eol=lf keeps every platform's checkout byte-identical.
+crates/vibemux_frontend/tests/fixtures/golden/*.txt text eol=lf
