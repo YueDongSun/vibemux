@@ -540,7 +540,31 @@ mod tests {
     }
 
     fn model() -> ViewModel {
-        ViewModel::from_report(&real_report())
+        let mut vm = ViewModel::from_report(&real_report());
+        // `ViewModel::from_report` reads the live process environment for
+        // the allowlisted diagnostics, so golden snapshots built from it
+        // would embed machine-specific values (PATH, HOME, ...) and fail
+        // on every other machine, platform, or CI runner — exactly what
+        // happened when the fixtures first met Linux. Pin a deterministic
+        // sample instead: the same allowlisted keys in allowlist order,
+        // fixed cross-platform values, every third key unset (renders as
+        // `<unset>`), and one long PATH to exercise paragraph wrapping.
+        vm.env_allowlist = crate::probe_env::PROBE_ENVIRONMENT_ALLOWLIST
+            .iter()
+            .enumerate()
+            .map(|(idx, key)| {
+                let value = match *key {
+                    "PATH" => Some(
+                        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
+                            .to_string(),
+                    ),
+                    _ if idx % 3 == 2 => None,
+                    _ => Some(format!("/opt/fixture/{}", key.to_lowercase())),
+                };
+                ((*key).to_string(), value)
+            })
+            .collect();
+        vm
     }
 
     #[test]

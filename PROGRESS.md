@@ -2260,3 +2260,12 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - `cargo check -p winit` on Ubuntu 22.04 (WSL2) with the fix: green (both backends resolve).
 - `cargo check --workspace --all-features` on Windows after the lockfile regen: green.
 - Full pre-push gates on both platforms recorded in the next entry.
+
+### 2026-09-15 (8) - Golden fixtures decoupled from the machine environment
+
+**Problem**
+- The first full Linux run of the WSL gate (Ubuntu 22.04, after the winit fix) failed `tui::render::tests::golden_render_snapshots_match_fixtures`: the golden model was built with `ViewModel::from_report`, whose diagnostics section embeds `collect_allowlisted_env()` — the live process environment. The fixtures therefore contained the generating machine's PATH (including local build dirs), HOME, APPDATA, and locale values, and could never match on any other machine, platform, or CI runner. This would have failed both the rust-ubuntu and rust-windows GitHub jobs on the very first push.
+
+**Fix**
+- The golden-test `model()` now pins a deterministic env sample: the same `PROBE_ENVIRONMENT_ALLOWLIST` keys in allowlist order, fixed cross-platform values (`/opt/fixture/<key>`), every third key unset (rendering `<unset>`), and one fixed long PATH to keep paragraph wrapping exercised. All four 120x32 fixtures regenerated (the 80x24 snapshots contain no env lines at that height, so they were already platform-independent). Fixture diff reviewed per AGENTS.md §14.2: only the env lines changed; title, agent table, gateway/A2A/telemetry lines, and footer are byte-identical, and no machine-specific value remains (`grep` for the user name, local paths, and Anaconda finds nothing).
+- `cargo test -p vibemux_frontend --all-features` on Windows: 53 lib + 5 CLI green with the new fixtures; fmt/clippy green.
