@@ -659,7 +659,7 @@ mod tests {
             cfg(ThemeId::Claude),
         );
         assert!(app.overview());
-        assert_eq!(app.sessions.list.len(), 5);
+        assert_eq!(app.sessions.list.len(), 10);
     }
 
     #[test]

@@ -22,7 +22,7 @@ pub fn render(ui: &mut Ui, c: &C, vm: &ViewModel, on_open: &mut dyn FnMut(usize)
         ui.label(RichText::new("COMMAND").color(c.accent).size(10.0).strong().monospace());
         ui.add_space(8.0);
         ui.label(
-            RichText::new("Five agents, one machine.")
+            RichText::new("Ten agents, one machine.")
                 .color(c.txt)
                 .size(30.0)
                 .strong(),
