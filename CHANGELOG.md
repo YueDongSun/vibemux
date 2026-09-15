@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix stacked dashboard clipping the tenth agent (Kimi) at common terminal sizes: the agent table now reserves 13 rows and slot overflow announces itself with a `+N more slots` marker instead of truncating silently. Light-theme aggregate health text now uses the WCAG-audited dark variants (previously terminal green/yellow on white, ~1.71:1).
+- Fix writer queue telemetry: enqueue rejection no longer leaves phantom depth behind, so `queue_depth`/`queue_high_watermark`/`queue_saturated` track the real bounded channel.
+- Fix `vibemux status` and run listing for projects with pre-release runs whose persisted role is not one of `worker|reviewer|orchestrator`: unknown legacy role strings now read back as `worker` instead of raising.
 - Fix Linux daemon startup for deeply nested project roots: the unix control socket now binds in the system temp directory under a short project-keyed per-instance name instead of inside the project runtime dir, staying within the 107-byte `sun_path` limit (previously any root nested deeper than ~50 characters failed with `EndpointUnavailable` at bind). The socket is owner-only (0600); endpoint and auth token remain anchored in the runtime-dir descriptor, and clients are unchanged.
 - Fix worktree inventory on older Git: drop the Git 2.37-only `-z` flag from `git worktree list --porcelain` so run ownership inspection works with the Git 2.34 shipped by Ubuntu 22.04/WSL2 (previously `error: unknown switch 'z'`). Records whose path or branch contains a newline are now rejected fail-closed.
 - Extend the probe and unified frontend to the Chinese CLI agents (qwen, iflow, trae, codebuddy, kimi): launcher and version probes join the report and the dashboard now renders ten agent rows with ten reserved native-TUI slots.

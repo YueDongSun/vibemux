@@ -17,6 +17,21 @@ CURRENT_SCHEMA_VERSION = 2
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 
 
+def _coerce_run_role(value: str) -> RunRole:
+    """Map persisted role strings to the closed enum, tolerating legacy rows.
+
+    Between the 2026-09-05 domestic-harness landing (2cdc3ed) and this fix the
+    pre-release `spawn --role` path persisted arbitrary strings. Raising
+    ``ValueError`` on those rows would break ``status``/reconciliation for
+    existing projects, so unknown values degrade to ``RunRole.WORKER`` (the
+    historical default) instead of failing the read.
+    """
+    try:
+        return RunRole(value)
+    except ValueError:
+        return RunRole.WORKER
+
+
 class Storage:
     def __init__(self, path: Path):
         self.path = path
@@ -244,7 +259,7 @@ class Storage:
             task_id=UUID(row["task_id"]),
             project_id=UUID(row["project_id"]),
             harness=row["harness"],
-            role=RunRole(row["role"]),
+            role=_coerce_run_role(row["role"]),
             protocol=row["protocol"],
             execution_backend=row["execution_backend"],
             terminal_backend=row["terminal_backend"],

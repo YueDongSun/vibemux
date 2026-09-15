@@ -9,6 +9,7 @@ from vibemux.models import (
     Project,
     Run,
     RunCompletionAuthority,
+    RunRole,
     RunStatus,
     Task,
     TaskStatus,
@@ -59,6 +60,29 @@ def test_storage_event_order_and_roundtrip(tmp_path: Path) -> None:
     assert events[0].sequence == 1
     assert stored_task is not None
     assert stored_task.title == "demo"
+    storage.close()
+
+
+def test_legacy_run_role_strings_degrade_to_worker(tmp_path: Path) -> None:
+    # The pre-release spawn path (2cdc3ed, 2026-09-05) persisted arbitrary
+    # --role strings; reading such a row must not break status/reconciliation.
+    storage = Storage(tmp_path / "db.sqlite3")
+    project = Project(str(tmp_path))
+    storage.save_project(project)
+    task = Task("demo", project.project_id)
+    storage.save_task(task, Event("task_created", project.project_id, task.task_id))
+    run = Run(task.task_id, project.project_id, "mock")
+    storage.save_run(run)
+    storage.connection.execute(
+        "UPDATE runs SET role = ? WHERE run_id = ?", ("legacy-custom", str(run.run_id))
+    )
+    storage.connection.commit()
+
+    loaded = storage.get_run(run.run_id)
+    assert loaded is not None
+    assert loaded.role == RunRole.WORKER
+    listed = storage.list_runs(project.project_id)
+    assert [item.role for item in listed] == [RunRole.WORKER]
     storage.close()
 
 
