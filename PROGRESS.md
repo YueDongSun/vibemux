@@ -263,7 +263,7 @@ Remaining:
 - [ ] Add Windows path tests for drive letters, case folding, spaces, Unicode, junctions, reparse points, and cross-drive refusal.
 - [ ] Replace the Python mock runtime path with a daemon-supervised mock plugin before claiming Rust end-to-end parity.
 - [ ] Enforce mypy, Ruff format, package build, coverage, security, integration, and live platform gates in CI.
-- [ ] Port the Python-side harness orchestration surface added after the migration boundary (harness registry, detection-gated spawn, `vibemux harnesses`/`vibemux switch`; introduced by `2cdc3ed` and re-applied by PR #3) to Rust per AGENTS.md §4.1 — new orchestration belongs in the Rust core. Until then the Python implementation remains the behavior reference and must not grow into a second authoritative state writer after cutover. Tracked in GitHub issue (number backfilled after creation).
+- [ ] Port the Python-side harness orchestration surface added after the migration boundary (harness registry, detection-gated spawn, `vibemux harnesses`/`vibemux switch`; introduced by `2cdc3ed` and re-applied by PR #3) to Rust per AGENTS.md §4.1 — new orchestration belongs in the Rust core. until then the Python implementation remains the behavior reference and must not grow into a second authoritative state writer after cutover. Tracked in GitHub issue #4.
 
 #### P2 — required before public plugin API
 
@@ -2226,7 +2226,7 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
 
 **Known limitations**
-- GUI keyboard accelerators `Ctrl+0..5` reach only 6 of the 10 harness seats; the remaining seats are mouse-selectable. Tracked in a GitHub issue (number backfilled after creation).
+- GUI keyboard accelerators `Ctrl+0..5` reach only 6 of the 10 harness seats; the remaining seats are mouse-selectable. Tracked in GitHub issue #5.
 
 ### 2026-09-15 (6) - Documentation sync for the two-shell frontend (C11)
 
@@ -2236,7 +2236,7 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - `docs/architecture.md`: frontend boundary paragraph updated (two shells, GUI seats with stub transcripts, ten harnesses, no attach).
 - `CHANGELOG.md`: added two-shell split and ten-harness GUI entries; corrected the now-stale "+N more slots" and "ten reserved native-TUI slots" phrasing (slots do not exist in the final tree).
 - `docs/adr/016_probe_and_unified_frontend.md`: added "Amendment (2026-09-15): two-shell frontend split" (theme ownership, light theme addition, dump superseding `--once`, rejected single-shell alternative).
-- `PROGRESS.md` §4.3 P1: added the Python harness-orchestration architecture debt item (AGENTS.md §4.1; `2cdc3ed` + PR #3 surface belongs in Rust), tracked in a GitHub issue (number backfilled after creation).
+- `PROGRESS.md` §4.3 P1: added the Python harness-orchestration architecture debt item (AGENTS.md §4.1; `2cdc3ed` + PR #3 surface belongs in Rust), tracked in GitHub issue #4.
 
 **Validation**
 - `grep` sweep for `vibemux.frontend|--once|vibemux-frontend` across `*.md`/`*.yml`/`*.ps1`: remaining hits are historical PROGRESS/CHANGELOG ledger entries (intentionally preserved as dated records) and the ADR 016 original text describing the pre-amendment decision.
@@ -2244,3 +2244,19 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Notes**
 - The unrelated local `rust-toolchain.toml` `rust-analyzer` component addition remains unstaged and excluded from every commit.
 - Local Python validation in this cycle ran on Anaconda 3.11.5 via `PYTHONPATH=src python -m pytest` (the package requires >=3.12 so `pip install -e` is unavailable locally); the GitHub Actions Python 3.12 job remains the authoritative gate. This caveat applies to the C5/C6 test runs recorded in their commit messages.
+
+### 2026-09-15 (7) - winit Linux backend fix (unblocks rust-ubuntu CI)
+
+**Problem**
+- The WSL full-workspace gate (Ubuntu 22.04, Rust 1.85.0) failed to compile at `9ebde41` with `error: The platform you're compiling for is not supported by winit` (winit 0.30.13, `platform_impl/mod.rs:78`). Because `vibemux_frontend` is part of `--workspace --all-targets`, this single compile error would fail the entire rust-ubuntu CI job — the two-shell merge would have landed main's Linux CI red again.
+
+**Root cause**
+- The two-shell branch (`4458db8`) pins eframe as `default-features = false, features = ["default_fonts", "glow"]`. eframe's default feature set forwards `wayland`/`x11` to winit; omitting them leaves winit with no Linux platform backend (`x11_platform`/`wayland_platform` cfgs unset → the unconditional `compile_error!`). The defect was invisible pre-merge because the two-shell branch was only ever built on Windows, and the risk-table assumption "eframe-on-Ubuntu builds with pure-Rust backends" was true of the *backends* but never exercised because the feature flags that enable them were missing.
+
+**Fix**
+- Root `Cargo.toml`: eframe features extended to `["default_fonts", "glow", "wayland", "x11"]` (commit `a35d9b1`, lockfile regenerated). Both backends are pure Rust at build time (x11rb, vendored wayland-sys); no system X11/wayland dev packages are required, and the frontend tests stay headless.
+
+**Validation**
+- `cargo check -p winit` on Ubuntu 22.04 (WSL2) with the fix: green (both backends resolve).
+- `cargo check --workspace --all-features` on Windows after the lockfile regen: green.
+- Full pre-push gates on both platforms recorded in the next entry.
