@@ -220,3 +220,155 @@ fn system_strip(ui: &mut Ui, c: &C, vm: &ViewModel) {
     });
     let _ = laid;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeId;
+    use crate::theme::palette_for;
+    use vibemux_probe::{
+        A2aSelfTestProbe, AgentKind, AgentProbe, GatewayProbe, LauncherKind, ProbeReport,
+        ProbeState, RouteKind,
+    };
+
+    fn fixture_report() -> ProbeReport {
+        ProbeReport {
+            schema_version: 1,
+            observed_at_epoch_seconds: 1,
+            platform: "windows".to_string(),
+            agents: AgentKind::all()
+                .into_iter()
+                .map(|agent| AgentProbe {
+                    agent,
+                    launcher_state: ProbeState::Verified,
+                    authentication_state: ProbeState::NotRun,
+                    inference_state: ProbeState::NotRun,
+                    launcher: LauncherKind::DirectExecutable,
+                    version: Some("1.0".to_string()),
+                    route: RouteKind::Direct,
+                    endpoints: Vec::new(),
+                    code: "version_verified".to_string(),
+                })
+                .collect(),
+            gateway: GatewayProbe {
+                state: ProbeState::Verified,
+                host: "127.0.0.1".to_string(),
+                port: 15_721,
+                tcp_reachable: true,
+                health_status: Some(200),
+                telemetry_state: ProbeState::Verified,
+                telemetry: Vec::new(),
+                code: "gateway_verified".to_string(),
+            },
+            a2a: A2aSelfTestProbe {
+                state: ProbeState::Verified,
+                correlation_preserved: true,
+                listener_closed: true,
+                code: "a2a_self_test_verified".to_string(),
+            },
+        }
+    }
+
+    /// Headless render of the overview inside a CentralPanel, mirroring
+    /// the top-level structure of `VibeMuxApp::update`, then count the
+    /// text shapes painted into the background layer. If the overview
+    /// body silently paints nothing (the "empty body" bug), this fails.
+    #[test]
+    fn overview_body_paints_text_shapes() {
+        let vm = crate::view_model::ViewModel::from_report(&fixture_report());
+        let palette = palette_for(ThemeId::Claude);
+        let c = super::super::pal(&palette);
+        let ctx = egui::Context::default();
+        let mut opened: Option<usize> = None;
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                // Mirror VibeMuxApp::update exactly, theme included.
+                super::super::apply_theme(ctx, &palette);
+                egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
+                    ui.add_space(5.0);
+                    let _ = super::super::topbar::render(
+                        ui,
+                        &c,
+                        ThemeId::Claude,
+                        "E:\\lab\\vibemux",
+                        true,
+                        false,
+                        false,
+                    );
+                    ui.add_space(5.0);
+                });
+                egui::CentralPanel::default()
+                    .frame(
+                        egui::Frame::new()
+                            .fill(c.bg)
+                            .inner_margin(egui::Margin::symmetric(120, 12)),
+                    )
+                    .show(ctx, |ui| {
+                        render(ui, &c, &vm, &mut |i| opened = Some(i));
+                    });
+            },
+        );
+        let shapes = out.shapes.len();
+        assert!(
+            shapes > 5,
+            "overview painted only {shapes} shapes; body appears empty"
+        );
+        assert!(opened.is_none(), "no row should be clicked headless");
+    }
+
+    /// Headless render of the workbench (rail + inspector + composer +
+    /// stage) mirroring `VibeMuxApp::render_workbench`. Guards against
+    /// the same class of silent-empty-render bugs in the seat shell.
+    #[test]
+    fn workbench_body_paints_text_shapes() {
+        let vm = crate::view_model::ViewModel::from_report(&fixture_report());
+        let palette = palette_for(ThemeId::Claude);
+        let c = super::super::pal(&palette);
+        let ctx = egui::Context::default();
+        let mut session = super::super::workbench::Session::new("stub line one\nstub line two\n");
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                super::super::apply_theme(ctx, &palette);
+                egui::SidePanel::left("rail")
+                    .exact_width(64.0)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        let _ = super::super::workbench::rail(ui, &c, &vm, Some(0));
+                    });
+                egui::SidePanel::right("inspector")
+                    .exact_width(280.0)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        super::super::workbench::inspector(ui, &c, &vm, 0);
+                    });
+                egui::TopBottomPanel::bottom("composer").show(ctx, |ui| {
+                    ui.add_space(6.0);
+                    let _ = super::super::workbench::composer(ui, &c, &mut session, true);
+                    ui.add_space(6.0);
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::super::workbench::stage_body(ui, &c, &vm, 0, &mut session);
+                });
+            },
+        );
+        let shapes = out.shapes.len();
+        assert!(
+            shapes > 5,
+            "workbench painted only {shapes} shapes; seat appears empty"
+        );
+    }
+}

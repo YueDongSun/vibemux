@@ -1841,3 +1841,32 @@ Non-goals:
 Publication authorization does not resolve the documented Linux/WSL, full ITK, remote/TLS, terminal/vendor-CLI, recovery, fuzz/soak or auxiliary-tooling gaps. See [publication evidence](docs/evidence/publication_validation.json) for the prepared snapshot and validation identity; the observed remote SHA is reported only after the push is verified.
 
 - Final exact-index checks: 77 intended files; 13 Markdown files and six JSON files validated; no broken staged local links; diff/cached-diff whitespace and ignore/example checks passed. Independent review in a separate worktree found no newly introduced operational credentials, private endpoints/profile IDs, machine-user paths or raw runtime/config artifacts. The only unstaged file is the unrelated toolchain component edit.
+
+### 2026-09-04 (2) - GUI chrome topbar layout fix
+
+**Problem**
+
+- The two-shell egui GUI opened with an effectively empty window: only the `VIBEMUX` wordmark was visible and every other chrome control plus the overview body failed to display. Reproduced by running `target\debug\vibemux_frontend.exe` on native Windows and capturing the window.
+
+**Root cause**
+
+- `topbar::render` assumed its parent `Ui` had a horizontal layout, but egui 0.32 `TopBottomPanel` always creates its child `Ui` with `Layout::top_down(Align::Min)` (`containers/panel.rs::show_inside_dyn`). The topbar widgets therefore stacked vertically inside the default `interact_size` chrome height and were clipped; the overflowing chrome also displaced the central panel so the overview body ended up invisible.
+
+**Fix**
+
+- `crates/vibemux_frontend/src/gui/topbar.rs`: wrap the topbar contents in an explicit `ui.horizontal(|ui| …)` block so the brand mark, workspace label, and the right-aligned `right_to_left` toolbar (theme switch, settings/diag icons, mode hint) land on a single chrome line.
+- `crates/vibemux_frontend/src/gui/overview.rs`: add headless egui render tests for both shells (`overview_body_paints_text_shapes`, `workbench_body_paints_text_shapes`) that mirror `VibeMuxApp::update`/`render_workbench` and assert non-trivial painted shape counts, guarding against silent empty-body regressions.
+- `crates/vibemux_frontend/Cargo.toml`: add the off-by-default `gui_screenshot` feature forwarding eframe's `__screenshot` test feature; used only for local visual verification via `EFRAME_SCREENSHOT_TO`.
+
+**Validation (native Windows, this change)**
+
+- `cargo build -p vibemux_frontend --bin vibemux_frontend`: passed.
+- Live window observation with the fix: the chrome renders VIBEMUX + workspace + overview hint + claude/github/vscode theme buttons + settings/diag icons, and the overview body renders the COMMAND kicker, "Five agents, one machine." headline, all five agent rows (Claude/Codex/OpenCode/Copilot/Grok with state dots, excerpts, route/version), and the telemetry/gateway/runtime facts strip. Captured both via `EFRAME_SCREENSHOT_TO` framebuffer dump and via Win32 window capture.
+- `cargo test -p vibemux_frontend`: 45 passed, 0 failed (including the two new headless render tests).
+- `cargo test --workspace --all-features`: all groups `ok` (same set as the 2026-08-31 run plus the two new tests).
+- `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+
+**Notes**
+
+- No behavior contracts changed: the fix is layout-only inside the chrome; probe/env/privacy contracts are untouched. No PTY/ConPTY attach was added.
+- The unrelated local `rust-toolchain.toml` `rust-analyzer` component addition remains unstaged and excluded, as before.
