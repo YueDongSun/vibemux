@@ -111,7 +111,7 @@ Besides mock and opencode/claude/copilot/pi/grok/gemini, the built-in harness re
 | `codebuddy` | CodeBuddy Code | Tencent | `codebuddy` |
 | `kimi` | Kimi Code CLI | Moonshot AI | `kimi` |
 
-`vibemux harnesses` probes every harness and persists the snapshot to `.vibemux/harnesses.json` (`--cached` reads the snapshot, `--json` prints JSON) while recording a `harness_probed` event; `vibemux switch <name>` writes the project default harness into `.vibemux/config.json` and records a `harness_switched` event. **Detection gating: both `switch` and `spawn` require the command to be detected locally; an undetected harness is rejected outright** — spawn fails before creating any worktree, leaving only a `run_failed` event and no orphan worktree or pane. The mock harness is always available, so offline flows are unaffected.
+`vibemux harnesses` probes every harness and persists the snapshot to `.vibemux/harnesses.json` (`--cached` reads the snapshot, `--json` prints JSON) while recording a `harness_probed` event; `vibemux switch <name>` writes the project default harness into `.vibemux/config.json` and records a `harness_switched` event. **Detection gating: both `switch` and `spawn` require the command to be detected locally; an undetected harness is rejected before any state change** — the task stays OPEN and no run row, event, worktree, or pane is created. The mock harness is always available, so offline flows are unaffected.
 
 ```powershell
 vibemux harnesses

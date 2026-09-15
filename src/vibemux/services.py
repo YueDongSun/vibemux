@@ -250,11 +250,20 @@ class RunService:
             raise InvalidRoleError(
                 f"unknown run role: {role} (expected one of {', '.join(item.value for item in RunRole)})"
             ) from exc
+        backend_name = terminal_backend or self.config.terminal_backend
+        harness_name = harness_name or self.config.default_harness
+        # Detection gates before any state transition: an undetected harness
+        # must leave the task OPEN with no run row, event, worktree, or pane.
+        profile = profile_for(harness_name)
+        adapter = adapter_for(profile)
+        capabilities = adapter.probe(profile)
+        if not capabilities.available:
+            raise HarnessNotDetectedError(
+                f"harness not detected on this machine: {harness_name} (see 'vibemux harnesses')"
+            )
         if task.status == TaskStatus.OPEN:
             task.transition(TaskStatus.IN_PROGRESS)
             self.storage.save_task(task)
-        backend_name = terminal_backend or self.config.terminal_backend
-        harness_name = harness_name or self.config.default_harness
         base_commit = ensure_clean_with_commit(self.repo_root, self.runner)
         run = Run(
             task_id,
@@ -279,13 +288,6 @@ class RunService:
         location: TerminalLocation | None = None
         backend = self._backend(backend_name)
         try:
-            profile = profile_for(harness_name)
-            adapter = adapter_for(profile)
-            capabilities = adapter.probe(profile)
-            if not capabilities.available:
-                raise HarnessNotDetectedError(
-                    f"harness not detected on this machine: {harness_name} (see 'vibemux harnesses')"
-                )
             worktree = self.workspace.create_worktree(
                 run.run_id.hex[:12], f"vibemux/{run.run_id.hex[:12]}", base_commit
             )
@@ -355,13 +357,28 @@ class RunService:
                 ),
             )
             raise
-        record_role(
-            harness_registry_path(self.repo_root),
-            harness_name,
-            capabilities.available,
-            capabilities.path,
-            safe_role.value,
-        )
+        # Registry bookkeeping is advisory: a corrupt or unwritable
+        # harnesses.json must not fail an otherwise healthy spawn after the
+        # run, worktree, and pane already exist. The failure is audited as an
+        # event and spawn still reports success.
+        try:
+            record_role(
+                harness_registry_path(self.repo_root),
+                harness_name,
+                capabilities.available,
+                capabilities.path,
+                safe_role.value,
+            )
+        except VibeMuxError as exc:
+            self.storage.append_event(
+                Event(
+                    "harness_role_record_failed",
+                    self.project_id,
+                    task_id,
+                    run.run_id,
+                    payload={"harness": harness_name, "error": str(exc)},
+                )
+            )
         return run
 
     def get(self, run_id: UUID) -> Run:

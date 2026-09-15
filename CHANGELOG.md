@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Harden spawn detection gating: an undetected or unknown harness is now rejected before any state change (the task stays OPEN and no run row, event, worktree, or pane is created), and harness-registry role bookkeeping is advisory — a corrupt or unwritable `harnesses.json` no longer fails an otherwise healthy spawn; the failure is recorded as a `harness_role_record_failed` audit event instead.
 - Fix stacked dashboard clipping the tenth agent (Kimi) at common terminal sizes: the agent table now reserves 13 rows and slot overflow announces itself with a `+N more slots` marker instead of truncating silently. Light-theme aggregate health text now uses the WCAG-audited dark variants (previously terminal green/yellow on white, ~1.71:1).
 - Fix writer queue telemetry: enqueue rejection no longer leaves phantom depth behind, so `queue_depth`/`queue_high_watermark`/`queue_saturated` track the real bounded channel.
 - Fix `vibemux status` and run listing for projects with pre-release runs whose persisted role is not one of `worker|reviewer|orchestrator`: unknown legacy role strings now read back as `worker` instead of raising.

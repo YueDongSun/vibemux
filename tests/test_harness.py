@@ -144,9 +144,42 @@ def test_spawn_rejects_undetected_harness_before_worktree(
     with pytest.raises(HarnessNotDetectedError):
         run_service.spawn(task.task_id, "qwen", terminal_backend="mock")
 
+    # Detection gates before any state change: no run row, no FAILED record,
+    # the task stays OPEN, and no worktree is created.
     runs = run_service.storage.list_runs(run_service.project_id)
-    assert runs and runs[0].status == RunStatus.FAILED
+    assert runs == []
+    reloaded = run_service.storage.get_task(task.task_id)
+    assert reloaded is not None
+    assert reloaded.status.value == "open"
     assert not list((tmp_path / ".vibemux" / "worktrees").glob("*"))
+
+
+def test_spawn_survives_role_recording_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import vibemux.services
+    from vibemux.errors import ConfigurationError
+
+    make_repo(tmp_path)
+    ProjectService(tmp_path).initialize("mock")
+    task = TaskService(tmp_path).create("role recording outage")
+
+    def broken_record_role(*args: object, **kwargs: object) -> None:
+        raise ConfigurationError("registry payload corrupt")
+
+    monkeypatch.setattr(vibemux.services, "record_role", broken_record_role)
+    run_service = RunService(tmp_path)
+    run = run_service.spawn(task.task_id, "mock", role="reviewer", terminal_backend="mock")
+
+    # The spawn itself is healthy; the bookkeeping failure is audited instead
+    # of tearing down the live run, worktree, and pane.
+    assert run.status == RunStatus.RUNNING
+    assert run.role.value == "reviewer"
+    events = run_service.storage.list_events(run_service.project_id)
+    audit = [event for event in events if event.event_type == "harness_role_record_failed"]
+    assert len(audit) == 1
+    assert audit[0].payload["harness"] == "mock"
+    assert "corrupt" in audit[0].payload["error"]
 
 
 def test_spawn_records_role_in_registry_and_run(tmp_path: Path) -> None:
