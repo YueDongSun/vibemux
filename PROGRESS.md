@@ -2300,3 +2300,14 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Validation**
 - `git ls-files --eol` shows `i/lf` for all eight fixtures (repository side already correct; the attribute fixes the checkout side). Fixtures and tests unchanged; no rerun of the local suites was needed beyond confirming the working tree stayed byte-identical. The next CI run on main is the authoritative confirmation.
+
+### 2026-09-15 (11) - Main push outcome: CI green on both platforms; PR #3 closed as landed
+
+**Outcome**
+- `feat/3-two-shell-frontend-integration` pushed to `main` (`91eaa6d..4718c64`, then the `.gitattributes` fix `3ae7cb5`). The second CI run on the tip (`34985544437`) is green on all four jobs: `python (windows-latest)`, `python (ubuntu-latest)`, `rust (windows-latest)`, `rust (ubuntu-latest)`. `rust (ubuntu-latest)` passes for the first time since the unix-socket `sun_path` defect entered the branch — C0a (system-temp control socket), C0b (Git 2.34-compatible worktree inventory), the winit `wayland`/`x11` backend fix, and the deterministic golden env sample all held under CI.
+- PR #3 was closed as superseded rather than MERGED: Merge A landed as a content-equivalent squash (single-parent `3261f82`; `git diff 4d96fc2 <landing>` shows zero product-code delta, only the C0a/C0b changes), so `4d96fc2` is not on main's first-parent chain and GitHub cannot auto-mark it. Closure rationale posted on the PR; the review triage comment maps all seven Codex findings to their fix commits or tracking issues (#4, #5).
+- Verification trail: run `34984067454` (first push) — rust-ubuntu green, rust-windows red on fixture CRLF (entry (10) root cause); run `34985544437` (after `.gitattributes`) — all four green.
+
+**Notes**
+- Issues #4 (Python harness-orchestration architecture debt, AGENTS.md §4.1) and #5 (GUI accelerators reach 6 of 10 seats) were created and backfilled into entries (5)/(6) and §4.3.
+- The unrelated local `rust-toolchain.toml` modification remains uncommitted by design.
