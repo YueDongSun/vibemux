@@ -126,14 +126,25 @@ async fn receipt(directory: &Path, name: String, value: Value) -> Result<(), Tas
     let path = directory.join(name);
     tokio::task::spawn_blocking(move || {
         let bytes = serde_json::to_vec(&value).map_err(|_| TaskGatewayError::Internal)?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|_| TaskGatewayError::Internal)?;
+        // Publish atomically: the workflow tests poll the receipts
+        // directory every 20ms, so a direct write to the final path can
+        // be observed as a zero-byte file (JSON EOF) on slow runners.
+        // Write to a sibling temp name, sync, then rename into place —
+        // rename within a directory is atomic on both POSIX and Windows,
+        // and it keeps the create_new semantics of failing when the
+        // receipt already exists (Windows rename refuses to replace).
+        let temp = path.with_extension(format!(
+            "{}.tmp-{}",
+            path.extension()
+                .map(|ext| ext.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            std::process::id()
+        ));
+        let mut file = std::fs::File::create(&temp).map_err(|_| TaskGatewayError::Internal)?;
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
-            .map_err(|_| TaskGatewayError::Internal)
+            .map_err(|_| TaskGatewayError::Internal)?;
+        std::fs::rename(&temp, &path).map_err(|_| TaskGatewayError::Internal)
     })
     .await
     .map_err(|_| TaskGatewayError::Internal)?

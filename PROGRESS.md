@@ -2311,3 +2311,18 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Notes**
 - Issues #4 (Python harness-orchestration architecture debt, AGENTS.md §4.1) and #5 (GUI accelerators reach 6 of 10 seats) were created and backfilled into entries (5)/(6) and §4.3.
 - The unrelated local `rust-toolchain.toml` modification remains uncommitted by design.
+
+### 2026-09-15 (12) - Atomic fixture receipt publication (CI race fix)
+
+**Problem**
+- CI run `34988675997` on the main tip (`a4b3127`, PROGRESS-docs-only over the green `3ae7cb5` run) failed `rust (windows-latest)` on `cancel_during_review_preserves_worker_completion_observation_and_cancels_local_task`: `fixture_receipts` read a zero-byte receipt and `serde_json` panicked with `EOF while parsing a value` at supervisor_workflow.rs:272.
+
+**Root cause**
+- `vibemux_model_fixture`'s `receipt()` helper opened the final path with `create_new` and wrote in place, while the workflow tests poll the receipts directory every 20 ms. A slow CI runner can observe the file between creation and `write_all`, i.e. zero bytes. A classic non-atomic-publish race that the faster local machines and the previous run happened to miss; the same helper backs the grpc suite's receipts.
+
+**Fix**
+- `receipt()` now writes to a sibling `<name>.tmp-<pid>` file, syncs, and `rename`s into place. Rename within a directory is atomic on POSIX and Windows, and Windows' rename-refuses-to-replace preserves the old create_new semantics of failing when the receipt already exists.
+
+**Validation**
+- Windows: `cargo test -p vibemuxd --test supervisor_workflow --all-features` three consecutive runs, 4/4 each. Clippy over the crate's bins green.
+- Ubuntu 22.04 (WSL probe at `a4b3127` + this fix): `supervisor_workflow` 4/4 and `supervisor_grpc` 3/3 green.
