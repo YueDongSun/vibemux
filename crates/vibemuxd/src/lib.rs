@@ -82,15 +82,23 @@ impl SharedWriterState {
         self.high_watermark.fetch_max(depth, Ordering::AcqRel);
     }
 
-    fn record_processed(&self) {
-        // Requests sent around the counted enqueue path (internal test
-        // channels) leave nothing to decrement; telemetry is advisory, so a
-        // clamped floor beats an arithmetic panic.
+    fn record_dequeue(&self) {
+        // Rollback for a counted enqueue whose channel publish failed, and
+        // the worker-side dequeue. Telemetry is advisory, so a clamped floor
+        // beats an arithmetic panic when a request traveled an uncounted
+        // path (internal test channels, Drop's shutdown).
         let _ = self
             .pending
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_sub(1)
             });
+    }
+
+    fn record_processed(&self) {
+        // Requests sent around the counted enqueue path (internal test
+        // channels) leave nothing to decrement; telemetry is advisory, so a
+        // clamped floor beats an arithmetic panic.
+        self.record_dequeue();
     }
 
     fn snapshot(&self) -> (usize, usize) {
@@ -308,13 +316,22 @@ impl WriterHandle {
 
     fn enqueue(&self, request: WriterRequest) -> Result<(), WriterError> {
         let sender = self.sender.upgrade().ok_or(WriterError::WorkerStopped)?;
-        sender.try_send(request).map_err(|error| match error {
-            TrySendError::Full(_) => WriterError::QueueFull,
-            TrySendError::Disconnected(_) => WriterError::WorkerStopped,
-        })?;
+        // Count before publishing: a fast worker may dequeue and process the
+        // request before record_enqueue would otherwise run, leaving phantom
+        // depth that inflates queue_depth and the watermark. A failed publish
+        // rolls the count back so rejection leaves telemetry unchanged.
         if let Some(shared) = self.shared.upgrade() {
             shared.record_enqueue();
         }
+        sender.try_send(request).map_err(|error| {
+            if let Some(shared) = self.shared.upgrade() {
+                shared.record_dequeue();
+            }
+            match error {
+                TrySendError::Full(_) => WriterError::QueueFull,
+                TrySendError::Disconnected(_) => WriterError::WorkerStopped,
+            }
+        })?;
         Ok(())
     }
 }
@@ -546,11 +563,16 @@ impl WriterWorker {
 
     fn enqueue(&self, request: WriterRequest) -> Result<(), WriterError> {
         let sender = self.sender.as_ref().ok_or(WriterError::WorkerStopped)?;
-        sender.try_send(request).map_err(|error| match error {
-            TrySendError::Full(_) => WriterError::QueueFull,
-            TrySendError::Disconnected(_) => WriterError::WorkerStopped,
-        })?;
+        // Count before publishing (see WriterHandle::enqueue); a failed
+        // publish rolls the count back.
         self.shared.record_enqueue();
+        sender.try_send(request).map_err(|error| {
+            self.shared.record_dequeue();
+            match error {
+                TrySendError::Full(_) => WriterError::QueueFull,
+                TrySendError::Disconnected(_) => WriterError::WorkerStopped,
+            }
+        })?;
         Ok(())
     }
 }
@@ -1040,6 +1062,56 @@ mod tests {
         assert_eq!(snapshot.queue_high_watermark, snapshot.queue_capacity);
         release_sender.send(()).expect("release worker");
         receive(fill_receiver, DEFAULT_RESPONSE_TIMEOUT).expect("drain queued health");
+        worker.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn enqueue_rejection_leaves_queue_telemetry_unchanged() {
+        // Regression: a rejected enqueue must not leave phantom depth behind.
+        // The enqueue is counted before the channel publish (a fast worker
+        // could otherwise dequeue before the count), and a failed publish
+        // rolls the count back, so after the barrier drains the queue reports
+        // exactly empty.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = directory.path().join("state.sqlite3");
+        let worker = WriterWorker::start_with_config(&database, 1, DEFAULT_RESPONSE_TIMEOUT)
+            .expect("writer");
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        worker
+            .enqueue(WriterRequest::HoldForBackpressureTest {
+                entered: entered_sender,
+                release: release_receiver,
+            })
+            .expect("enqueue barrier");
+        entered_receiver
+            .recv_timeout(DEFAULT_RESPONSE_TIMEOUT)
+            .expect("worker entered barrier");
+        let (fill_response, fill_receiver) = mpsc::channel();
+        worker
+            .enqueue(WriterRequest::Health(fill_response))
+            .expect("fill queue");
+        for _ in 0..3 {
+            let (overflow_sender, _overflow_receiver) = mpsc::channel();
+            assert_eq!(
+                worker.enqueue(WriterRequest::Health(overflow_sender)),
+                Err(WriterError::QueueFull)
+            );
+        }
+        release_sender.send(()).expect("release worker");
+        receive(fill_receiver, DEFAULT_RESPONSE_TIMEOUT).expect("drain queued health");
+        let drained = worker.health().expect("drained health");
+        assert_eq!(
+            drained.queue_depth, 0,
+            "rejected enqueues must roll their count back"
+        );
+        // The barrier + one queued health + the sampling floor bound the
+        // watermark; the three rejections must not have raised it.
+        assert!(
+            drained.queue_high_watermark <= 2,
+            "phantom depth inflated the watermark: {}",
+            drained.queue_high_watermark
+        );
         worker.shutdown().expect("shutdown");
     }
 

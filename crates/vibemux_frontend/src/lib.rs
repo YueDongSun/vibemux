@@ -1535,8 +1535,16 @@ mod tests {
         for (width, height) in [(80u16, 24u16), (120, 32)] {
             let rendered = render_text(&model, width, height);
             for name in [
-                "Claude", "Codex", "OpenCode", "Copilot", "Grok", "Qwen", "iFlow", "TRAE",
-                "CodeBuddy", "Kimi",
+                "Claude",
+                "Codex",
+                "OpenCode",
+                "Copilot",
+                "Grok",
+                "Qwen",
+                "iFlow",
+                "TRAE",
+                "CodeBuddy",
+                "Kimi",
             ] {
                 assert!(
                     rendered.contains(name),
