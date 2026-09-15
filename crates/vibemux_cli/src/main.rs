@@ -94,6 +94,9 @@ fn health_json(status: &str, health: &DaemonHealth) -> serde_json::Value {
         "process_id": health.process_id,
         "store_schema_version": health.store_schema_version,
         "queue_capacity": health.queue_capacity,
+        "queue_depth": health.queue_depth,
+        "queue_high_watermark": health.queue_high_watermark,
+        "queue_saturated": health.queue_saturated,
     })
 }
 
@@ -120,6 +123,9 @@ mod tests {
                 process_id: 42,
                 store_schema_version: 1,
                 queue_capacity: 64,
+                queue_depth: 3,
+                queue_high_watermark: 7,
+                queue_saturated: false,
             },
         );
         let keys = output
@@ -135,6 +141,9 @@ mod tests {
                 "ok",
                 "process_id",
                 "queue_capacity",
+                "queue_depth",
+                "queue_high_watermark",
+                "queue_saturated",
                 "status",
                 "store_schema_version",
             ])

@@ -123,6 +123,14 @@ $run2 = vibemux spawn $task --harness iflow   # one-off override to iflow (must 
 
 Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` stores the role on the Run and in `run_prepared`/`run_started` events, and accumulates it into the harness snapshot's `roles` field (visible via `vibemux harnesses`); `vibemux status` shows each run's role. Unknown roles are rejected.
 
+## Dashboard themes and machine-readable output
+
+The unified frontend ships four themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), and `light` (dark variants tuned for white or very light terminal backgrounds). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against dark backgrounds, and all state information is carried by full-word text labels so color is never the only channel.
+
+Machine-readable evidence for scripts and CI: `vibemux-frontend --json` prints the versioned probe report; `--once` prints a plain-text snapshot. Theme selection never affects either output.
+
+Golden render fixtures per theme (80x24 and 120x32) live in `crates/vibemux_frontend/tests/fixtures/golden/`; regenerate after an intentional visual change with `cargo test -p vibemux_frontend write_golden_fixtures -- --ignored`.
+
 ## Development commands
 
 ```powershell

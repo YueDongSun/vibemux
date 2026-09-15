@@ -177,6 +177,34 @@ def test_spawn_rejects_unknown_role(tmp_path: Path) -> None:
         RunService(tmp_path).spawn(task.task_id, "mock", role="bogus", terminal_backend="mock")
 
 
+def test_registry_rejects_corrupt_payloads(tmp_path: Path) -> None:
+    from vibemux.errors import ConfigurationError
+    from vibemux.registry import HarnessRegistry
+
+    snapshot = tmp_path / "harnesses.json"
+    for corrupt in ["not json", "{", '["unexpected"]', '{"harnesses": {"qwen": 7}}']:
+        snapshot.write_text(corrupt, encoding="utf-8")
+        with pytest.raises(ConfigurationError):
+            HarnessRegistry.read(snapshot)
+
+    snapshot.write_text('{"harnesses": {"qwen": {"detected": true}}}', encoding="utf-8")
+    registry = HarnessRegistry.read(snapshot)
+    assert registry.harnesses["qwen"].detected is True
+    assert registry.harnesses["qwen"].roles == ()
+
+
+def test_cached_snapshot_reports_nothing_before_first_refresh(tmp_path: Path) -> None:
+    make_repo(tmp_path)
+    ProjectService(tmp_path).initialize("mock")
+
+    rows = HarnessService(tmp_path).cached()
+
+    assert rows, "cached view still lists every registered harness"
+    assert all(row["available"] is False for row in rows)
+    assert all(row["roles"] == [] for row in rows)
+    assert not tmp_path.joinpath(".vibemux", "harnesses.json").exists()
+
+
 def test_spawn_falls_back_to_project_default_harness(tmp_path: Path) -> None:
     make_repo(tmp_path)
     ProjectService(tmp_path).initialize("mock")
