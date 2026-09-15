@@ -1866,3 +1866,13 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Evidence**
 - WSL2 before fix: `cargo test -p vibemuxd --all-features` — supervisor_grpc 3/3 failed (`EndpointUnavailable`), matching rust-ubuntu CI byte-for-byte. After fix: `default_daemon_has_no_a2a_endpoints` passes on WSL2; full WSL workspace gate runs at the pre-push validation step. Windows `cargo test -p vibemuxd --all-features` on this change: all control unit tests (33), daemon_process (2), plugin_registry (9), supervisor_grpc (3), supervisor_workflow (4) passed; the unix-gated tests compile only on unix.
+
+### 2026-09-15 (2) - Worktree inventory parses without the Git 2.37-only -z flag
+
+**Bug**
+- `WorkspaceManager` ran `git worktree list --porcelain -z`, but `-z` for worktree list requires Git 2.37+. WSL2/Ubuntu 22.04 — the documented development environment — ships Git 2.34 as its LTS default, which fails with `error: unknown switch 'z'`, surfacing as `WorkspaceError::Git` and failing the supervisor workflow/grpc integration tests (4/4 and 2/3 on WSL2 after the socket fix above). `git status --porcelain -z` is supported since Git 1.7 and is unchanged.
+
+**Fix**
+- Dropped `-z` from the worktree-list invocation only; `inventory_matches` now parses LF-delimited porcelain records (blank line separates entries).
+- Fail-closed safety: a record path or branch containing `\n` is rejected before matching (a newline could otherwise forge field lines). Owned worktree paths are generated UUID-suffixed names and never contain a newline, so no legitimate record is affected.
+- New unit tests: LF inventory exact-match / duplicate / locked / detached rejection, missing trailing blank line, and newline-path/branch rejection.

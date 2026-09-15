@@ -268,15 +268,17 @@ impl WorkspaceManager {
         if branch.trim() != record.branch {
             return Err(WorkspaceError::InvalidPath);
         }
+        // Line-delimited porcelain (no -z): the -z flag needs git 2.37+,
+        // but WSL2/Ubuntu 22.04 — the documented development environment —
+        // ships git 2.34 as its LTS default and fails with
+        // `error: unknown switch 'z'`. inventory_matches rejects any
+        // path/branch containing '\n' fail-closed, and owned worktree paths
+        // are generated (UUID-suffixed) and validated against the record, so
+        // they never contain a newline.
         let inventory = self
             .git(
                 &self.repo,
-                &[
-                    "worktree".into(),
-                    "list".into(),
-                    "--porcelain".into(),
-                    "-z".into(),
-                ],
+                &["worktree".into(), "list".into(), "--porcelain".into()],
             )
             .await?;
         if !inventory_matches(&inventory, &record.path, &record.branch) {
@@ -659,14 +661,21 @@ fn path_key(path: &str) -> String {
 }
 
 fn inventory_matches(inventory: &str, path: &str, branch: &str) -> bool {
+    // Line-delimited parsing requires reject-before-match: a path or branch
+    // containing '\n' could otherwise forge field lines inside the inventory.
+    // Owned worktree paths are generated (UUID-suffixed) and never contain a
+    // newline, so the fail-closed arm is unreachable for legitimate records.
+    if path.contains('\n') || branch.contains('\n') {
+        return false;
+    }
     let expected = path_key(path);
     let expected_branch = format!("refs/heads/{branch}");
     let mut listed_path = None;
     let mut listed_branch = None;
     let mut matches = 0;
     let mut unsafe_entry = false;
-    for field in inventory.split('\0').chain(std::iter::once("")) {
-        if field.is_empty() {
+    for line in inventory.split('\n').chain(std::iter::once("")) {
+        if line.is_empty() {
             if listed_path.as_deref() == Some(expected.as_str())
                 && listed_branch == Some(expected_branch.as_str())
                 && !unsafe_entry
@@ -676,14 +685,14 @@ fn inventory_matches(inventory: &str, path: &str, branch: &str) -> bool {
             listed_path = None;
             listed_branch = None;
             unsafe_entry = false;
-        } else if let Some(value) = field.strip_prefix("worktree ") {
+        } else if let Some(value) = line.strip_prefix("worktree ") {
             listed_path = Some(path_key(value));
-        } else if let Some(value) = field.strip_prefix("branch ") {
+        } else if let Some(value) = line.strip_prefix("branch ") {
             listed_branch = Some(value);
-        } else if field == "bare"
-            || field == "detached"
-            || field.starts_with("locked")
-            || field.starts_with("prunable")
+        } else if line == "bare"
+            || line == "detached"
+            || line.starts_with("locked")
+            || line.starts_with("prunable")
         {
             unsafe_entry = true;
         }
@@ -803,10 +812,10 @@ mod tests {
         ));
     }
     #[test]
-    fn nul_inventory_preserves_newline_paths_and_fails_duplicates_or_locked_entries() {
-        let path = "/managed/line\nbreak";
+    fn line_inventory_matches_exactly_once_and_rejects_duplicates_or_locked_entries() {
+        let path = "/managed/run_one";
         let entry = format!(
-            "worktree {path}\0HEAD {}\0branch refs/heads/codex/run_one\0\0",
+            "worktree {path}\nHEAD {}\nbranch refs/heads/codex/run_one\n\n",
             "a".repeat(40)
         );
         assert!(inventory_matches(&entry, path, "codex/run_one"));
@@ -816,9 +825,39 @@ mod tests {
             "codex/run_one"
         ));
         assert!(!inventory_matches(
-            &entry.replace("\0\0", "\0locked fixture\0\0"),
+            &entry.replace("\n\n", "\nlocked fixture\n\n"),
             path,
             "codex/run_one"
         ));
+        // Without a trailing blank line the final entry still terminates.
+        assert!(inventory_matches(
+            entry.trim_end_matches('\n'),
+            path,
+            "codex/run_one"
+        ));
+        // A detached or bare entry never matches.
+        assert!(!inventory_matches(
+            &entry.replace("branch refs/heads/codex/run_one\n", "detached\n"),
+            path,
+            "codex/run_one"
+        ));
+    }
+
+    #[test]
+    fn line_inventory_rejects_newline_paths_and_branches_fail_closed() {
+        // A newline inside a record path or branch could forge field lines in
+        // the line-delimited inventory; reject before matching instead.
+        let path = "/managed/run_one";
+        let entry = format!(
+            "worktree {path}\nHEAD {}\nbranch refs/heads/codex/run_one\n\n",
+            "a".repeat(40)
+        );
+        let forged = format!("worktree {path}\nworktree {path}\n{entry}");
+        assert!(!inventory_matches(
+            &forged,
+            &format!("{path}\nworktree {path}"),
+            "codex/run_one"
+        ));
+        assert!(!inventory_matches(&entry, path, "codex/run_one\n"));
     }
 }
