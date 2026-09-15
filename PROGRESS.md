@@ -2269,3 +2269,20 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Fix**
 - The golden-test `model()` now pins a deterministic env sample: the same `PROBE_ENVIRONMENT_ALLOWLIST` keys in allowlist order, fixed cross-platform values (`/opt/fixture/<key>`), every third key unset (rendering `<unset>`), and one fixed long PATH to keep paragraph wrapping exercised. All four 120x32 fixtures regenerated (the 80x24 snapshots contain no env lines at that height, so they were already platform-independent). Fixture diff reviewed per AGENTS.md §14.2: only the env lines changed; title, agent table, gateway/A2A/telemetry lines, and footer are byte-identical, and no machine-specific value remains (`grep` for the user name, local paths, and Anaconda finds nothing).
 - `cargo test -p vibemux_frontend --all-features` on Windows: 53 lib + 5 CLI green with the new fixtures; fmt/clippy green.
+
+### 2026-09-15 (9) - Pre-push validation of the integration branch tip (`9c2b0a4`)
+
+**Windows (native, tip `9c2b0a4`)**
+- `cargo fmt --all -- --check`: pass.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: pass.
+- `cargo test --workspace --all-features`: pass (52 test-group results ok; frontend 53 lib + 5 CLI; no failures). Note: an earlier full-suite attempt that ran concurrently with the WSL gate showed 2 real-process lifecycle-test failures (`startup_timeout_terminates_only_the_spawned_fixture`, `abrupt_process_recovery_preserves_database_and_allows_restart`) under the doubled machine load; both pass in every non-concurrent rerun, consistent with the documented load-sensitive flake class.
+- `PYTHONPATH=src python -m pytest`: 41 passed in 15.12s (Anaconda 3.11.5 caveat per entry (6)).
+- `PYTHONPATH=src python -m ruff check .`: pass. `python scripts/smoke_test.py`: PASS mock workflow.
+- Runtime smokes: `vibemux_frontend_dump` prints the Central Console snapshot (exit 0); `vibemux_frontend_tui --json` emits `schema_version 1` with 10 agents; `--theme mono --json` valid; `--bogus` exits 4 with `unknown argument: --bogus` on stderr; `cargo build -p vibemux_frontend --bin vibemux_frontend` (GUI) pass.
+
+**Linux (Ubuntu 22.04, WSL2, Rust 1.85.0, fresh shallow clone at `9c2b0a4`)**
+- `cargo fmt --all -- --check`: pass.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: pass — including the egui/eframe GUI with the winit x11/wayland backends enabled (entry (7)); no system X11 dev packages were needed.
+- `cargo test --workspace --all-features`: pass — all 52 group results ok including the golden fixture snapshots (entry (8) fix verified cross-platform) and the previously Linux-blocking grpc/workflow suites (C0a/C0b). One intermediate run hit 10 failures in the real-process `vibemux_plugin_supervisor` suite while the harness session was being torn down; isolated rerun of that crate (13/13) and the subsequent full-suite rerun were both green — same load-contention flake class already documented, no code change.
+
+**Gate decision**: both platform gates green at the integration branch tip; proceeding to the main push.
