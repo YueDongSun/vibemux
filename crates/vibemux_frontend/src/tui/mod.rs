@@ -1,17 +1,14 @@
 #![forbid(unsafe_code)]
 //! Read-only TUI debug view. Per-harness details and "native-TUI
-//! reservation" copy moved to the GUI; this module is intentionally
-//! minimal and ASCII-only.
+//! reservation" copy moved to the GUI; this module renders the audited
+//! theme system and the ten-agent table.
 
 mod footer;
-mod render;
+pub mod render;
 pub mod snapshot;
+pub mod theme;
 
-use std::{
-    io,
-    sync::{Arc, atomic::AtomicU8},
-    time::Duration,
-};
+use std::{io, time::Duration};
 
 use crossterm::{
     cursor::Show,
@@ -21,70 +18,61 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use crate::theme::{ThemeId, palette_for};
 use crate::view_model::ViewModel;
 
 pub use render::render_debug_dashboard;
 pub use snapshot::debug_snapshot;
+pub use theme::Theme;
 
 /// Run the TUI debug view. Returns when the user quits (`q`/`Esc`).
 /// Pressing `c` writes the ASCII snapshot to stdout; pressing `t`
 /// cycles the theme.
-pub fn run_tui(view_model: &ViewModel) -> io::Result<()> {
+///
+/// The TUI keeps its own audited `Theme` system (classic /
+/// high-contrast / mono / light) and deliberately does not mirror the
+/// GUI's persisted hex palettes: the debug view is a terminal surface
+/// governed by terminal color semantics, and the GUI remains the
+/// human-persistent interface.
+pub fn run_tui(view_model: &ViewModel, theme: Theme) -> io::Result<()> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    // Theme is shared between the render and the footer via an atomic
-    // u8 so the renderer can read it cheaply every frame. The TUI does
-    // not persist this state across runs; each launch reads the GUI's
-    // config file on its own (this is honest: pre-alpha, single-process
-    // at a time).
-    let theme_id = Arc::new(AtomicU8::new(load_initial_theme() as u8));
-    let snapshot_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut theme = theme;
+    let mut snapshot_pending = false;
 
     loop {
-        let id = ThemeId::ALL
-            [theme_id.load(std::sync::atomic::Ordering::Relaxed) as usize % ThemeId::ALL.len()];
-        let palette = palette_for(id);
         terminal.draw(|frame| {
-            render::render_debug_dashboard(frame, view_model, &palette);
-            footer::render_footer(frame, view_model, id);
+            render::render_debug_dashboard(frame, view_model, theme);
+            footer::render_footer(frame, view_model, theme);
         })?;
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Char('c') => {
-                        snapshot_pending.store(true, std::sync::atomic::Ordering::Relaxed);
+                        snapshot_pending = true;
                     }
                     KeyCode::Char('t') => {
-                        let next = id.cycle();
-                        theme_id.store(next as u8, std::sync::atomic::Ordering::Relaxed);
+                        theme = theme.next();
                     }
                     _ => {}
                 }
             }
         }
-        if snapshot_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        if snapshot_pending {
             let snap = snapshot::debug_snapshot(view_model);
             // We deliberately write to stdout (not the alternate screen)
             // by leaving the alternate screen temporarily.
             execute!(io::stdout(), LeaveAlternateScreen)?;
             println!("{snap}");
             execute!(io::stdout(), EnterAlternateScreen)?;
+            snapshot_pending = false;
         }
     }
     Ok(())
-}
-
-/// Initial theme for the TUI. Reads from the GUI's persisted config so
-/// the two UIs agree on first launch; falls back to `Claude` when no
-/// config exists.
-fn load_initial_theme() -> ThemeId {
-    crate::theme::serialize::load_user_config().theme
 }
 
 struct TerminalGuard;
