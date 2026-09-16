@@ -121,7 +121,7 @@ pub fn render(
             // Shell mode hint.
             if overview {
                 ui.label(
-                    RichText::new("overview")
+                    RichText::new("overview · ctrl+1..0 → seat")
                         .color(c.faint)
                         .size(9.5)
                         .monospace(),

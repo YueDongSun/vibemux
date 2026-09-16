@@ -2327,3 +2327,15 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - Windows: `cargo test -p vibemuxd --test supervisor_workflow --all-features` three consecutive runs, 4/4 each. Clippy over the crate's bins green.
 - Ubuntu 22.04 (WSL probe at `a4b3127` + this fix): `supervisor_workflow` 4/4 and `supervisor_grpc` 3/3 green.
 - CI confirmation: run `34990558402` on main tip `8509b02` is green on all four jobs (python/rust × windows-latest/ubuntu-latest) — the first fully green main CI since PR #1. `rust (ubuntu-latest)` has now passed three consecutive runs.
+
+### 2026-09-16 (1) - GUI keyboard accelerators reach all ten seats (issue #5)
+
+**Problem**
+- After the ten-harness GUI extension, the keyboard digit map still covered only `Ctrl+0..5` (6 of 10 destinations: Overview + seats 1-5), and the workbench rail hover text advertised `Ctrl+6..Ctrl+10` for seats 6-10 — keys that did nothing. The topbar hint also promised `esc → overview` but no Escape handler existed.
+
+**Fix**
+- Digit row mapped one-to-one onto the ten seats: `Ctrl+1..9` open seats 1-9, `Ctrl+0` opens the tenth (Kimi). `Escape` (unmodified, and only when no text field holds keyboard focus via `ctx.wants_keyboard_input()`) closes the topmost overlay first and otherwise returns a seat to the overview — making the existing topbar hint true. The rail hover labels now come from a `seat_accelerator(idx)` helper that matches the key map exactly, and the overview-mode hint documents the digit keys (`overview · ctrl+1..0 → seat`). `Ctrl+T`/`Ctrl+,`/`Ctrl+;` are unchanged.
+- Tests: `ctrl_digits_open_all_ten_seats` (headless egui `Context::run` with injected key events, one assertion per seat), `escape_closes_overlays_then_returns_to_overview` (overlay-close precedence, seat → overview, no-op in overview), and a `seat_accelerator` unit test pinning the digit-row mapping. The headless key-injection helper sets both the event modifiers and `RawInput::modifiers` — `InputState::modifiers` is sourced from the latter.
+
+**Validation (native Windows)**
+- `cargo test -p vibemux_frontend --all-features`: 56 lib + 5 CLI green (three new tests). `cargo fmt --all -- --check`, `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`, and the GUI binary build: all green. Closes issue #5.

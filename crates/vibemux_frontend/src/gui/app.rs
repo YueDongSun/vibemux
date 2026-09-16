@@ -262,6 +262,24 @@ impl eframe::App for VibeMuxApp {
 
 impl VibeMuxApp {
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        // Escape (no modifier): close the topmost overlay first, then
+        // leave the seat for the overview. Guarded so a focused text
+        // field (the composer) keeps Escape for itself.
+        if ctx.input(|i| i.key_pressed(Key::Escape)) && !ctx.wants_keyboard_input() {
+            if self.settings_open {
+                self.settings_open = false;
+                return;
+            }
+            if self.diag_open {
+                self.diag_open = false;
+                return;
+            }
+            if !self.overview() {
+                self.shell = Shell::Overview;
+            }
+            // In the overview with nothing open, Escape is a no-op; fall
+            // through so the ctrl-gated keys below still see their input.
+        }
         let input = ctx.input(|i| i.clone());
         let ctrl = input.modifiers == Modifiers::CTRL || input.modifiers == Modifiers::COMMAND;
         if !ctrl {
@@ -271,23 +289,26 @@ impl VibeMuxApp {
             self.set_theme(self.theme_id.cycle());
             return;
         }
-        const DIGITS: [(Key, u8); 6] = [
-            (Key::Num0, 0),
+        // The digit row has exactly ten keys and there are ten harness
+        // seats: Ctrl+1..9 open seats 1..9 and Ctrl+0 opens the tenth
+        // (issue #5; previously only seats 1-5 were reachable).
+        const DIGITS: [(Key, u8); 10] = [
             (Key::Num1, 1),
             (Key::Num2, 2),
             (Key::Num3, 3),
             (Key::Num4, 4),
             (Key::Num5, 5),
+            (Key::Num6, 6),
+            (Key::Num7, 7),
+            (Key::Num8, 8),
+            (Key::Num9, 9),
+            (Key::Num0, 10),
         ];
-        for (key, value) in DIGITS {
+        for (key, seat) in DIGITS {
             if input.key_pressed(key) {
-                if value == 0 {
-                    self.shell = Shell::Overview;
-                } else {
-                    let idx = (value as usize) - 1;
-                    if idx < self.view_model.agents.len() {
-                        self.shell = Shell::Workbench { agent: idx };
-                    }
+                let idx = (seat as usize) - 1;
+                if idx < self.view_model.agents.len() {
+                    self.shell = Shell::Workbench { agent: idx };
                 }
                 return;
             }
@@ -689,5 +710,92 @@ mod tests {
         app.set_theme(ThemeId::Github);
         assert_eq!(app.theme_id(), ThemeId::Github);
         assert_eq!(app.user_config.theme, ThemeId::Github);
+    }
+
+    // ── keyboard accelerators (issue #5) ───────────────────
+
+    fn press_key(app: &mut VibeMuxApp, key: Key, modifiers: egui::Modifiers) {
+        let ctx = egui::Context::default();
+        // InputState::modifiers comes from RawInput::modifiers (not from
+        // the event's own modifiers field), so both must carry them.
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+                ..Default::default()
+            },
+            |ctx| app.handle_keyboard(ctx),
+        );
+    }
+
+    #[test]
+    fn ctrl_digits_open_all_ten_seats() {
+        let digits = [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+            Key::Num0,
+        ];
+        for (idx, key) in digits.iter().enumerate() {
+            let mut app = VibeMuxApp::new_for_test(
+                ViewModel::from_report(&fixture_report()),
+                cfg(ThemeId::Claude),
+            );
+            assert!(
+                app.overview(),
+                "test starts in overview for seat {}",
+                idx + 1
+            );
+            press_key(&mut app, *key, egui::Modifiers::CTRL);
+            assert_eq!(
+                app.focused(),
+                Some(idx),
+                "Ctrl+{} must open seat {} (0-based {})",
+                if idx == 9 { 0 } else { idx + 1 },
+                idx + 1,
+                idx
+            );
+        }
+    }
+
+    #[test]
+    fn escape_closes_overlays_then_returns_to_overview() {
+        let mut app = VibeMuxApp::new_for_test(
+            ViewModel::from_report(&fixture_report()),
+            cfg(ThemeId::Claude),
+        );
+        // From the overview with an overlay open, Escape closes the
+        // overlay without changing the shell.
+        app.settings_open = true;
+        press_key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.settings_open, "Escape must close the settings overlay");
+        assert!(app.overview());
+
+        // From a seat, Escape closes the diag overlay first and keeps
+        // the seat; a second Escape returns to the overview.
+        app.diag_open = true;
+        app.shell = Shell::Workbench { agent: 7 };
+        press_key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.diag_open, "Escape must close the diag overlay");
+        assert_eq!(app.shell, Shell::Workbench { agent: 7 });
+
+        press_key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(app.overview(), "Escape from a seat must return to overview");
+
+        // In the overview with nothing open, Escape is a no-op.
+        press_key(&mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(app.overview());
     }
 }

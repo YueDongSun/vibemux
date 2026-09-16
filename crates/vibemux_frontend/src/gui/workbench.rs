@@ -43,6 +43,19 @@ pub struct RailOut {
     pub to_overview: bool,
 }
 
+/// Keyboard accelerator label for seat `idx` (0-based): seats 1-9 map to
+/// `Ctrl+1..9` and the tenth seat wraps to `Ctrl+0`, because the digit row
+/// has exactly ten keys and every harness seat must be keyboard-reachable
+/// (issue #5). Seats past ten fall back to their ordinal.
+#[must_use]
+pub fn seat_accelerator(idx: usize) -> String {
+    if idx == 9 {
+        "0".to_string()
+    } else {
+        (idx + 1).to_string()
+    }
+}
+
 pub fn rail(ui: &mut Ui, c: &C, vm: &ViewModel, cur: Option<usize>) -> RailOut {
     let mut out = RailOut {
         open: None,
@@ -113,7 +126,7 @@ pub fn rail(ui: &mut Ui, c: &C, vm: &ViewModel, cur: Option<usize>) -> RailOut {
         if resp.clicked() {
             out.open = Some(idx);
         }
-        let _ = resp.on_hover_text(format!("{} (Ctrl+{})", agent.name, idx + 1));
+        let _ = resp.on_hover_text(format!("{} (Ctrl+{})", agent.name, seat_accelerator(idx)));
         ui.add_space(6.0);
     }
 
@@ -376,5 +389,22 @@ fn line_color(line: &str, c: &C) -> Color32 {
         c.warn
     } else {
         c.muted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seat_accelerator_maps_the_digit_row_onto_seats() {
+        // Seats 1-9 map to Ctrl+1..9; the tenth seat wraps to Ctrl+0 so
+        // every harness seat has a keyboard path (issue #5).
+        let expected = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
+        for (idx, want) in expected.iter().enumerate() {
+            assert_eq!(&seat_accelerator(idx), want, "seat {}", idx + 1);
+        }
+        // Out-of-range fallback: ordinal (no seat exists past ten today).
+        assert_eq!(seat_accelerator(10), "11");
     }
 }
