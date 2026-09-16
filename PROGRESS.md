@@ -2360,3 +2360,4 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Merge outcome**
 - Landed on `main` as `8cc394b` (feature commit `273e041` + probe-cache path fix `8cc394b`; authorized direct push). WSL (Ubuntu 22.04, Rust 1.85.0, probe clone @ `8cc394b`) re-ran the three gates green: 54 test suites ok, zero failures, including the three harness control tests fixed for Linux (runtime_dir ≠ state_dir). CI on `main` run `35077253232`: python (ubuntu/windows) + rust (ubuntu/windows) all **success**.
+- Follow-up docs commit `494c40e` (this entry's merge-outcome note) also green on `main` (run `35078695714`) after one re-run: the first attempt hit a load-sensitive `vibemux_cli::recovery` flake (`ControlRuntimeSecurityInvalid` in four tests) unrelated to the docs diff — the identical code passed at `8cc394b` and passed on re-run. Tracked as issue #6.
