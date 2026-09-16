@@ -2024,8 +2024,9 @@ mod tests {
         assert!(serde_json::to_vec(&payload).expect("status JSON").len() < MAX_CONTROL_FRAME_BYTES);
     }
 
-    /// Write a trusted probe cache marking `detected` harnesses verified.
-    fn write_probe_cache(runtime_dir: &Path, detected: &[&str]) {
+    /// Write a trusted probe cache into the project state dir (the database's
+    /// parent), marking `detected` harnesses verified.
+    fn write_probe_cache(state_dir: &Path, detected: &[&str]) {
         use vibemux_probe::AgentKind;
         let agents = AgentKind::all()
             .into_iter()
@@ -2052,7 +2053,7 @@ mod tests {
             "gateway": {"state":"not_run","host":"localhost","port":0,"tcp_reachable":false,"health_status":null,"telemetry_state":"not_run","telemetry":[],"code":"not_run"},
             "a2a": {"state":"not_run","correlation_preserved":false,"listener_closed":false,"code":"a2a_not_run"},
         });
-        let path = runtime_dir.join(PROBE_CACHE_FILE_NAME);
+        let path = state_dir.join(PROBE_CACHE_FILE_NAME);
         let bytes = serde_json::to_vec(&report).expect("probe cache JSON");
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -2077,7 +2078,8 @@ mod tests {
         let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
 
         // Seed the probe cache: claude and codex verified, rest unavailable.
-        write_probe_cache(&runtime_dir, &["claude", "codex"]);
+        // The cache lives in the project state dir (the database parent).
+        write_probe_cache(temp.path(), &["claude", "codex"]);
 
         let rows = client.harness_refresh().await.expect("refresh");
         assert_eq!(rows.len(), 10);
@@ -2117,7 +2119,7 @@ mod tests {
             .await
             .expect("server");
         let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
-        write_probe_cache(&runtime_dir, &["claude"]);
+        write_probe_cache(temp.path(), &["claude"]);
         client.harness_refresh().await.expect("refresh");
 
         // Undetected harness is gated.
