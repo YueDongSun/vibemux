@@ -18,9 +18,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use vibemux_events::{EventDraft, EventEnvelope};
-use vibemux_store::{A2aCommitOutcome, CommitOutcome, STORE_SCHEMA_VERSION, SqliteStore};
+use vibemux_harness::{HarnessConfigSnapshot, HarnessDetection, HarnessRow};
+use vibemux_store::{
+    A2aCommitOutcome, CommitOutcome, HarnessSnapshotOutcome, STORE_SCHEMA_VERSION, SqliteStore,
+};
 use vibemux_types::{
-    Run, RunId, Task, TaskId,
+    ProjectId, Run, RunId, Task, TaskId,
     a2a::{A2aRunRecord, A2aRunStart, A2aRunUpdate},
 };
 
@@ -135,7 +138,7 @@ pub enum WriterError {
 
 impl WriterError {
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub fn code(&self) -> &str {
         match self {
             Self::InvalidCapacity => "writer_invalid_capacity",
             Self::LockHeld => "writer_lock_held",
@@ -143,7 +146,7 @@ impl WriterError {
             Self::QueueFull => "writer_queue_full",
             Self::WorkerStopped => "writer_stopped",
             Self::ResponseTimeout => "writer_response_timeout",
-            Self::Store { .. } => "writer_store_error",
+            Self::Store { code } => code.as_str(),
             Self::ThreadTerminated => "writer_thread_terminated",
         }
     }
@@ -183,6 +186,24 @@ enum WriterRequest {
         response: mpsc::Sender<Result<Option<Value>, WriterError>>,
     },
     Events(mpsc::Sender<Result<Vec<EventEnvelope>, WriterError>>),
+    CommitHarnessSnapshot {
+        config: HarnessConfigSnapshot,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+        draft: EventDraft,
+        checked_at: String,
+        response: mpsc::Sender<Result<HarnessSnapshotOutcome, WriterError>>,
+    },
+    CommitHarnessSwitch {
+        harness: String,
+        draft: EventDraft,
+        response: mpsc::Sender<Result<CommitOutcome, WriterError>>,
+    },
+    HarnessRows {
+        cached: bool,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+        response: mpsc::Sender<Result<Vec<HarnessRow>, WriterError>>,
+    },
+    HarnessConfig(mpsc::Sender<Result<HarnessConfigSnapshot, WriterError>>),
     Shutdown(mpsc::Sender<Result<(), WriterError>>),
     #[cfg(test)]
     HoldForBackpressureTest {
@@ -312,6 +333,63 @@ impl WriterHandle {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::A2aRuns { task_id, response })?;
         receive(receiver, self.response_timeout)
+    }
+
+    pub fn commit_harness_snapshot(
+        &self,
+        config: HarnessConfigSnapshot,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+        draft: EventDraft,
+        checked_at: String,
+    ) -> Result<HarnessSnapshotOutcome, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::CommitHarnessSnapshot {
+            config,
+            detections,
+            draft,
+            checked_at,
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn commit_harness_switch(
+        &self,
+        harness: String,
+        draft: EventDraft,
+    ) -> Result<CommitOutcome, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::CommitHarnessSwitch {
+            harness,
+            draft,
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn harness_rows(
+        &self,
+        cached: bool,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+    ) -> Result<Vec<HarnessRow>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::HarnessRows {
+            cached,
+            detections,
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn harness_config(&self) -> Result<HarnessConfigSnapshot, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::HarnessConfig(response))?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn project_id(&self) -> Result<Option<ProjectId>, WriterError> {
+        let events = self.events()?;
+        Ok(events.first().map(|event| event.project_id()))
     }
 
     fn enqueue(&self, request: WriterRequest) -> Result<(), WriterError> {
@@ -526,6 +604,41 @@ impl WriterWorker {
         receive(receiver, self.response_timeout)
     }
 
+    pub fn commit_harness_snapshot(
+        &self,
+        config: HarnessConfigSnapshot,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+        draft: EventDraft,
+        checked_at: String,
+    ) -> Result<HarnessSnapshotOutcome, WriterError> {
+        self.handle()?
+            .commit_harness_snapshot(config, detections, draft, checked_at)
+    }
+
+    pub fn commit_harness_switch(
+        &self,
+        harness: String,
+        draft: EventDraft,
+    ) -> Result<CommitOutcome, WriterError> {
+        self.handle()?.commit_harness_switch(harness, draft)
+    }
+
+    pub fn harness_rows(
+        &self,
+        cached: bool,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+    ) -> Result<Vec<HarnessRow>, WriterError> {
+        self.handle()?.harness_rows(cached, detections)
+    }
+
+    pub fn harness_config(&self) -> Result<HarnessConfigSnapshot, WriterError> {
+        self.handle()?.harness_config()
+    }
+
+    pub fn project_id(&self) -> Result<Option<ProjectId>, WriterError> {
+        self.handle()?.project_id()
+    }
+
     pub fn projection(
         &self,
         entity_kind: impl Into<String>,
@@ -680,6 +793,72 @@ fn writer_loop(
             }
             WriterRequest::Events(response) => {
                 let result = store.events().map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::CommitHarnessSnapshot {
+                config,
+                detections,
+                draft,
+                checked_at,
+                response,
+            } => {
+                let result = store
+                    .commit_harness_snapshot(&config, draft, &detections, &checked_at)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::CommitHarnessSwitch {
+                harness,
+                draft,
+                response,
+            } => {
+                let result = store
+                    .commit_harness_switch(&harness, draft)
+                    .map_err(|error| WriterError::Store {
+                        code: error.code().to_string(),
+                    });
+                let _ = response.send(result);
+            }
+            WriterRequest::HarnessRows {
+                cached,
+                detections,
+                response,
+            } => {
+                let result = (|| {
+                    let registry = store
+                        .harness_registry()
+                        .map_err(|e| store_error(e.code()))?;
+                    let config = store.harness_config().map_err(|e| store_error(e.code()))?;
+                    // For a cached read the detection column comes from the
+                    // persisted snapshot; for a live read the daemon injected
+                    // fresh probe results.
+                    let detections = if cached {
+                        registry
+                            .harnesses
+                            .iter()
+                            .map(|entry| {
+                                (
+                                    entry.name.clone(),
+                                    HarnessDetection {
+                                        detected: entry.state.detected,
+                                        path: entry.state.path.clone(),
+                                        launcher: None,
+                                        version: None,
+                                    },
+                                )
+                            })
+                            .collect()
+                    } else {
+                        detections
+                    };
+                    Ok(vibemux_harness::build_rows(&registry, &config, &detections))
+                })();
+                let _ = response.send(result);
+            }
+            WriterRequest::HarnessConfig(response) => {
+                let result = store
+                    .harness_config()
+                    .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }
             WriterRequest::Shutdown(response) => {

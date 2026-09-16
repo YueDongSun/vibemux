@@ -21,7 +21,7 @@
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
 | Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle only |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle and the harness registry/switch surface (control protocol v3) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -263,7 +263,7 @@ Remaining:
 - [ ] Add Windows path tests for drive letters, case folding, spaces, Unicode, junctions, reparse points, and cross-drive refusal.
 - [ ] Replace the Python mock runtime path with a daemon-supervised mock plugin before claiming Rust end-to-end parity.
 - [ ] Enforce mypy, Ruff format, package build, coverage, security, integration, and live platform gates in CI.
-- [ ] Port the Python-side harness orchestration surface added after the migration boundary (harness registry, detection-gated spawn, `vibemux harnesses`/`vibemux switch`; introduced by `2cdc3ed` and re-applied by PR #3) to Rust per AGENTS.md §4.1 — new orchestration belongs in the Rust core. until then the Python implementation remains the behavior reference and must not grow into a second authoritative state writer after cutover. Tracked in GitHub issue #4.
+- [x] Port the Python-side harness orchestration surface added after the migration boundary (harness registry, detection-gated spawn, `vibemux harnesses`/`vibemux switch`; introduced by `2cdc3ed` and re-applied by PR #3) to Rust per AGENTS.md §4.1 — **done 2026-09-16 (entry 2026-09-16 (2))**: new crate `vibemux_harness`, `vibemux_store` schema 3 (harness registry/config projections + `v3_harness_seed`), control protocol v3 (`HarnessRefresh`/`HarnessSnapshot`/`HarnessSwitch`, daemon-owned via the single `WriterWorker`), and `vibemuxctl harnesses [--cached]` / `vibemuxctl switch <harness>`. Detection comes from the trusted `vibemux_probe` cache; gating rejects undetected/unknown harnesses. Closes issue #4. Remaining scope note: Rust launch/attach execution is still not implemented (the `pty` protocol label is persisted for parity only), and the Python prototype remains the installed behavior reference for full spawn orchestration.
 
 #### P2 — required before public plugin API
 
@@ -2339,3 +2339,21 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Validation (native Windows)**
 - `cargo test -p vibemux_frontend --all-features`: 56 lib + 5 CLI green (three new tests). `cargo fmt --all -- --check`, `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`, and the GUI binary build: all green. Closes issue #5.
+
+### 2026-09-16 (2) - Rust harness-orchestration surface (issue #4)
+
+**Scope**
+- Ports the Python harness-orchestration surface (`2cdc3ed` + PR #3) into the Rust core per AGENTS.md §4.1, so the Rust core — not the Python prototype — now carries harness registry, detection, the `harnesses`/`switch` commands, and detection gating. The single-writer rule is preserved: all harness state changes go through `vibemuxd`'s `WriterWorker`; no parallel Python writer is introduced.
+
+**Implementation**
+- New crate `vibemux_harness` (pure logic, `#![forbid(unsafe_code)]`, no I/O): the ten-harness profile registry (command/protocol/provider, protocol label `pty` retained from the Python reference for parity — no Rust launch/attach in this slice), row/snapshot building with roles carry-over, `harness_probed`/`harness_switched`/`v3_harness_seed` canonical event drafts, and bounded path/role validation. Detection inputs are injected so the types → harness → store dependency direction stays acyclic.
+- `vibemux_store` schema **3** migration: seeds `harness_registry` and `harness_config` projections plus a `v3_harness_seed` event. `commit_harness_snapshot` (atomic registry upsert + `harness_probed` event; seeds the default only when absent so a refresh never clobbers a `switch`) and `commit_harness_switch` (detection-gated; rejects unknown names and undetected harnesses before any state change) plus validated `harness_registry`/`harness_config` reads.
+- `vibemuxd`: control protocol **v3** adds `HarnessRefresh`/`HarnessSnapshot`/`HarnessSwitch` (v1/v2 remain accepted; the new ops require v3, mirroring the PluginStatus legacy gate). The daemon executes **no** harness binaries itself — it consumes the trusted `vibemux_probe` cache (`<project>/.vibemux/probe_cache.json`, validated as a regular owner-readable bounded UTF-8 JSON file) inside `spawn_blocking`, and only the probe's `verified` `--version` state counts as detected (a bare PATH hit never does). Probe-cache path is derived from the database's state dir, fixing the Windows case where the control runtime lives under `%LOCALAPPDATA%` but project state stays under `<project>/.vibemux`.
+- `vibemuxctl harnesses [--cached]` and `vibemuxctl switch <harness>`: thin clients over the new control ops. Harness gating codes (`harness_not_detected`, `store_unknown_harness`, `harness_probe_cache_missing`) round-trip the wire so the CLI prints actionable errors instead of a generic remote-error.
+
+**Live validation (native Windows, real installed harnesses)**
+- Real `vibemux_probe` run detected `claude` (2.1.217) and `grok` (1.0.30) verified, `codex`/`opencode`/`copilot` launcher=`power_shell_companion` with `--version` probe `failed` (correctly **not** counted as available), and qwen/iflow/trae/codebuddy/kimi unavailable.
+- `vibemuxctl harnesses` (live refresh) returned all ten rows with detected/version/launcher for the verified two; `switch grok` succeeded (`from none`), `switch qwen` was gated (`harness_not_detected`), `switch bogus-harness` rejected (`store_unknown_harness`), `harnesses --cached` read back the persisted `default=grok` and detection after a daemon restart, and a missing probe cache surfaced `harness_probe_cache_missing`. `daemon health` reported `store_schema_version: 3`.
+
+**Validation**
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features`: all green (new tests across `vibemux_harness`, `vibemux_store`, `vibemuxd` control integration, and `vibemux_cli`). Closes issue #4.

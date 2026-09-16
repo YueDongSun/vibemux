@@ -1292,7 +1292,12 @@ mod tests {
             )
             .expect("preserved bytes");
         assert_eq!(preserved, encoded);
-        assert_eq!(migrated.events().expect("events"), vec![event]);
+        // The v3 migration appends its harness seed after the historical
+        // event; the historical bytes at sequence 1 are unchanged.
+        let events = migrated.events().expect("events");
+        assert_eq!(events[0], event);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event_type().as_str(), "v3_harness_seed");
         assert_eq!(
             migrated
                 .projection("task", &task.task_id().to_string())
@@ -1308,7 +1313,7 @@ mod tests {
                     0
                 ))
                 .expect("version"),
-            2
+            crate::STORE_SCHEMA_VERSION
         );
     }
     #[test]

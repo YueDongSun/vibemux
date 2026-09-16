@@ -1,5 +1,5 @@
 [package]
-name = "vibemux_store"
+name = "vibemux_harness"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,15 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rusqlite.workspace = true
 serde.workspace = true
-sha2.workspace = true
-time.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+time.workspace = true
 vibemux_events = { path = "../vibemux_events" }
-vibemux_harness = { path = "../vibemux_harness" }
+vibemux_probe = { path = "../vibemux_probe" }
 vibemux_types = { path = "../vibemux_types" }
-
-[dev-dependencies]
-tempfile.workspace = true

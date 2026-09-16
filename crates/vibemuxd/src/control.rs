@@ -29,9 +29,15 @@ use crate::plugin_registry::{
 };
 use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::{WriterError, WriterHealth, WriterWorker};
+use vibemux_harness::{HarnessDetection, HarnessRow};
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = 2;
+pub const CONTROL_PROTOCOL_VERSION: u32 = 3;
 pub const LEGACY_CONTROL_PROTOCOL_VERSION: u32 = 1;
+/// The daemon executes no harness binaries itself; it consumes the trusted
+/// `vibemux_probe` cache written by an explicit probe run. This keeps the
+/// writer thread free of process spawns and reuses the probe's verified
+/// `--version` detection instead of trusting a bare PATH hit.
+pub const PROBE_CACHE_FILE_NAME: &str = "probe_cache.json";
 pub const MAX_CONTROL_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024;
 pub const CONTROL_DEADLINE: Duration = Duration::from_secs(10);
@@ -43,6 +49,9 @@ const PEER_CLOSE_DEADLINE: Duration = Duration::from_secs(1);
 pub enum ControlOperation {
     Health,
     PluginStatus,
+    HarnessRefresh,
+    HarnessSnapshot,
+    HarnessSwitch,
     Shutdown,
 }
 
@@ -53,6 +62,11 @@ pub struct ControlRequest {
     pub request_id: String,
     pub token: String,
     pub operation: ControlOperation,
+    /// Optional operation argument (e.g. the harness name for
+    /// `harness_switch`). Absent for parameterless operations; validated
+    /// against the operation before dispatch.
+    #[serde(default)]
+    pub argument: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -91,6 +105,7 @@ impl fmt::Debug for ControlRequest {
             .field("request_id", &self.request_id)
             .field("token", &"[redacted]")
             .field("operation", &self.operation)
+            .field("argument", &self.argument)
             .finish()
     }
 }
@@ -100,6 +115,8 @@ impl fmt::Debug for ControlRequest {
 pub enum ControlPayload {
     Health(DaemonHealth),
     PluginStatus(Vec<PluginStatus>),
+    HarnessSnapshot(Vec<HarnessRow>),
+    HarnessSwitched { from: String, to: String },
     ShutdownAccepted,
 }
 
@@ -435,6 +452,7 @@ struct ServerState {
     plugins: PluginStatusReader,
     process_id: u32,
     token: String,
+    probe_cache_path: PathBuf,
 }
 
 pub struct DaemonControlServer {
@@ -571,6 +589,14 @@ impl DaemonControlServer {
         if descriptor_path.exists() {
             return Err(ControlError::DescriptorExists);
         }
+        // The probe cache is project state, not a control-runtime artifact:
+        // on Windows the runtime dir lives under %LOCALAPPDATA% while the
+        // project state (and database) stays under <project>/.vibemux. The
+        // database path always has a state-dir parent.
+        let probe_cache_path = database_path
+            .parent()
+            .map(|state_dir| state_dir.join(PROBE_CACHE_FILE_NAME))
+            .ok_or(ControlError::EndpointUnavailable)?;
 
         let database_path = database_path.to_path_buf();
         let writer_lock_path = writer_lock_path.to_path_buf();
@@ -629,6 +655,7 @@ impl DaemonControlServer {
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
                 token: descriptor.token,
+                probe_cache_path: probe_cache_path.clone(),
             });
             let task = tokio::spawn(async move {
                 let _descriptor_guard = descriptor_guard;
@@ -700,6 +727,7 @@ impl DaemonControlServer {
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
                 token: descriptor.token,
+                probe_cache_path: probe_cache_path.clone(),
             });
             let task = tokio::spawn(async move {
                 let _descriptor_guard = descriptor_guard;
@@ -854,9 +882,62 @@ impl ControlClient {
         }
     }
 
+    fn require_v3(&self) -> Result<(), ControlError> {
+        if self.descriptor.version < CONTROL_PROTOCOL_VERSION {
+            return Err(ControlError::UnsupportedVersion);
+        }
+        Ok(())
+    }
+
+    pub async fn harness_refresh(&self) -> Result<Vec<HarnessRow>, ControlError> {
+        self.require_v3()?;
+        match self
+            .request(ControlOperation::HarnessRefresh, CONTROL_DEADLINE)
+            .await?
+        {
+            ControlPayload::HarnessSnapshot(rows) => Ok(rows),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
+    pub async fn harness_snapshot(&self) -> Result<Vec<HarnessRow>, ControlError> {
+        self.require_v3()?;
+        match self
+            .request(ControlOperation::HarnessSnapshot, CONTROL_DEADLINE)
+            .await?
+        {
+            ControlPayload::HarnessSnapshot(rows) => Ok(rows),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
+    pub async fn harness_switch(&self, name: &str) -> Result<(String, String), ControlError> {
+        self.require_v3()?;
+        match self
+            .request_with_argument(
+                ControlOperation::HarnessSwitch,
+                Some(name.to_string()),
+                CONTROL_DEADLINE,
+            )
+            .await?
+        {
+            ControlPayload::HarnessSwitched { from, to } => Ok((from, to)),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
     async fn request(
         &self,
         operation: ControlOperation,
+        deadline: Duration,
+    ) -> Result<ControlPayload, ControlError> {
+        self.request_with_argument(operation, None, deadline).await
+    }
+
+    async fn request_with_argument(
+        &self,
+        operation: ControlOperation,
+        argument: Option<String>,
         deadline: Duration,
     ) -> Result<ControlPayload, ControlError> {
         self.request_raw_with_deadline(
@@ -865,6 +946,7 @@ impl ControlClient {
                 request_id: Uuid::new_v4().to_string(),
                 token: self.descriptor.token.clone(),
                 operation,
+                argument,
             },
             deadline,
         )
@@ -936,6 +1018,13 @@ where
     if !supported_control_version(request.version)
         || (request.version == LEGACY_CONTROL_PROTOCOL_VERSION
             && request.operation == ControlOperation::PluginStatus)
+        || (request.version < CONTROL_PROTOCOL_VERSION
+            && matches!(
+                request.operation,
+                ControlOperation::HarnessRefresh
+                    | ControlOperation::HarnessSnapshot
+                    | ControlOperation::HarnessSwitch
+            ))
     {
         let mut response =
             ControlResponse::error(request.request_id, &ControlError::UnsupportedVersion);
@@ -960,6 +1049,37 @@ where
             ),
             false,
         ),
+        ControlOperation::HarnessRefresh => match harness_refresh(state.clone()).await {
+            Ok(rows) => (
+                ControlResponse::success(request_id, ControlPayload::HarnessSnapshot(rows)),
+                false,
+            ),
+            Err(error) => (ControlResponse::error(request_id, &error), false),
+        },
+        ControlOperation::HarnessSnapshot => match harness_snapshot(state.clone()).await {
+            Ok(rows) => (
+                ControlResponse::success(request_id, ControlPayload::HarnessSnapshot(rows)),
+                false,
+            ),
+            Err(error) => (ControlResponse::error(request_id, &error), false),
+        },
+        ControlOperation::HarnessSwitch => {
+            let Some(name) = request.argument.as_deref() else {
+                let response = ControlResponse::error(request_id, &ControlError::InvalidRequest);
+                send_response(stream, &response).await;
+                return false;
+            };
+            match harness_switch(state.clone(), name).await {
+                Ok((from, to)) => (
+                    ControlResponse::success(
+                        request_id,
+                        ControlPayload::HarnessSwitched { from, to },
+                    ),
+                    false,
+                ),
+                Err(error) => (ControlResponse::error(request_id, &error), false),
+            }
+        }
         // Acceptance only. The owner joins plugins before releasing the writer.
         ControlOperation::Shutdown => (
             ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
@@ -1015,6 +1135,150 @@ async fn shutdown_writer(state: Arc<ServerState>) -> Result<(), ControlError> {
     })
     .await
     .map_err(|_| ControlError::ServerTerminated)?
+}
+
+/// Read the trusted probe cache and build per-harness detection inputs.
+/// The cache is written by an explicit `vibemux_probe` run; the daemon
+/// validates that it is a regular, owner-readable, bounded UTF-8 JSON file
+/// before trusting it, and only `verified` launcher states count as
+/// detected (a bare PATH hit never does).
+fn load_probe_detections(
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, HarnessDetection>, ControlError> {
+    // Distinguishing "cache absent" from "cache present but invalid" matters
+    // for an actionable CLI error: absence means "run the probe first".
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ControlError::Remote {
+                code: "harness_probe_cache_missing".to_string(),
+            });
+        }
+        Err(_) => return Err(ControlError::InvalidRequest),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(ControlError::UnsafeArtifact);
+    }
+    if metadata.len() > MAX_DESCRIPTOR_BYTES as u64 * 64 {
+        return Err(ControlError::InvalidRequest);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(ControlError::UnsafeArtifact);
+        }
+    }
+    let bytes = std::fs::read(path).map_err(|_| ControlError::InvalidRequest)?;
+    let report: vibemux_probe::ProbeReport =
+        serde_json::from_slice(&bytes).map_err(|_| ControlError::InvalidRequest)?;
+    let mut detections = std::collections::BTreeMap::new();
+    for agent in report.agents {
+        let detection = vibemux_harness::detection_from_probe(
+            agent.launcher_state,
+            agent.launcher,
+            agent.version.as_deref(),
+            // The probe report does not carry the resolved launcher path;
+            // the executable name is retained for observability only.
+            Some(agent.agent.command_name()),
+        )
+        .map_err(|_| ControlError::InvalidRequest)?;
+        detections.insert(agent.agent.command_name().to_string(), detection);
+    }
+    Ok(detections)
+}
+
+async fn harness_refresh(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, ControlError> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<HarnessRow>, ControlError> {
+        let detections = load_probe_detections(&state.probe_cache_path)?;
+        let writer = {
+            let guard = state
+                .writer
+                .lock()
+                .map_err(|_| ControlError::ServerTerminated)?;
+            guard
+                .as_ref()
+                .ok_or(ControlError::ServerTerminated)?
+                .handle()?
+        };
+        let project_id = writer
+            .project_id()?
+            .unwrap_or_else(vibemux_types::ProjectId::new);
+        let payload = vibemux_harness::refresh_payload(&detections);
+        let config = writer.harness_config()?;
+        let draft = vibemux_harness::events::probed(
+            project_id,
+            format!("harness-probe-{}", Uuid::new_v4()),
+            payload,
+        )
+        .map_err(|error| ControlError::Writer {
+            code: error.code().to_string(),
+        })?;
+        writer.commit_harness_snapshot(config, detections.clone(), draft, iso_now())?;
+        Ok(writer.harness_rows(false, detections)?)
+    })
+    .await
+    .map_err(|_| ControlError::ServerTerminated)?
+}
+
+async fn harness_snapshot(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, ControlError> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<HarnessRow>, ControlError> {
+        let writer = {
+            let guard = state
+                .writer
+                .lock()
+                .map_err(|_| ControlError::ServerTerminated)?;
+            guard
+                .as_ref()
+                .ok_or(ControlError::ServerTerminated)?
+                .handle()?
+        };
+        Ok(writer.harness_rows(true, std::collections::BTreeMap::new())?)
+    })
+    .await
+    .map_err(|_| ControlError::ServerTerminated)?
+}
+
+async fn harness_switch(
+    state: Arc<ServerState>,
+    name: &str,
+) -> Result<(String, String), ControlError> {
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || -> Result<(String, String), ControlError> {
+        let writer = {
+            let guard = state
+                .writer
+                .lock()
+                .map_err(|_| ControlError::ServerTerminated)?;
+            guard
+                .as_ref()
+                .ok_or(ControlError::ServerTerminated)?
+                .handle()?
+        };
+        let from = writer.harness_config()?.default_harness;
+        let project_id = writer
+            .project_id()?
+            .unwrap_or_else(vibemux_types::ProjectId::new);
+        let draft = vibemux_harness::events::switched(
+            project_id,
+            format!("harness-switch-{}", Uuid::new_v4()),
+            &from,
+            &name,
+        )
+        .map_err(|error| ControlError::Writer {
+            code: error.code().to_string(),
+        })?;
+        writer.commit_harness_switch(name.clone(), draft)?;
+        Ok((from, name))
+    })
+    .await
+    .map_err(|_| ControlError::ServerTerminated)?
+}
+
+fn iso_now() -> String {
+    let now = time::OffsetDateTime::now_utc();
+    now.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
 #[cfg(windows)]
@@ -1319,6 +1583,14 @@ fn remote_error(code: String) -> ControlError {
         | "writer_response_timeout"
         | "writer_store_error"
         | "writer_thread_terminated" => ControlError::Remote { code },
+        // Harness gating codes must round-trip so the CLI can distinguish
+        // "not detected" from "unknown harness" for actionable messages.
+        "harness_not_detected"
+        | "store_unknown_harness"
+        | "harness_unknown"
+        | "harness_invalid_state"
+        | "harness_probe_cache_missing"
+        | "harness_invalid_path" => ControlError::Remote { code },
         _ => ControlError::Remote {
             code: "control_remote_error".to_string(),
         },
@@ -1346,6 +1618,7 @@ mod tests {
             request_id: "request_1".to_string(),
             token: descriptor.token,
             operation: ControlOperation::Health,
+            argument: None,
         };
         let rendered = format!("{request:?}");
         assert!(rendered.contains("[redacted]"));
@@ -1593,6 +1866,7 @@ mod tests {
             version: CONTROL_PROTOCOL_VERSION + 1,
             request_id: Uuid::new_v4().to_string(),
             token: client.descriptor.token.clone(),
+            argument: None,
             operation: ControlOperation::Health,
         };
         assert_eq!(
@@ -1684,6 +1958,7 @@ mod tests {
                 version: CONTROL_PROTOCOL_VERSION,
                 request_id: "status_denied".to_string(),
                 token: "wrong".to_string(),
+                argument: None,
                 operation: ControlOperation::PluginStatus,
             })
             .await
@@ -1710,6 +1985,7 @@ mod tests {
                 version: LEGACY_CONTROL_PROTOCOL_VERSION,
                 request_id: "legacy_auth".to_string(),
                 token: "wrong".to_string(),
+                argument: None,
                 operation: ControlOperation::Health,
             })
             .await
@@ -1728,7 +2004,7 @@ mod tests {
             "task_create",
             "run_update",
         ] {
-            let request = serde_json::json!({"version":2,"request_id":"denied","token":"redacted","operation":operation});
+            let request = serde_json::json!({"version":CONTROL_PROTOCOL_VERSION,"request_id":"denied","token":"redacted","operation":operation});
             assert!(serde_json::from_value::<ControlRequest>(request).is_err());
         }
         let status = PluginStatus {
@@ -1746,5 +2022,149 @@ mod tests {
             ControlPayload::PluginStatus(vec![status; crate::plugin_registry::HARD_MAX_PLUGINS]),
         );
         assert!(serde_json::to_vec(&payload).expect("status JSON").len() < MAX_CONTROL_FRAME_BYTES);
+    }
+
+    /// Write a trusted probe cache marking `detected` harnesses verified.
+    fn write_probe_cache(runtime_dir: &Path, detected: &[&str]) {
+        use vibemux_probe::AgentKind;
+        let agents = AgentKind::all()
+            .into_iter()
+            .map(|agent| {
+                let is_detected = detected.contains(&agent.command_name());
+                serde_json::json!({
+                    "agent": agent,
+                    "launcher_state": if is_detected { "verified" } else { "unavailable" },
+                    "authentication_state": "not_run",
+                    "inference_state": "not_run",
+                    "launcher": if is_detected { "direct_executable" } else { "unavailable" },
+                    "version": if is_detected { serde_json::json!("1.0.0") } else { serde_json::Value::Null },
+                    "route": "unknown",
+                    "endpoints": [],
+                    "code": if is_detected { "version_verified" } else { "launcher_unavailable" },
+                })
+            })
+            .collect::<Vec<_>>();
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "observed_at_epoch_seconds": 0,
+            "platform": "test",
+            "agents": agents,
+            "gateway": {"state":"not_run","host":"localhost","port":0,"tcp_reachable":false,"health_status":null,"telemetry_state":"not_run","telemetry":[],"code":"not_run"},
+            "a2a": {"state":"not_run","correlation_preserved":false,"listener_closed":false,"code":"a2a_not_run"},
+        });
+        let path = runtime_dir.join(PROBE_CACHE_FILE_NAME);
+        let bytes = serde_json::to_vec(&report).expect("probe cache JSON");
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).expect("create probe cache");
+        file.write_all(&bytes).expect("write probe cache");
+        file.sync_all().expect("sync probe cache");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn harness_refresh_snapshot_switch_round_trip() {
+        let temp = tempfile::tempdir().expect("temp");
+        let database_path = temp.path().join("state.sqlite3");
+        let runtime_dir = temp.path().join(".vibemux");
+        let server = DaemonControlServer::start(&database_path, &runtime_dir)
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+
+        // Seed the probe cache: claude and codex verified, rest unavailable.
+        write_probe_cache(&runtime_dir, &["claude", "codex"]);
+
+        let rows = client.harness_refresh().await.expect("refresh");
+        assert_eq!(rows.len(), 10);
+        let claude = rows
+            .iter()
+            .find(|row| row.name == "claude")
+            .expect("claude");
+        assert!(claude.available);
+        assert!(!claude.default);
+        let qwen = rows.iter().find(|row| row.name == "qwen").expect("qwen");
+        assert!(!qwen.available);
+
+        // Switch to a detected harness; the default persists.
+        let (from, to) = client.harness_switch("claude").await.expect("switch");
+        assert_eq!(from, vibemux_harness::NO_DEFAULT_HARNESS);
+        assert_eq!(to, "claude");
+
+        // Cached snapshot reflects the persisted default and detection.
+        let cached = client.harness_snapshot().await.expect("snapshot");
+        let claude_cached = cached
+            .iter()
+            .find(|row| row.name == "claude")
+            .expect("claude cached");
+        assert!(claude_cached.default);
+        assert!(claude_cached.available);
+
+        // Events were appended.
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn harness_switch_rejects_undetected_and_unknown() {
+        let temp = tempfile::tempdir().expect("temp");
+        let database_path = temp.path().join("state.sqlite3");
+        let runtime_dir = temp.path().join(".vibemux");
+        let server = DaemonControlServer::start(&database_path, &runtime_dir)
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        write_probe_cache(&runtime_dir, &["claude"]);
+        client.harness_refresh().await.expect("refresh");
+
+        // Undetected harness is gated.
+        let error = client
+            .harness_switch("qwen")
+            .await
+            .expect_err("undetected switch");
+        assert_eq!(error.code(), "harness_not_detected");
+        // Unknown harness is rejected.
+        let error = client
+            .harness_switch("unknown-harness")
+            .await
+            .expect_err("unknown switch");
+        assert_eq!(error.code(), "store_unknown_harness");
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn harness_operations_require_v3() {
+        let temp = tempfile::tempdir().expect("temp");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        let mut legacy = client.clone();
+        legacy.descriptor.version = LEGACY_CONTROL_PROTOCOL_VERSION;
+        assert_eq!(
+            legacy
+                .harness_snapshot()
+                .await
+                .expect_err("snapshot requires v3"),
+            ControlError::UnsupportedVersion
+        );
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[test]
+    fn probe_cache_rejects_symlink_and_oversized() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("cache.json");
+        // Missing file is an error.
+        assert!(load_probe_detections(&path).is_err());
+        // Oversized file is rejected before parsing.
+        std::fs::write(&path, vec![b' '; MAX_DESCRIPTOR_BYTES * 64 + 1]).expect("oversized");
+        assert_eq!(
+            load_probe_detections(&path),
+            Err(ControlError::InvalidRequest)
+        );
     }
 }

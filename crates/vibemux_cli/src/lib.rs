@@ -18,6 +18,7 @@ use std::{sync::mpsc, thread, time::Instant as StdInstant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::time::{Instant, sleep};
+use vibemux_harness::HarnessRow;
 use vibemuxd::{
     control::{ControlClient, ControlError, DaemonHealth},
     process::{DaemonPathError, DaemonPaths},
@@ -238,6 +239,14 @@ pub enum CliCommand {
         project_root: Option<PathBuf>,
         confirmation: String,
     },
+    Harnesses {
+        project_root: Option<PathBuf>,
+        cached: bool,
+    },
+    Switch {
+        project_root: Option<PathBuf>,
+        harness: String,
+    },
     Help,
     Version,
 }
@@ -272,6 +281,14 @@ pub enum DaemonCliError {
     RecoveryArtifact { code: String },
     #[error("CLI arguments are invalid")]
     InvalidArguments,
+    #[error(
+        "harness probe cache is missing: run `vibemux_probe` first (writes {0}/probe_cache.json)"
+    )]
+    HarnessProbeCacheMissing(String),
+    #[error("harness is not detected on this machine: {0} (run 'vibemuxctl harnesses' to refresh)")]
+    HarnessNotDetected(String),
+    #[error("unknown harness: {0}")]
+    UnknownHarness(String),
 }
 
 impl DaemonCliError {
@@ -292,6 +309,9 @@ impl DaemonCliError {
             Self::RecoveryBlocked { .. } => "daemon_recovery_blocked",
             Self::RecoveryArtifact { code } => code,
             Self::InvalidArguments => "cli_invalid_arguments",
+            Self::HarnessProbeCacheMissing(_) => "harness_probe_cache_missing",
+            Self::HarnessNotDetected(_) => "harness_not_detected",
+            Self::UnknownHarness(_) => "store_unknown_harness",
         }
     }
 }
@@ -354,6 +374,59 @@ pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliE
     Ok(health)
 }
 
+/// Ensure the daemon is running, then return a connected control client.
+/// Harness commands piggyback on the existing lifecycle: `harnesses`/`switch`
+/// start the daemon on demand (like `daemon start`) so detection state is
+/// always written by the single authoritative writer.
+async fn harness_client(paths: &DaemonPaths) -> Result<ControlClient, DaemonCliError> {
+    // Reuse the start flow only for its already-running detection; we do not
+    // auto-spawn here because spawning needs the daemon executable. Require
+    // the daemon to be running and report NotRunning otherwise.
+    let selection = select_runtime(paths)?;
+    validate_selected_runtime(paths, &selection)?;
+    control_client(&selection)
+}
+
+pub async fn harness_list(
+    paths: &DaemonPaths,
+    cached: bool,
+) -> Result<Vec<HarnessRow>, DaemonCliError> {
+    let client = harness_client(paths).await?;
+    let result = if cached {
+        client.harness_snapshot().await
+    } else {
+        client.harness_refresh().await
+    };
+    result.map_err(map_control_error)
+}
+
+pub async fn harness_switch(
+    paths: &DaemonPaths,
+    harness: &str,
+) -> Result<(String, String), DaemonCliError> {
+    let client = harness_client(paths).await?;
+    client
+        .harness_switch(harness)
+        .await
+        .map_err(map_harness_control_error)
+}
+
+fn map_harness_control_error(error: ControlError) -> DaemonCliError {
+    match error.code() {
+        "harness_not_detected" => DaemonCliError::HarnessNotDetected(error.code().to_string()),
+        "store_unknown_harness" | "harness_unknown" => {
+            DaemonCliError::UnknownHarness(error.code().to_string())
+        }
+        "harness_probe_cache_missing" => {
+            // The CLI surfaces "run the probe first" rather than the raw
+            // machine code; project path is fetched lazily from the harness
+            // caller (we only need to hint the file name here).
+            DaemonCliError::HarnessProbeCacheMissing(".".to_string())
+        }
+        _ => map_control_error(error),
+    }
+}
+
 pub fn parse_cli_arguments(
     arguments: impl Iterator<Item = OsString>,
 ) -> Result<CliCommand, DaemonCliError> {
@@ -364,7 +437,19 @@ pub fn parse_cli_arguments(
     if arguments.len() == 1 && arguments[0] == "--version" {
         return Ok(CliCommand::Version);
     }
-    if arguments.len() < 2 || arguments[0] != "daemon" {
+    if arguments.is_empty() {
+        return Err(DaemonCliError::InvalidArguments);
+    }
+    let verb = arguments[0]
+        .to_str()
+        .ok_or(DaemonCliError::InvalidArguments)?;
+    if verb == "harnesses" || verb == "switch" {
+        return parse_harness_arguments(verb, &arguments[1..]);
+    }
+    if verb != "daemon" {
+        return Err(DaemonCliError::InvalidArguments);
+    }
+    if arguments.len() < 2 {
         return Err(DaemonCliError::InvalidArguments);
     }
     let action = arguments[1]
@@ -424,6 +509,50 @@ pub fn daemon_paths(project_root: Option<&Path>) -> Result<DaemonPaths, DaemonCl
         None => std::env::current_dir().map_err(|_| DaemonCliError::InvalidProjectRoot)?,
     };
     DaemonPaths::from_project_root(&project_root).map_err(DaemonCliError::from)
+}
+
+fn parse_harness_arguments(
+    verb: &str,
+    arguments: &[OsString],
+) -> Result<CliCommand, DaemonCliError> {
+    let mut project_root = None;
+    let mut cached = false;
+    let mut positional: Option<String> = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        let token = arguments[index]
+            .to_str()
+            .ok_or(DaemonCliError::InvalidArguments)?;
+        match token {
+            "--project-root" if project_root.is_none() => {
+                let value = arguments
+                    .get(index + 1)
+                    .ok_or(DaemonCliError::InvalidArguments)?;
+                project_root = Some(PathBuf::from(value));
+                index += 2;
+            }
+            "--cached" if verb == "harnesses" && !cached => {
+                cached = true;
+                index += 1;
+            }
+            _ if verb == "switch" && !token.starts_with("--") && positional.is_none() => {
+                positional = Some(token.to_string());
+                index += 1;
+            }
+            _ => return Err(DaemonCliError::InvalidArguments),
+        }
+    }
+    match verb {
+        "harnesses" => Ok(CliCommand::Harnesses {
+            project_root,
+            cached,
+        }),
+        "switch" => Ok(CliCommand::Switch {
+            project_root,
+            harness: positional.ok_or(DaemonCliError::InvalidArguments)?,
+        }),
+        _ => Err(DaemonCliError::InvalidArguments),
+    }
 }
 
 pub fn daemon_executable(explicit: Option<&Path>) -> Result<PathBuf, DaemonCliError> {
@@ -947,5 +1076,53 @@ mod tests {
             Duration::from_millis(5),
             Duration::from_millis(10),
         )
+    }
+
+    #[test]
+    fn parser_routes_harness_commands() {
+        assert_eq!(
+            parse_cli_arguments([OsString::from("harnesses")].into_iter()).expect("harnesses"),
+            CliCommand::Harnesses {
+                project_root: None,
+                cached: false,
+            }
+        );
+        assert_eq!(
+            parse_cli_arguments(
+                [
+                    OsString::from("harnesses"),
+                    OsString::from("--cached"),
+                    OsString::from("--project-root"),
+                    OsString::from("C:\\repo"),
+                ]
+                .into_iter()
+            )
+            .expect("harnesses cached"),
+            CliCommand::Harnesses {
+                project_root: Some(PathBuf::from("C:\\repo")),
+                cached: true,
+            }
+        );
+        assert_eq!(
+            parse_cli_arguments(
+                [
+                    OsString::from("switch"),
+                    OsString::from("claude"),
+                    OsString::from("--project-root"),
+                    OsString::from("."),
+                ]
+                .into_iter()
+            )
+            .expect("switch"),
+            CliCommand::Switch {
+                project_root: Some(PathBuf::from(".")),
+                harness: "claude".to_string(),
+            }
+        );
+        assert!(parse_cli_arguments([OsString::from("switch")].into_iter()).is_err());
+        assert!(
+            parse_cli_arguments([OsString::from("harnesses"), OsString::from("bogus")].into_iter())
+                .is_err()
+        );
     }
 }

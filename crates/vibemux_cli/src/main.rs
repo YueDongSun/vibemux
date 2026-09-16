@@ -1,7 +1,7 @@
 use serde_json::json;
 use vibemux_cli::{
     CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome, daemon_executable,
-    daemon_health, daemon_paths, parse_cli_arguments,
+    daemon_health, daemon_paths, harness_list, harness_switch, parse_cli_arguments,
     recovery::{inspect_runtime, recover_runtime},
     start_daemon, stop_daemon,
 };
@@ -82,6 +82,30 @@ async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
                 code: "cli_output_encoding_failed".to_string(),
             })
         }
+        CliCommand::Harnesses {
+            project_root,
+            cached,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            let rows = harness_list(&paths, cached).await?;
+            Ok(json!({
+                "ok": true,
+                "harnesses": rows,
+            }))
+        }
+        CliCommand::Switch {
+            project_root,
+            harness,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            let (from, to) = harness_switch(&paths, &harness).await?;
+            Ok(json!({
+                "ok": true,
+                "default_harness": to,
+                "from": from,
+                "to": to,
+            }))
+        }
         CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
     }
 }
@@ -106,7 +130,7 @@ fn emit_error(error: &DaemonCliError) {
 
 fn print_help() {
     println!(
-        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]"
+        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n  vibemuxctl harnesses [--cached] [--project-root <path>]\n  vibemuxctl switch <harness> [--project-root <path>]"
     );
 }
 
@@ -151,6 +175,38 @@ mod tests {
         let encoded = output.to_string();
         for forbidden in ["token", "endpoint", "database", "project_root", "prompt"] {
             assert!(!encoded.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn harness_rows_contain_no_secret_fields() {
+        // The harness listing is machine-readable context; it must never
+        // leak tokens, endpoints, full environments, or database paths.
+        let rows = vec![vibemux_harness::HarnessRow {
+            name: "claude".to_string(),
+            command: vec!["claude".to_string()],
+            protocol: vibemux_harness::HarnessProtocol::Pty,
+            provider: "anthropic".to_string(),
+            available: true,
+            path: Some("claude".to_string()),
+            roles: vec!["worker".to_string()],
+            default: true,
+            launcher: Some(vibemux_probe::LauncherKind::DirectExecutable),
+            version: Some("1.0.0".to_string()),
+        }];
+        let encoded = serde_json::to_string(&rows).expect("rows JSON");
+        for forbidden in [
+            "token",
+            "endpoint",
+            "database_path",
+            "env",
+            "api_key",
+            "secret",
+        ] {
+            assert!(
+                !encoded.contains(forbidden),
+                "harness rows leaked {forbidden}"
+            );
         }
     }
 }
