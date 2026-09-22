@@ -243,25 +243,20 @@ impl DaemonPaths {
         if acl_marker_valid(&marker) {
             return Ok(());
         }
+        // Serialize the secure -> publish -> verify sequence for this
+        // process. Parallel callers (test threads, or a daemon starting
+        // while another project's daemon first-starts) share the control
+        // runtime root: racing the publication used to let concurrent
+        // readers observe an empty marker (`create_new` + write is not
+        // atomic) and multiplied the PowerShell helper load under CI
+        // timing (issue #6).
+        let _guard = control_acl_init_lock();
+        if acl_marker_valid(&marker) {
+            return Ok(());
+        }
         vibemux_platform::secure_user_directory(&self.control_runtime_root)
             .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)?;
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&marker)
-        {
-            Ok(mut file) => {
-                file.write_all(CONTROL_ACL_MARKER_CONTENTS)
-                    .and_then(|()| file.sync_all())
-                    .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if !acl_marker_valid(&marker) {
-                    return Err(DaemonPathError::ControlRuntimeSecurityInvalid);
-                }
-            }
-            Err(_) => return Err(DaemonPathError::ControlRuntimeSecurityInvalid),
-        }
+        publish_acl_marker(&marker)?;
         vibemux_platform::verify_restricted_path_acl(&marker)
             .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)?;
         Ok(())
@@ -295,6 +290,43 @@ pub(crate) fn project_runtime_key(project_root: &Path) -> String {
     }
     let digest: [u8; 32] = hasher.finalize().into();
     hex(&digest)
+}
+
+/// Serialize ACL-marker initialization within one process. Poisoning is
+/// tolerated: the critical section is idempotent, so a panicked predecessor
+/// leaves nothing half-done in memory.
+#[cfg(windows)]
+fn control_acl_init_lock() -> std::sync::MutexGuard<'static, ()> {
+    static INIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    INIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Publish the ACL marker atomically: write the contents to a per-process
+/// temporary file and rename it into place. A concurrent reader sees either
+/// no marker or the complete contents - never a half-written one - and a
+/// writer that dies mid-publish leaves at most a stale temporary (overwritten
+/// by the next attempt of the same pid) instead of a poisoned empty marker
+/// that used to fail every later start. Renaming over a stale marker also
+/// heals one left behind by an interrupted writer of an older version.
+#[cfg(windows)]
+fn publish_acl_marker(marker: &Path) -> Result<(), DaemonPathError> {
+    let temporary = marker.with_file_name(format!(
+        "{CONTROL_ACL_MARKER_FILE_NAME}.{}.tmp",
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary)
+        .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)?;
+    file.write_all(CONTROL_ACL_MARKER_CONTENTS)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)?;
+    drop(file);
+    std::fs::rename(&temporary, marker).map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
 }
 
 #[cfg(windows)]
@@ -495,6 +527,51 @@ mod tests {
                 .expect_err("legacy descriptor must block new daemon"),
             DaemonPathError::LegacyRuntimeConflict
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn acl_marker_publication_replaces_stale_markers_without_debris() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let marker = temp.path().join(CONTROL_ACL_MARKER_FILE_NAME);
+        // A writer that died between creating the marker and writing its
+        // contents (the pre-rename code could leave exactly this) must not
+        // poison later starts: publishing over it heals the state.
+        std::fs::write(&marker, b"").expect("empty stale marker");
+        publish_acl_marker(&marker).expect("publish over stale marker");
+        assert_eq!(
+            std::fs::read(&marker).expect("healed marker contents"),
+            CONTROL_ACL_MARKER_CONTENTS
+        );
+        let entries: Vec<_> = std::fs::read_dir(temp.path())
+            .expect("control root listing")
+            .map(|entry| entry.expect("directory entry").file_name())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "no temporary file may linger after publication: {entries:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ensure_runtime_dir_heals_a_stale_acl_marker() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        std::fs::create_dir_all(paths.control_runtime_root()).expect("control root");
+        let marker = paths
+            .control_runtime_root()
+            .join(CONTROL_ACL_MARKER_FILE_NAME);
+        // An existing marker with no contents used to fail every later
+        // ensure with ControlRuntimeSecurityInvalid (AlreadyExists + invalid
+        // was a hard error); it must heal instead.
+        std::fs::write(&marker, b"").expect("empty stale marker");
+        paths
+            .ensure_runtime_dir()
+            .expect("ensure heals stale marker");
+        assert!(acl_marker_valid(&marker));
     }
 
     #[cfg(unix)]

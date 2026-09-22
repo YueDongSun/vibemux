@@ -2392,3 +2392,20 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - `NO_DEFAULT_HARNESS` sentinel kept as-is for wire-shape stability.
 - `parse_harness_arguments` (CLI harness subcommand parsing) left on its existing implementation; not unified this round.
 - `commit_projection` shared-tail reuse (expressing the a2a commit path through `find_duplicate`/`insert_event`/`upsert_harness_projection`) not performed — the only `crates/vibemux_store/src/a2a.rs` change is test adjustments for the v3 seed-event baseline.
+
+### 2026-09-23 - Windows ACL-marker publication race (issue #6)
+
+**Scope**
+- Fix the load-sensitive `rust-windows` CI flake (issue #6): four `vibemux_cli::recovery` tests intermittently panicked at `ensure_runtime_dir()` with `ControlRuntimeSecurityInvalid` on loaded runners while identical code was green on adjacent commits.
+
+**Root cause**
+- `ensure_windows_control_acl` published the shared `%LOCALAPPDATA%\VibeMux\runtime\.acl_v1` marker with `create_new` + `write_all` — not atomic. `vibemux_cli` is the second workspace member, so its lib test binary is the first process in a CI job to touch the marker, and its parallel recovery tests all raced first-touch initialization: the winner created an EMPTY marker and every loser hitting `AlreadyExists` inside the create→write window (widened to seconds by runner scheduling load) read empty contents and hard-failed. The same window permanently poisoned the marker when a writer died mid-publish (`AlreadyExists` + invalid was a hard error that never self-healed). Secondary: each racing caller spawned its own `powershell.exe` secure+verify pair, multiplying helper load toward the 5 s `HELPER_TIMEOUT`.
+
+**Implementation**
+- `crates/vibemuxd/src/process.rs`: marker publication is now atomic — contents are written to a per-pid temporary file (`.acl_v1.<pid>.tmp`), synced, then `std::fs::rename`d onto the marker, so readers see either no marker or the complete contents, never a half-written one, and a crashed writer leaves at most a stale temporary (overwritten by the next same-pid attempt) instead of a poisoned marker. `ensure_windows_control_acl` serializes the secure→publish→verify sequence behind a process-wide, poisoning-tolerant mutex (double-checked around the existing fast path), so a first-touch pays one secure+verify pair and every concurrent caller early-returns on the valid marker. A stale or invalid existing marker is healed by renaming over it — only after re-running `secure_user_directory` and re-verifying the marker ACL, so the trust chain is unchanged.
+- `crates/vibemux_platform/src/windows_security.rs`: `HELPER_TIMEOUT` 5 s → 15 s (a liveness knob for one helper on a loaded runner, not a security check).
+
+**Validation**
+- Deterministic regression test demonstrated pre-fix-red / post-fix-green: `ensure_runtime_dir_heals_a_stale_acl_marker` writes an empty marker and expects ensure to heal it; run against `328e72c`'s implementation it failed with exactly `ControlRuntimeSecurityInvalid`. Plus `acl_marker_publication_replaces_stale_markers_without_debris` (atomic replacement of a stale marker, no temporary left behind).
+- First-touch concurrency smoke reproducing the CI scenario (global marker deleted before each round, then `cargo test -p vibemux_cli --lib recovery::` — the exact binary and tests that flaked, in parallel): 5/5 rounds green.
+- Windows gates on this change: `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` — 54 suites, 297 passed / 0 failed / 2 ignored. The entire diff is `#[cfg(windows)]`-gated (the unix compile surface is unchanged); `rust-ubuntu` CI re-validates the unix side.

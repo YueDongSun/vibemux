@@ -13,7 +13,11 @@ use crate::PlatformError;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const WINDOWS_POWERSHELL_RELATIVE_PATH: &str = "System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 const SECURE_PATH_ENV: &str = "VIBEMUX_SECURE_PATH";
-const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
+// A cold powershell.exe start on a loaded CI runner (2-4 cores, the test
+// suite running alongside) can take multiple seconds; the ACL-marker path
+// serializes its helper invocations, so this budget is a liveness knob for
+// one helper under load, not a security check (issue #6).
+const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
 const HELPER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_HELPER_OUTPUT_BYTES: usize = 128;
 

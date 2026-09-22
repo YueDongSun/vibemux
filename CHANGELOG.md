@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix the load-sensitive `rust-windows` recovery-test flake (issue #6): the shared `.acl_v1` control-runtime marker is published atomically (per-pid temp file + rename; stale/empty markers self-heal after re-securing) and the secure→publish→verify sequence is serialized per process, so parallel first-start callers can no longer observe a half-written marker or stampede `powershell.exe` helpers. PowerShell helper timeout raised 5 s → 15 s as CI-load headroom (liveness knob, not a security check).
 - Fix round over the harness surface (`273e041..0bfe966` review): `vibemux_probe --write-cache --project-root <dir>` atomically writes the trusted detection cache to `<dir>/.vibemux/probe_cache.json` (owner-only perms, temp-file + rename, stdout report unchanged), and agent rows now carry the **resolved executable path** the PATH scan actually used (Windows `PATHEXT` incl. `.cmd`/PowerShell-companion shims; unix executable regular files). Caches written by older builds still parse (`path` null).
 - Make the default-harness switch atomic and detection-gated: `from` is read inside the same transaction that writes, so concurrent switches can never record a lying `from: none` for distinct targets, and unknown/undetected gates run before any write.
 - Harden refresh against a single bad agent: one agent's invalid version/path now **degrades only that agent** to `detected=false` (fail-closed) instead of aborting the whole refresh.
