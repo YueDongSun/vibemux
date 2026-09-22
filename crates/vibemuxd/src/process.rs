@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
-use std::{fs::OpenOptions, io::Write};
+use std::{fs::OpenOptions, io::Write, os::windows::fs::OpenOptionsExt};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -18,6 +18,12 @@ pub const CONTROL_WRITER_LOCK_FILE_NAME: &str = "writer.lock";
 const CONTROL_ACL_MARKER_FILE_NAME: &str = ".acl_v1";
 #[cfg(windows)]
 const CONTROL_ACL_MARKER_CONTENTS: &[u8] = b"vibemux_control_acl_v1";
+/// Open a path's reparse point itself instead of following it, so a link
+/// planted at the temporary marker path fails closed rather than letting the
+/// writer truncate an arbitrary target (matters only if the daemon is ever
+/// run elevated; a same-user attacker can already write user-writable files).
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaemonPaths {
@@ -98,10 +104,24 @@ impl DaemonPaths {
         }
         std::fs::create_dir_all(&self.runtime_dir)
             .map_err(|_| DaemonPathError::ControlRuntimeUnavailable)?;
-        self.validate_runtime_dir()
+        // `ensure_windows_control_acl` has just established the marker under
+        // the init lock (and ACL-verified it when healing), so the ensure
+        // path validates locations only. Re-reading the marker here would
+        // reopen a lock-free window in which a concurrent marker rewrite
+        // failed an otherwise healthy ensure - the straddle behind the
+        // issue #6 follow-up. The public `validate_runtime_dir` keeps the
+        // full check for read-only inspection callers.
+        self.validate_runtime_locations()
     }
 
     pub fn validate_runtime_dir(&self) -> Result<(), DaemonPathError> {
+        self.validate_runtime_locations()?;
+        #[cfg(windows)]
+        self.validate_windows_acl_marker()?;
+        Ok(())
+    }
+
+    fn validate_runtime_locations(&self) -> Result<(), DaemonPathError> {
         self.validate_state_dir()?;
         let canonical_control_root = std::fs::canonicalize(&self.control_runtime_root)
             .map_err(|_| DaemonPathError::ControlRuntimeUnavailable)?;
@@ -113,8 +133,6 @@ impl DaemonPaths {
         if canonical_runtime != self.runtime_dir {
             return Err(DaemonPathError::UnsafeControlRuntime);
         }
-        #[cfg(windows)]
-        self.validate_windows_acl_marker()?;
         Ok(())
     }
 
@@ -243,13 +261,14 @@ impl DaemonPaths {
         if acl_marker_valid(&marker) {
             return Ok(());
         }
-        // Serialize the secure -> publish -> verify sequence for this
-        // process. Parallel callers (test threads, or a daemon starting
-        // while another project's daemon first-starts) share the control
-        // runtime root: racing the publication used to let concurrent
-        // readers observe an empty marker (`create_new` + write is not
-        // atomic) and multiplied the PowerShell helper load under CI
-        // timing (issue #6).
+        // Serialize the secure -> publish -> verify sequence for THIS
+        // process: parallel in-process callers (test threads, concurrent
+        // daemon starts) share the control runtime root, and racing the
+        // publication used to let concurrent readers observe an empty
+        // marker (`create_new` + write is not atomic) and multiplied the
+        // PowerShell helper load under CI timing (issue #6). Cross-process
+        // first-starts are made safe by the atomic rename in
+        // `publish_acl_marker`, not by this lock.
         let _guard = control_acl_init_lock();
         if acl_marker_valid(&marker) {
             return Ok(());
@@ -310,6 +329,12 @@ fn control_acl_init_lock() -> std::sync::MutexGuard<'static, ()> {
 /// by the next attempt of the same pid) instead of a poisoned empty marker
 /// that used to fail every later start. Renaming over a stale marker also
 /// heals one left behind by an interrupted writer of an older version.
+///
+/// The temporary name is per-PROCESS, so within one process callers must
+/// hold [`control_acl_init_lock`]: without it, two threads would interleave
+/// truncate/write/rename on the same temporary and could publish an empty
+/// marker or fail a rename. Across processes the distinct pid names plus the
+/// atomic rename make concurrent publication converge on identical contents.
 #[cfg(windows)]
 fn publish_acl_marker(marker: &Path) -> Result<(), DaemonPathError> {
     let temporary = marker.with_file_name(format!(
@@ -320,6 +345,7 @@ fn publish_acl_marker(marker: &Path) -> Result<(), DaemonPathError> {
         .write(true)
         .create(true)
         .truncate(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(&temporary)
         .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)?;
     file.write_all(CONTROL_ACL_MARKER_CONTENTS)
@@ -407,6 +433,20 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Serializes the tests that deliberately invalidate the SHARED global
+    /// marker (`%LOCALAPPDATA%\VibeMux\runtime\.acl_v1`). Sibling tests only
+    /// ever publish VALID contents through `ensure_runtime_dir`, so without
+    /// this lock one test's empty-marker window could land between another
+    /// test's marker read and its assertion - reintroducing the very
+    /// straddle this module's production fix removed (issue #6 follow-up).
+    #[cfg(windows)]
+    fn marker_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]
@@ -557,6 +597,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn ensure_runtime_dir_heals_a_stale_acl_marker() {
+        let _marker_guard = marker_test_lock();
         let temp = tempfile::tempdir().expect("temp directory");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
         let _control_cleanup = ControlRuntimeCleanup::new(&paths);
@@ -572,6 +613,51 @@ mod tests {
             .ensure_runtime_dir()
             .expect("ensure heals stale marker");
         assert!(acl_marker_valid(&marker));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_first_touch_serializes_marker_publication() {
+        // Pins the init lock: `publish_acl_marker` uses a per-PROCESS
+        // temporary name, so without `control_acl_init_lock` the threads
+        // below would interleave truncate/write/rename on the same
+        // temporary and could publish an empty marker or fail a rename -
+        // an issue-#6-class failure no other test would catch. Removing the
+        // shared marker forces the first-touch path on every run.
+        let _marker_guard = marker_test_lock();
+        let roots: Vec<_> = (0..4)
+            .map(|_| tempfile::tempdir().expect("temp directory"))
+            .collect();
+        let paths_list: Vec<_> = roots
+            .iter()
+            .map(|root| DaemonPaths::from_project_root(root.path()).expect("daemon paths"))
+            .collect();
+        let marker = paths_list[0]
+            .control_runtime_root()
+            .join(CONTROL_ACL_MARKER_FILE_NAME);
+        match std::fs::remove_file(&marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove stale marker: {error}"),
+        }
+        let cleanups: Vec<_> = paths_list.iter().map(ControlRuntimeCleanup::new).collect();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = paths_list
+                .iter()
+                .map(|paths| {
+                    scope.spawn(move || {
+                        paths
+                            .ensure_runtime_dir()
+                            .expect("concurrent ensure must succeed");
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("concurrent ensure thread panicked");
+            }
+        });
+        assert!(acl_marker_valid(&marker));
+        drop(cleanups);
     }
 
     #[cfg(unix)]
