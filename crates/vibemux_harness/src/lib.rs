@@ -1,22 +1,28 @@
 #![forbid(unsafe_code)]
-//! Harness orchestration surface for the Rust core: the ten-harness profile
-//! registry, machine-readable row construction, snapshot/switch payloads, and
-//! canonical event drafts. This crate is pure logic — it performs no process,
-//! filesystem, or network I/O; detection inputs are injected by callers (the
-//! daemon reads the trusted `vibemux_probe` cache), which keeps the types ->
-//! harness -> store dependency direction acyclic per AGENTS.md §4.2.
+//! Harness orchestration surface for the Rust core: the agent/launcher/probe
+//! state vocabulary ([`agent`], re-exported at the crate root), the
+//! ten-harness profile registry, machine-readable row construction,
+//! snapshot/switch payloads, and canonical event drafts. This crate is pure
+//! logic — it performs no process, filesystem, or network I/O; detection
+//! inputs are injected by callers (the daemon reads the trusted probe cache
+//! owned by `vibemux_probe::cache`), which keeps the types -> harness ->
+//! store dependency direction acyclic per AGENTS.md §4.2.
+
+pub mod agent;
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
-use vibemux_probe::{AgentKind, LauncherKind, ProbeState};
+
+pub use agent::{AgentKind, LauncherKind, ProbeState};
 
 pub const HARNESS_REGISTRY_ENTITY_KIND: &str = "harness_registry";
 pub const HARNESS_CONFIG_ENTITY_KIND: &str = "harness_config";
 pub const MAX_HARNESS_PATH_BYTES: usize = 1024;
 pub const MAX_HARNESS_ROLES: usize = 64;
 pub const MAX_HARNESS_ROLE_BYTES: usize = 128;
-pub const MAX_HARNESS_LAUNCHER_BYTES: usize = 32;
 pub const MAX_HARNESS_VERSION_BYTES: usize = 256;
 /// The Python prototype never carries a persisted default (its sidecar stores
 /// only detection state); the Rust store seeds this sentinel instead of a
@@ -38,7 +44,6 @@ pub enum HarnessProtocol {
 /// Static profile for one harness: identity plus the launch surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HarnessProfile {
-    pub agent: AgentKind,
     pub command: &'static str,
     pub protocol: HarnessProtocol,
     pub provider: &'static str,
@@ -76,6 +81,11 @@ pub struct HarnessRow {
 }
 
 /// Persisted per-harness snapshot state (registry projection value).
+///
+/// `launcher`/`version` are optional because the persisted registry was
+/// seeded before `AgentProbe::path` was added to the probe report; the
+/// store treats a legacy row as equivalent to `(None, None)` so the schema-3
+/// JSON shape stays forward-compatible.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessState {
@@ -84,6 +94,10 @@ pub struct HarnessState {
     pub path: Option<String>,
     #[serde(default)]
     pub roles: Vec<String>,
+    #[serde(default)]
+    pub launcher: Option<LauncherKind>,
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 impl HarnessState {
@@ -101,6 +115,9 @@ impl HarnessState {
         if let Some(path) = &self.path {
             validate_path(path)?;
         }
+        if let Some(version) = &self.version {
+            validate_version(version)?;
+        }
         Ok(())
     }
 }
@@ -115,12 +132,67 @@ pub struct HarnessRegistrySnapshot {
     pub harnesses: Vec<HarnessEntry>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+/// One persisted registry entry. The on-disk shape is a flat object
+/// (`{"name": "...", "detected": ..., "path": ..., "roles": [...],
+/// "launcher": ..., "version": ...}`) — `HarnessEntry` and `HarnessState`
+/// exist as separate Rust types only to make ownership of `name` explicit;
+/// `Deserialize` is implemented manually so an unknown field on the registry
+/// entry fails closed (the on-disk shape is part of the schema-3 wire
+/// contract), and `Serialize` keeps the same flat layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HarnessEntry {
     pub name: String,
-    #[serde(flatten)]
     pub state: HarnessState,
+}
+
+impl Serialize for HarnessEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("HarnessEntry", 6)?;
+        s.serialize_field("name", &self.name)?;
+        s.serialize_field("detected", &self.state.detected)?;
+        s.serialize_field("path", &self.state.path)?;
+        s.serialize_field("roles", &self.state.roles)?;
+        s.serialize_field("launcher", &self.state.launcher)?;
+        s.serialize_field("version", &self.state.version)?;
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Helper {
+            name: String,
+            detected: bool,
+            #[serde(default)]
+            path: Option<String>,
+            #[serde(default)]
+            roles: Vec<String>,
+            #[serde(default)]
+            launcher: Option<LauncherKind>,
+            #[serde(default)]
+            version: Option<String>,
+        }
+        let helper = Helper::deserialize(deserializer)?;
+        Ok(HarnessEntry {
+            name: helper.name,
+            state: HarnessState {
+                detected: helper.detected,
+                path: helper.path,
+                roles: helper.roles,
+                launcher: helper.launcher,
+                version: helper.version,
+            },
+        })
+    }
 }
 
 impl HarnessRegistrySnapshot {
@@ -156,8 +228,6 @@ pub struct HarnessConfigSnapshot {
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum HarnessError {
-    #[error("unknown harness name")]
-    UnknownHarness,
     #[error("harness snapshot state is invalid")]
     InvalidState,
     #[error("harness path exceeds the bounded length or is not portable UTF-8")]
@@ -168,7 +238,6 @@ impl HarnessError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::UnknownHarness => "harness_unknown",
             Self::InvalidState => "harness_invalid_state",
             Self::InvalidPath => "harness_invalid_path",
         }
@@ -179,7 +248,6 @@ impl HarnessError {
 #[must_use]
 pub fn profiles() -> [HarnessProfile; 10] {
     AgentKind::all().map(|agent| HarnessProfile {
-        agent,
         command: agent.command_name(),
         protocol: HarnessProtocol::Pty,
         provider: match agent {
@@ -194,11 +262,6 @@ pub fn profiles() -> [HarnessProfile; 10] {
             AgentKind::Kimi => "moonshot",
         },
     })
-}
-
-#[must_use]
-pub fn profile_for(agent: AgentKind) -> HarnessProfile {
-    profiles()[agent as usize]
 }
 
 #[must_use]
@@ -230,14 +293,14 @@ fn validate_version(version: &str) -> Result<(), HarnessError> {
 pub fn build_rows(
     registry: &HarnessRegistrySnapshot,
     config: &HarnessConfigSnapshot,
-    detections: &std::collections::BTreeMap<String, HarnessDetection>,
+    detections: &BTreeMap<String, HarnessDetection>,
 ) -> Vec<HarnessRow> {
     profiles()
         .into_iter()
         .map(|profile| {
             let state = registry.state(profile.command);
             let detection = detections.get(profile.command);
-            let detected = detection.is_some_and(|input| input.detected);
+            let detected = detection.is_some_and(HarnessDetection::is_detected);
             HarnessRow {
                 name: profile.command.to_string(),
                 command: vec![profile.command.to_string()],
@@ -258,24 +321,99 @@ pub fn build_rows(
         .collect()
 }
 
-/// Payload + persisted registry state produced by a refresh: roles carry over
-/// from the previous snapshot, detection replaces availability.
-pub fn build_refresh(
-    previous: &HarnessRegistrySnapshot,
-    detections: &std::collections::BTreeMap<String, HarnessDetection>,
-    checked_at: &str,
-) -> (HarnessRegistrySnapshot, Value) {
-    let mut harnesses = Vec::with_capacity(AgentKind::all().len());
+/// Build the listing rows from PERSISTED registry state alone (no fresh
+/// detections). Used by the cached (`--cached`) path and by the daemon after
+/// the writer commits a refresh, so the live and cached views share one
+/// derivation.
+#[must_use]
+pub fn build_rows_from_registry(
+    registry: &HarnessRegistrySnapshot,
+    config: &HarnessConfigSnapshot,
+) -> Vec<HarnessRow> {
+    profiles()
+        .into_iter()
+        .map(|profile| {
+            let state = registry.state(profile.command);
+            let detected = state.is_some_and(HarnessState::is_detected);
+            HarnessRow {
+                name: profile.command.to_string(),
+                command: vec![profile.command.to_string()],
+                protocol: profile.protocol,
+                provider: profile.provider.to_string(),
+                available: detected,
+                path: if detected {
+                    state.and_then(|state| state.path.clone())
+                } else {
+                    None
+                },
+                roles: state.map(|state| state.roles.clone()).unwrap_or_default(),
+                default: profile.command == config.default_harness,
+                launcher: state.and_then(|state| state.launcher),
+                version: state.and_then(|state| state.version.clone()),
+            }
+        })
+        .collect()
+}
+
+/// Classify the detected/missing harness partition alphabetically, matching
+/// the Python `services.py` payload order (Python iterates over a sorted
+/// `dict`). This is the only classifier that produces the partition; every
+/// other entry point delegates here.
+fn classify_detections(
+    detections: &BTreeMap<String, HarnessDetection>,
+) -> (Vec<&'static str>, Vec<&'static str>) {
     let mut detected = Vec::new();
     let mut missing = Vec::new();
     for profile in profiles() {
-        let input = detections.get(profile.command);
-        let is_detected = input.is_some_and(|input| input.detected);
-        if is_detected {
+        if detections
+            .get(profile.command)
+            .is_some_and(HarnessDetection::is_detected)
+        {
             detected.push(profile.command);
         } else {
             missing.push(profile.command);
         }
+    }
+    detected.sort_unstable();
+    missing.sort_unstable();
+    (detected, missing)
+}
+
+impl HarnessDetection {
+    /// `true` when the detection represents a verified harness. The probe is
+    /// the only source of truth — a bare PATH hit never counts.
+    #[must_use]
+    pub const fn is_detected(&self) -> bool {
+        self.detected
+    }
+}
+
+impl HarnessState {
+    /// `true` when the persisted state represents a verified harness.
+    #[must_use]
+    pub const fn is_detected(&self) -> bool {
+        self.detected
+    }
+}
+
+/// Payload + persisted registry state produced by a refresh: roles carry over
+/// from the previous snapshot, detection replaces availability. Payload
+/// arrays are sorted alphabetically to match Python `services.py`.
+pub fn build_refresh(
+    previous: &HarnessRegistrySnapshot,
+    detections: &BTreeMap<String, HarnessDetection>,
+    checked_at: &str,
+) -> (HarnessRegistrySnapshot, Value) {
+    let mut harnesses = Vec::with_capacity(AgentKind::all().len());
+    for profile in profiles() {
+        let input = detections.get(profile.command);
+        let is_detected = input.is_some_and(HarnessDetection::is_detected);
+        // Fail-closed: an undetected entry never persists path/launcher/
+        // version, even if the caller supplied a `HarnessDetection` with
+        // those fields populated. Every upstream pipeline (the probe-derived
+        // `detection_from_probe` and the daemon's degrade path) already zeros
+        // them for undetected, so this is the one place that can enforce the
+        // invariant independently of the caller.
         harnesses.push(HarnessEntry {
             name: profile.command.to_string(),
             state: HarnessState {
@@ -289,9 +427,20 @@ pub fn build_refresh(
                     .state(profile.command)
                     .map(|state| state.roles.clone())
                     .unwrap_or_default(),
+                launcher: if is_detected {
+                    input.and_then(|input| input.launcher)
+                } else {
+                    None
+                },
+                version: if is_detected {
+                    input.and_then(|input| input.version.clone())
+                } else {
+                    None
+                },
             },
         });
     }
+    let (detected, missing) = classify_detections(detections);
     let snapshot = HarnessRegistrySnapshot {
         checked_at: Some(checked_at.to_string()),
         harnesses,
@@ -301,28 +450,6 @@ pub fn build_refresh(
         "missing": missing,
     });
     (snapshot, payload)
-}
-
-/// Event payload for a refresh without building the snapshot (the store
-/// carries roles over internally). Mirrors `build_refresh`'s payload.
-#[must_use]
-pub fn refresh_payload(detections: &std::collections::BTreeMap<String, HarnessDetection>) -> Value {
-    let mut detected = Vec::new();
-    let mut missing = Vec::new();
-    for profile in profiles() {
-        if detections
-            .get(profile.command)
-            .is_some_and(|input| input.detected)
-        {
-            detected.push(profile.command);
-        } else {
-            missing.push(profile.command);
-        }
-    }
-    json!({
-        "detected": detected,
-        "missing": missing,
-    })
 }
 
 /// Seed registry written by the store migration: nothing detected, no roles,
@@ -339,6 +466,8 @@ pub fn seed_registry() -> HarnessRegistrySnapshot {
                     detected: false,
                     path: None,
                     roles: Vec::new(),
+                    launcher: None,
+                    version: None,
                 },
             })
             .collect(),
@@ -468,7 +597,6 @@ mod tests {
         let profiles = profiles();
         assert_eq!(profiles.len(), 10);
         for (profile, agent) in profiles.iter().zip(AgentKind::all()) {
-            assert_eq!(profile.agent, agent);
             assert_eq!(profile.command, agent.command_name());
             assert_eq!(profile.protocol, HarnessProtocol::Pty);
             assert!(!profile.provider.is_empty());
@@ -521,16 +649,144 @@ mod tests {
         ]);
         let (snapshot, payload) = build_refresh(&previous, &detections, "2026-09-16T00:00:00Z");
         assert_eq!(snapshot.checked_at.as_deref(), Some("2026-09-16T00:00:00Z"));
-        // Profile order is alphabetical (claude, codex, ..., trae), matching
-        // the sorted payload the Python reference emits.
+        // Alphabetical order matches the Python `services.py` reference:
+        // both detected and missing arrays are sorted ascending.
         assert_eq!(
             payload,
-            json!({"detected": ["claude", "qwen"], "missing": ["codex", "opencode", "copilot", "grok", "iflow", "trae", "codebuddy", "kimi"]})
+            json!({"detected": ["claude", "qwen"], "missing": ["codebuddy", "codex", "copilot", "grok", "iflow", "kimi", "opencode", "trae"]})
         );
+        // The persisted snapshot still classifies by detection state, not
+        // by the payload — claude and qwen are detected, the rest are not.
+        assert!(snapshot.state("claude").expect("claude").detected);
+        assert!(snapshot.state("qwen").expect("qwen").detected);
         let kimi = snapshot.state("kimi").expect("kimi state");
         assert!(!kimi.detected);
         assert_eq!(kimi.roles, ["orchestrator"]);
         assert!(snapshot.state("codex").expect("codex").path.is_none());
+        assert_eq!(
+            snapshot.state("claude").expect("claude").launcher,
+            Some(LauncherKind::DirectExecutable)
+        );
+    }
+
+    /// Regression: an undetected `HarnessDetection` that still carries a
+    /// launcher/version (a caller that did NOT zero them) must never persist
+    /// those fields — `build_refresh` gates `path`/`launcher`/`version` on
+    /// `is_detected`, independently of the caller. This keeps the persisted
+    /// registry consistent with the probe-derived and daemon-degrade paths.
+    #[test]
+    fn build_refresh_strips_undetected_observability_fields() {
+        let previous = seed_registry();
+        // A present-but-undetected detection that a buggy caller failed to
+        // zero: `detected = false` but launcher/version/path populated.
+        let mut detections = BTreeMap::new();
+        detections.insert(
+            "claude".to_string(),
+            HarnessDetection {
+                detected: false,
+                path: Some("C:\\tools\\claude.exe".to_string()),
+                launcher: Some(LauncherKind::DirectExecutable),
+                version: Some("1.0.0".to_string()),
+            },
+        );
+        let (snapshot, _payload) = build_refresh(&previous, &detections, "2026-09-16T00:00:00Z");
+        let claude = snapshot.state("claude").expect("claude state");
+        assert!(!claude.detected);
+        assert!(claude.path.is_none(), "undetected path must not persist");
+        assert!(
+            claude.launcher.is_none(),
+            "undetected launcher must not persist"
+        );
+        assert!(
+            claude.version.is_none(),
+            "undetected version must not persist"
+        );
+    }
+
+    #[test]
+    fn build_rows_from_registry_matches_build_rows_for_persisted_state() {
+        let mut previous = seed_registry();
+        previous
+            .harnesses
+            .iter_mut()
+            .find(|entry| entry.name == "claude")
+            .expect("claude entry")
+            .state
+            .roles = vec!["worker".to_string(), "reviewer".to_string()];
+        let config = HarnessConfigSnapshot {
+            default_harness: "claude".to_string(),
+        };
+        // Live detection turns claude detected.
+        let detections = BTreeMap::from([("claude".to_string(), detection(true))]);
+        let (persisted, _payload) = build_refresh(&previous, &detections, "2026-09-16T00:00:00Z");
+        // Live rows reflect the detection input.
+        let live_rows = build_rows(&previous, &config, &detections);
+        // Cached rows are derived purely from the persisted state.
+        let cached_rows = build_rows_from_registry(&persisted, &config);
+        assert_eq!(live_rows, cached_rows);
+    }
+
+    #[test]
+    fn registry_entry_unknown_field_is_rejected() {
+        let encoded = r#"{"name":"claude","detected":true,"path":null,"roles":[],"launcher":null,"version":null,"extra":true}"#;
+        let error = serde_json::from_str::<HarnessEntry>(encoded)
+            .expect_err("unknown field must fail closed");
+        assert!(error.to_string().contains("extra"));
+    }
+
+    #[test]
+    fn registry_entry_legacy_without_launcher_or_version_parses() {
+        // Older schema-3 rows written before launcher/version existed must
+        // still parse (the harness state defaults the optional fields).
+        let encoded = r#"{"name":"claude","detected":true,"path":null,"roles":[]}"#;
+        let entry: HarnessEntry = serde_json::from_str(encoded).expect("legacy entry parses");
+        assert_eq!(entry.name, "claude");
+        assert!(entry.state.detected);
+        assert_eq!(entry.state.launcher, None);
+        assert_eq!(entry.state.version, None);
+    }
+
+    #[test]
+    fn registry_entry_round_trip_preserves_flat_shape() {
+        let entry = HarnessEntry {
+            name: "claude".to_string(),
+            state: HarnessState {
+                detected: true,
+                path: Some("C:\\tools\\claude.exe".to_string()),
+                roles: vec!["worker".to_string()],
+                launcher: Some(LauncherKind::DirectExecutable),
+                version: Some("1.0.0".to_string()),
+            },
+        };
+        let encoded = serde_json::to_string(&entry).expect("serialize entry");
+        // Flat shape: no nested `state` object in the JSON.
+        assert!(!encoded.contains("\"state\""));
+        assert!(encoded.contains("\"name\":\"claude\""));
+        assert!(encoded.contains("\"detected\":true"));
+        assert!(encoded.contains("\"launcher\":\"direct_executable\""));
+        assert!(encoded.contains("\"version\":\"1.0.0\""));
+        let decoded: HarnessEntry = serde_json::from_str(&encoded).expect("round-trip");
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn harness_state_validates_version_bounds() {
+        let mut state = HarnessState {
+            detected: true,
+            path: None,
+            roles: Vec::new(),
+            launcher: Some(LauncherKind::DirectExecutable),
+            version: Some("1.0.0".to_string()),
+        };
+        assert!(state.validate().is_ok());
+        state.version = Some(String::new());
+        assert_eq!(state.validate(), Err(HarnessError::InvalidState));
+        state.version = Some("x".repeat(MAX_HARNESS_VERSION_BYTES + 1));
+        assert_eq!(state.validate(), Err(HarnessError::InvalidState));
+        state.version = Some("with\0nul".to_string());
+        assert_eq!(state.validate(), Err(HarnessError::InvalidState));
+        state.version = None;
+        assert!(state.validate().is_ok());
     }
 
     #[test]
@@ -579,6 +835,8 @@ mod tests {
             detected: true,
             path: Some("x".repeat(MAX_HARNESS_PATH_BYTES + 1)),
             roles: Vec::new(),
+            launcher: None,
+            version: None,
         };
         assert_eq!(state.validate(), Err(HarnessError::InvalidPath));
         state.path = None;
@@ -621,5 +879,18 @@ mod tests {
     #[test]
     fn no_default_sentinel_is_not_a_switchable_harness() {
         assert!(profile_by_name(NO_DEFAULT_HARNESS).is_none());
+    }
+
+    #[test]
+    fn harness_error_no_longer_contains_unknown_harness_variant() {
+        // Compile-time check: the variant is gone and the `harness_unknown`
+        // code arm no longer exists. A constructor that would have produced
+        // `HarnessError::UnknownHarness` now fails to compile, so the
+        // surviving two-variant surface is the only legal harness error
+        // vocabulary for callers.
+        let _: HarnessError = HarnessError::InvalidState;
+        let _: HarnessError = HarnessError::InvalidPath;
+        assert_eq!(HarnessError::InvalidState.code(), "harness_invalid_state");
+        assert_eq!(HarnessError::InvalidPath.code(), "harness_invalid_path");
     }
 }

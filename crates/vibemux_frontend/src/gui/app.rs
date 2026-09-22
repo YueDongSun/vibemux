@@ -637,6 +637,7 @@ mod tests {
                     authentication_state: ProbeState::NotRun,
                     inference_state: ProbeState::NotRun,
                     launcher: LauncherKind::DirectExecutable,
+                    path: None,
                     version: Some("1.0".to_string()),
                     route: RouteKind::Direct,
                     endpoints: Vec::new(),

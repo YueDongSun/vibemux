@@ -282,7 +282,7 @@ pub enum DaemonCliError {
     #[error("CLI arguments are invalid")]
     InvalidArguments,
     #[error(
-        "harness probe cache is missing: run `vibemux_probe` first (writes {0}/probe_cache.json)"
+        "harness probe cache is missing: run 'vibemux_probe --write-cache --project-root <root>' (writes {0})"
     )]
     HarnessProbeCacheMissing(String),
     #[error("harness is not detected on this machine: {0} (run 'vibemuxctl harnesses' to refresh)")]
@@ -374,14 +374,14 @@ pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliE
     Ok(health)
 }
 
-/// Ensure the daemon is running, then return a connected control client.
-/// Harness commands piggyback on the existing lifecycle: `harnesses`/`switch`
-/// start the daemon on demand (like `daemon start`) so detection state is
-/// always written by the single authoritative writer.
+/// Return a connected control client for the harness surface.
+///
+/// Requires a running daemon: this helper does NOT auto-spawn the daemon
+/// because spawning needs the daemon executable (and a per-process
+/// configuration the lifecycle commands have but the harness CLI does not).
+/// When the daemon is absent, callers see `NotRunning` and can decide
+/// whether to start it (via the lifecycle verbs) before retrying.
 async fn harness_client(paths: &DaemonPaths) -> Result<ControlClient, DaemonCliError> {
-    // Reuse the start flow only for its already-running detection; we do not
-    // auto-spawn here because spawning needs the daemon executable. Require
-    // the daemon to be running and report NotRunning otherwise.
     let selection = select_runtime(paths)?;
     validate_selected_runtime(paths, &selection)?;
     control_client(&selection)
@@ -397,7 +397,7 @@ pub async fn harness_list(
     } else {
         client.harness_refresh().await
     };
-    result.map_err(map_control_error)
+    result.map_err(|error| map_harness_control_error(&paths.probe_cache_path(), error, None))
 }
 
 pub async fn harness_switch(
@@ -408,21 +408,33 @@ pub async fn harness_switch(
     client
         .harness_switch(harness)
         .await
-        .map_err(map_harness_control_error)
+        .map_err(|error| map_harness_control_error(&paths.probe_cache_path(), error, Some(harness)))
 }
 
-fn map_harness_control_error(error: ControlError) -> DaemonCliError {
+/// Map a control error from a harness command into a CLI error with the
+/// minimum context needed for an actionable user message. The probe-cache
+/// path is fetched from the daemon paths so the operator gets the exact
+/// location the probe must write to, with the `--write-cache
+/// --project-root <root>` remediation text. The harness name (in scope at
+/// the switch call site; `None` for listing reads where no single harness
+/// applies) fills in the `harness_not_detected` / `store_unknown_harness`
+/// messages so the operator sees the offending harness's name, not the
+/// opaque wire code.
+fn map_harness_control_error(
+    probe_cache_path: &std::path::Path,
+    error: ControlError,
+    harness_name: Option<&str>,
+) -> DaemonCliError {
     match error.code() {
-        "harness_not_detected" => DaemonCliError::HarnessNotDetected(error.code().to_string()),
-        "store_unknown_harness" | "harness_unknown" => {
-            DaemonCliError::UnknownHarness(error.code().to_string())
+        "harness_not_detected" => {
+            DaemonCliError::HarnessNotDetected(harness_name.unwrap_or("harness").to_string())
         }
-        "harness_probe_cache_missing" => {
-            // The CLI surfaces "run the probe first" rather than the raw
-            // machine code; project path is fetched lazily from the harness
-            // caller (we only need to hint the file name here).
-            DaemonCliError::HarnessProbeCacheMissing(".".to_string())
+        "store_unknown_harness" => {
+            DaemonCliError::UnknownHarness(harness_name.unwrap_or("harness").to_string())
         }
+        "harness_probe_cache_missing" => DaemonCliError::HarnessProbeCacheMissing(
+            probe_cache_path.to_string_lossy().into_owned(),
+        ),
         _ => map_control_error(error),
     }
 }
@@ -1124,5 +1136,43 @@ mod tests {
             parse_cli_arguments([OsString::from("harnesses"), OsString::from("bogus")].into_iter())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn harness_error_messages_carry_the_harness_name() {
+        let probe_cache = PathBuf::from("C:\\tmp\\.vibemux\\probe_cache.json");
+        for (code, name) in [
+            ("harness_not_detected", "qwen"),
+            ("store_unknown_harness", "bogus-harness"),
+        ] {
+            let error = map_harness_control_error(
+                &probe_cache,
+                ControlError::Remote {
+                    code: code.to_string(),
+                },
+                Some(name),
+            );
+            assert_eq!(error.code(), code);
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(name),
+                "'{code}' message must name the harness ({name}): {rendered}"
+            );
+            assert!(
+                !rendered.contains(code),
+                "'{code}' message must not leak the wire code: {rendered}"
+            );
+        }
+        let missing = map_harness_control_error(
+            &probe_cache,
+            ControlError::Remote {
+                code: "harness_probe_cache_missing".to_string(),
+            },
+            None,
+        );
+        assert_eq!(missing.code(), "harness_probe_cache_missing");
+        let rendered = missing.to_string();
+        assert!(rendered.contains("--write-cache --project-root <root>"));
+        assert!(rendered.contains("C:\\tmp\\.vibemux\\probe_cache.json"));
     }
 }

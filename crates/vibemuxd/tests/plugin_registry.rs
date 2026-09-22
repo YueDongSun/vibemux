@@ -155,7 +155,25 @@ async fn crash_budget_exhaustion_quarantine_and_sibling_visibility_over_real_ipc
     assert!(client.health().await.expect("health after crash").healthy);
     server.shutdown().await.expect("join daemon");
     let writer = WriterWorker::start(&database).expect("writer released only after cleanup");
-    assert!(writer.events().expect("events").is_empty());
+    // The writer no longer exposes forwarding read helpers; queries go
+    // through SqliteStore directly (the worker still owns the authoritative
+    // connection — we read via a parallel handle after shutdown). The v3
+    // migration seeds one `v3_harness_seed` event on fresh databases, so a
+    // truly empty event log is no longer the right invariant: the test
+    // asserts the daemon added nothing beyond the migration seed.
+    let store = vibemux_store::SqliteStore::open(&database).expect("store");
+    let event_types = store
+        .events()
+        .expect("events")
+        .iter()
+        .map(|event| event.event_type().as_str().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        event_types
+            .iter()
+            .all(|event_type| event_type == "v3_harness_seed"),
+        "daemon committed events beyond the migration seed: {event_types:?}"
+    );
     writer.shutdown().expect("close writer");
 }
 
@@ -176,9 +194,16 @@ async fn malformed_and_task_shaped_plugin_events_quarantine_without_canonical_mu
         })
         .expect("task");
         let writer = WriterWorker::start(&database).expect("seed writer");
-        writer
+        // Task/run commits no longer have a writer-surface helper; the
+        // daemon's authoritative writes for task/run go through the
+        // store directly. The writer is opened to validate the lock
+        // invariant and shut down cleanly.
+        let handle = writer.handle().expect("handle");
+        drop(handle);
+        let mut store = vibemux_store::SqliteStore::open(&database).expect("open");
+        store
             .commit_task(
-                task.clone(),
+                &task,
                 EventDraft {
                     event_id: EventId::new(),
                     event_type: EventType::new("task_created").expect("type"),
@@ -193,9 +218,14 @@ async fn malformed_and_task_shaped_plugin_events_quarantine_without_canonical_mu
                 },
             )
             .expect("seed task");
-        let before = writer.events().expect("events");
-        let projection = writer
-            .projection("task", task.task_id().to_string())
+        drop(store);
+        let before = vibemux_store::SqliteStore::open(&database)
+            .expect("open")
+            .events()
+            .expect("events");
+        let projection = vibemux_store::SqliteStore::open(&database)
+            .expect("open")
+            .projection("task", &task.task_id().to_string())
             .expect("projection");
         writer.shutdown().expect("close seed writer");
         let startup = PluginStartup {
@@ -219,15 +249,16 @@ async fn malformed_and_task_shaped_plugin_events_quarantine_without_canonical_mu
         assert!(client.health().await.expect("healthy core").healthy);
         server.shutdown().await.expect("shutdown");
         let writer = WriterWorker::start(&database).expect("inspect after owner stopped");
-        assert_eq!(writer.events().expect("events"), before);
+        let store = vibemux_store::SqliteStore::open(&database).expect("store");
+        assert_eq!(store.events().expect("events"), before);
         assert_eq!(
-            writer
-                .projection("task", task.task_id().to_string())
+            store
+                .projection("task", &task.task_id().to_string())
                 .expect("task"),
             projection
         );
         assert!(
-            writer
+            store
                 .projection("run", "mock_run")
                 .expect("no run")
                 .is_none()

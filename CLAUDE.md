@@ -30,10 +30,10 @@ Key invariants from `AGENTS.md` §2: user messages are data (never interpolated 
 Rust crate dependency direction (from `AGENTS.md` §4.2):
 
 ```text
-types → events → harness → store / workspace / platform / a2a → plugin-api → plugin-host → vibemuxd → vibemux-cli
+types → events → harness → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli
 ```
 
-Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache.
+Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary (`AgentKind`/`LauncherKind`/`ProbeState`) lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it — the harness crate pulls no probe I/O.
 
 ## Layout quick map
 
@@ -41,13 +41,13 @@ Domain crates must not depend on platform, database, terminal, or network implem
 src/vibemux/           # Python prototype (CLI: typer + rich)
 crates/vibemux_types/              # IDs, state machines
 crates/vibemux_events/             # canonical event envelopes, idempotency
-crates/vibemux_harness/            # harness registry/profiles/rows + canonical event drafts (pure logic, no I/O)
+crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness registry/profiles/rows + canonical event drafts (pure logic, no I/O)
 crates/vibemux_store/              # SQLite migrations (schema 3: + harness projections) + repositories (bundled)
 crates/vibemux_platform/           # Windows/POSIX process and IPC primitives
 crates/vibemux_a2a/                # official A2A Rust SDK adapter (loopback only)
 crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest
 crates/vibemux_plugin_supervisor/  # M4.1 child process supervision
-crates/vibemux_probe/              # M5.0 read-only launcher/gateway probe
+crates/vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache (depends on vibemux_harness)
 crates/vibemux_frontend/           # M5.0 two-shell frontend: egui GUI + Ratatui TUI + ASCII dump
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v3: health/plugin/harness ops)
 crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch client
@@ -101,14 +101,14 @@ MSRV is **Rust 1.85.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 .\target\debug\vibemuxctl.exe daemon inspect --project-root .
 .\target\debug\vibemuxctl.exe daemon stop   --project-root .
 
-# Harness orchestration (control protocol v3; daemon must be running):
-.\target\debug\vibemux_probe.exe            # write the trusted detection cache to .vibemux\probe_cache.json
+# Harness orchestration (control protocol v3; v2/v1 accepted for legacy ops; daemon must be running):
+.\target\debug\vibemux_probe.exe --write-cache --project-root .  # atomically writes the trusted detection cache to .vibemux\probe_cache.json (stdout report unchanged)
 .\target\debug\vibemuxctl.exe harnesses --project-root .          # live refresh from the probe cache
 .\target\debug\vibemuxctl.exe harnesses --cached --project-root . # persisted snapshot (no re-probe)
 .\target\debug\vibemuxctl.exe switch grok --project-root .        # set project default (detection-gated)
 ```
 
-`harnesses`/`switch` emit machine-readable JSON rows (`name/command/protocol/provider/available/path/roles/default`, plus Rust `launcher`/`version`). Only the probe's verified `--version` state counts as available; `switch` rejects undetected (`harness_not_detected`) or unknown (`store_unknown_harness`) harnesses before any state change, and a missing cache surfaces `harness_probe_cache_missing`. All harness state is written solely by `vibemuxd`'s single `WriterWorker` (schema 3).
+`harnesses`/`switch` emit machine-readable JSON rows (`name/command/protocol/provider/available/path/roles/default`, plus `launcher`/`version`). `path` is the **resolved executable path** the probe's PATH scan actually found and used; cached (`--cached`) rows include the persisted `launcher`/`version` exactly like live rows. Only the probe's verified `--version` state counts as available; `switch` rejects undetected (`harness_not_detected`) or unknown (`store_unknown_harness`) harnesses before any state change, and a missing cache surfaces `harness_probe_cache_missing` with actionable remediation that names `vibemux_probe --write-cache --project-root <root>` and the real cache path. All harness state is written solely by `vibemuxd`'s single `WriterWorker` (schema 3).
 
 If `inspect` reports `recoverable`, the output contains a 64-character hexadecimal SHA-256 confirmation that must be passed to a separate `daemon recover` invocation. Recovery never kills a PID and never opens or modifies the database — it only removes unchanged stale descriptor/socket/writer lock artifacts.
 

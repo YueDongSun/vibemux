@@ -839,10 +839,13 @@ mod tests {
     fn create_duplicate_conflict_and_transaction_rollback_are_atomic() {
         let directory = tempfile::tempdir().expect("directory");
         let mut store = SqliteStore::open(&directory.path().join("state.sqlite3")).expect("store");
+        let baseline_events = store.events().expect("events").len();
         let request = start_request(&task(), "worker", "worker_peer");
         store.connection.execute_batch("CREATE TRIGGER reject_binding BEFORE INSERT ON a2a_runs BEGIN SELECT RAISE(ABORT,'fixture'); END;").expect("trigger");
         assert!(store.start_a2a_run(request.clone()).is_err());
-        assert!(store.events().expect("events").is_empty());
+        // The seed event from the v3 migration is the baseline; a rejected
+        // commit must append nothing beyond it.
+        assert_eq!(store.events().expect("events").len(), baseline_events);
         assert!(
             store
                 .projection("task", &request.task.task_id().to_string())
@@ -866,7 +869,10 @@ mod tests {
             store.start_a2a_run(conflict),
             Err(StoreError::A2aIdempotencyConflict)
         ));
-        assert_eq!(store.events().expect("events").len(), 1);
+        // The v3 migration seeds one event; the conflicting idempotency key
+        // must append nothing beyond the one start event already committed
+        // before this rejection.
+        assert_eq!(store.events().expect("events").len(), baseline_events + 1);
     }
 
     #[test]

@@ -32,12 +32,15 @@ use crate::{WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow};
 
 pub const CONTROL_PROTOCOL_VERSION: u32 = 3;
+/// V2 is grandfathered for `Health`/`PluginStatus` exactly like v1 is for
+/// `Health`/`Shutdown`; the harness surface still requires v3.
+pub const CONTROL_PROTOCOL_V2: u32 = 2;
 pub const LEGACY_CONTROL_PROTOCOL_VERSION: u32 = 1;
 /// The daemon executes no harness binaries itself; it consumes the trusted
 /// `vibemux_probe` cache written by an explicit probe run. This keeps the
 /// writer thread free of process spawns and reuses the probe's verified
-/// `--version` detection instead of trusting a bare PATH hit.
-pub const PROBE_CACHE_FILE_NAME: &str = "probe_cache.json";
+/// `--version` detection instead of trusting a bare PATH hit. The actual
+/// file name is owned by `vibemux_probe::cache::PROBE_CACHE_FILE_NAME`.
 pub const MAX_CONTROL_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024;
 pub const CONTROL_DEADLINE: Duration = Duration::from_secs(10);
@@ -53,6 +56,21 @@ pub enum ControlOperation {
     HarnessSnapshot,
     HarnessSwitch,
     Shutdown,
+}
+
+impl ControlOperation {
+    /// Minimum control protocol version each operation requires. Centralized
+    /// table so both the dispatch (server) and the gating helpers (client)
+    /// share one truth.
+    #[must_use]
+    pub const fn minimum_protocol_version(&self) -> u32 {
+        match self {
+            Self::Health => 1,
+            Self::Shutdown => 1,
+            Self::PluginStatus => 2,
+            Self::HarnessRefresh | Self::HarnessSnapshot | Self::HarnessSwitch => 3,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -487,6 +505,7 @@ impl DaemonControlServer {
                 .then(|| paths.legacy_writer_lock_path()),
             plugins,
             None,
+            paths.probe_cache_path(),
         )
         .await
     }
@@ -498,6 +517,10 @@ impl DaemonControlServer {
         plugins: PluginStartup,
     ) -> Result<Self, ControlError> {
         let writer_lock_path = crate::writer_lock_path_for_database(database_path);
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        let probe_cache_path = crate::process::probe_cache_path_for_state_dir(state_dir);
         Self::start_with_writer_locks(
             database_path,
             runtime_dir,
@@ -505,19 +528,31 @@ impl DaemonControlServer {
             None,
             plugins,
             None,
+            probe_cache_path,
         )
         .await
     }
 
     pub async fn start(database_path: &Path, runtime_dir: &Path) -> Result<Self, ControlError> {
         let writer_lock_path = crate::writer_lock_path_for_database(database_path);
-        Self::start_with_writer_lock(database_path, runtime_dir, &writer_lock_path).await
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        let probe_cache_path = crate::process::probe_cache_path_for_state_dir(state_dir);
+        Self::start_with_writer_lock(
+            database_path,
+            runtime_dir,
+            &writer_lock_path,
+            probe_cache_path,
+        )
+        .await
     }
 
     pub async fn start_with_writer_lock(
         database_path: &Path,
         runtime_dir: &Path,
         writer_lock_path: &Path,
+        probe_cache_path: PathBuf,
     ) -> Result<Self, ControlError> {
         Self::start_with_writer_locks(
             database_path,
@@ -526,6 +561,7 @@ impl DaemonControlServer {
             None,
             PluginStartup::default(),
             None,
+            probe_cache_path,
         )
         .await
     }
@@ -535,6 +571,7 @@ impl DaemonControlServer {
         runtime_dir: &Path,
         writer_lock_path: &Path,
         compatibility_lock_path: &Path,
+        probe_cache_path: PathBuf,
     ) -> Result<Self, ControlError> {
         Self::start_with_writer_locks(
             database_path,
@@ -543,6 +580,7 @@ impl DaemonControlServer {
             Some(compatibility_lock_path),
             PluginStartup::default(),
             None,
+            probe_cache_path,
         )
         .await
     }
@@ -569,6 +607,7 @@ impl DaemonControlServer {
                 .then(|| paths.legacy_writer_lock_path()),
             plugins,
             Some(supervisor),
+            paths.probe_cache_path(),
         )
         .await
     }
@@ -580,6 +619,7 @@ impl DaemonControlServer {
         compatibility_lock_path: Option<&Path>,
         plugins: PluginStartup,
         supervisor: Option<SupervisorServiceConfig>,
+        probe_cache_path: PathBuf,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
         std::fs::create_dir_all(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -589,15 +629,6 @@ impl DaemonControlServer {
         if descriptor_path.exists() {
             return Err(ControlError::DescriptorExists);
         }
-        // The probe cache is project state, not a control-runtime artifact:
-        // on Windows the runtime dir lives under %LOCALAPPDATA% while the
-        // project state (and database) stays under <project>/.vibemux. The
-        // database path always has a state-dir parent.
-        let probe_cache_path = database_path
-            .parent()
-            .map(|state_dir| state_dir.join(PROBE_CACHE_FILE_NAME))
-            .ok_or(ControlError::EndpointUnavailable)?;
-
         let database_path = database_path.to_path_buf();
         let writer_lock_path = writer_lock_path.to_path_buf();
         let compatibility_lock_path = compatibility_lock_path.map(Path::to_path_buf);
@@ -859,7 +890,7 @@ impl ControlClient {
     }
 
     pub async fn plugin_status(&self) -> Result<Vec<PluginStatus>, ControlError> {
-        if self.descriptor.version < CONTROL_PROTOCOL_VERSION {
+        if self.descriptor.version < ControlOperation::PluginStatus.minimum_protocol_version() {
             return Err(ControlError::UnsupportedVersion);
         }
         match self
@@ -882,15 +913,15 @@ impl ControlClient {
         }
     }
 
-    fn require_v3(&self) -> Result<(), ControlError> {
-        if self.descriptor.version < CONTROL_PROTOCOL_VERSION {
+    fn require_operation(&self, operation: ControlOperation) -> Result<(), ControlError> {
+        if self.descriptor.version < operation.minimum_protocol_version() {
             return Err(ControlError::UnsupportedVersion);
         }
         Ok(())
     }
 
     pub async fn harness_refresh(&self) -> Result<Vec<HarnessRow>, ControlError> {
-        self.require_v3()?;
+        self.require_operation(ControlOperation::HarnessRefresh)?;
         match self
             .request(ControlOperation::HarnessRefresh, CONTROL_DEADLINE)
             .await?
@@ -901,7 +932,7 @@ impl ControlClient {
     }
 
     pub async fn harness_snapshot(&self) -> Result<Vec<HarnessRow>, ControlError> {
-        self.require_v3()?;
+        self.require_operation(ControlOperation::HarnessSnapshot)?;
         match self
             .request(ControlOperation::HarnessSnapshot, CONTROL_DEADLINE)
             .await?
@@ -912,7 +943,7 @@ impl ControlClient {
     }
 
     pub async fn harness_switch(&self, name: &str) -> Result<(String, String), ControlError> {
-        self.require_v3()?;
+        self.require_operation(ControlOperation::HarnessSwitch)?;
         match self
             .request_with_argument(
                 ControlOperation::HarnessSwitch,
@@ -1016,15 +1047,7 @@ where
         return false;
     }
     if !supported_control_version(request.version)
-        || (request.version == LEGACY_CONTROL_PROTOCOL_VERSION
-            && request.operation == ControlOperation::PluginStatus)
-        || (request.version < CONTROL_PROTOCOL_VERSION
-            && matches!(
-                request.operation,
-                ControlOperation::HarnessRefresh
-                    | ControlOperation::HarnessSnapshot
-                    | ControlOperation::HarnessSwitch
-            ))
+        || request.version < request.operation.minimum_protocol_version()
     {
         let mut response =
             ControlResponse::error(request.request_id, &ControlError::UnsupportedVersion);
@@ -1138,59 +1161,54 @@ async fn shutdown_writer(state: Arc<ServerState>) -> Result<(), ControlError> {
 }
 
 /// Read the trusted probe cache and build per-harness detection inputs.
-/// The cache is written by an explicit `vibemux_probe` run; the daemon
-/// validates that it is a regular, owner-readable, bounded UTF-8 JSON file
-/// before trusting it, and only `verified` launcher states count as
-/// detected (a bare PATH hit never does).
+/// The cache is written by an explicit `vibemux_probe --write-cache` run;
+/// the hardened cache reader rejects missing/unsafe/oversized/invalid files
+/// before any trust is granted, and only `verified` launcher states count as
+/// detected (a bare PATH hit never does). A single agent's invalid
+/// version/path DEGRADES that agent to `detected = false` (fail-closed) and
+/// never aborts the whole refresh, so one bad row cannot block the daemon
+/// from committing the rest.
 fn load_probe_detections(
     path: &Path,
 ) -> Result<std::collections::BTreeMap<String, HarnessDetection>, ControlError> {
-    // Distinguishing "cache absent" from "cache present but invalid" matters
-    // for an actionable CLI error: absence means "run the probe first".
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ControlError::Remote {
-                code: "harness_probe_cache_missing".to_string(),
-            });
-        }
-        Err(_) => return Err(ControlError::InvalidRequest),
-    };
-    if !metadata.file_type().is_file() {
-        return Err(ControlError::UnsafeArtifact);
-    }
-    if metadata.len() > MAX_DESCRIPTOR_BYTES as u64 * 64 {
-        return Err(ControlError::InvalidRequest);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(ControlError::UnsafeArtifact);
-        }
-    }
-    let bytes = std::fs::read(path).map_err(|_| ControlError::InvalidRequest)?;
-    let report: vibemux_probe::ProbeReport =
-        serde_json::from_slice(&bytes).map_err(|_| ControlError::InvalidRequest)?;
+    let report = vibemux_probe::cache::read_cache(path).map_err(|error| match error {
+        vibemux_probe::cache::CacheError::Missing => ControlError::Remote {
+            code: "harness_probe_cache_missing".to_string(),
+        },
+        vibemux_probe::cache::CacheError::UnsafeArtifact => ControlError::UnsafeArtifact,
+        vibemux_probe::cache::CacheError::TooLarge => ControlError::InvalidRequest,
+        vibemux_probe::cache::CacheError::Invalid => ControlError::InvalidRequest,
+        vibemux_probe::cache::CacheError::Io => ControlError::InvalidRequest,
+    })?;
     let mut detections = std::collections::BTreeMap::new();
     for agent in report.agents {
-        let detection = vibemux_harness::detection_from_probe(
+        // Fail-closed: one bad agent row degrades only itself.
+        let Ok(detection) = vibemux_harness::detection_from_probe(
             agent.launcher_state,
             agent.launcher,
             agent.version.as_deref(),
-            // The probe report does not carry the resolved launcher path;
-            // the executable name is retained for observability only.
-            Some(agent.agent.command_name()),
-        )
-        .map_err(|_| ControlError::InvalidRequest)?;
+            agent.path.as_deref(),
+        ) else {
+            detections.insert(
+                agent.agent.command_name().to_string(),
+                HarnessDetection {
+                    detected: false,
+                    path: None,
+                    launcher: None,
+                    version: None,
+                },
+            );
+            continue;
+        };
         detections.insert(agent.agent.command_name().to_string(), detection);
     }
     Ok(detections)
 }
 
 async fn harness_refresh(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, ControlError> {
+    let probe_cache_path = state.probe_cache_path.clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<HarnessRow>, ControlError> {
-        let detections = load_probe_detections(&state.probe_cache_path)?;
+        let detections = load_probe_detections(&probe_cache_path)?;
         let writer = {
             let guard = state
                 .writer
@@ -1201,21 +1219,16 @@ async fn harness_refresh(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, Con
                 .ok_or(ControlError::ServerTerminated)?
                 .handle()?
         };
-        let project_id = writer
-            .project_id()?
-            .unwrap_or_else(vibemux_types::ProjectId::new);
-        let payload = vibemux_harness::refresh_payload(&detections);
-        let config = writer.harness_config()?;
-        let draft = vibemux_harness::events::probed(
-            project_id,
-            format!("harness-probe-{}", Uuid::new_v4()),
-            payload,
-        )
-        .map_err(|error| ControlError::Writer {
-            code: error.code().to_string(),
-        })?;
-        writer.commit_harness_snapshot(config, detections.clone(), draft, iso_now())?;
-        Ok(writer.harness_rows(false, detections)?)
+        // ONE writer round-trip: the snapshot outcome carries the
+        // registry, the persisted config, and the canonical payload, so the
+        // listing rows are built locally without a second commit or a
+        // second harness_config read.
+        let idempotency_key = format!("harness-probe-{}", Uuid::new_v4());
+        let outcome = writer.commit_harness_snapshot(detections, iso_now(), idempotency_key)?;
+        Ok(vibemux_harness::build_rows_from_registry(
+            &outcome.registry,
+            &outcome.config,
+        ))
     })
     .await
     .map_err(|_| ControlError::ServerTerminated)?
@@ -1233,7 +1246,9 @@ async fn harness_snapshot(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, Co
                 .ok_or(ControlError::ServerTerminated)?
                 .handle()?
         };
-        Ok(writer.harness_rows(true, std::collections::BTreeMap::new())?)
+        // Cached reads: derive rows from the persisted registry/config via
+        // build_rows_from_registry (no synthetic detections payload).
+        Ok(writer.harness_rows()?)
     })
     .await
     .map_err(|_| ControlError::ServerTerminated)?
@@ -1255,21 +1270,13 @@ async fn harness_switch(
                 .ok_or(ControlError::ServerTerminated)?
                 .handle()?
         };
-        let from = writer.harness_config()?.default_harness;
-        let project_id = writer
-            .project_id()?
-            .unwrap_or_else(vibemux_types::ProjectId::new);
-        let draft = vibemux_harness::events::switched(
-            project_id,
-            format!("harness-switch-{}", Uuid::new_v4()),
-            &from,
-            &name,
-        )
-        .map_err(|error| ControlError::Writer {
-            code: error.code().to_string(),
-        })?;
-        writer.commit_harness_switch(name.clone(), draft)?;
-        Ok((from, name))
+        // ONE writer round-trip: the outcome carries the canonical
+        // `(from, to)` pair read inside the same transaction as the
+        // switch insert, so concurrent switches cannot both report
+        // `from = none`.
+        let idempotency_key = format!("harness-switch-{}", Uuid::new_v4());
+        let outcome = writer.commit_harness_switch(name.clone(), idempotency_key)?;
+        Ok((outcome.from, outcome.to))
     })
     .await
     .map_err(|_| ControlError::ServerTerminated)?
@@ -1515,7 +1522,7 @@ fn endpoint_kind(_endpoint: &str) -> ControlEndpointKind {
 fn supported_control_version(version: u32) -> bool {
     matches!(
         version,
-        LEGACY_CONTROL_PROTOCOL_VERSION | CONTROL_PROTOCOL_VERSION
+        LEGACY_CONTROL_PROTOCOL_VERSION | CONTROL_PROTOCOL_V2 | CONTROL_PROTOCOL_VERSION
     )
 }
 
@@ -1568,6 +1575,18 @@ fn endpoint_name(runtime_dir: &Path) -> String {
         .into_owned()
 }
 
+/// Prefix-based pass-through: codes beginning with known namespaces
+/// (`writer_`, `store_`, `harness_`, `control_`, `a2a_`, `plugin_`) round-trip
+/// as `Remote { code }` so the CLI can distinguish actionable failure modes.
+/// The five canonical frame errors (`control_frame_too_large`,
+/// `control_invalid_frame`, `control_invalid_request`, `control_unauthorized`,
+/// `control_unsupported_version`) still map to their typed variants first, so
+/// clients that match on the typed variant are unaffected; other `control_*`
+/// codes (e.g. `control_artifact_unsafe_path` from the hardened probe-cache
+/// reader) pass through so their dedicated diagnostic reaches the operator
+/// instead of collapsing to the generic remote error. Anything outside the
+/// known namespaces collapses to `control_remote_error` to avoid leaking
+/// arbitrary server text back to the caller.
 fn remote_error(code: String) -> ControlError {
     match code.as_str() {
         "control_frame_too_large" => ControlError::FrameTooLarge,
@@ -1575,22 +1594,15 @@ fn remote_error(code: String) -> ControlError {
         "control_invalid_request" => ControlError::InvalidRequest,
         "control_unauthorized" => ControlError::Unauthorized,
         "control_unsupported_version" => ControlError::UnsupportedVersion,
-        "writer_invalid_capacity"
-        | "writer_lock_held"
-        | "writer_lock_io"
-        | "writer_queue_full"
-        | "writer_stopped"
-        | "writer_response_timeout"
-        | "writer_store_error"
-        | "writer_thread_terminated" => ControlError::Remote { code },
-        // Harness gating codes must round-trip so the CLI can distinguish
-        // "not detected" from "unknown harness" for actionable messages.
-        "harness_not_detected"
-        | "store_unknown_harness"
-        | "harness_unknown"
-        | "harness_invalid_state"
-        | "harness_probe_cache_missing"
-        | "harness_invalid_path" => ControlError::Remote { code },
+        _ if code.starts_with("writer_")
+            || code.starts_with("store_")
+            || code.starts_with("harness_")
+            || code.starts_with("control_")
+            || code.starts_with("a2a_")
+            || code.starts_with("plugin_") =>
+        {
+            ControlError::Remote { code }
+        }
         _ => ControlError::Remote {
             code: "control_remote_error".to_string(),
         },
@@ -1996,6 +2008,45 @@ mod tests {
     }
 
     #[test]
+    fn control_contract_accepts_v1_v2_v3() {
+        // The accepted protocol version set is the ground truth for both
+        // server dispatch and client gating; pin it here so an accidental
+        // change is caught at test time.
+        assert!(supported_control_version(LEGACY_CONTROL_PROTOCOL_VERSION));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V2));
+        assert!(supported_control_version(CONTROL_PROTOCOL_VERSION));
+        assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
+        assert!(!supported_control_version(0));
+        // The minimum-version table is the single source of truth that
+        // both the server dispatch and the client require_operation helper
+        // consult.
+        assert_eq!(
+            ControlOperation::Health.minimum_protocol_version(),
+            LEGACY_CONTROL_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            ControlOperation::Shutdown.minimum_protocol_version(),
+            LEGACY_CONTROL_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            ControlOperation::PluginStatus.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V2
+        );
+        assert_eq!(
+            ControlOperation::HarnessRefresh.minimum_protocol_version(),
+            CONTROL_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            ControlOperation::HarnessSnapshot.minimum_protocol_version(),
+            CONTROL_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            ControlOperation::HarnessSwitch.minimum_protocol_version(),
+            CONTROL_PROTOCOL_VERSION
+        );
+    }
+
+    #[test]
     fn control_contract_has_no_plugin_or_task_mutation_operations() {
         for operation in [
             "plugin_start",
@@ -2025,46 +2076,69 @@ mod tests {
     }
 
     /// Write a trusted probe cache into the project state dir (the database's
-    /// parent), marking `detected` harnesses verified.
+    /// parent), marking `detected` harnesses verified. Uses
+    /// `vibemux_probe::cache::write_cache` so the test cache is byte-shape
+    /// identical to what `vibemux_probe --write-cache` produces.
     fn write_probe_cache(state_dir: &Path, detected: &[&str]) {
-        use vibemux_probe::AgentKind;
+        use vibemux_probe::{
+            A2aSelfTestProbe, AgentKind, GatewayProbe, LauncherKind, ProbeReport, ProbeState,
+            RouteKind, SafeEndpoint, cache,
+        };
         let agents = AgentKind::all()
             .into_iter()
             .map(|agent| {
                 let is_detected = detected.contains(&agent.command_name());
-                serde_json::json!({
-                    "agent": agent,
-                    "launcher_state": if is_detected { "verified" } else { "unavailable" },
-                    "authentication_state": "not_run",
-                    "inference_state": "not_run",
-                    "launcher": if is_detected { "direct_executable" } else { "unavailable" },
-                    "version": if is_detected { serde_json::json!("1.0.0") } else { serde_json::Value::Null },
-                    "route": "unknown",
-                    "endpoints": [],
-                    "code": if is_detected { "version_verified" } else { "launcher_unavailable" },
-                })
+                vibemux_probe::AgentProbe {
+                    agent,
+                    launcher_state: if is_detected {
+                        ProbeState::Verified
+                    } else {
+                        ProbeState::Unavailable
+                    },
+                    authentication_state: ProbeState::NotRun,
+                    inference_state: ProbeState::NotRun,
+                    launcher: if is_detected {
+                        LauncherKind::DirectExecutable
+                    } else {
+                        LauncherKind::Unavailable
+                    },
+                    path: is_detected
+                        .then(|| format!("C:\\\\tools\\\\{}.exe", agent.command_name())),
+                    version: is_detected.then(|| "1.0.0".to_string()),
+                    route: RouteKind::Unknown,
+                    endpoints: Vec::<SafeEndpoint>::new(),
+                    code: if is_detected {
+                        "version_verified".to_string()
+                    } else {
+                        "launcher_unavailable".to_string()
+                    },
+                }
             })
             .collect::<Vec<_>>();
-        let report = serde_json::json!({
-            "schema_version": 1,
-            "observed_at_epoch_seconds": 0,
-            "platform": "test",
-            "agents": agents,
-            "gateway": {"state":"not_run","host":"localhost","port":0,"tcp_reachable":false,"health_status":null,"telemetry_state":"not_run","telemetry":[],"code":"not_run"},
-            "a2a": {"state":"not_run","correlation_preserved":false,"listener_closed":false,"code":"a2a_not_run"},
-        });
-        let path = state_dir.join(PROBE_CACHE_FILE_NAME);
-        let bytes = serde_json::to_vec(&report).expect("probe cache JSON");
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path).expect("create probe cache");
-        file.write_all(&bytes).expect("write probe cache");
-        file.sync_all().expect("sync probe cache");
+        let report = ProbeReport {
+            schema_version: vibemux_probe::PROBE_SCHEMA_VERSION,
+            observed_at_epoch_seconds: 0,
+            platform: "test".to_string(),
+            agents,
+            gateway: GatewayProbe {
+                state: ProbeState::NotRun,
+                host: "localhost".to_string(),
+                port: vibemux_probe::DEFAULT_CC_SWITCH_PORT,
+                tcp_reachable: false,
+                health_status: None,
+                telemetry_state: ProbeState::NotRun,
+                telemetry: Vec::new(),
+                code: "not_run".to_string(),
+            },
+            a2a: A2aSelfTestProbe {
+                state: ProbeState::NotRun,
+                correlation_preserved: false,
+                listener_closed: false,
+                code: "a2a_not_run".to_string(),
+            },
+        };
+        let path = state_dir.join(cache::PROBE_CACHE_FILE_NAME);
+        cache::write_cache(&report, &path).expect("write probe cache");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2144,15 +2218,36 @@ mod tests {
             .await
             .expect("server");
         let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
-        let mut legacy = client.clone();
-        legacy.descriptor.version = LEGACY_CONTROL_PROTOCOL_VERSION;
+        // v1 clients can still call Health and Shutdown.
+        let mut v1 = client.clone();
+        v1.descriptor.version = LEGACY_CONTROL_PROTOCOL_VERSION;
+        assert!(v1.health().await.expect("v1 health").healthy);
         assert_eq!(
-            legacy
-                .harness_snapshot()
+            v1.harness_snapshot()
                 .await
-                .expect_err("snapshot requires v3"),
+                .expect_err("v1 snapshot is rejected"),
             ControlError::UnsupportedVersion
         );
+        // v2 clients can still call Health and PluginStatus, but harness
+        // operations remain v3-only.
+        let mut v2 = client.clone();
+        v2.descriptor.version = CONTROL_PROTOCOL_V2;
+        assert!(v2.health().await.expect("v2 health").healthy);
+        assert!(v2.plugin_status().await.is_ok());
+        assert_eq!(
+            v2.harness_snapshot()
+                .await
+                .expect_err("v2 snapshot is rejected"),
+            ControlError::UnsupportedVersion
+        );
+        // v3 clients see the full surface (cached snapshot reads from the
+        // persisted registry seeded by the v3 migration, no probe cache
+        // involvement).
+        let rows = client
+            .harness_snapshot()
+            .await
+            .expect("v3 snapshot succeeds");
+        assert_eq!(rows.len(), 10);
         server.shutdown().await.expect("shutdown");
     }
 
@@ -2160,13 +2255,83 @@ mod tests {
     fn probe_cache_rejects_symlink_and_oversized() {
         let temp = tempfile::tempdir().expect("temp");
         let path = temp.path().join("cache.json");
-        // Missing file is an error.
-        assert!(load_probe_detections(&path).is_err());
+        // Missing file is reported as the missing-cache code so the CLI
+        // can hint the operator to run the probe.
+        assert_eq!(
+            load_probe_detections(&path),
+            Err(ControlError::Remote {
+                code: "harness_probe_cache_missing".to_string()
+            })
+        );
         // Oversized file is rejected before parsing.
-        std::fs::write(&path, vec![b' '; MAX_DESCRIPTOR_BYTES * 64 + 1]).expect("oversized");
+        std::fs::write(
+            &path,
+            vec![b' '; vibemux_probe::cache::MAX_CACHE_BYTES as usize + 1],
+        )
+        .expect("oversized");
         assert_eq!(
             load_probe_detections(&path),
             Err(ControlError::InvalidRequest)
+        );
+    }
+
+    /// Regression: a store-side error code (e.g. a database failure that
+    /// surfaces as `store_database_error`) must round-trip to the client
+    /// instead of collapsing to the generic `control_remote_error`. The
+    /// prefix pass-through is the contract the CLI relies on for
+    /// actionable messages. Non-canonical `control_*` codes (e.g.
+    /// `control_artifact_unsafe_path`, which the hardened probe-cache reader
+    /// maps from `CacheError::UnsafeArtifact`) round-trip too, while the five
+    /// canonical frame errors still surface as their typed variants.
+    #[test]
+    fn store_side_error_code_round_trips_to_client() {
+        let passthrough = remote_error("store_database_error".to_string());
+        assert_eq!(
+            passthrough,
+            ControlError::Remote {
+                code: "store_database_error".to_string()
+            }
+        );
+        let harness = remote_error("harness_not_detected".to_string());
+        assert_eq!(
+            harness,
+            ControlError::Remote {
+                code: "harness_not_detected".to_string()
+            }
+        );
+        let a2a = remote_error("a2a_invalid_transition".to_string());
+        assert_eq!(
+            a2a,
+            ControlError::Remote {
+                code: "a2a_invalid_transition".to_string()
+            }
+        );
+        // The control_ namespace is prefix-passed too, so a non-canonical
+        // control code (UnsafeArtifact's code) reaches the operator rather
+        // than collapsing to the generic remote error.
+        let unsafe_artifact = remote_error("control_artifact_unsafe_path".to_string());
+        assert_eq!(
+            unsafe_artifact,
+            ControlError::Remote {
+                code: "control_artifact_unsafe_path".to_string()
+            }
+        );
+        // The five canonical frame errors still map to their typed variants
+        // so clients matching on the typed variant are unaffected.
+        assert!(matches!(
+            remote_error("control_unauthorized".to_string()),
+            ControlError::Unauthorized
+        ));
+        assert!(matches!(
+            remote_error("control_invalid_frame".to_string()),
+            ControlError::InvalidFrame
+        ));
+        let unknown = remote_error("definitely_not_a_namespace".to_string());
+        assert_eq!(
+            unknown,
+            ControlError::Remote {
+                code: "control_remote_error".to_string()
+            }
         );
     }
 }

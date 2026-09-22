@@ -301,27 +301,31 @@ fn assert_children_joined(project: &Project, attempts: u64) {
 fn inspect(project: &Project) -> (Vec<A2aRunRecord>, Vec<EventEnvelope>, Value) {
     let writer = WriterWorker::start(project.paths.database_path())
         .expect("writer released after daemon shutdown");
-    let events = writer.events().expect("events");
+    let store = vibemux_store::SqliteStore::open(project.paths.database_path()).expect("store");
+    let events = store.events().expect("events");
     let ids = events
         .iter()
         .filter_map(EventEnvelope::task_id)
         .collect::<BTreeSet<_>>();
     assert_eq!(ids.len(), 1);
     let task_id = *ids.iter().next().expect("task id");
-    let records = writer.a2a_runs(task_id).expect("records");
-    let task = writer
-        .projection("task", task_id.to_string())
+    let records = store.a2a_runs(task_id).expect("records");
+    let task = store
+        .projection("task", &task_id.to_string())
         .expect("projection")
         .expect("task");
+    drop(store);
     writer.shutdown().expect("close inspection writer");
-    let reopened =
+    let reopened_writer =
         WriterWorker::start(project.paths.database_path()).expect("reopen persisted state");
+    let reopened = vibemux_store::SqliteStore::open(project.paths.database_path()).expect("reopen");
     assert_eq!(
         reopened.a2a_runs(task_id).expect("verified replay"),
         records
     );
     assert_eq!(reopened.events().expect("immutable event replay"), events);
-    reopened.shutdown().expect("close replay writer");
+    drop(reopened);
+    reopened_writer.shutdown().expect("close replay writer");
     let encoded = serde_json::to_string(&events).expect("events JSON");
     assert!(!encoded.contains(&token()));
     assert!(!encoded.contains("Sort the supplied numbers ascending"));

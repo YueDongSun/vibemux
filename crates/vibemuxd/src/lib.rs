@@ -15,15 +15,14 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
-use vibemux_events::{EventDraft, EventEnvelope};
-use vibemux_harness::{HarnessConfigSnapshot, HarnessDetection, HarnessRow};
+use vibemux_harness::{HarnessDetection, HarnessRow};
 use vibemux_store::{
-    A2aCommitOutcome, CommitOutcome, HarnessSnapshotOutcome, STORE_SCHEMA_VERSION, SqliteStore,
+    A2aCommitOutcome, HarnessSnapshotOutcome, HarnessSwitchOutcome, STORE_SCHEMA_VERSION,
+    SqliteStore,
 };
 use vibemux_types::{
-    ProjectId, Run, RunId, Task, TaskId,
+    ProjectId, RunId, TaskId,
     a2a::{A2aRunRecord, A2aRunStart, A2aRunUpdate},
 };
 
@@ -170,40 +169,29 @@ enum WriterRequest {
         response: mpsc::Sender<Result<Vec<A2aRunRecord>, WriterError>>,
     },
     Health(mpsc::Sender<Result<WriterHealth, WriterError>>),
-    CommitTask {
-        task: Task,
-        draft: EventDraft,
-        response: mpsc::Sender<Result<CommitOutcome, WriterError>>,
-    },
-    CommitRun {
-        run: Run,
-        draft: EventDraft,
-        response: mpsc::Sender<Result<CommitOutcome, WriterError>>,
-    },
-    Projection {
-        entity_kind: String,
-        entity_id: String,
-        response: mpsc::Sender<Result<Option<Value>, WriterError>>,
-    },
-    Events(mpsc::Sender<Result<Vec<EventEnvelope>, WriterError>>),
+    /// O(1) `project_id()` accessor (typed `SELECT envelope_json ... LIMIT 1`
+    /// via `SqliteStore::project_id`); replaces the prior full
+    /// `events()`-scan implementation that lived on `WriterHandle`.
+    ProjectId(mpsc::Sender<Result<Option<ProjectId>, WriterError>>),
     CommitHarnessSnapshot {
-        config: HarnessConfigSnapshot,
         detections: std::collections::BTreeMap<String, HarnessDetection>,
-        draft: EventDraft,
         checked_at: String,
+        idempotency_key: String,
         response: mpsc::Sender<Result<HarnessSnapshotOutcome, WriterError>>,
     },
     CommitHarnessSwitch {
         harness: String,
-        draft: EventDraft,
-        response: mpsc::Sender<Result<CommitOutcome, WriterError>>,
+        idempotency_key: String,
+        response: mpsc::Sender<Result<HarnessSwitchOutcome, WriterError>>,
     },
+    /// Build listing rows from the persisted registry/config. There is a
+    /// single path: live refreshes materialize rows through
+    /// `commit_harness_snapshot`'s outcome, so this never takes a detections
+    /// payload (a synthetic empty map would otherwise mark every persisted
+    /// harness undetected).
     HarnessRows {
-        cached: bool,
-        detections: std::collections::BTreeMap<String, HarnessDetection>,
         response: mpsc::Sender<Result<Vec<HarnessRow>, WriterError>>,
     },
-    HarnessConfig(mpsc::Sender<Result<HarnessConfigSnapshot, WriterError>>),
     Shutdown(mpsc::Sender<Result<(), WriterError>>),
     #[cfg(test)]
     HoldForBackpressureTest {
@@ -288,26 +276,6 @@ impl WriterHandle {
         }
     }
 
-    pub fn events(&self) -> Result<Vec<EventEnvelope>, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::Events(response))?;
-        receive(receiver, self.response_timeout)
-    }
-
-    pub fn projection(
-        &self,
-        entity_kind: impl Into<String>,
-        entity_id: impl Into<String>,
-    ) -> Result<Option<Value>, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::Projection {
-            entity_kind: entity_kind.into(),
-            entity_id: entity_id.into(),
-            response,
-        })?;
-        receive(receiver, self.response_timeout)
-    }
-
     pub fn start_a2a_run(&self, start: A2aRunStart) -> Result<A2aCommitOutcome, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::StartA2aRun {
@@ -337,17 +305,15 @@ impl WriterHandle {
 
     pub fn commit_harness_snapshot(
         &self,
-        config: HarnessConfigSnapshot,
         detections: std::collections::BTreeMap<String, HarnessDetection>,
-        draft: EventDraft,
         checked_at: String,
+        idempotency_key: String,
     ) -> Result<HarnessSnapshotOutcome, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::CommitHarnessSnapshot {
-            config,
             detections,
-            draft,
             checked_at,
+            idempotency_key,
             response,
         })?;
         receive(receiver, self.response_timeout)
@@ -356,40 +322,31 @@ impl WriterHandle {
     pub fn commit_harness_switch(
         &self,
         harness: String,
-        draft: EventDraft,
-    ) -> Result<CommitOutcome, WriterError> {
+        idempotency_key: String,
+    ) -> Result<HarnessSwitchOutcome, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::CommitHarnessSwitch {
             harness,
-            draft,
+            idempotency_key,
             response,
         })?;
         receive(receiver, self.response_timeout)
     }
 
-    pub fn harness_rows(
-        &self,
-        cached: bool,
-        detections: std::collections::BTreeMap<String, HarnessDetection>,
-    ) -> Result<Vec<HarnessRow>, WriterError> {
+    /// Build listing rows from the persisted registry/config alone. Live
+    /// refreshes materialize rows through `commit_harness_snapshot`'s
+    /// outcome, so this reader is the single derivation used by the cached
+    /// (`--cached`) path and any post-commit row read.
+    pub fn harness_rows(&self) -> Result<Vec<HarnessRow>, WriterError> {
         let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::HarnessRows {
-            cached,
-            detections,
-            response,
-        })?;
-        receive(receiver, self.response_timeout)
-    }
-
-    pub fn harness_config(&self) -> Result<HarnessConfigSnapshot, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::HarnessConfig(response))?;
+        self.enqueue(WriterRequest::HarnessRows { response })?;
         receive(receiver, self.response_timeout)
     }
 
     pub fn project_id(&self) -> Result<Option<ProjectId>, WriterError> {
-        let events = self.events()?;
-        Ok(events.first().map(|event| event.project_id()))
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::ProjectId(response))?;
+        receive(receiver, self.response_timeout)
     }
 
     fn enqueue(&self, request: WriterRequest) -> Result<(), WriterError> {
@@ -432,18 +389,6 @@ impl WriterWorker {
         })
     }
 
-    pub fn start_a2a_run(&self, start: A2aRunStart) -> Result<A2aCommitOutcome, WriterError> {
-        self.handle()?.start_a2a_run(start)
-    }
-    pub fn update_a2a_run(&self, update: A2aRunUpdate) -> Result<A2aCommitOutcome, WriterError> {
-        self.handle()?.update_a2a_run(update)
-    }
-    pub fn a2a_run(&self, run_id: RunId) -> Result<Option<A2aRunRecord>, WriterError> {
-        self.handle()?.a2a_run(run_id)
-    }
-    pub fn a2a_runs(&self, task_id: TaskId) -> Result<Vec<A2aRunRecord>, WriterError> {
-        self.handle()?.a2a_runs(task_id)
-    }
     pub fn start(database_path: &Path) -> Result<Self, WriterError> {
         Self::start_with_config(
             database_path,
@@ -584,81 +529,6 @@ impl WriterWorker {
         receive(receiver, self.response_timeout)
     }
 
-    pub fn commit_task(&self, task: Task, draft: EventDraft) -> Result<CommitOutcome, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::CommitTask {
-            task,
-            draft,
-            response,
-        })?;
-        receive(receiver, self.response_timeout)
-    }
-
-    pub fn commit_run(&self, run: Run, draft: EventDraft) -> Result<CommitOutcome, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::CommitRun {
-            run,
-            draft,
-            response,
-        })?;
-        receive(receiver, self.response_timeout)
-    }
-
-    pub fn commit_harness_snapshot(
-        &self,
-        config: HarnessConfigSnapshot,
-        detections: std::collections::BTreeMap<String, HarnessDetection>,
-        draft: EventDraft,
-        checked_at: String,
-    ) -> Result<HarnessSnapshotOutcome, WriterError> {
-        self.handle()?
-            .commit_harness_snapshot(config, detections, draft, checked_at)
-    }
-
-    pub fn commit_harness_switch(
-        &self,
-        harness: String,
-        draft: EventDraft,
-    ) -> Result<CommitOutcome, WriterError> {
-        self.handle()?.commit_harness_switch(harness, draft)
-    }
-
-    pub fn harness_rows(
-        &self,
-        cached: bool,
-        detections: std::collections::BTreeMap<String, HarnessDetection>,
-    ) -> Result<Vec<HarnessRow>, WriterError> {
-        self.handle()?.harness_rows(cached, detections)
-    }
-
-    pub fn harness_config(&self) -> Result<HarnessConfigSnapshot, WriterError> {
-        self.handle()?.harness_config()
-    }
-
-    pub fn project_id(&self) -> Result<Option<ProjectId>, WriterError> {
-        self.handle()?.project_id()
-    }
-
-    pub fn projection(
-        &self,
-        entity_kind: impl Into<String>,
-        entity_id: impl Into<String>,
-    ) -> Result<Option<Value>, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::Projection {
-            entity_kind: entity_kind.into(),
-            entity_id: entity_id.into(),
-            response,
-        })?;
-        receive(receiver, self.response_timeout)
-    }
-
-    pub fn events(&self) -> Result<Vec<EventEnvelope>, WriterError> {
-        let (response, receiver) = mpsc::channel();
-        self.enqueue(WriterRequest::Events(response))?;
-        receive(receiver, self.response_timeout)
-    }
-
     pub fn shutdown(mut self) -> Result<(), WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::Shutdown(response))?;
@@ -761,104 +631,45 @@ fn writer_loop(
                 // Restart the observation window from the current depth.
                 shared.reset_watermark(depth);
             }
-            WriterRequest::CommitTask {
-                task,
-                draft,
-                response,
-            } => {
+            WriterRequest::ProjectId(response) => {
                 let result = store
-                    .commit_task(&task, draft)
+                    .project_id()
                     .map_err(|error| store_error(error.code()));
-                let _ = response.send(result);
-            }
-            WriterRequest::CommitRun {
-                run,
-                draft,
-                response,
-            } => {
-                let result = store
-                    .commit_run(&run, draft)
-                    .map_err(|error| store_error(error.code()));
-                let _ = response.send(result);
-            }
-            WriterRequest::Projection {
-                entity_kind,
-                entity_id,
-                response,
-            } => {
-                let result = store
-                    .projection(&entity_kind, &entity_id)
-                    .map_err(|error| store_error(error.code()));
-                let _ = response.send(result);
-            }
-            WriterRequest::Events(response) => {
-                let result = store.events().map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }
             WriterRequest::CommitHarnessSnapshot {
-                config,
                 detections,
-                draft,
                 checked_at,
+                idempotency_key,
                 response,
             } => {
                 let result = store
-                    .commit_harness_snapshot(&config, draft, &detections, &checked_at)
+                    .commit_harness_snapshot(&detections, &checked_at, &idempotency_key)
                     .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }
             WriterRequest::CommitHarnessSwitch {
                 harness,
-                draft,
+                idempotency_key,
                 response,
             } => {
                 let result = store
-                    .commit_harness_switch(&harness, draft)
-                    .map_err(|error| WriterError::Store {
-                        code: error.code().to_string(),
-                    });
+                    .commit_harness_switch(&harness, &idempotency_key)
+                    .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }
-            WriterRequest::HarnessRows {
-                cached,
-                detections,
-                response,
-            } => {
-                let result = (|| {
+            WriterRequest::HarnessRows { response } => {
+                let result = (|| -> Result<Vec<HarnessRow>, WriterError> {
                     let registry = store
                         .harness_registry()
                         .map_err(|e| store_error(e.code()))?;
                     let config = store.harness_config().map_err(|e| store_error(e.code()))?;
-                    // For a cached read the detection column comes from the
-                    // persisted snapshot; for a live read the daemon injected
-                    // fresh probe results.
-                    let detections = if cached {
-                        registry
-                            .harnesses
-                            .iter()
-                            .map(|entry| {
-                                (
-                                    entry.name.clone(),
-                                    HarnessDetection {
-                                        detected: entry.state.detected,
-                                        path: entry.state.path.clone(),
-                                        launcher: None,
-                                        version: None,
-                                    },
-                                )
-                            })
-                            .collect()
-                    } else {
-                        detections
-                    };
-                    Ok(vibemux_harness::build_rows(&registry, &config, &detections))
+                    // A single derivation: rows are built from the persisted
+                    // snapshot alone; fresh detections never enter this path.
+                    Ok(vibemux_harness::build_rows_from_registry(
+                        &registry, &config,
+                    ))
                 })();
-                let _ = response.send(result);
-            }
-            WriterRequest::HarnessConfig(response) => {
-                let result = store
-                    .harness_config()
-                    .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }
             WriterRequest::Shutdown(response) => {
@@ -911,27 +722,10 @@ fn lock_nonce() -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-    use time::OffsetDateTime;
-    use vibemux_events::{ActorName, EventPayload, EventType};
-    use vibemux_types::{EventId, ProjectId, Task, TaskSpec};
+    use vibemux_events::EventEnvelope;
+    use vibemux_types::{ProjectId, Task, TaskSpec};
 
     use super::*;
-
-    fn draft(project_id: ProjectId, key: &str) -> EventDraft {
-        EventDraft {
-            event_id: EventId::new(),
-            event_type: EventType::new("task_created").expect("event type"),
-            project_id,
-            task_id: None,
-            run_id: None,
-            causation_id: None,
-            actor: ActorName::new("daemon").expect("actor"),
-            timestamp: OffsetDateTime::now_utc(),
-            idempotency_key: Some(key.to_string()),
-            payload: EventPayload::new(json!({"source": "writer_test"})).expect("payload"),
-        }
-    }
 
     fn task(project_id: ProjectId) -> Task {
         Task::new(TaskSpec {
@@ -953,7 +747,7 @@ mod tests {
         let worker = WriterWorker::start(&database).expect("writer");
         let handle = worker.handle().expect("handle");
         let task = task(ProjectId::new());
-        let run = Run::new(RunSpec {
+        let run = vibemux_types::Run::new(RunSpec {
             project_id: task.project_id(),
             task_id: task.task_id(),
             harness: "mock".to_string(),
@@ -1000,7 +794,8 @@ mod tests {
             1
         );
         assert_eq!(outcomes[0].record, outcomes[1].record);
-        assert_eq!(handle.events().expect("events").len(), 1);
+        let all_events = store_events(&database);
+        assert_eq!(all_events.len(), 2, "v3 seed event + one committed a2a run");
         assert_eq!(handle.a2a_runs(task.task_id()).expect("runs").len(), 1);
         let updated = handle
             .update_a2a_run(A2aRunUpdate {
@@ -1029,6 +824,7 @@ mod tests {
     }
     #[test]
     fn worker_owns_store_and_commits_projection() {
+        use vibemux_types::{RunSpec, a2a::RunWorkspace};
         let directory = tempfile::tempdir().expect("tempdir");
         let database = directory.path().join("state.sqlite3");
         let worker = WriterWorker::start(&database).expect("start worker");
@@ -1037,20 +833,45 @@ mod tests {
         assert_eq!(health.store_schema_version, STORE_SCHEMA_VERSION);
         let project_id = ProjectId::new();
         let task = task(project_id);
+        let run = vibemux_types::Run::new(RunSpec {
+            project_id,
+            task_id: task.task_id(),
+            harness: "mock".to_string(),
+            role: "worker".to_string(),
+            protocol: "a2a".to_string(),
+            base_commit: "a".repeat(40),
+        })
+        .expect("run");
         let outcome = worker
-            .commit_task(task.clone(), draft(project_id, "writer_task_1"))
-            .expect("commit task");
-        assert_eq!(outcome.event.sequence().get(), 1);
-        assert_eq!(worker.events().expect("events").len(), 1);
-        assert_eq!(
-            worker
-                .projection("task", task.task_id().to_string())
-                .expect("projection")
-                .expect("task projection")["status"],
-            json!("open")
-        );
+            .handle()
+            .expect("handle")
+            .start_a2a_run(A2aRunStart {
+                task: task.clone(),
+                run: run.clone(),
+                peer_id: "worker_peer".to_string(),
+                external_task_id: "external_task".to_string(),
+                transport: "http_json".to_string(),
+                protocol_version: "1.0".to_string(),
+                workspace: RunWorkspace {
+                    path: "/vibemux_fixture/run".to_string(),
+                    branch: "codex/writer_fixture".to_string(),
+                    base_commit: "a".repeat(40),
+                    ownership_token: "owned_fixture".to_string(),
+                },
+                timestamp: time::OffsetDateTime::now_utc(),
+                idempotency_key: "writer_projection_a2a".to_string(),
+            })
+            .expect("start_a2a_run");
+        assert_eq!(outcome.record.version, 1);
         worker.shutdown().expect("shutdown");
         assert!(!writer_lock_path_for_database(&database).exists());
+        // The committed run task projection is queryable after shutdown.
+        let store = SqliteStore::open(&database).expect("reopen");
+        let projection = store
+            .projection("task", &task.task_id().to_string())
+            .expect("projection")
+            .expect("task projection");
+        assert_eq!(projection["status"], "in_progress");
     }
 
     #[test]
@@ -1090,17 +911,48 @@ mod tests {
 
     #[test]
     fn graceful_shutdown_allows_restart_and_replay() {
+        use vibemux_types::{RunSpec, a2a::RunWorkspace};
         let directory = tempfile::tempdir().expect("tempdir");
         let database = directory.path().join("state.sqlite3");
         let project_id = ProjectId::new();
         let task = task(project_id);
+        let run = vibemux_types::Run::new(RunSpec {
+            project_id,
+            task_id: task.task_id(),
+            harness: "mock".to_string(),
+            role: "worker".to_string(),
+            protocol: "a2a".to_string(),
+            base_commit: "a".repeat(40),
+        })
+        .expect("run");
         let first = WriterWorker::start(&database).expect("first writer");
-        first
-            .commit_task(task, draft(project_id, "restart_task"))
-            .expect("commit task");
+        let handle = first.handle().expect("handle");
+        handle
+            .start_a2a_run(A2aRunStart {
+                task,
+                run,
+                peer_id: "replay_peer".to_string(),
+                external_task_id: "replay_task".to_string(),
+                transport: "http_json".to_string(),
+                protocol_version: "1.0".to_string(),
+                workspace: RunWorkspace {
+                    path: "/vibemux_fixture/run".to_string(),
+                    branch: "codex/writer_fixture".to_string(),
+                    base_commit: "a".repeat(40),
+                    ownership_token: "owned_fixture".to_string(),
+                },
+                timestamp: time::OffsetDateTime::now_utc(),
+                idempotency_key: "restart_a2a".to_string(),
+            })
+            .expect("start_a2a_run");
         first.shutdown().expect("shutdown first");
         let second = WriterWorker::start(&database).expect("restart writer");
-        assert_eq!(second.events().expect("replayed events").len(), 1);
+        let events = store_events(&database);
+        assert_eq!(
+            events.len(),
+            2,
+            "v3 seed event + the committed A2A run survive restart"
+        );
         second.shutdown().expect("shutdown second");
     }
 
@@ -1172,12 +1024,19 @@ mod tests {
             .recv_timeout(DEFAULT_RESPONSE_TIMEOUT)
             .expect("worker entered barrier");
         let (blocked_response, blocked_receiver) = mpsc::channel();
+        let (proj_id_response, proj_id_receiver) = mpsc::channel();
         worker
-            .enqueue(WriterRequest::Events(blocked_response))
-            .expect("queue events");
-        // Release the barrier from another thread once the health request is
-        // queued, so the worker drains everything and answers the health
-        // request instead of deadlocking behind the barrier.
+            .enqueue(WriterRequest::ProjectId(proj_id_response))
+            .expect("queue project_id");
+        worker
+            .enqueue(WriterRequest::A2aRuns {
+                task_id: vibemux_types::TaskId::new(),
+                response: blocked_response,
+            })
+            .expect("queue a2a_runs");
+        // Release the barrier from another thread once the project_id
+        // request is queued, so the worker drains everything and answers
+        // the health request instead of deadlocking behind the barrier.
         let releaser = thread::spawn(move || {
             thread::sleep(Duration::from_millis(150));
             let _ = release_sender.send(());
@@ -1188,11 +1047,12 @@ mod tests {
             "queue drained before health was answered"
         );
         assert_eq!(
-            loaded.queue_high_watermark, 2,
-            "events and health waited together behind the barrier"
+            loaded.queue_high_watermark, 3,
+            "project_id, a2a_runs, and the sampling health waited together behind the barrier"
         );
         assert!(!loaded.queue_saturated);
-        receive(blocked_receiver, DEFAULT_RESPONSE_TIMEOUT).expect("drain events");
+        receive(proj_id_receiver, DEFAULT_RESPONSE_TIMEOUT).expect("drain project_id");
+        let _ = receive(blocked_receiver, DEFAULT_RESPONSE_TIMEOUT);
         releaser.join().expect("releaser");
 
         // The watermark window restarts after the loaded sample; the drained
@@ -1326,5 +1186,10 @@ mod tests {
             health
         );
         assert!(!encoded.contains("path"));
+    }
+
+    fn store_events(database: &Path) -> Vec<EventEnvelope> {
+        let store = SqliteStore::open(database).expect("open");
+        store.events().expect("events")
     }
 }

@@ -164,6 +164,6 @@ cargo run -p vibemux_frontend --bin vibemux_frontend_tui
 cargo run -p vibemux_frontend --bin vibemux_frontend
 ```
 
-`vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the egui GUI. All ten harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi) appear as dashboard rows and GUI seats showing stub transcripts only; real PTY/ConPTY attach is not implemented and must not be treated as usable.
+`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the egui GUI. All ten harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi) appear as dashboard rows and GUI seats showing stub transcripts only; real PTY/ConPTY attach is not implemented and must not be treated as usable.
 
 See [docs/architecture.md](docs/architecture.md), [docs/platform_support.md](docs/platform_support.md), [docs/protocol_boundaries.md](docs/protocol_boundaries.md), and `docs/adr/`.

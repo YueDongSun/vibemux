@@ -12,5 +12,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
 vibemux_events = { path = "../vibemux_events" }
-vibemux_probe = { path = "../vibemux_probe" }
 vibemux_types = { path = "../vibemux_types" }

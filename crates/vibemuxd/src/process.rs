@@ -33,6 +33,16 @@ pub struct DaemonPaths {
     legacy_writer_lock_path: PathBuf,
 }
 
+/// Canonical probe-cache location for a state directory. This is the SINGLE
+/// owner of `<state_dir>/probe_cache.json`: `DaemonPaths::probe_cache_path`
+/// and the explicit trusted-startup constructors (`ServerState::start` and
+/// `start_with_plugins`, which only receive a database path) both route
+/// through here, so the location can never have two maintainers.
+#[must_use]
+pub fn probe_cache_path_for_state_dir(state_dir: &Path) -> PathBuf {
+    state_dir.join(vibemux_probe::cache::PROBE_CACHE_FILE_NAME)
+}
+
 impl DaemonPaths {
     pub fn from_project_root(project_root: &Path) -> Result<Self, DaemonPathError> {
         let project_root =
@@ -201,6 +211,14 @@ impl DaemonPaths {
     #[must_use]
     pub fn python_database_path(&self) -> PathBuf {
         self.state_dir.join(PYTHON_DATABASE_FILE_NAME)
+    }
+
+    /// The trusted probe cache location: `<state_dir>/probe_cache.json`. The
+    /// file name is owned by `vibemux_probe::cache` so the probe writer and
+    /// the daemon reader can never disagree about the location.
+    #[must_use]
+    pub fn probe_cache_path(&self) -> PathBuf {
+        probe_cache_path_for_state_dir(&self.state_dir)
     }
 
     #[cfg(windows)]
@@ -377,6 +395,23 @@ mod tests {
                 .file_name()
                 .and_then(|name| name.to_str()),
             Some(PYTHON_DATABASE_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn probe_cache_path_is_pinned_under_the_state_dir() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        assert_eq!(
+            paths.probe_cache_path(),
+            paths.state_dir().join("probe_cache.json")
+        );
+        assert_eq!(
+            paths
+                .probe_cache_path()
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(vibemux_probe::cache::PROBE_CACHE_FILE_NAME)
         );
     }
 

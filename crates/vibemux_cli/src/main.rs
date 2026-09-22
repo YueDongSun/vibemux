@@ -125,7 +125,11 @@ fn health_json(status: &str, health: &DaemonHealth) -> serde_json::Value {
 }
 
 fn emit_error(error: &DaemonCliError) {
-    eprintln!("{}", json!({"ok": false, "error_code": error.code()}));
+    eprintln!("{}", error_json(error));
+}
+
+fn error_json(error: &DaemonCliError) -> serde_json::Value {
+    json!({"ok": false, "error_code": error.code(), "error": error.to_string()})
 }
 
 fn print_help() {
@@ -208,5 +212,27 @@ mod tests {
                 "harness rows leaked {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn emitted_error_json_includes_the_actionable_human_message() {
+        let error = DaemonCliError::UnknownHarness("bogus-harness".to_string());
+        let value = error_json(&error);
+        assert_eq!(value["ok"], serde_json::Value::Bool(false));
+        assert_eq!(value["error_code"], "store_unknown_harness");
+        assert!(
+            value["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("bogus-harness")),
+            "error message must name the harness"
+        );
+
+        let error =
+            DaemonCliError::HarnessProbeCacheMissing("C:\\tmp\\.vibemux\\probe_cache.json".into());
+        let value = error_json(&error);
+        assert_eq!(value["error_code"], "harness_probe_cache_missing");
+        let message = value["error"].as_str().expect("error message present");
+        assert!(message.contains("--write-cache --project-root <root>"));
+        assert!(message.contains("C:\\tmp\\.vibemux\\probe_cache.json"));
     }
 }

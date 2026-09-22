@@ -4478,7 +4478,6 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "vibemux_events",
- "vibemux_probe",
  "vibemux_types",
 ]
 
@@ -4553,6 +4552,7 @@ dependencies = [
  "toml",
  "url",
  "vibemux_a2a",
+ "vibemux_harness",
 ]
 
 [[package]]

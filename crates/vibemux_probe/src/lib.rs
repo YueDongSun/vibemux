@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
-//! Read-only local agent, gateway, and A2A diagnostics.
+//! Read-only local agent, gateway, and A2A diagnostics, plus the trusted
+//! probe cache ([`cache`]) that persists one report for the daemon to read.
+
+pub mod cache;
 
 use std::{
     collections::BTreeSet,
@@ -19,6 +22,12 @@ use tokio::{
 use toml::Value as TomlValue;
 use url::Url;
 use vibemux_a2a::{InformationShare, LocalInformationServer, share_information};
+
+// The agent/launcher/probe-state vocabulary is owned by `vibemux_harness`
+// (pure logic, no I/O) and re-exported here so every consumer of the
+// historical `vibemux_probe::{AgentKind, LauncherKind, ProbeState}` paths
+// compiles unchanged.
+pub use vibemux_harness::{AgentKind, LauncherKind, ProbeState};
 
 pub const PROBE_SCHEMA_VERSION: u16 = 1;
 pub const DEFAULT_CC_SWITCH_PORT: u16 = 15_721;
@@ -49,88 +58,6 @@ pub const PROBE_ENVIRONMENT_ALLOWLIST: [&str; 15] = [
     "USERPROFILE",
 ];
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentKind {
-    Claude,
-    Codex,
-    OpenCode,
-    Copilot,
-    Grok,
-    Qwen,
-    Iflow,
-    Trae,
-    Codebuddy,
-    Kimi,
-}
-
-impl AgentKind {
-    #[must_use]
-    pub const fn all() -> [Self; 10] {
-        [
-            Self::Claude,
-            Self::Codex,
-            Self::OpenCode,
-            Self::Copilot,
-            Self::Grok,
-            Self::Qwen,
-            Self::Iflow,
-            Self::Trae,
-            Self::Codebuddy,
-            Self::Kimi,
-        ]
-    }
-
-    #[must_use]
-    pub const fn command_name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::OpenCode => "opencode",
-            Self::Copilot => "copilot",
-            Self::Grok => "grok",
-            Self::Qwen => "qwen",
-            Self::Iflow => "iflow",
-            Self::Trae => "trae",
-            Self::Codebuddy => "codebuddy",
-            Self::Kimi => "kimi",
-        }
-    }
-
-    #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
-            Self::OpenCode => "OpenCode",
-            Self::Copilot => "Copilot",
-            Self::Grok => "Grok",
-            Self::Qwen => "Qwen",
-            Self::Iflow => "iFlow",
-            Self::Trae => "TRAE",
-            Self::Codebuddy => "CodeBuddy",
-            Self::Kimi => "Kimi",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProbeState {
-    Verified,
-    Failed,
-    Unavailable,
-    NotRun,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LauncherKind {
-    DirectExecutable,
-    PowerShellCompanion,
-    Unavailable,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteKind {
@@ -154,6 +81,12 @@ pub struct AgentProbe {
     pub authentication_state: ProbeState,
     pub inference_state: ProbeState,
     pub launcher: LauncherKind,
+    /// The resolved launcher artifact the PATH scan found and used (direct
+    /// executable, or the `.ps1` script a PowerShell companion wraps). `None`
+    /// when no launcher resolved. `#[serde(default)]` keeps caches written by
+    /// older builds (which predate this field) parseable as `path: None`.
+    #[serde(default)]
+    pub path: Option<String>,
     pub version: Option<String>,
     pub route: RouteKind,
     pub endpoints: Vec<SafeEndpoint>,
@@ -242,6 +175,10 @@ struct LauncherSpec {
     executable: PathBuf,
     prefix_args: Vec<String>,
     kind: LauncherKind,
+    /// The launcher artifact the PATH scan resolved: the direct executable, or
+    /// the `.ps1` script a PowerShell companion wraps (mirrors the Python
+    /// reference, which reports the script — not the wrapper — as the path).
+    resolved_path: PathBuf,
 }
 
 pub async fn run_probe(config: &ProbeConfig) -> ProbeReport {
@@ -294,12 +231,14 @@ async fn probe_agent(agent: AgentKind, config: &ProbeConfig) -> AgentProbe {
             authentication_state: ProbeState::NotRun,
             inference_state: ProbeState::NotRun,
             launcher: LauncherKind::Unavailable,
+            path: None,
             version: None,
             route,
             endpoints,
             code: "launcher_unavailable".to_string(),
         };
     };
+    let path = Some(launcher.resolved_path.to_string_lossy().into_owned());
     match probe_version(&launcher, config.command_timeout).await {
         Ok(version) => AgentProbe {
             agent,
@@ -307,6 +246,7 @@ async fn probe_agent(agent: AgentKind, config: &ProbeConfig) -> AgentProbe {
             authentication_state: ProbeState::NotRun,
             inference_state: ProbeState::NotRun,
             launcher: launcher.kind,
+            path,
             version: Some(version),
             route,
             endpoints,
@@ -318,6 +258,7 @@ async fn probe_agent(agent: AgentKind, config: &ProbeConfig) -> AgentProbe {
             authentication_state: ProbeState::NotRun,
             inference_state: ProbeState::NotRun,
             launcher: launcher.kind,
+            path,
             version: None,
             route,
             endpoints,
@@ -388,6 +329,7 @@ fn resolve_launcher(command: &str, paths: &[PathBuf], home_dir: &Path) -> Option
                 }
                 if suffix == ".exe" || suffix == ".com" {
                     return Some(LauncherSpec {
+                        resolved_path: candidate.clone(),
                         executable: candidate,
                         prefix_args: Vec::new(),
                         kind: LauncherKind::DirectExecutable,
@@ -412,6 +354,9 @@ fn resolve_launcher(command: &str, paths: &[PathBuf], home_dir: &Path) -> Option
                             script.to_string_lossy().into_owned(),
                         ],
                         kind: LauncherKind::PowerShellCompanion,
+                        // The wrapped script — not the wrapper — is the
+                        // launcher artifact, mirroring the Python reference.
+                        resolved_path: script,
                     });
                 }
             }
@@ -421,12 +366,30 @@ fn resolve_launcher(command: &str, paths: &[PathBuf], home_dir: &Path) -> Option
     paths
         .iter()
         .map(|directory| directory.join(command))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable_regular_file(candidate))
         .map(|executable| LauncherSpec {
+            resolved_path: executable.clone(),
             executable,
             prefix_args: Vec::new(),
             kind: LauncherKind::DirectExecutable,
         })
+}
+
+/// Unix PATH-scan predicate: a regular file with at least one execute bit
+/// (mirrors `shutil.which` in the Python reference). On other platforms the
+/// caller-side `cfg!(windows)` branch already resolved the launcher, so the
+/// plain regular-file check is the compiled fallback.
+fn is_executable_regular_file(candidate: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(candidate)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        candidate.is_file()
+    }
 }
 
 fn resolve_powershell(paths: &[PathBuf], home_dir: &Path) -> Option<PathBuf> {
@@ -896,11 +859,63 @@ mod tests {
         let fixture: ProbeReport =
             serde_json::from_str(PROBE_REPORT_FIXTURE).expect("decode checked-in fixture");
         assert_eq!(fixture.schema_version, PROBE_SCHEMA_VERSION);
+        // The checked-in fixture predates the `path` field; it must still
+        // parse, defaulting the resolved path to None.
+        assert_eq!(fixture.agents.len(), 1);
+        assert_eq!(fixture.agents[0].path, None);
         let fixture_encoded = report_json(&fixture).expect("encode checked-in fixture");
         assert_eq!(
             serde_json::from_str::<ProbeReport>(&fixture_encoded)
                 .expect("round-trip checked-in fixture"),
             fixture
         );
+    }
+
+    #[test]
+    fn resolve_launcher_records_the_path_it_used() {
+        let temp = TempDir::new().expect("temp path dir");
+        let home = TempDir::new().expect("temp home dir");
+        let paths = [temp.path().to_path_buf()];
+
+        #[cfg(windows)]
+        let expected = {
+            let exe = temp.path().join("myagent.exe");
+            fs::write(&exe, b"dummy").expect("write exe");
+            exe
+        };
+        #[cfg(unix)]
+        let expected = {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = temp.path().join("myagent");
+            fs::write(&bin, b"#!/bin/sh\n").expect("write bin");
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("chmod");
+            bin
+        };
+
+        let spec = resolve_launcher("myagent", &paths, home.path()).expect("launcher resolved");
+        assert_eq!(spec.kind, LauncherKind::DirectExecutable);
+        assert_eq!(spec.resolved_path, expected);
+    }
+
+    #[test]
+    fn resolve_launcher_without_a_match_has_no_path() {
+        let temp = TempDir::new().expect("temp path dir");
+        let home = TempDir::new().expect("temp home dir");
+        // An empty PATH directory resolves nothing, so no launcher (and thus
+        // no resolved path) is produced.
+        assert!(resolve_launcher("nope", &[temp.path().to_path_buf()], home.path()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_resolve_launcher_requires_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new().expect("temp path dir");
+        let home = TempDir::new().expect("temp home dir");
+        let bin = temp.path().join("myagent");
+        fs::write(&bin, b"data").expect("write bin");
+        // A non-executable regular file must not resolve (mirrors shutil.which).
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(resolve_launcher("myagent", &[temp.path().to_path_buf()], home.path()).is_none());
     }
 }
