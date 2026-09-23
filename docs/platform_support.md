@@ -11,4 +11,4 @@
 | tmux | POSIX backend | Command contract implemented |
 | ConPTY | Future native backend | Not implemented |
 | `vibemuxd` / `vibemuxctl` | Windows named pipe / POSIX UDS | Real-machine Windows process smoke and Linux-container process smoke passed for M3 |
-| Windows control runtime | Protected per-user DACL + hashed project leaf | Effective ACL verified for current SID / `SYSTEM` / Administrators |
+| Windows control runtime | Protected per-user DACL + hashed project leaf | Effective ACL verified for current SID / `SYSTEM` / Administrators, re-verified in one helper pass on every trusted daemon start (ADR-020) |

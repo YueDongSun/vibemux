@@ -59,6 +59,39 @@ async fn startup_timeout_terminates_only_the_spawned_fixture() {
 }
 
 #[tokio::test]
+async fn early_daemon_exit_fails_fast_instead_of_timing_out() {
+    let temp = tempfile::tempdir().expect("temp project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    #[cfg(windows)]
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    let config = DaemonBootstrapConfig::new(
+        paths.clone(),
+        PathBuf::from(env!("CARGO_BIN_EXE_vibemux_exit_fixture")),
+    )
+    .with_timing(
+        Duration::from_secs(10),
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+    );
+
+    // The fixture exits immediately without publishing artifacts, so the
+    // start must fail fast with the classified cause. On Windows this pins
+    // the launcher's daemon-exit watchdog: before the fix the helper
+    // blocked in a synchronous stdin read (Console.In is a SyncTextReader
+    // on .NET Framework), the exit was never observed, and this returned
+    // StartupTimeout only after the full deadline (issue #7).
+    assert_eq!(
+        start_daemon(&config)
+            .await
+            .expect_err("fixture must fail the start"),
+        DaemonCliError::StartFailed
+    );
+    assert!(paths.state_dir().join("exit_fixture_started").is_file());
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
+}
+
+#[tokio::test]
 async fn abrupt_process_recovery_preserves_database_and_allows_restart() {
     let temp = tempfile::tempdir().expect("temp project");
     let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");

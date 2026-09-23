@@ -58,7 +58,14 @@ try {
     if ($null -eq $process) { exit 4 }
     [Console]::Out.WriteLine($process.Id)
     [Console]::Out.Flush()
-    $control_task = [Console]::In.ReadLineAsync()
+    # Read stdin through a plain StreamReader, NOT [Console]::In: on Windows
+    # PowerShell (.NET Framework) Console.In is a SyncTextReader whose
+    # ReadLineAsync() blocks the calling thread until a line arrives, which
+    # made the daemon-exit watchdog below dead code - a daemon that died
+    # before becoming healthy was never observed, and 'vibemuxctl daemon
+    # start' always waited out the full startup deadline (issue #7).
+    $stdin_reader = New-Object IO.StreamReader([Console]::OpenStandardInput())
+    $control_task = $stdin_reader.ReadLineAsync()
     while (-not $control_task.Wait(25)) {
         if ($process.HasExited) { exit 5 }
     }
@@ -596,6 +603,36 @@ pub fn daemon_executable(explicit: Option<&Path>) -> Result<PathBuf, DaemonCliEr
     }
 }
 
+/// Classify why a spawned daemon exited without a healthy start. On
+/// Windows the launcher detaches the daemon process, so its stderr (which
+/// would carry `daemon_control_runtime_security_invalid` from the
+/// fail-closed start verification, issue #7) never reaches the CLI. The
+/// control-runtime ACLs are the one such cause the CLI can observe for
+/// itself: on the failure path only, re-check them with ONE read-only
+/// verification. The happy path never spawns a helper.
+#[cfg(windows)]
+async fn classify_daemon_exit(paths: &DaemonPaths) -> DaemonCliError {
+    // Clone for the `'static` closure; the re-check runs through
+    // spawn_blocking because it spawns and waits on a helper process.
+    let paths = paths.clone();
+    let security_invalid =
+        tokio::task::spawn_blocking(move || paths.verify_control_runtime_acl().is_err())
+            .await
+            // A helper that could not even run leaves the cause undetermined;
+            // report the honest generic failure instead of blaming the ACLs.
+            .unwrap_or(false);
+    if security_invalid {
+        DaemonCliError::from(DaemonPathError::ControlRuntimeSecurityInvalid)
+    } else {
+        DaemonCliError::StartFailed
+    }
+}
+
+#[cfg(unix)]
+async fn classify_daemon_exit(_paths: &DaemonPaths) -> DaemonCliError {
+    DaemonCliError::StartFailed
+}
+
 async fn wait_for_health(
     config: &DaemonBootstrapConfig,
     mut spawned: Option<SpawnedDaemon>,
@@ -643,7 +680,7 @@ async fn wait_for_health(
             }
         }
         if child_exited && !select_runtime(&config.paths)?.has_artifacts {
-            return Err(DaemonCliError::StartFailed);
+            return Err(classify_daemon_exit(&config.paths).await);
         }
         if Instant::now() >= deadline {
             if let Some(spawned) = spawned.as_mut() {
@@ -1080,6 +1117,35 @@ mod tests {
         assert!(!paths.legacy_writer_lock_path().exists());
         assert!(!paths.descriptor_path().exists());
         assert!(!paths.writer_lock_path().exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn classify_daemon_exit_distinguishes_security_failures() {
+        let temp = tempfile::tempdir().expect("temp project");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        paths.ensure_runtime_dir().expect("runtime directory");
+        // Healthy ACLs: the daemon's exit cause stays the generic failure.
+        assert_eq!(
+            classify_daemon_exit(&paths).await,
+            DaemonCliError::StartFailed
+        );
+        // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
+        // control root, so sibling tests are unaffected). BUILTIN\Users in
+        // SID form to stay locale-independent.
+        let status = std::process::Command::new("icacls")
+            .arg(paths.runtime_dir())
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
+            .status()
+            .expect("icacls");
+        assert!(status.success(), "icacls must succeed");
+        assert_eq!(
+            classify_daemon_exit(&paths).await,
+            DaemonCliError::Control {
+                code: "daemon_control_runtime_security_invalid".to_string()
+            }
+        );
     }
 
     fn short_test_config(paths: DaemonPaths) -> DaemonBootstrapConfig {

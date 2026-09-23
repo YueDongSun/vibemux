@@ -19,6 +19,11 @@ path = "src/bin/vibemux_hang_fixture.rs"
 required-features = ["test_helpers"]
 
 [[bin]]
+name = "vibemux_exit_fixture"
+path = "src/bin/vibemux_exit_fixture.rs"
+required-features = ["test_helpers"]
+
+[[bin]]
 name = "vibemux_recovery_fixture"
 path = "src/bin/vibemux_recovery_fixture.rs"
 required-features = ["test_helpers"]

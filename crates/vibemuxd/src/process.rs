@@ -240,24 +240,61 @@ impl DaemonPaths {
     }
 
     #[cfg(windows)]
+    fn acl_marker_path(&self) -> PathBuf {
+        self.control_runtime_root.join(CONTROL_ACL_MARKER_FILE_NAME)
+    }
+
+    /// Re-verify the whole Windows control-runtime trust surface in ONE
+    /// helper invocation: the protected control root, the per-project
+    /// runtime leaf, the ACL marker, and the published control artifacts
+    /// (descriptor + writer lock), in that index order. The marker is a
+    /// contents-only idempotency record - it carries no secret - so
+    /// `ensure_runtime_dir`'s fast path accepting valid contents does NOT
+    /// prove the surrounding ACLs are still restricted ("verify once,
+    /// trust forever", issue #7). ADR 020 requires the protected root and
+    /// effective leaf/artifact ACLs to be verified, so trusted daemon
+    /// starts call this after publishing the descriptor. Every path must
+    /// exist (a missing one fails closed). Legacy compatibility artifacts
+    /// stay in the project-local `.vibemux` state directory by design and
+    /// are not part of this protected surface. Any failure is reported as
+    /// [`DaemonPathError::ControlRuntimeSecurityInvalid`], never success.
+    #[cfg(windows)]
+    pub fn verify_control_security(&self) -> Result<(), DaemonPathError> {
+        let marker = self.acl_marker_path();
+        let paths = [
+            self.control_runtime_root.as_path(),
+            self.runtime_dir.as_path(),
+            marker.as_path(),
+            self.descriptor_path.as_path(),
+            self.writer_lock_path.as_path(),
+        ];
+        vibemux_platform::verify_restricted_path_acls(&paths)
+            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+    }
+
+    #[cfg(windows)]
     pub fn verify_control_runtime_acl(&self) -> Result<(), DaemonPathError> {
-        vibemux_platform::verify_restricted_path_acl(&self.control_runtime_root)
-            .and_then(|_| vibemux_platform::verify_restricted_path_acl(&self.runtime_dir))
-            .map(|_| ())
+        let paths = [
+            self.control_runtime_root.as_path(),
+            self.runtime_dir.as_path(),
+        ];
+        vibemux_platform::verify_restricted_path_acls(&paths)
             .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
     }
 
     #[cfg(windows)]
     pub fn verify_control_artifact_acls(&self) -> Result<(), DaemonPathError> {
-        vibemux_platform::verify_restricted_path_acl(&self.descriptor_path)
-            .and_then(|_| vibemux_platform::verify_restricted_path_acl(&self.writer_lock_path))
-            .map(|_| ())
+        let paths = [
+            self.descriptor_path.as_path(),
+            self.writer_lock_path.as_path(),
+        ];
+        vibemux_platform::verify_restricted_path_acls(&paths)
             .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
     }
 
     #[cfg(windows)]
     fn ensure_windows_control_acl(&self) -> Result<(), DaemonPathError> {
-        let marker = self.control_runtime_root.join(CONTROL_ACL_MARKER_FILE_NAME);
+        let marker = self.acl_marker_path();
         if acl_marker_valid(&marker) {
             return Ok(());
         }
@@ -283,7 +320,7 @@ impl DaemonPaths {
 
     #[cfg(windows)]
     fn validate_windows_acl_marker(&self) -> Result<(), DaemonPathError> {
-        let marker = self.control_runtime_root.join(CONTROL_ACL_MARKER_FILE_NAME);
+        let marker = self.acl_marker_path();
         if acl_marker_valid(&marker) {
             Ok(())
         } else {
@@ -602,9 +639,7 @@ mod tests {
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
         let _control_cleanup = ControlRuntimeCleanup::new(&paths);
         std::fs::create_dir_all(paths.control_runtime_root()).expect("control root");
-        let marker = paths
-            .control_runtime_root()
-            .join(CONTROL_ACL_MARKER_FILE_NAME);
+        let marker = paths.acl_marker_path();
         // An existing marker with no contents used to fail every later
         // ensure with ControlRuntimeSecurityInvalid (AlreadyExists + invalid
         // was a hard error); it must heal instead.
@@ -632,9 +667,7 @@ mod tests {
             .iter()
             .map(|root| DaemonPaths::from_project_root(root.path()).expect("daemon paths"))
             .collect();
-        let marker = paths_list[0]
-            .control_runtime_root()
-            .join(CONTROL_ACL_MARKER_FILE_NAME);
+        let marker = paths_list[0].acl_marker_path();
         match std::fs::remove_file(&marker) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -658,6 +691,64 @@ mod tests {
         });
         assert!(acl_marker_valid(&marker));
         drop(cleanups);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verify_control_security_accepts_a_secured_runtime() {
+        // Verifying the full surface includes the SHARED `.acl_v1` marker:
+        // the concurrent first-touch test removes and republishes it, and a
+        // verify straddling that window would fail on a missing (not
+        // insecure) path. Hold the same test lock as the marker-writers.
+        let _marker_guard = marker_test_lock();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        paths
+            .ensure_runtime_dir()
+            .expect("secure runtime directory");
+        // Stand-ins for the artifacts the control server publishes: plain
+        // files inside the secured runtime leaf inherit its restricted
+        // DACL, which is exactly what the real descriptor/writer.lock get.
+        std::fs::write(paths.descriptor_path(), b"descriptor").expect("descriptor stand-in");
+        std::fs::write(paths.writer_lock_path(), b"writer.lock").expect("writer.lock stand-in");
+        paths
+            .verify_control_security()
+            .expect("verify full surface");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verify_control_security_rejects_a_loosened_runtime_dir() {
+        let _marker_guard = marker_test_lock();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        paths
+            .ensure_runtime_dir()
+            .expect("secure runtime directory");
+        std::fs::write(paths.descriptor_path(), b"descriptor").expect("descriptor stand-in");
+        std::fs::write(paths.writer_lock_path(), b"writer.lock").expect("writer.lock stand-in");
+        assert!(
+            paths.verify_control_security().is_ok(),
+            "sanity: secured runtime must verify"
+        );
+        // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
+        // control root, so sibling tests are unaffected). BUILTIN\Users in
+        // SID form to stay locale-independent; the extra ACE makes the
+        // effective rule count stop being exactly three.
+        let status = std::process::Command::new("icacls")
+            .arg(paths.runtime_dir())
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
+            .status()
+            .expect("icacls");
+        assert!(status.success(), "icacls must succeed");
+        assert_eq!(
+            paths
+                .verify_control_security()
+                .expect_err("loosened runtime leaf must fail closed"),
+            DaemonPathError::ControlRuntimeSecurityInvalid
+        );
     }
 
     #[cfg(unix)]

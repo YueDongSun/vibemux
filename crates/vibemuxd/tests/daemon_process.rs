@@ -12,6 +12,9 @@ use vibemuxd::{
     process::DaemonPaths,
 };
 
+#[cfg(windows)]
+use vibemuxd::control::DaemonControlServer;
+
 const PROCESS_TEST_DEADLINE: Duration = Duration::from_secs(10);
 const HEALTH_ATTEMPT_DEADLINE: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -157,6 +160,98 @@ async fn abrupt_exit_leaves_owned_artifacts_for_fail_closed_diagnosis() {
             *legacy_lock_before
         );
     }
+}
+
+/// The trusted constructor re-verifies the whole control-runtime ACL
+/// surface (ADR 020, issue #7): with a healthy secured runtime the start
+/// succeeds and every artifact verifies while the daemon runs.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trusted_start_verifies_the_full_control_runtime_surface() {
+    let temp = tempfile::tempdir().expect("temp project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    paths.ensure_runtime_dir().expect("runtime directory");
+
+    let server = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .expect("trusted start must pass the ACL verification");
+    paths
+        .verify_control_security()
+        .expect("full surface verifies while running");
+    paths
+        .verify_control_artifact_acls()
+        .expect("artifact ACLs verify while running");
+    assert!(paths.descriptor_path().is_file());
+    assert!(paths.writer_lock_path().is_file());
+
+    server.shutdown().await.expect("clean shutdown");
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
+    assert!(!paths.legacy_writer_lock_path().exists());
+}
+
+/// With the runtime leaf's ACL loosened, the trusted constructor fails
+/// closed with `daemon_control_runtime_security_invalid`, leaves NO
+/// runtime artifacts behind (descriptor removed by its guard, both
+/// lifecycle locks removed by the joined writer), keeps the database, and
+/// the standalone daemon binary surfaces the same code on stderr.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trusted_start_fails_closed_when_the_runtime_acl_is_loosened() {
+    let temp = tempfile::tempdir().expect("temp project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    paths.ensure_runtime_dir().expect("runtime directory");
+    // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
+    // control root, so sibling tests are unaffected). BUILTIN\Users in SID
+    // form to stay locale-independent; the extra ACE breaks the exactly-
+    // three-rules invariant.
+    let status = std::process::Command::new("icacls")
+        .arg(paths.runtime_dir())
+        .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
+        .status()
+        .expect("icacls");
+    assert!(status.success(), "icacls must succeed");
+
+    let error = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .err()
+        .expect("loosened runtime ACL must fail closed");
+    assert_eq!(error.code(), "daemon_control_runtime_security_invalid");
+    // Fail-closed post-state: no descriptor, no lifecycle locks, database
+    // kept (the writer opened it before verification and shutdown joins it).
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
+    assert!(!paths.legacy_writer_lock_path().exists());
+    assert!(paths.database_path().is_file());
+
+    // A retry must fail identically - the failure is deterministic, not a
+    // one-shot race.
+    let retry = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .err()
+        .expect("retry must fail closed identically");
+    assert_eq!(retry.code(), "daemon_control_runtime_security_invalid");
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
+
+    // End-to-end: the standalone daemon binary reports the same code on
+    // stderr (mirrors the control_descriptor_exists assertion above).
+    let output = Command::new(env!("CARGO_BIN_EXE_vibemuxd"))
+        .arg("--project-root")
+        .arg(paths.project_root())
+        .output()
+        .await
+        .expect("run daemon against loosened runtime");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("daemon_control_runtime_security_invalid"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
 }
 
 fn spawn_daemon(paths: &DaemonPaths) -> Child {

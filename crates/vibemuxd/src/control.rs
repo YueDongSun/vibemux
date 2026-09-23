@@ -318,6 +318,8 @@ pub enum ControlError {
     ArtifactCleanupFailed,
     #[error("local control runtime generation conflicts with legacy artifacts")]
     RuntimeGenerationConflict,
+    #[error("daemon control runtime access policy is invalid")]
+    ControlRuntimeSecurityInvalid,
     #[error("daemon writer operation failed: {code}")]
     Writer { code: String },
     #[error("daemon plugin operation failed: {code}")]
@@ -347,6 +349,10 @@ impl ControlError {
             Self::ArtifactChanged => "control_artifact_changed",
             Self::ArtifactCleanupFailed => "control_artifact_cleanup_failed",
             Self::RuntimeGenerationConflict => "control_runtime_generation_conflict",
+            // String-identical to `DaemonPathError::ControlRuntimeSecurityInvalid`
+            // so clients see one code for one condition regardless of which
+            // layer caught it (issue #7).
+            Self::ControlRuntimeSecurityInvalid => "daemon_control_runtime_security_invalid",
             Self::Writer { code } | Self::Plugin { code } | Self::Remote { code } => code,
             Self::Deadline => "control_deadline_exceeded",
             Self::ServerTerminated => "control_server_terminated",
@@ -506,6 +512,7 @@ impl DaemonControlServer {
             plugins,
             None,
             paths.probe_cache_path(),
+            Some(paths),
         )
         .await
     }
@@ -529,6 +536,7 @@ impl DaemonControlServer {
             plugins,
             None,
             probe_cache_path,
+            None,
         )
         .await
     }
@@ -562,6 +570,7 @@ impl DaemonControlServer {
             PluginStartup::default(),
             None,
             probe_cache_path,
+            None,
         )
         .await
     }
@@ -581,6 +590,7 @@ impl DaemonControlServer {
             PluginStartup::default(),
             None,
             probe_cache_path,
+            None,
         )
         .await
     }
@@ -608,10 +618,20 @@ impl DaemonControlServer {
             plugins,
             Some(supervisor),
             paths.probe_cache_path(),
+            Some(paths),
         )
         .await
     }
 
+    /// `security` is the trusted-path context (`Some` only from the
+    /// `start_for_paths*` constructors, which are reached after
+    /// `DaemonPaths::ensure_runtime_dir` validated the project layout).
+    /// On Windows it triggers a fail-closed re-verification of the whole
+    /// control-runtime ACL surface right after the descriptor is
+    /// published (ADR 020, issue #7); raw-path constructors pass `None`
+    /// because their runtime directories (often plain test tempdirs) are
+    /// not part of the protected surface.
+    #[allow(clippy::too_many_arguments)] // eight params is the honest signature of a trusted start
     async fn start_with_writer_locks(
         database_path: &Path,
         runtime_dir: &Path,
@@ -620,6 +640,7 @@ impl DaemonControlServer {
         plugins: PluginStartup,
         supervisor: Option<SupervisorServiceConfig>,
         probe_cache_path: PathBuf,
+        security: Option<&crate::process::DaemonPaths>,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
         std::fs::create_dir_all(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -657,10 +678,41 @@ impl DaemonControlServer {
                 .create(&endpoint)
                 .map_err(|_| ControlError::EndpointUnavailable)?;
             let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
+            // ADR 020 / issue #7: the ACL marker is a contents-only
+            // idempotency record, so a valid fast path in
+            // `ensure_runtime_dir` proves nothing about the CURRENT ACLs.
+            // Re-verify the protected root, runtime leaf, marker, and the
+            // just-published artifacts (one helper invocation) before any
+            // plugin/supervisor machinery starts; fail closed. The verify
+            // and the failure-path writer shutdown both run through
+            // `spawn_blocking` (the pattern `serve_owned` uses) because
+            // they block on a helper process / thread join. `WriterWorker::
+            // shutdown` JOINS the writer thread so the lifecycle locks are
+            // removed deterministically; `WriterWorker::Drop` would only
+            // try_send a signal and detach, leaving stale locks behind. A
+            // join panic counts as a verification failure: unverifiable
+            // means invalid.
+            if let Some(paths) = security {
+                // Clone for the `'static` closure: `spawn_blocking` cannot
+                // hold the caller's borrow across the task boundary, and
+                // `DaemonPaths` is a cheap value type.
+                let paths = paths.clone();
+                let verified =
+                    tokio::task::spawn_blocking(move || paths.verify_control_security().is_ok())
+                        .await
+                        .unwrap_or(false);
+                if !verified {
+                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
+                    return Err(ControlError::ControlRuntimeSecurityInvalid);
+                }
+            }
             let mut registry = PluginRegistry::new(plugins.registry_config.clone())?;
             for (config, policy) in plugins.registrations {
                 if let Err(error) = registry.register(config, policy) {
                     let _ = registry.shutdown().await;
+                    // Same writer-shutdown rule as the verify failure:
+                    // join the worker, never detach it.
+                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
                     return Err(error.into());
                 }
             }
@@ -669,6 +721,7 @@ impl DaemonControlServer {
                     Ok(service) => Some(service),
                     Err(error) => {
                         let _ = registry.shutdown().await;
+                        let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
                         return Err(ControlError::Plugin {
                             code: error.code().to_string(),
                         });
@@ -714,6 +767,9 @@ impl DaemonControlServer {
             use std::os::unix::fs::PermissionsExt;
             use tokio::net::UnixListener;
 
+            // The ACL re-verification is Windows-only (ADR 020); keep the
+            // parameter honest on unix without changing behavior.
+            let _ = security;
             let socket_path = PathBuf::from(&endpoint);
             let listener =
                 UnixListener::bind(&socket_path).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -733,6 +789,9 @@ impl DaemonControlServer {
             for (config, policy) in plugins.registrations {
                 if let Err(error) = registry.register(config, policy) {
                     let _ = registry.shutdown().await;
+                    // Join the writer (deterministic lifecycle-lock removal)
+                    // instead of letting WriterWorker::Drop detach it.
+                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
                     return Err(error.into());
                 }
             }
@@ -741,6 +800,7 @@ impl DaemonControlServer {
                     Ok(service) => Some(service),
                     Err(error) => {
                         let _ = registry.shutdown().await;
+                        let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
                         return Err(ControlError::Plugin {
                             code: error.code().to_string(),
                         });
