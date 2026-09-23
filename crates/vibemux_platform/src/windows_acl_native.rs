@@ -412,14 +412,26 @@ mod tests {
     }
 
     #[test]
-    fn unprotected_directory_fails_closed() {
-        // A plain temp directory carries the default inherited ACEs of the
-        // user profile (more than three effective rules and broader
-        // principals), so it must never pass the restricted rule set.
+    fn broadened_directory_fails_closed() {
+        // Environment-independent rejection: add Everyone (SID form,
+        // locale-independent) to a fresh directory's DACL. Whatever the
+        // machine's default temp ACLs are - loose on developer machines,
+        // already exactly three restricted ACEs on some CI runners, which
+        // is what made the previous "plain tempdir must fail" assumption
+        // environment-dependent - the extra principal takes the effective
+        // count off exactly three (stage 7) deterministically.
         let temp = tempfile::tempdir().expect("temp directory");
-        let plain = temp.path().join("plain");
-        std::fs::create_dir(&plain).expect("plain directory");
-        let result = verify_paths(&[plain.as_path()]);
-        assert!(matches!(result, Err((stage, 1)) if stage != 0));
+        let broadened = temp.path().join("broadened");
+        std::fs::create_dir(&broadened).expect("broadened directory");
+        let status = std::process::Command::new("icacls")
+            .arg(&broadened)
+            .args(["/grant", "*S-1-1-0:(OI)(CI)F"])
+            .status()
+            .expect("icacls");
+        assert!(status.success(), "icacls must succeed");
+        assert_eq!(
+            verify_paths(&[broadened.as_path()]),
+            Err((STAGE_ACE_COUNT, 1))
+        );
     }
 }
