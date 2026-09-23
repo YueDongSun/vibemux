@@ -1,6 +1,6 @@
 # ADR 020: Windows per-user control runtime and ACL boundary
 
-Status: Accepted for pre-alpha implementation
+Status: Accepted for pre-alpha implementation. Read-only ACL verification amended by [ADR 025](025_native_read_only_acl_verification.md) (verification is native Win32; DACL writes remain on the fixed PowerShell companion).
 
 ## Context
 

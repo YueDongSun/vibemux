@@ -609,17 +609,19 @@ pub fn daemon_executable(explicit: Option<&Path>) -> Result<PathBuf, DaemonCliEr
 /// fail-closed start verification, issue #7) never reaches the CLI. The
 /// control-runtime ACLs are the one such cause the CLI can observe for
 /// itself: on the failure path only, re-check them with ONE read-only
-/// verification. The happy path never spawns a helper.
+/// native verification pass (~ms, no helper process - ADR 025). The happy
+/// path performs no security work at all.
 #[cfg(windows)]
 async fn classify_daemon_exit(paths: &DaemonPaths) -> DaemonCliError {
     // Clone for the `'static` closure; the re-check runs through
-    // spawn_blocking because it spawns and waits on a helper process.
+    // spawn_blocking because it performs blocking LSA/filesystem reads.
     let paths = paths.clone();
     let security_invalid =
         tokio::task::spawn_blocking(move || paths.verify_control_runtime_acl().is_err())
             .await
-            // A helper that could not even run leaves the cause undetermined;
-            // report the honest generic failure instead of blaming the ACLs.
+            // A verification pass that could not even run leaves the cause
+            // undetermined; report the honest generic failure instead of
+            // blaming the ACLs.
             .unwrap_or(false);
     if security_invalid {
         DaemonCliError::from(DaemonPathError::ControlRuntimeSecurityInvalid)

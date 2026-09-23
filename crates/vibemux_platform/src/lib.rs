@@ -1,6 +1,15 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Reviewed platform boundaries that remain independent from domain and storage types.
+//!
+//! `unsafe` is denied at this crate root and allowed in exactly one narrow
+//! module: [`windows_acl_native`], the read-only Win32 ACL verification
+//! surface reviewed and recorded by ADR 025 (amending ADR 020's read path).
+//! ACL writes stay on the fixed, reviewed PowerShell companion in
+//! [`windows_security`]. Every other workspace crate keeps
+//! `#![forbid(unsafe_code)]`.
 
+#[cfg(windows)]
+mod windows_acl_native;
 #[cfg(windows)]
 mod windows_security;
 

@@ -245,19 +245,25 @@ impl DaemonPaths {
     }
 
     /// Re-verify the whole Windows control-runtime trust surface in ONE
-    /// helper invocation: the protected control root, the per-project
-    /// runtime leaf, the ACL marker, and the published control artifacts
+    /// batched call: the protected control root, the per-project runtime
+    /// leaf, the ACL marker, and the published control artifacts
     /// (descriptor + writer lock), in that index order. The marker is a
     /// contents-only idempotency record - it carries no secret - so
     /// `ensure_runtime_dir`'s fast path accepting valid contents does NOT
     /// prove the surrounding ACLs are still restricted ("verify once,
     /// trust forever", issue #7). ADR 020 requires the protected root and
-    /// effective leaf/artifact ACLs to be verified, so trusted daemon
-    /// starts call this after publishing the descriptor. Every path must
-    /// exist (a missing one fails closed). Legacy compatibility artifacts
-    /// stay in the project-local `.vibemux` state directory by design and
-    /// are not part of this protected surface. Any failure is reported as
-    /// [`DaemonPathError::ControlRuntimeSecurityInvalid`], never success.
+    /// effective leaf/artifact ACLs to be verified; since ADR 025 the
+    /// verification is native read-only Win32 (no helper process), and
+    /// trusted daemon starts run it in TWO phases:
+    /// [`Self::verify_control_pre_publish`] before the token-bearing
+    /// descriptor exists, then [`Self::verify_control_artifact_acls`] after
+    /// publication. This full-surface form remains the one-call inspection
+    /// API (used by tests and callers that run after both phases). Every
+    /// path must exist (a missing one fails closed). Legacy compatibility
+    /// artifacts stay in the project-local `.vibemux` state directory by
+    /// design and are not part of this protected surface. Any failure is
+    /// reported as [`DaemonPathError::ControlRuntimeSecurityInvalid`],
+    /// never success.
     #[cfg(windows)]
     pub fn verify_control_security(&self) -> Result<(), DaemonPathError> {
         let marker = self.acl_marker_path();
@@ -266,6 +272,29 @@ impl DaemonPaths {
             self.runtime_dir.as_path(),
             marker.as_path(),
             self.descriptor_path.as_path(),
+            self.writer_lock_path.as_path(),
+        ];
+        vibemux_platform::verify_restricted_path_acls(&paths)
+            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+    }
+
+    /// Phase 1 of the two-phase trusted-start verification (ADR 025,
+    /// issue #8): the protected control root, the per-project runtime
+    /// leaf, the ACL marker, and the writer lock - everything that already
+    /// exists BEFORE the token-bearing descriptor is published. Verifying
+    /// these first means a loosened runtime refuses the start while the
+    /// descriptor (and its bearer token) does not exist yet, closing the
+    /// sub-second exposure window Stage 1 had (it could only verify after
+    /// publication). Native and ~ms-cheap, so the extra phase adds no
+    /// measurable start cost. Same fail-closed contract as
+    /// [`Self::verify_control_security`].
+    #[cfg(windows)]
+    pub fn verify_control_pre_publish(&self) -> Result<(), DaemonPathError> {
+        let marker = self.acl_marker_path();
+        let paths = [
+            self.control_runtime_root.as_path(),
+            self.runtime_dir.as_path(),
+            marker.as_path(),
             self.writer_lock_path.as_path(),
         ];
         vibemux_platform::verify_restricted_path_acls(&paths)
@@ -747,6 +776,42 @@ mod tests {
             paths
                 .verify_control_security()
                 .expect_err("loosened runtime leaf must fail closed"),
+            DaemonPathError::ControlRuntimeSecurityInvalid
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verify_control_pre_publish_covers_the_pre_descriptor_surface() {
+        // Phase 1 of the two-phase trusted start (ADR 025, issue #8): it
+        // must accept the secured root/leaf/marker with a writer.lock
+        // stand-in while the descriptor does NOT exist yet, and must fail
+        // closed on a loosened leaf - before any token is published.
+        let _marker_guard = marker_test_lock();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        paths
+            .ensure_runtime_dir()
+            .expect("secure runtime directory");
+        std::fs::write(paths.writer_lock_path(), b"writer.lock").expect("writer.lock stand-in");
+        assert!(!paths.descriptor_path().exists());
+        paths
+            .verify_control_pre_publish()
+            .expect("pre-publish surface must verify");
+        // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
+        // control root, so sibling tests are unaffected); BUILTIN\Users in
+        // SID form to stay locale-independent.
+        let status = std::process::Command::new("icacls")
+            .arg(paths.runtime_dir())
+            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
+            .status()
+            .expect("icacls");
+        assert!(status.success(), "icacls must succeed");
+        assert_eq!(
+            paths
+                .verify_control_pre_publish()
+                .expect_err("loosened leaf must fail closed before publication"),
             DaemonPathError::ControlRuntimeSecurityInvalid
         );
     }
