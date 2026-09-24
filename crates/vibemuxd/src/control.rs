@@ -27,6 +27,8 @@ use crate::plugin_configuration::PluginStartup;
 use crate::plugin_registry::{
     PluginRegistry, PluginRegistryError, PluginStatus, PluginStatusReader,
 };
+#[cfg(windows)]
+use crate::process::DaemonPaths;
 use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::{WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow};
@@ -622,16 +624,61 @@ impl DaemonControlServer {
         )
         .await
     }
+}
 
+/// One phase of the two-phase trusted-start ACL verification (ADR 025):
+/// run `verify` on a cloned `DaemonPaths` through `spawn_blocking` and,
+/// when it fails (or its join panics - unverifiable means invalid), take
+/// the writer from `writer`, join it via [`join_writer`], and fail
+/// closed with [`ControlError::ControlRuntimeSecurityInvalid`]. On success
+/// the writer is left in place for the caller's next step. `security ==
+/// None` (raw test-tempdir constructors) skips the phase entirely.
+#[cfg(windows)]
+async fn verify_control_phase(
+    security: Option<&crate::process::DaemonPaths>,
+    writer: &mut Option<WriterWorker>,
+    verify: fn(&crate::process::DaemonPaths) -> Result<(), crate::process::DaemonPathError>,
+) -> Result<(), ControlError> {
+    let Some(paths) = security else {
+        return Ok(());
+    };
+    // Clone for the `'static` closure: `spawn_blocking` cannot hold the
+    // caller's borrow across the task boundary, and `DaemonPaths` is a
+    // cheap value type.
+    let paths = paths.clone();
+    let verified = tokio::task::spawn_blocking(move || verify(&paths).is_ok())
+        .await
+        .unwrap_or(false);
+    if !verified {
+        let _ = join_writer(writer.take()).await;
+        return Err(ControlError::ControlRuntimeSecurityInvalid);
+    }
+    Ok(())
+}
+
+/// Join the writer worker so the lifecycle locks are removed
+/// deterministically before a failed start returns; `WriterWorker::Drop`
+/// would only try_send a signal and detach, leaving stale locks behind.
+/// The join runs through `spawn_blocking` because it blocks on a thread.
+#[cfg(windows)]
+async fn join_writer(writer: Option<WriterWorker>) {
+    if let Some(writer) = writer {
+        let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
+    }
+}
+
+impl DaemonControlServer {
     /// `security` is the trusted-path context (`Some` only from the
     /// `start_for_paths*` constructors, which are reached after
     /// `DaemonPaths::ensure_runtime_dir` validated the project layout).
     /// On Windows it triggers the fail-closed two-phase re-verification of
-    /// the control-runtime ACL surface (ADR 020/025, issues #7/#8): root,
-    /// runtime leaf, marker, and writer lock BEFORE the token-bearing
-    /// descriptor is published, then the published artifacts after. Raw-path
-    /// constructors pass `None` because their runtime directories (often
-    /// plain test tempdirs) are not part of the protected surface.
+    /// the control-runtime ACL surface (ADR 020/025, issues #7/#8): see
+    /// `DaemonPaths::verify_control_pre_publish` (phase 1, before the
+    /// token-bearing descriptor exists) and
+    /// `DaemonPaths::verify_control_descriptor_acl` (phase 2, after
+    /// publication). Raw-path constructors pass `None` because their
+    /// runtime directories (often plain test tempdirs) are not part of the
+    /// protected surface.
     #[allow(clippy::too_many_arguments)] // eight params is the honest signature of a trusted start
     async fn start_with_writer_locks(
         database_path: &Path,
@@ -654,6 +701,13 @@ impl DaemonControlServer {
         let database_path = database_path.to_path_buf();
         let writer_lock_path = writer_lock_path.to_path_buf();
         let compatibility_lock_path = compatibility_lock_path.map(Path::to_path_buf);
+        let endpoint = endpoint_name(&runtime_dir);
+        // Generate the token BEFORE starting the writer: this keeps the
+        // fallible step outside the writer-ownership window, so a failure
+        // here can never strand a started worker behind a `?` early return
+        // (`WriterWorker::Drop` detaches instead of joining and would leave
+        // the lifecycle locks behind).
+        let token = control_token()?;
         let writer = tokio::task::spawn_blocking(move || match compatibility_lock_path {
             Some(compatibility_lock_path) => WriterWorker::start_with_compatibility_lock_path(
                 &database_path,
@@ -665,12 +719,11 @@ impl DaemonControlServer {
         .await
         .map_err(|_| ControlError::ServerTerminated)??;
         let writer_lock_path = writer.lock_path().to_path_buf();
-        let endpoint = endpoint_name(&runtime_dir);
         let descriptor = ControlDescriptor {
             version: CONTROL_PROTOCOL_VERSION,
             process_id: std::process::id(),
             endpoint: endpoint.clone(),
-            token: control_token()?,
+            token,
         };
 
         #[cfg(windows)]
@@ -678,75 +731,96 @@ impl DaemonControlServer {
             // ADR 020/025, issues #7/#8: the ACL marker is a contents-only
             // idempotency record, so a valid fast path in
             // `ensure_runtime_dir` proves nothing about the CURRENT ACLs.
-            // PHASE 1 runs BEFORE the token-bearing descriptor exists:
-            // the protected root, runtime leaf, marker, and writer lock
-            // are re-verified natively (~ms, no helper process - ADR 025),
-            // so a loosened runtime refuses the start while no secret has
-            // been written yet. The verify and every failure-path writer
-            // shutdown run through `spawn_blocking` (the pattern
-            // `serve_owned` uses) because they block on LSA/filesystem
-            // reads or a thread join. `WriterWorker::shutdown` JOINS the
-            // writer thread so the lifecycle locks are removed
-            // deterministically; `WriterWorker::Drop` would only try_send
-            // a signal and detach, leaving stale locks behind. A join
-            // panic counts as a verification failure: unverifiable means
-            // invalid.
-            if let Some(paths) = security {
-                // Clone for the `'static` closure: `spawn_blocking` cannot
-                // hold the caller's borrow across the task boundary, and
-                // `DaemonPaths` is a cheap value type.
-                let paths = paths.clone();
-                let verified =
-                    tokio::task::spawn_blocking(move || paths.verify_control_pre_publish().is_ok())
-                        .await
-                        .unwrap_or(false);
-                if !verified {
-                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
-                    return Err(ControlError::ControlRuntimeSecurityInvalid);
+            // Trusted starts therefore re-verify in two phases around the
+            // descriptor publication - see
+            // `DaemonPaths::verify_control_pre_publish` and
+            // `DaemonPaths::verify_control_descriptor_acl` for the surfaces
+            // and ordering rationale. EVERY failure path in this branch
+            // joins the writer through `join_writer`:
+            // `WriterWorker::shutdown` JOINS the worker thread so the
+            // lifecycle locks are removed deterministically, while `Drop`
+            // would only try_send a signal and detach, leaving stale locks
+            // behind. The verifications and shutdowns run through
+            // `spawn_blocking` because LSA/filesystem reads and a thread
+            // join are blocking work; a join panic counts as a
+            // verification failure: unverifiable means invalid.
+            let mut writer = Some(writer);
+            // PHASE 1: root/leaf/marker/writer.lock BEFORE the token-bearing
+            // descriptor exists.
+            verify_control_phase(
+                security,
+                &mut writer,
+                DaemonPaths::verify_control_pre_publish,
+            )
+            .await?;
+            let listener = match windows_server_options(true).create(&endpoint) {
+                Ok(listener) => listener,
+                Err(_) => {
+                    let _ = join_writer(writer.take()).await;
+                    return Err(ControlError::EndpointUnavailable);
                 }
-            }
-            let listener = windows_server_options(true)
-                .create(&endpoint)
-                .map_err(|_| ControlError::EndpointUnavailable)?;
-            let descriptor_guard = DescriptorGuard::publish(&descriptor_path, descriptor.clone())?;
-            // PHASE 2: the just-published descriptor and the writer lock
-            // must carry the restricted effective ACLs, completing the
-            // issue-#7 full-surface guarantee. Failure cleanup drops the
-            // descriptor guard (removing the unchanged descriptor) and
-            // joins the writer, exactly like phase 1.
-            if let Some(paths) = security {
-                let paths = paths.clone();
-                let verified = tokio::task::spawn_blocking(move || {
-                    paths.verify_control_artifact_acls().is_ok()
-                })
-                .await
-                .unwrap_or(false);
-                if !verified {
-                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
-                    return Err(ControlError::ControlRuntimeSecurityInvalid);
+            };
+            let descriptor_guard =
+                match DescriptorGuard::publish(&descriptor_path, descriptor.clone()) {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        let _ = join_writer(writer.take()).await;
+                        return Err(error);
+                    }
+                };
+            // PHASE 2: the just-published descriptor (the writer lock was
+            // verified by phase 1 and nothing between the phases rewrites
+            // it).
+            verify_control_phase(
+                security,
+                &mut writer,
+                DaemonPaths::verify_control_descriptor_acl,
+            )
+            .await?;
+            let mut registry = match PluginRegistry::new(plugins.registry_config.clone()) {
+                Ok(registry) => registry,
+                Err(error) => {
+                    let _ = join_writer(writer.take()).await;
+                    return Err(error.into());
                 }
-            }
-            let mut registry = PluginRegistry::new(plugins.registry_config.clone())?;
+            };
             for (config, policy) in plugins.registrations {
                 if let Err(error) = registry.register(config, policy) {
                     let _ = registry.shutdown().await;
-                    // Same writer-shutdown rule as the verify failure:
-                    // join the worker, never detach it.
-                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
+                    // Same writer-shutdown rule as every other failure path
+                    // in this branch: join the worker, never detach it.
+                    let _ = join_writer(writer.take()).await;
                     return Err(error.into());
                 }
             }
+            let Some(writer) = writer else {
+                // Unreachable in practice: every path above that takes the
+                // writer returns early, so a healthy start still owns it.
+                return Err(ControlError::ServerTerminated);
+            };
             let supervisor = match supervisor {
-                Some(config) => match SupervisorService::start(writer.handle()?, config).await {
-                    Ok(service) => Some(service),
-                    Err(error) => {
-                        let _ = registry.shutdown().await;
-                        let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
-                        return Err(ControlError::Plugin {
-                            code: error.code().to_string(),
-                        });
+                Some(config) => {
+                    let handle = match writer.handle() {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            let _ = registry.shutdown().await;
+                            let _ = join_writer(Some(writer)).await;
+                            return Err(ControlError::Plugin {
+                                code: error.code().to_string(),
+                            });
+                        }
+                    };
+                    match SupervisorService::start(handle, config).await {
+                        Ok(service) => Some(service),
+                        Err(error) => {
+                            let _ = registry.shutdown().await;
+                            let _ = join_writer(Some(writer)).await;
+                            return Err(ControlError::Plugin {
+                                code: error.code().to_string(),
+                            });
+                        }
                     }
-                },
+                }
                 None => None,
             };
             let a2a_base_url = supervisor

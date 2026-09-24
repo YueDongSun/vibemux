@@ -204,15 +204,12 @@ async fn trusted_start_fails_closed_when_the_runtime_acl_is_loosened() {
     let _control_cleanup = ControlRuntimeCleanup::new(&paths);
     paths.ensure_runtime_dir().expect("runtime directory");
     // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
-    // control root, so sibling tests are unaffected). BUILTIN\Users in SID
-    // form to stay locale-independent; the extra ACE breaks the exactly-
-    // three-rules invariant.
-    let status = std::process::Command::new("icacls")
-        .arg(paths.runtime_dir())
-        .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
-        .status()
-        .expect("icacls");
-    assert!(status.success(), "icacls must succeed");
+    // control root, so sibling tests are unaffected); the extra ACE breaks
+    // the exactly-three-rules invariant.
+    vibemux_platform::test_helpers::loosen_with_icacls(
+        paths.runtime_dir(),
+        "*S-1-5-32-545:(OI)(CI)F",
+    );
 
     let error = DaemonControlServer::start_for_paths(&paths)
         .await

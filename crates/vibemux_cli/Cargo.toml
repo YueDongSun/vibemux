@@ -44,3 +44,4 @@ base64.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }

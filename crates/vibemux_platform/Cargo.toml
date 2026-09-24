@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Exposes `test_helpers` (the shared icacls ACL-loosening recipe) to other
+# crates' test builds; vibemuxd/vibemux_cli dev-dependencies enable it.
+test_helpers = []
+
 [dependencies]
 thiserror.workspace = true
 

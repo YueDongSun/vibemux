@@ -19,6 +19,14 @@ pub use windows_security::{
     verify_restricted_path_acls,
 };
 
+/// Shared ACL-loosening recipe for fail-closed tests across the workspace
+/// (`vibemuxd` process/control tests, `vibemux_cli` classify tests). Test
+/// builds only; enabled by consumers via the `test_helpers` feature.
+#[cfg(all(windows, any(test, feature = "test_helpers")))]
+pub mod test_helpers {
+    pub use crate::windows_security::tests::{loosen_with_icacls, restore_with_icacls};
+}
+
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]

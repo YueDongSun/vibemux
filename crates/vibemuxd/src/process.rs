@@ -239,43 +239,52 @@ impl DaemonPaths {
         probe_cache_path_for_state_dir(&self.state_dir)
     }
 
+    /// Path of the `.acl_v1` marker under the protected control root.
+    /// Public because the marker is part of the documented runtime
+    /// surface: the CLI's failure-path classification re-checks its ACL
+    /// alongside the root and leaf
+    /// ([`Self::verify_control_surviving_acls`]).
     #[cfg(windows)]
-    fn acl_marker_path(&self) -> PathBuf {
+    pub fn acl_marker_path(&self) -> PathBuf {
         self.control_runtime_root.join(CONTROL_ACL_MARKER_FILE_NAME)
     }
 
-    /// Re-verify the whole Windows control-runtime trust surface in ONE
-    /// batched call: the protected control root, the per-project runtime
-    /// leaf, the ACL marker, and the published control artifacts
-    /// (descriptor + writer lock), in that index order. The marker is a
-    /// contents-only idempotency record - it carries no secret - so
-    /// `ensure_runtime_dir`'s fast path accepting valid contents does NOT
-    /// prove the surrounding ACLs are still restricted ("verify once,
-    /// trust forever", issue #7). ADR 020 requires the protected root and
-    /// effective leaf/artifact ACLs to be verified; since ADR 025 the
-    /// verification is native read-only Win32 (no helper process), and
-    /// trusted daemon starts run it in TWO phases:
-    /// [`Self::verify_control_pre_publish`] before the token-bearing
-    /// descriptor exists, then [`Self::verify_control_artifact_acls`] after
-    /// publication. This full-surface form remains the one-call inspection
-    /// API (used by tests and callers that run after both phases). Every
-    /// path must exist (a missing one fails closed). Legacy compatibility
-    /// artifacts stay in the project-local `.vibemux` state directory by
-    /// design and are not part of this protected surface. Any failure is
-    /// reported as [`DaemonPathError::ControlRuntimeSecurityInvalid`],
-    /// never success.
+    /// The shared tail of every control-surface verifier below: run the
+    /// batched native ACL verification over `paths` and collapse any
+    /// failure (ACL violation, missing path, rejected batch) into
+    /// [`DaemonPathError::ControlRuntimeSecurityInvalid`]. The individual
+    /// stage/index diagnostics stay inside `vibemux_platform`; this layer
+    /// deliberately reports no path, SID, or ACL text (ADR 020 line 21).
+    #[cfg(windows)]
+    fn verify_control_acls(&self, paths: &[&Path]) -> Result<(), DaemonPathError> {
+        vibemux_platform::verify_restricted_path_acls(paths)
+            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+    }
+
+    /// Re-verify the whole Windows control-runtime trust surface in one
+    /// call: the protected control root, the per-project runtime leaf, the
+    /// ACL marker, and the published control artifacts (descriptor +
+    /// writer lock). The marker is a contents-only idempotency record - it
+    /// carries no secret - so `ensure_runtime_dir`'s fast path accepting
+    /// valid contents does NOT prove the surrounding ACLs are still
+    /// restricted ("verify once, trust forever", issue #7). ADR 020
+    /// requires the protected root and effective leaf/artifact ACLs to be
+    /// verified; since ADR 025 the verification is native read-only Win32
+    /// (no helper process), and trusted daemon starts run it in TWO
+    /// phases: [`Self::verify_control_pre_publish`] before the
+    /// token-bearing descriptor exists, then
+    /// [`Self::verify_control_descriptor_acl`] after publication. This
+    /// full-surface form composes both phases and is the inspection API
+    /// the tests use to certify a running daemon; production start code
+    /// calls the phases individually. Every path must exist (a missing
+    /// one fails closed). Legacy compatibility artifacts stay in the
+    /// project-local `.vibemux` state directory by design and are not part
+    /// of this protected surface. Any failure is reported as
+    /// [`DaemonPathError::ControlRuntimeSecurityInvalid`], never success.
     #[cfg(windows)]
     pub fn verify_control_security(&self) -> Result<(), DaemonPathError> {
-        let marker = self.acl_marker_path();
-        let paths = [
-            self.control_runtime_root.as_path(),
-            self.runtime_dir.as_path(),
-            marker.as_path(),
-            self.descriptor_path.as_path(),
-            self.writer_lock_path.as_path(),
-        ];
-        vibemux_platform::verify_restricted_path_acls(&paths)
-            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+        self.verify_control_pre_publish()
+            .and_then(|()| self.verify_control_artifact_acls())
     }
 
     /// Phase 1 of the two-phase trusted-start verification (ADR 025,
@@ -297,28 +306,52 @@ impl DaemonPaths {
             marker.as_path(),
             self.writer_lock_path.as_path(),
         ];
-        vibemux_platform::verify_restricted_path_acls(&paths)
-            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+        self.verify_control_acls(&paths)
     }
 
+    /// The part of the phase-1 surface that SURVIVES a failed start: the
+    /// protected control root, the per-project runtime leaf, and the ACL
+    /// marker. The writer lock is deliberately excluded: every daemon-side
+    /// failure path removes it (joined writer shutdown), so after a start
+    /// has failed it either never existed or is already gone - and the
+    /// CLI's post-mortem classification (`classify_daemon_exit`) must not
+    /// fail on a missing writer.lock that the failure itself cleaned up.
+    /// This is what an external observer can legitimately re-check.
     #[cfg(windows)]
-    pub fn verify_control_runtime_acl(&self) -> Result<(), DaemonPathError> {
+    pub fn verify_control_surviving_acls(&self) -> Result<(), DaemonPathError> {
+        let marker = self.acl_marker_path();
         let paths = [
             self.control_runtime_root.as_path(),
             self.runtime_dir.as_path(),
+            marker.as_path(),
         ];
-        vibemux_platform::verify_restricted_path_acls(&paths)
-            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+        self.verify_control_acls(&paths)
     }
 
+    /// Phase 2 of the two-phase trusted-start verification (ADR 025,
+    /// issue #8): the just-published, token-bearing descriptor. The writer
+    /// lock is NOT re-read here - phase 1 verified it microseconds
+    /// earlier and nothing between the phases rewrites it (the only
+    /// intervening writes are the named-pipe bind and the descriptor
+    /// publication itself).
+    #[cfg(windows)]
+    pub fn verify_control_descriptor_acl(&self) -> Result<(), DaemonPathError> {
+        self.verify_control_acls(&[self.descriptor_path.as_path()])
+    }
+
+    /// Inspection form of the artifact half: the descriptor AND the writer
+    /// lock in one batch. Production phase 2 uses
+    /// [`Self::verify_control_descriptor_acl`] (the writer lock was
+    /// already covered by phase 1); this two-path form serves the
+    /// full-surface inspection API
+    /// ([`Self::verify_control_security`]) and direct test callers.
     #[cfg(windows)]
     pub fn verify_control_artifact_acls(&self) -> Result<(), DaemonPathError> {
         let paths = [
             self.descriptor_path.as_path(),
             self.writer_lock_path.as_path(),
         ];
-        vibemux_platform::verify_restricted_path_acls(&paths)
-            .map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
+        self.verify_control_acls(&paths)
     }
 
     #[cfg(windows)]
@@ -624,7 +657,7 @@ mod tests {
             .ensure_runtime_dir()
             .expect("secure runtime directory");
         paths
-            .verify_control_runtime_acl()
+            .verify_control_surviving_acls()
             .expect("verify control runtime ACL");
         std::fs::write(paths.legacy_descriptor_path(), b"legacy").expect("legacy descriptor");
         assert_eq!(
@@ -763,15 +796,12 @@ mod tests {
             "sanity: secured runtime must verify"
         );
         // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
-        // control root, so sibling tests are unaffected). BUILTIN\Users in
-        // SID form to stay locale-independent; the extra ACE makes the
-        // effective rule count stop being exactly three.
-        let status = std::process::Command::new("icacls")
-            .arg(paths.runtime_dir())
-            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
-            .status()
-            .expect("icacls");
-        assert!(status.success(), "icacls must succeed");
+        // control root, so sibling tests are unaffected); the extra ACE
+        // makes the effective rule count stop being exactly three.
+        vibemux_platform::test_helpers::loosen_with_icacls(
+            paths.runtime_dir(),
+            "*S-1-5-32-545:(OI)(CI)F",
+        );
         assert_eq!(
             paths
                 .verify_control_security()
@@ -800,14 +830,11 @@ mod tests {
             .verify_control_pre_publish()
             .expect("pre-publish surface must verify");
         // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
-        // control root, so sibling tests are unaffected); BUILTIN\Users in
-        // SID form to stay locale-independent.
-        let status = std::process::Command::new("icacls")
-            .arg(paths.runtime_dir())
-            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
-            .status()
-            .expect("icacls");
-        assert!(status.success(), "icacls must succeed");
+        // control root, so sibling tests are unaffected).
+        vibemux_platform::test_helpers::loosen_with_icacls(
+            paths.runtime_dir(),
+            "*S-1-5-32-545:(OI)(CI)F",
+        );
         assert_eq!(
             paths
                 .verify_control_pre_publish()

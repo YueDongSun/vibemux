@@ -608,16 +608,19 @@ pub fn daemon_executable(explicit: Option<&Path>) -> Result<PathBuf, DaemonCliEr
 /// would carry `daemon_control_runtime_security_invalid` from the
 /// fail-closed start verification, issue #7) never reaches the CLI. The
 /// control-runtime ACLs are the one such cause the CLI can observe for
-/// itself: on the failure path only, re-check them with ONE read-only
-/// native verification pass (~ms, no helper process - ADR 025). The happy
-/// path performs no security work at all.
+/// itself: on the failure path only, re-check the SURVIVING phase-1
+/// surface - protected root, runtime leaf, and the `.acl_v1` marker -
+/// with ONE read-only native verification pass (~ms, no helper process -
+/// ADR 025). The descriptor and writer lock are absent by definition on
+/// this path (every daemon-side failure removes them), so they are not
+/// part of the re-check. The happy path performs no security work at all.
 #[cfg(windows)]
 async fn classify_daemon_exit(paths: &DaemonPaths) -> DaemonCliError {
     // Clone for the `'static` closure; the re-check runs through
     // spawn_blocking because it performs blocking LSA/filesystem reads.
     let paths = paths.clone();
     let security_invalid =
-        tokio::task::spawn_blocking(move || paths.verify_control_runtime_acl().is_err())
+        tokio::task::spawn_blocking(move || paths.verify_control_surviving_acls().is_err())
             .await
             // A verification pass that could not even run leaves the cause
             // undetermined; report the honest generic failure instead of
@@ -1133,15 +1136,29 @@ mod tests {
             classify_daemon_exit(&paths).await,
             DaemonCliError::StartFailed
         );
+        // Loosen ONLY the shared `.acl_v1` marker: the daemon's phase-1
+        // verification rejects it, and the CLI re-check must classify the
+        // security failure too (it used to check root+leaf only and
+        // reported the generic `daemon_start_failed` for marker drift -
+        // the code-review V2 finding). The marker ACL is restored
+        // immediately so the shared runtime is healthy again for sibling
+        // tests (none of them verify the marker's ACL, only its contents,
+        // but the runtime stays tidy).
+        let marker = paths.acl_marker_path();
+        vibemux_platform::test_helpers::loosen_with_icacls(&marker, "*S-1-1-0:F");
+        assert_eq!(
+            classify_daemon_exit(&paths).await,
+            DaemonCliError::Control {
+                code: "daemon_control_runtime_security_invalid".to_string()
+            }
+        );
+        vibemux_platform::test_helpers::restore_with_icacls(&marker, "*S-1-1-0");
         // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
-        // control root, so sibling tests are unaffected). BUILTIN\Users in
-        // SID form to stay locale-independent.
-        let status = std::process::Command::new("icacls")
-            .arg(paths.runtime_dir())
-            .args(["/grant", "*S-1-5-32-545:(OI)(CI)F"])
-            .status()
-            .expect("icacls");
-        assert!(status.success(), "icacls must succeed");
+        // control root, so sibling tests are unaffected).
+        vibemux_platform::test_helpers::loosen_with_icacls(
+            paths.runtime_dir(),
+            "*S-1-5-32-545:(OI)(CI)F",
+        );
         assert_eq!(
             classify_daemon_exit(&paths).await,
             DaemonCliError::Control {

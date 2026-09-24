@@ -141,9 +141,11 @@ fn current_user_sid() -> Option<CurrentUserSid> {
     let mut buffer: Vec<u64> = vec![0; buffer_length];
     let mut returned: u32 = 0;
     // SAFETY: `buffer` is a valid, aligned, live allocation of at least
-    // `needed` bytes for the duration of the call; on success it holds a
-    // `TOKEN_USER` whose `Sid` points into OS storage tied to the token,
-    // which this function keeps open via the returned guard.
+    // `needed` bytes for the duration of the call; on success the API
+    // writes a `TOKEN_USER` followed by the SID inline at the end of THIS
+    // buffer (GetTokenInformation does not allocate SID storage elsewhere).
+    // The guard therefore owns BOTH the buffer and the token handle:
+    // dropping the buffer would invalidate the SID pointer below.
     let ok = unsafe {
         GetTokenInformation(
             token.0,
@@ -228,6 +230,17 @@ fn verify_path(path: &Path, current_user: PSID) -> Result<(), u32> {
             _ => STAGE_API_FAILURE,
         });
     }
+    // `ppDacl` is NULL when the object's DACL is absent entirely - the
+    // maximally loose state (no DACL = "everyone, full control"), which is
+    // exactly the drift this verifier exists to reject. The deleted
+    // batched PowerShell verifier returned `stage_7_index_i` (count != 3)
+    // here; the native module's GetAclInformation dereferences `dacl`,
+    // so we MUST map NULL to the same stage-7 fail-closed answer BEFORE
+    // reaching evaluate_dacl - otherwise the daemon crashes with
+    // STATUS_ACCESS_VIOLATION on the worst possible ACL failure mode.
+    if dacl.is_null() {
+        return Err(STAGE_ACE_COUNT);
+    }
     // The guard must outlive `evaluate_dacl`: the DACL pointer references
     // memory inside the descriptor.
     let _descriptor = OwnedSecurityDescriptor(descriptor);
@@ -311,6 +324,7 @@ fn evaluate_dacl(dacl: *const ACL, current_user: PSID) -> Result<(), u32> {
 mod tests {
     use super::*;
     use crate::secure_user_directory;
+    use crate::windows_security::tests::loosen_with_icacls;
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows_sys::core::PWSTR;
 
@@ -373,6 +387,9 @@ mod tests {
         // used immediately after the drop with no allocation in between).
         // The threads below interleave same-size poisoned allocations with
         // verifications so the reuse actually happens inside the window.
+        // 200 rounds per thread = 800 verifications total: the pinned bug
+        // fired at worker 1 round 0 in the recorded red run, so this keeps
+        // a ~200x margin without burning CI seconds on 6000 reads.
         let temp = tempfile::tempdir().expect("temp directory");
         let protected = temp.path().join("protected_runtime");
         std::fs::create_dir(&protected).expect("protected directory");
@@ -381,7 +398,7 @@ mod tests {
             for worker in 0..4usize {
                 let protected = protected.as_path();
                 scope.spawn(move || {
-                    for round in 0..1500usize {
+                    for round in 0..200usize {
                         let mut junk: Vec<Vec<u64>> = Vec::with_capacity(8);
                         for block in 0..8usize {
                             // 2..8 u64 blocks: the size class the TOKEN_USER
@@ -413,25 +430,61 @@ mod tests {
 
     #[test]
     fn broadened_directory_fails_closed() {
-        // Environment-independent rejection: add Everyone (SID form,
-        // locale-independent) to a fresh directory's DACL. Whatever the
-        // machine's default temp ACLs are - loose on developer machines,
-        // already exactly three restricted ACEs on some CI runners, which
-        // is what made the previous "plain tempdir must fail" assumption
-        // environment-dependent - the extra principal takes the effective
-        // count off exactly three (stage 7) deterministically.
+        // Environment-independent rejection: secure the directory with the
+        // reviewed bootstrap first (exactly three restricted ACEs), then
+        // grant Everyone. Whatever the machine's default temp ACLs are -
+        // loose on developer machines, already exactly three restricted
+        // ACEs on some CI runners, which is what made the previous "plain
+        // tempdir must fail" assumption environment-dependent - the extra
+        // principal takes the effective count off exactly three (stage 7)
+        // deterministically.
         let temp = tempfile::tempdir().expect("temp directory");
-        let broadened = temp.path().join("broadened");
-        std::fs::create_dir(&broadened).expect("broadened directory");
-        let status = std::process::Command::new("icacls")
-            .arg(&broadened)
-            .args(["/grant", "*S-1-1-0:(OI)(CI)F"])
-            .status()
-            .expect("icacls");
-        assert!(status.success(), "icacls must succeed");
-        assert_eq!(
-            verify_paths(&[broadened.as_path()]),
-            Err((STAGE_ACE_COUNT, 1))
-        );
+        let dir = temp.path().join("broadened");
+        std::fs::create_dir(&dir).expect("broadened directory");
+        secure_user_directory(&dir).expect("secure directory");
+        loosen_with_icacls(&dir, "*S-1-1-0:(OI)(CI)F");
+        assert_eq!(verify_paths(&[dir.as_path()]), Err((STAGE_ACE_COUNT, 1)));
+    }
+
+    #[test]
+    fn null_dacl_is_a_count_violation_not_a_crash() {
+        // Regression pin for the first version of this module: it never
+        // checked `GetNamedSecurityInfoW`'s ppDacl out-parameter for NULL,
+        // so a path with an absent DACL (the maximally loose state the
+        // verifier exists to reject) made GetAclInformation dereference a
+        // NULL pointer and the process died with STATUS_ACCESS_VIOLATION
+        // instead of failing closed with a typed stage. The Stage 1
+        // batched PowerShell verifier returned `stage_7_index_i` here.
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
+        let temp = tempfile::tempdir().expect("temp directory");
+        let dir = temp.path().join("null_dacl");
+        std::fs::create_dir(&dir).expect("null-dacl directory");
+        secure_user_directory(&dir).expect("secure directory");
+        let wide: Vec<u16> = dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: test-only setup. `wide` is a NUL-terminated UTF-16 path
+        // that outlives the call; every other pointer is NULL, which with
+        // DACL_SECURITY_INFORMATION strips the object's DACL (the no-DACL
+        // state this regression pins), and the WIN32_ERROR return is
+        // asserted before the verifier runs.
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(status, 0, "SetNamedSecurityInfoW must strip the DACL");
+        // The native verifier must answer a typed rejection (stage 7,
+        // index 1), not crash the process.
+        assert_eq!(verify_paths(&[dir.as_path()]), Err((STAGE_ACE_COUNT, 1)));
     }
 }

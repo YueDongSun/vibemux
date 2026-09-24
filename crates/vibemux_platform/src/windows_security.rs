@@ -215,9 +215,48 @@ fn system_powershell() -> Result<PathBuf, PlatformError> {
     }
 }
 
+/// Shared ACL-loosening recipe for fail-closed tests (own unit tests and,
+/// behind the crate's `test_helpers` feature, other workspace crates'
+/// integration tests). Not part of the production surface: it exists so
+/// every loosened-ACL test uses the same reviewed icacls invocation
+/// instead of re-spelling it (code-review V9 finding on issue #8).
+#[cfg(any(test, feature = "test_helpers"))]
+pub mod tests {
+    use std::path::Path;
+
+    /// Loosen `path` by granting `sid_and_rights` (icacls grant syntax,
+    /// e.g. `*S-1-1-0:F` for Everyone on a file or
+    /// `*S-1-5-32-545:(OI)(CI)F` for BUILTIN\Users on a directory; SID
+    /// forms stay locale-independent). The extra ACE breaks the
+    /// exactly-three-allow-rules invariant the verifiers enforce.
+    /// `icacls.exe` is part of Windows system32, so there is no
+    /// availability fallback: a missing icacls fails the test loudly.
+    pub fn loosen_with_icacls(path: &Path, sid_and_rights: &str) {
+        let status = std::process::Command::new("icacls")
+            .arg(path)
+            .args(["/grant", sid_and_rights])
+            .status()
+            .expect("icacls");
+        assert!(status.success(), "icacls must succeed");
+    }
+
+    /// Remove an ACE previously added by [`loosen_with_icacls`] so shared
+    /// artifacts return to their secured state for sibling tests.
+    pub fn restore_with_icacls(path: &Path, sid: &str) {
+        let status = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/remove")
+            .arg(sid)
+            .status()
+            .expect("icacls restore");
+        assert!(status.success(), "icacls restore must succeed");
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
+    use tests::loosen_with_icacls;
 
     #[test]
     fn protected_directory_and_inherited_file_pass_verification() {
@@ -261,15 +300,10 @@ mod tests {
         std::fs::write(&first, b"descriptor").expect("first artifact");
         let second = protected.join("writer.lock");
         std::fs::write(&second, b"lock").expect("second artifact");
-        // Broaden one artifact with an extra ACE for BUILTIN\Users (SID
-        // form, locale-independent): the effective rule count stops being
-        // exactly three, so the batch must name path index 3 at stage 7.
-        let status = std::process::Command::new("icacls")
-            .arg(&second)
-            .args(["/grant", "*S-1-5-32-545:F"])
-            .status()
-            .expect("icacls");
-        assert!(status.success(), "icacls must succeed");
+        // Broaden one artifact with an extra ACE for BUILTIN\Users: the
+        // effective rule count stops being exactly three, so the batch must
+        // name path index 3 at stage 7.
+        loosen_with_icacls(&second, "*S-1-5-32-545:F");
         assert_eq!(
             verify_restricted_path_acls(&[&protected, &first, &second]),
             Err(PlatformError::AccessControlInvalidAt { stage: 7, index: 3 })
@@ -315,12 +349,7 @@ mod tests {
         secure_user_directory(&protected).expect("secure directory");
         let broadened = protected.join("writer.lock");
         std::fs::write(&broadened, b"lock").expect("artifact");
-        let status = std::process::Command::new("icacls")
-            .arg(&broadened)
-            .args(["/grant", "*S-1-5-32-545:F"])
-            .status()
-            .expect("icacls");
-        assert!(status.success(), "icacls must succeed");
+        loosen_with_icacls(&broadened, "*S-1-5-32-545:F");
         assert_eq!(
             verify_restricted_path_acl(&broadened),
             Err(PlatformError::AccessControlInvalid { stage: 7 })

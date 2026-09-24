@@ -20,7 +20,7 @@ Stage 1 closed the security gap but the helper spawn costs a measured ~400 ms pe
 
 ## Consequences
 
-- Trusted daemon start returns inside the §9 p95 < 500 ms budget; the Stage 1 deviation note is removed.
+- Trusted daemon start returns to the same machine-specific level as the pre-change baseline (the ~400 ms Stage 1 helper-spawn overhead is removed; the §9 deviation note in `PROGRESS.md` was **rewritten**, not removed, to record the measured absolute p95 and the baseline-vs-target context - on the reference machine both the pre-change baseline and the post-change measurement sit above the 500 ms target, which remains open).
 - `powershell.exe` spawns on the lifecycle path are reduced to the one-time bootstrap/heal write and the CLI process-launch companion (ADR 018); the issue #6 helper-load class shrinks accordingly (`helper_slot` now guards the write path only).
 - The same-SID trust-model limitation is unchanged (ADR 020 line 26): native verification detects ACL drift and misconfiguration; it does not isolate same-user processes.
 - `vibemux_platform` is no longer `unsafe`-free at the crate level; containment is the root-level `deny` plus the single module-level `allow`, and any future `unsafe` outside that module requires its own accepted ADR.
