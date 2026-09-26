@@ -127,11 +127,42 @@ Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` sto
 
 The frontend crate builds three binaries:
 
-- `vibemux_frontend` — an egui/eframe GUI (overview canvas plus a workbench seat per harness). It takes no CLI flags and owns its own persisted hex theme palettes (`claude`/`github`/`vscode`). Harness seats display stub transcripts; there is no PTY/ConPTY attach.
+- `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps Agents/Settings/Diagnostics secondary, and preserves all five appearance palettes. The composer retains a local draft but Send is unavailable until a continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
 
-The TUI ships four themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), and `light` (dark variants tuned for white or very light terminal backgrounds). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
+The redesigned GUI defaults to **Studio**: an off-white canvas, quiet sidebar,
+dark-green accent, native Windows typography, and a continuous task activity
+list. Six themes are available in **Settings → Appearance**: `studio`, `github`,
+`claude`, `vscode`, `nord`, and `gruvbox`. Existing saved appearance preferences
+are preserved; select Studio in Settings to adopt the new light style.
+
+Task windows have Overview, Activity, Artifacts and Terminal tabs. Closing a
+window does not stop its task. `Ctrl+1..0` accesses the ten harness diagnostics;
+Escape closes overlays before returning to Coordinator. Task and terminal
+connection states are separate. An explicitly configured WezTerm observer can
+associate an existing native pane with an A2A-backed Run and focus it after
+identity checks. Watch and interact with the CLI in WezTerm; embedded terminal
+rendering and harness launch/input remain future work. See
+[terminal observation setup and protocol](docs/terminal_observer_protocol.md).
+
+Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
+`cargo run -p vibemux_frontend --bin vibemux_frontend`. The GUI does not start
+the daemon automatically. A stopped or older daemon produces an explicit
+unavailable state. The existing structured supervisor recipe is not a continuous
+coding-agent chat service.
+
+The screenshot-only `vibemux_frontend_preview` binary is built with
+`--features gui_screenshot`; its scenes are visibly marked **DEMO DATA** and
+never contact a daemon or model. Example:
+`cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat studio 1440 900 1`.
+Add an absolute PNG path as the last argument to capture a settled native frame.
+Scenes are `chat`, `drawer`, `task`, `task_terminal`, and `disconnected`.
+The `task` scenes capture the actual independent native viewport.
+
+The TUI ships six themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), `light` (dark variants tuned for white or very light terminal backgrounds), and the brand themes `nord` and `gruvbox` (xterm-256 indices resolved from the brand palettes, so they render the same hues on WezTerm and tmux without a truecolor dependency). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
+
+The canonical GUI palette values are exported to `config/theme_palettes.json` (pinned to the compiled-in palettes by a parity test) and consumed by the Python CLI: `VIBEMUX_THEME=<name>` restyles human-facing `vibemux` output (tables, errors, status lines), while `--json` output stays theme-independent. `vibemux theme --list` prints the available themes, and `vibemux theme --backend wezterm|tmux --theme <name>` prints a matching pane-chrome snippet (WezTerm `config.colors` lua table, or tmux `set -g` options) that you adopt yourself — VibeMux never writes or mutates your terminal configuration (see [ADR 026](docs/adr/026_multi_surface_theme_palettes.md)).
 
 Machine-readable evidence for scripts and CI: `vibemux_frontend_tui --json` prints the versioned probe report; `vibemux_frontend_dump` prints a plain-text snapshot. Theme selection never affects either output.
 
