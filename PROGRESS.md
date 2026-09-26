@@ -92,88 +92,21 @@ The current Python implementation remains valuable as:
 
 Python must not receive new authoritative orchestration, A2A routing, event-broker, scheduler, or public plugin behavior. It must also not become a concurrent writer to the Rust database.
 
-### 3.2 Process topology
+### 3.2 Process topology, crate layout, and contracts
 
-```text
-PowerShell / shell / future GUI
-              |
-              | local authenticated IPC
-              v
-        +-------------+
-        | vibemux CLI |
-        +-------------+
-              |
-              v
-+--------------------------------------------------+
-|                  vibemuxd                         |
-|                                                  |
-| Rust core:                                       |
-| - canonical IDs, Task/Run/Event state machines   |
-| - append-only event sequencing and projections   |
-| - SQLite migrations and single-writer policy     |
-| - bounded async routing and backpressure          |
-| - plugin supervision and capability registry      |
-| - A2A client/server gateway                       |
-| - policy, cancellation, reconciliation, audit     |
-+-------------+-------------------+----------------+
-              |                   |
-      plugin protocol             | A2A v1 transports
-  framed messages over stdio      | gRPC / JSON-RPC / REST
-              |                   |
-      +-------+--------+      remote/local A2A peers
-      |       |        |
-  harness  terminal  sandbox
-  plugins   plugins   plugins
-      |
-  OpenCode / Claude / Copilot / Pi / Grok / Gemini
-```
+Detailed process topology, current crate responsibilities, dependency direction, core/plugin boundary, plugin model, and A2A transport policy live in [docs/architecture.md](docs/architecture.md). The decision summary in §3.1 above captures what is accepted and what remains unimplemented.
 
 ### 3.3 Core versus plugin boundary
 
-| Capability | Core | Plugin |
-|---|---:|---:|
-| Canonical Task/Run/Event types | Yes | No |
-| State transition validation | Yes | No |
-| Event sequencing and idempotency | Yes | No |
-| SQLite schema and migrations | Yes | No |
-| A2A Agent Card, task mapping, streaming, routing | Yes | No |
-| Backpressure, cancellation, deadlines | Yes | No |
-| Plugin process supervision | Yes | No |
-| Policy enforcement and permission decisions | Yes | Optional policy extension, core remains authoritative |
-| Git worktree safety invariants | Yes | Optional platform helper only |
-| Terminal-specific commands | No | Yes |
-| Harness-specific launch and structured protocol | No | Yes |
-| Sandbox implementation | No | Yes |
-| UI, notifications, GitHub integrations | No | Yes |
-| Model-provider configuration helpers | No | Yes |
-| Benchmark reporters/exporters | No | Yes |
-| Direct database writes | Yes, single writer | Never |
+See [docs/architecture.md §Core versus plugin boundary](docs/architecture.md#core-versus-plugin-boundary).
 
 ### 3.4 Plugin model
 
-V1 plugins are out-of-process executables. The project will not expose a Rust `cdylib` ABI as the public plugin interface.
-
-Initial plugin transport:
-
-- child process managed by `vibemuxd`;
-- length-delimited, versioned Protobuf frames over stdin/stdout;
-- stderr reserved for human-readable diagnostics;
-- optional JSON debug codec for development only;
-- capability negotiation during handshake;
-- bounded frame size, bounded queues, deadlines, cancellation, heartbeat, and structured shutdown;
-- no direct access to the core SQLite database;
-- explicit permission manifest and platform declaration.
-
-Future long-lived plugins may use Windows named pipes or Unix domain sockets. Local unauthenticated TCP is not the default plugin transport.
+See [docs/architecture.md §Plugin model](docs/architecture.md#plugin-model) and [ADR 013](docs/adr/013_rust_core_plugins.md) and [ADR 021](docs/adr/021_plugin_protocol_v1_foundation.md).
 
 ### 3.5 External A2A transport policy
 
-- External compatibility: JSON-RPC and HTTP+JSON/REST.
-- High-throughput VibeMux-to-VibeMux path: gRPC when both Agent Cards advertise it.
-- Streaming: transport-native streaming with bounded buffering and cancellation propagation.
-- The core canonical event model remains independent of A2A wire objects.
-- Internal `Task` and external A2A `Task` are related through an explicit binding table; they are not assumed to be the same object.
-- Protocol types from the official Rust SDK must be wrapped behind a VibeMux-owned adapter crate so SDK churn does not leak through the whole codebase.
+See [docs/architecture.md §External A2A transport policy](docs/architecture.md#external-a2a-transport-policy) and [ADR 024](docs/adr/024_stateful_a2a_supervisor.md).
 
 ---
 
@@ -192,10 +125,10 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
 | A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
-| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection and reserved Ratatui slots exist; real PTY/ConPTY attachment and native-TUI lifecycle do not |
+| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) exist; continuous coordinator chat, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
-| Rust terminal plugins and native-TUI attachment | `PLANNED` | no terminal plugin/ConPTY implementation | Mock/WezTerm/tmux plugin parity and ownership are not implemented |
+| Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Structured vendor harness plugins | `PLANNED` | mock fixture only | No OpenCode/Claude/Copilot/Pi/Grok/Gemini production adapter is integrated |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
@@ -295,32 +228,7 @@ M4.2 delivery and remaining gates:
 
 ### 5.1 Current `main`
 
-```text
-vibemux/
-├── Cargo.toml
-├── rust-toolchain.toml
-├── crates/
-│   ├── vibemux_types/          # IDs, domain objects, state machines
-│   ├── vibemux_events/         # canonical envelopes and invariants
-│   ├── vibemux_store/          # SQLite migrations and repositories
-│   ├── vibemux_platform/       # Windows/POSIX process and IPC primitives
-│   ├── vibemux_a2a/            # official SDK adapter; loopback slice only
-│   ├── vibemux_probe/          # read-only launcher/gateway probes
-│   ├── vibemux_frontend/       # Ratatui shell with reserved native-TUI slots
-│   ├── vibemux_plugin_protocol/
-│   │   └── proto/vibemux_plugin_v1.proto
-│   ├── vibemux_plugin_supervisor/
-│   ├── vibemuxd/               # long-lived local core
-│   └── vibemux_cli/             # thin lifecycle client and daemon bootstrap
-├── src/vibemux/                 # Python behavior-reference package
-├── tests/                       # Python tests and fixtures
-├── scripts/                     # smoke and benchmark scripts
-├── docs/                        # architecture, ADRs, boundaries, and labs
-├── AGENTS.md
-└── PROGRESS.md
-```
-
-The root `Cargo.toml` is authoritative for current workspace membership.
+The current crate responsibilities, process topology, and dependency direction live in [docs/architecture.md](docs/architecture.md). The root `Cargo.toml` remains the authoritative source for workspace membership.
 
 ### 5.2 Planned additions
 
@@ -1848,7 +1756,6 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 - Final exact-index checks: 77 intended files; 13 Markdown files and six JSON files validated; no broken staged local links; diff/cached-diff whitespace and ignore/example checks passed. Independent review in a separate worktree found no newly introduced operational credentials, private endpoints/profile IDs, machine-user paths or raw runtime/config artifacts. The only unstaged file is the unrelated toolchain component edit.
 
-<<<<<<< HEAD
 ### 2026-09-04 - Frontend agent-table truncation fix
 
 **Bug**

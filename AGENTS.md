@@ -2,11 +2,18 @@
 
 ## 1. Scope and Authority
 
+This file is the authoritative engineering-rules source for the VibeMux repository. Section 1 below is the entry point; sections 2–21 are the rules themselves. See also:
+
+- [docs/architecture.md](docs/architecture.md) for current modules, data flow, and contracts.
+- [PROGRESS.md](PROGRESS.md) for implementation status and milestone sequencing.
+- [docs/adr/](docs/adr/) for accepted architecture decisions.
+
 This file defines repository-wide engineering rules for human contributors and coding agents.
 
 - These rules apply to every file in the repository unless a more specific nested `AGENTS.md` explicitly narrows a rule for its subtree.
 - A nested file may add constraints but may not weaken security, state-integrity, compatibility, or release gates defined here.
 - `PROGRESS.md` is the source of truth for implementation status and milestone sequencing.
+- `docs/architecture.md` is the source of truth for current modules, data flow, and contracts.
 - Architecture decisions belong in ADRs. Chat history, issue comments, and agent memory are not authoritative architecture records.
 - Personal learning plans, tutorial prompts, and private workflow instructions do not belong in this file.
 

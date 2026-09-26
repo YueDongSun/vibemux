@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+> Claude Code entry point for the VibeMux repository. Read it together with [AGENTS.md](AGENTS.md) (engineering rules) and [PROGRESS.md](PROGRESS.md) (status and evidence) before any non-trivial change.
 
 ## What VibeMux is
 
@@ -9,17 +9,17 @@ VibeMux is a **Windows-first, local-first, terminal-native collaboration environ
 Two implementations coexist:
 
 - A **Python 3.12 prototype** (`src/vibemux/`, installable as the `vibemux` CLI) is the current full entry point and the behavior reference for Rust parity.
-- A **Rust 2024 workspace** (`crates/`) is the target authoritative core. M3 (persistence + single-writer daemon + authenticated local IPC) is `VERIFIED`; M4 plugin protocol/supervisor is `PARTIAL`; M5.0 read-only probe and unified frontend shell is `PARTIAL`; A2A is `PARTIAL`, with only the M7.0 local-loopback information-share slice verified. See `PROGRESS.md` for the authoritative status table.
+- A **Rust 2024 workspace** (`crates/`) is the target authoritative core. M3 (persistence + single-writer daemon + authenticated local IPC) is `VERIFIED`; M4 plugin protocol/supervisor is `PARTIAL`; M5.0 read-only probe and unified frontend shell is `PARTIAL`; A2A is `PARTIAL — LOCAL STATEFUL`, with authenticated HTTP+JSON, JSON-RPC, and gRPC plus canonical bindings and local supervisor verification. See [PROGRESS.md](PROGRESS.md) for the authoritative status table and remaining gates.
 
 `AGENTS.md` is the engineering-rules source of truth; `PROGRESS.md` is the implementation-status source of truth. Read both before any non-trivial change.
 
 ## Core architecture (read this once)
 
-The canonical domain model is `Task / Run / Event` — terminal-independent. Five orthogonal abstractions:
+The canonical domain model is `Task / Run / Event` — terminal-independent. Five orthogonal abstractions own distinct concerns:
 
 | Abstraction | Owns | Does NOT do |
 |---|---|---|
-| `TerminalBackend` | pane lifecycle (WezTerm / tmux / Mock) | decide Task success |
+| `TerminalBackend` | pane lifecycle (WezTerm / tmux / mock) | decide Task success |
 | `ExecutionBackend` | runtime that executes commands | own canonical state |
 | `HarnessAdapter` | controlled argv / launch spec | execute shell strings |
 | `WorkspaceManager` | Git worktree + branch per Run | merge, push, or clean automatically |
@@ -33,23 +33,25 @@ Rust crate dependency direction (from `AGENTS.md` §4.2):
 types → events → harness → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli
 ```
 
-Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary (`AgentKind`/`LauncherKind`/`ProbeState`) lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it — the harness crate pulls no probe I/O.
+Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary (`AgentKind`/`LauncherKind`/`ProbeState`) lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it — the harness crate pulls no probe I/O. Full crate responsibilities and data flow are in [docs/architecture.md](docs/architecture.md).
 
 ## Layout quick map
 
 ```
-src/vibemux/           # Python prototype (CLI: typer + rich)
-crates/vibemux_types/              # IDs, state machines
+src/vibemux/           # Python prototype (CLI: typer + rich; `vibemux theme` snippets)
+config/theme_palettes.json         # exported GUI palettes (pinned by the palette_parity test)
+crates/vibemux_types/              # IDs, state machines, frontend query types
 crates/vibemux_events/             # canonical event envelopes, idempotency
 crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness registry/profiles/rows + canonical event drafts (pure logic, no I/O)
 crates/vibemux_store/              # SQLite migrations (schema 3: + harness projections) + repositories (bundled)
 crates/vibemux_platform/           # Windows/POSIX process and IPC primitives
 crates/vibemux_a2a/                # official A2A Rust SDK adapter (loopback only)
-crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest
+crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest (+ optional terminal observation payload)
 crates/vibemux_plugin_supervisor/  # M4.1 child process supervision
+crates/vibemux_terminal_observer/  # out-of-process WezTerm observation plugin (list/focus native panes)
 crates/vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache (depends on vibemux_harness)
-crates/vibemux_frontend/           # M5.0 two-shell frontend: egui GUI + Ratatui TUI + ASCII dump
-crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v3: health/plugin/harness ops)
+crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + ASCII dump
+crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v4: health/plugin/harness/frontend/terminal ops)
 crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch client
 tests/                              # Python pytest suite
 scripts/                            # smoke + benchmark scripts
@@ -101,7 +103,7 @@ MSRV is **Rust 1.85.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 .\target\debug\vibemuxctl.exe daemon inspect --project-root .
 .\target\debug\vibemuxctl.exe daemon stop   --project-root .
 
-# Harness orchestration (control protocol v3; v2/v1 accepted for legacy ops; daemon must be running):
+# Harness orchestration (needs control protocol v3+; the daemon speaks v4 and accepts v1/v2 for legacy ops; daemon must be running):
 .\target\debug\vibemux_probe.exe --write-cache --project-root .  # atomically writes the trusted detection cache to .vibemux\probe_cache.json (stdout report unchanged)
 .\target\debug\vibemuxctl.exe harnesses --project-root .          # live refresh from the probe cache
 .\target\debug\vibemuxctl.exe harnesses --cached --project-root . # persisted snapshot (no re-probe)
@@ -130,19 +132,23 @@ Release-start benchmark (script refuses a project that already has a daemon desc
 
 ## Targeted cross-references
 
-- Engineering rules (must/must-not, lifecycle gates, security, testing layers): `AGENTS.md`.
-- Milestone status, evidence, and dated progress entries: `PROGRESS.md` §6–§13.
-- Architecture diagram + crate boundaries: `docs/architecture.md` and `PROGRESS.md` §3.
-- Platform claims + live-validation environments: `docs/platform_support.md`.
-- Wire contracts and what is/isn't supported: `docs/protocol_boundaries.md`.
-- CLI smoke recipe: `README.md` "Mock workflow".
-- ADRs (architecture decisions): `docs/adr/`.
+- Engineering rules (must/must-not, lifecycle gates, security, testing layers): [AGENTS.md](AGENTS.md).
+- Milestone status, evidence, and dated progress entries: [PROGRESS.md](PROGRESS.md).
+- Modules, data flow, contracts: [docs/architecture.md](docs/architecture.md).
+- Architecture diagram + crate boundaries: [PROGRESS.md §3](PROGRESS.md) and [docs/architecture.md](docs/architecture.md).
+- Platform claims + live-validation environments: [docs/platform_support.md](docs/platform_support.md).
+- Wire contracts and what is/isn't supported: [docs/protocol_boundaries.md](docs/protocol_boundaries.md).
+- ADRs (architecture decisions): [docs/adr/](docs/adr/).
+- CLI smoke recipe: [README.md](README.md) "Mock workflow".
+
+## Forbidden Git actions
+
+Unless explicitly authorized for a known safe resource, do not run: `git reset --hard`, `git clean -fd`/`-fdx`, `git checkout -- .`, `git restore .`, force push, deleting unknown branches, rewriting published history, deleting worktrees outside a validated cleanup plan.
 
 ## Where to be careful
 
 - `99d1f8e` is only the **original Python audit baseline**; the current Python package remains the behavior reference while new orchestration or A2A work targets Rust. Do not let the Python prototype grow a second authoritative state writer after cutover.
 - During migration, Rust only writes `.vibemux/vibemux_rust.sqlite3`; it never opens `.vibemux/vibemux.sqlite3`. Path code refuses symlinks/hardlinks that alias the Python database.
-- The M5.0 frontend shows all ten harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) as GUI workbench seats with stub transcripts and as TUI dashboard rows, but does **not** attach to PTYs/ConPTYs in this slice. Treat any reference to live native-TUI attach as premature.
-- The M7.0 A2A slice is **loopback-only, HTTP+JSON-only, local-only**. Do not infer remote deployment, JSON-RPC, gRPC, streaming, cancellation, artifacts, authentication, or TCK conformance from it.
+- The GUI is the Supervisor Chat workspace (ADR 028): it reads real task/run/event/artifact summaries over Control v4 and never fabricates a transcript or reply; Send stays unavailable until a continuous coordinator-chat adapter exists. The ten harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) appear as diagnostics and TUI dashboard rows. Nothing attaches to PTYs/ConPTYs or renders a native TUI; the optional WezTerm observer only lists and focuses an explicitly linked native pane. Treat any reference to live native-TUI attach, embedded terminals, or harness launch/input forwarding as premature.
+- The current A2A gateway remains **loopback-only and local-only** even though HTTP+JSON, JSON-RPC, gRPC, authentication, bounded streaming, cancellation, and artifacts are implemented within that local contract. Do not infer remote/TLS deployment, complete official ITK coverage, message history, automatic restart recovery, or unrestricted coding-harness integration.
 - `vibemuxctl` is pre-alpha; it does not replace the installed Python `vibemux` command and it does not override a public database path.
-- Forbidden Git actions unless the user explicitly authorizes a known safe resource: `git reset --hard`, `git clean -fd`/`-fdx`, `git checkout -- .`, `git restore .`, force push, deleting unknown branches, rewriting published history, deleting worktrees outside a validated cleanup plan.
