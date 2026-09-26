@@ -92,6 +92,26 @@ impl DispatchPhase {
             Self::Completed | Self::Failed | Self::Unverified | Self::Cancelled => None,
         }
     }
+
+    /// Every Task/Run status pair an attempt in this phase can have: the
+    /// canonical pair of a non-terminal phase, or one pair per distinct edge
+    /// that reaches a terminal phase. The store rejects any other pair.
+    #[must_use]
+    pub const fn allowed_statuses(self) -> &'static [(TaskStatus, RunStatus)] {
+        match self {
+            Self::Admitted => &[(TaskStatus::InProgress, RunStatus::Preparing)],
+            Self::Running | Self::CancelRequested => {
+                &[(TaskStatus::InProgress, RunStatus::Running)]
+            }
+            Self::RecoveryPending => &[(TaskStatus::Blocked, RunStatus::Stale)],
+            Self::Completed => &[(TaskStatus::Done, RunStatus::Succeeded)],
+            Self::Failed | Self::Unverified => &[(TaskStatus::Blocked, RunStatus::Failed)],
+            Self::Cancelled => &[
+                (TaskStatus::Cancelled, RunStatus::Failed),
+                (TaskStatus::Cancelled, RunStatus::Stopped),
+            ],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

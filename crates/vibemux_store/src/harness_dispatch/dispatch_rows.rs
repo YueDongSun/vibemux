@@ -1,18 +1,20 @@
 //! Row persistence for `harness_dispatches` and the dispatch-owned Task/Run
 //! projections. Every load cross-checks the indexed columns against the
-//! record JSON, recomputes the fingerprint, and checks that a non-terminal
-//! phase still matches its canonical Task/Run statuses; any disagreement
-//! fails closed.
+//! record JSON, recomputes the fingerprint, and checks that the phase allows
+//! the Task/Run statuses and that a completed record keeps its evidence; any
+//! disagreement fails closed.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
-use vibemux_harness::dispatch::{DispatchError, Sha256Digest, request::request_fingerprint};
+use vibemux_harness::dispatch::{
+    AttemptOutcome, DispatchError, DispatchPhase, Sha256Digest, request::request_fingerprint,
+};
 use vibemux_types::{Run, Task};
 
 use super::{
     ClaimFence, HARNESS_DISPATCH_RECORD_SCHEMA_VERSION, HarnessDispatchCommit,
-    HarnessDispatchRecord,
+    HarnessDispatchRecord, is_clean_completion,
 };
 use crate::StoreError;
 
@@ -113,10 +115,22 @@ pub(super) fn load(
     {
         return Err(StoreError::HarnessDispatchProjectionMismatch);
     }
-    if let Some(statuses) = record.phase.canonical_statuses() {
-        if (task.status(), run.status()) != statuses {
-            return Err(StoreError::HarnessDispatchProjectionMismatch);
-        }
+    if !record
+        .phase
+        .allowed_statuses()
+        .contains(&(task.status(), run.status()))
+    {
+        return Err(StoreError::HarnessDispatchProjectionMismatch);
+    }
+    // A completed record must still carry the evidence that justified it.
+    if record.phase == DispatchPhase::Completed
+        && !(record.outcome == Some(AttemptOutcome::Completed)
+            && record.capture.is_some()
+            && record
+                .process
+                .is_some_and(|process| is_clean_completion(record.error_code, &process)))
+    {
+        return Err(StoreError::HarnessDispatchProjectionMismatch);
     }
     Ok(Some(StoredDispatch {
         record,
@@ -146,19 +160,17 @@ pub(super) fn is_reserved(
     )?)
 }
 
-/// Attempts that startup recovery changes, in admission order.
-pub(super) fn active_request_ids(connection: &Connection) -> Result<Vec<Uuid>, StoreError> {
+/// Stored keys of the attempts that startup recovery changes, in admission
+/// order. They are returned unparsed so recovery can quarantine a bad key
+/// without stopping.
+pub(super) fn active_request_keys(connection: &Connection) -> Result<Vec<String>, StoreError> {
     let mut statement = connection.prepare(
         "SELECT request_id FROM harness_dispatches WHERE phase IN ('admitted', 'running', 'cancel_requested') ORDER BY rowid",
     )?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    let mut request_ids = Vec::new();
-    for row in rows {
-        let request_id =
-            Uuid::parse_str(&row?).map_err(|_| StoreError::HarnessDispatchProjectionMismatch)?;
-        request_ids.push(request_id);
-    }
-    Ok(request_ids)
+    let keys = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(keys)
 }
 
 pub(super) fn insert(

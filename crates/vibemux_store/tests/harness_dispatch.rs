@@ -16,14 +16,14 @@ use vibemux_harness::{
         attempt::resource_key,
         capture_budget::{CaptureSummary, KindCounts},
         events::ProcessSummary,
-        request::DISPATCH_REQUEST_SCHEMA_VERSION,
+        request::{DISPATCH_REQUEST_SCHEMA_VERSION, MAX_PROMPT_BYTES},
     },
 };
 use vibemux_store::{
     ClaimFence, HarnessDispatchAdmission, HarnessDispatchCommit, HarnessDispatchFinish,
-    HarnessDispatchRecord, SqliteStore, StoreError,
+    HarnessDispatchRecord, HarnessDispatchRecovery, QuarantinedDispatch, SqliteStore, StoreError,
 };
-use vibemux_types::{EventId, Run, RunStatus, Task, TaskStatus};
+use vibemux_types::{EventId, Run, RunSpec, RunStatus, Task, TaskStatus};
 
 const FIXTURE_PROMPT: &str = "fixture prompt";
 
@@ -313,6 +313,8 @@ fn claim_is_single_use_and_the_fence_stays_out_of_records_and_events() {
             .expect("record json")
             .contains(&fence)
     );
+    let debug = format!("{claimed:?}");
+    assert!(debug.contains("ClaimFence(<redacted>)") && !debug.contains(&fence));
     for event in store.events().expect("events") {
         assert!(
             !String::from_utf8(event.to_json_vec().expect("event json"))
@@ -498,7 +500,9 @@ fn recovery_fails_admitted_and_parks_claimed_attempts() {
         .finish_harness_dispatch(&clean_finish(done, done_fence))
         .expect("finish");
 
-    let recovered = store.recover_harness_dispatches(at(20)).expect("recover");
+    let recovery = store.recover_harness_dispatches(at(20)).expect("recover");
+    assert!(recovery.quarantined.is_empty());
+    let recovered = recovery.recovered;
     let changed: Vec<(Uuid, DispatchPhase)> = recovered
         .iter()
         .map(|commit| (commit.record.request_id, commit.record.phase))
@@ -532,11 +536,15 @@ fn recovery_fails_admitted_and_parks_claimed_attempts() {
             DispatchError::StaleFence
         );
     }
-    assert!(
+    assert_eq!(
         store
             .recover_harness_dispatches(at(21))
-            .expect("second recovery")
-            .is_empty()
+            .expect("second recovery"),
+        HarnessDispatchRecovery::default()
+    );
+    assert_eq!(
+        dispatch_error(store.claim_harness_dispatch(running, at(21))),
+        DispatchError::InvalidTransition
     );
 
     // The reservation is kept until an operator acknowledges by cancelling.
@@ -553,8 +561,88 @@ fn recovery_fails_admitted_and_parks_claimed_attempts() {
         statuses(&store, &acknowledged.record),
         (TaskStatus::Cancelled, RunStatus::Stopped)
     );
+    // The record keeps the latest code; the event carries only its own.
+    assert_eq!(
+        acknowledged.record.error_code,
+        Some(DispatchError::Interrupted)
+    );
+    let payload = acknowledged
+        .event
+        .as_ref()
+        .expect("event")
+        .payload()
+        .value();
+    assert_eq!(payload["error_code"], Value::Null);
+    // The acknowledged attempt has no fence left to present.
+    assert_eq!(
+        dispatch_error(store.finish_harness_dispatch(&clean_finish(running, running_fence))),
+        DispatchError::StaleFence
+    );
     admit(&mut store, &codex("/work/beta"));
     admit(&mut store, &codex("/work/alpha"));
+}
+
+#[test]
+fn recovery_quarantines_defective_rows_and_recovers_the_rest() {
+    let (file, mut store) = open_store(&["codex"]);
+    let healthy = admit(&mut store, &codex("/work/alpha"));
+    claim(&mut store, healthy);
+    let corrupted = admit(&mut store, &codex("/work/beta"));
+    claim(&mut store, corrupted);
+    let unkeyed = admit(&mut store, &codex("/work/gamma"));
+    let raw = Connection::open(file.path()).expect("open raw database");
+    raw.execute(
+        "UPDATE harness_dispatches SET record_json = replace(record_json, '\"phase\":\"running\"', '\"phase\":\"admitted\"') WHERE request_id = ?",
+        [corrupted.to_string()],
+    )
+    .expect("corrupt record json");
+    raw.execute(
+        "UPDATE harness_dispatches SET request_id = 'not a request' WHERE request_id = ?",
+        [unkeyed.to_string()],
+    )
+    .expect("corrupt request key");
+    let corrupted_fence = fence_column(file.path(), corrupted);
+    let before = event_count(&store);
+
+    let recovery = store.recover_harness_dispatches(at(20)).expect("recover");
+    let recovered: Vec<(Uuid, DispatchPhase)> = recovery
+        .recovered
+        .iter()
+        .map(|commit| (commit.record.request_id, commit.record.phase))
+        .collect();
+    assert_eq!(recovered, [(healthy, DispatchPhase::RecoveryPending)]);
+    let mismatch = "store_harness_dispatch_projection_mismatch";
+    assert_eq!(
+        recovery.quarantined,
+        [
+            QuarantinedDispatch {
+                request_id: Some(corrupted),
+                code: mismatch,
+            },
+            QuarantinedDispatch {
+                request_id: None,
+                code: mismatch,
+            },
+        ]
+    );
+    assert_eq!(event_count(&store), before + 1);
+
+    // Quarantined rows are untouched and keep their reservations.
+    let phase: String = raw
+        .query_row(
+            "SELECT phase FROM harness_dispatches WHERE request_id = ?",
+            [corrupted.to_string()],
+            |row| row.get(0),
+        )
+        .expect("phase column");
+    assert_eq!(phase, "running");
+    assert_eq!(fence_column(file.path(), corrupted), corrupted_fence);
+    for workspace in ["/work/beta", "/work/gamma"] {
+        assert_eq!(
+            dispatch_error(store.admit_harness_dispatch(&codex(workspace))),
+            DispatchError::Busy
+        );
+    }
 }
 
 #[test]
@@ -602,6 +690,14 @@ fn admission_requires_a_detected_executable_route() {
         })),
         DispatchError::InvalidRequest
     );
+    for byte_count in [0, MAX_PROMPT_BYTES as u64 + 1] {
+        let mut prompt_out_of_bounds = claude();
+        prompt_out_of_bounds.prompt.byte_count = byte_count;
+        assert_eq!(
+            dispatch_error(store.admit_harness_dispatch(&prompt_out_of_bounds)),
+            DispatchError::InvalidPrompt
+        );
+    }
     assert_eq!(event_count(&store), before);
     admit(&mut store, &claude());
 }
@@ -659,6 +755,20 @@ fn generic_commits_cannot_touch_dispatch_owned_entities() {
         store.commit_run(&run, draft("generic_run")),
         Err(StoreError::HarnessDispatchBoundProjection)
     ));
+    // Nor can a new Run attach to the dispatch's Task.
+    let foreign = Run::new(RunSpec {
+        project_id: task.project_id(),
+        task_id: task.task_id(),
+        harness: "codex".to_owned(),
+        role: "fixture".to_owned(),
+        protocol: "pty".to_owned(),
+        base_commit: "0123456789abcdef".to_owned(),
+    })
+    .expect("foreign run");
+    assert!(matches!(
+        store.commit_run(&foreign, draft("generic_foreign_run")),
+        Err(StoreError::HarnessDispatchBoundProjection)
+    ));
 }
 
 #[test]
@@ -683,6 +793,29 @@ fn corrupted_rows_fail_closed() {
     set_fingerprint(admitted.fingerprint.to_hex());
     assert_eq!(record(&store, request_id), admitted);
 
+    let set_version = |version: u64| {
+        raw.execute(
+            "UPDATE harness_dispatches SET version = ? WHERE request_id = ?",
+            rusqlite::params![version, request_id.to_string()],
+        )
+        .expect("edit version column");
+    };
+    set_version(7);
+    assert!(matches!(
+        store.harness_dispatch(request_id),
+        Err(StoreError::HarnessDispatchProjectionMismatch)
+    ));
+    set_version(admitted.version);
+
+    // The schema itself refuses a fence on an unclaimed attempt.
+    assert!(
+        raw.execute(
+            "UPDATE harness_dispatches SET claim_fence = ? WHERE request_id = ?",
+            [Uuid::new_v4().to_string(), request_id.to_string()],
+        )
+        .is_err()
+    );
+
     // A Task moved outside the dispatch API no longer matches the phase.
     raw.execute(
         "UPDATE projections SET state_json = replace(state_json, '\"in_progress\"', '\"blocked\"') WHERE entity_kind = 'task' AND entity_id = ?",
@@ -695,4 +828,172 @@ fn corrupted_rows_fail_closed() {
         Err(StoreError::HarnessDispatchProjectionMismatch)
     ));
     assert_eq!(event_count(&store), before);
+}
+
+#[test]
+fn failed_and_cancelled_finishes_record_their_phase_and_a_failure_needs_its_code() {
+    let (_file, mut store) = open_store(&["codex"]);
+    let failed = admit(&mut store, &codex("/work/alpha"));
+    let failed_fence = claim(&mut store, failed);
+    let before = event_count(&store);
+    for outcome in [AttemptOutcome::Failed, AttemptOutcome::Unverified] {
+        assert_eq!(
+            dispatch_error(store.finish_harness_dispatch(&report(
+                failed,
+                failed_fence,
+                outcome,
+                None
+            ))),
+            DispatchError::InvalidRequest
+        );
+    }
+    assert_eq!(event_count(&store), before);
+
+    let finished = store
+        .finish_harness_dispatch(&report(
+            failed,
+            failed_fence,
+            AttemptOutcome::Failed,
+            Some(DispatchError::TurnFailed),
+        ))
+        .expect("failed finish");
+    assert_eq!(finished.record.phase, DispatchPhase::Failed);
+    assert_eq!(finished.record.error_code, Some(DispatchError::TurnFailed));
+    assert_eq!(
+        statuses(&store, &finished.record),
+        (TaskStatus::Blocked, RunStatus::Failed)
+    );
+
+    let cancelled = admit(&mut store, &codex("/work/beta"));
+    let cancelled_fence = claim(&mut store, cancelled);
+    let finished = store
+        .finish_harness_dispatch(&report(
+            cancelled,
+            cancelled_fence,
+            AttemptOutcome::Cancelled,
+            None,
+        ))
+        .expect("cancelled finish");
+    assert_eq!(finished.record.phase, DispatchPhase::Cancelled);
+    assert_eq!(finished.record.error_code, None);
+    assert_eq!(
+        statuses(&store, &finished.record),
+        (TaskStatus::Cancelled, RunStatus::Stopped)
+    );
+    admit(&mut store, &codex("/work/alpha"));
+    admit(&mut store, &codex("/work/beta"));
+}
+
+#[test]
+fn a_repeated_finish_must_repeat_the_same_report() {
+    let (_file, mut store) = open_store(&["codex"]);
+    let request_id = admit(&mut store, &codex("/work/alpha"));
+    let fence = claim(&mut store, request_id);
+    let finish = report(
+        request_id,
+        fence,
+        AttemptOutcome::Failed,
+        Some(DispatchError::TurnFailed),
+    );
+    let finished = store.finish_harness_dispatch(&finish).expect("finish");
+    let before = event_count(&store);
+
+    let mut retried_later = finish;
+    retried_later.timestamp = at(30);
+    let retried = store
+        .finish_harness_dispatch(&retried_later)
+        .expect("retried finish");
+    assert!(retried.event.is_none());
+
+    let mut more_output = finish;
+    more_output.capture.record_count += 1;
+    let other_code = report(
+        request_id,
+        fence,
+        AttemptOutcome::Failed,
+        Some(DispatchError::ProcessFailed),
+    );
+    for changed in [more_output, other_code, clean_finish(request_id, fence)] {
+        assert_eq!(
+            dispatch_error(store.finish_harness_dispatch(&changed)),
+            DispatchError::Conflict
+        );
+    }
+    assert_eq!(record(&store, request_id), finished.record);
+    assert_eq!(event_count(&store), before);
+}
+
+#[test]
+fn finish_before_claim_is_an_invalid_transition() {
+    let (_file, mut store) = open_store(&["codex"]);
+    let claimed = admit(&mut store, &codex("/work/alpha"));
+    let other_fence = claim(&mut store, claimed);
+    let request_id = admit(&mut store, &codex("/work/beta"));
+    let before = event_count(&store);
+
+    assert_eq!(
+        dispatch_error(store.finish_harness_dispatch(&clean_finish(request_id, other_fence))),
+        DispatchError::InvalidTransition
+    );
+    assert_eq!(record(&store, request_id).phase, DispatchPhase::Admitted);
+    assert_eq!(event_count(&store), before);
+}
+
+#[test]
+fn timestamps_never_move_backwards() {
+    let (_file, mut store) = open_store(&["codex"]);
+    let request_id = admit(&mut store, &codex("/work/alpha"));
+    store
+        .claim_harness_dispatch(request_id, at(30))
+        .expect("claim");
+
+    let cancelled = store
+        .cancel_harness_dispatch(request_id, at(5))
+        .expect("cancel with an earlier clock");
+    assert_eq!(cancelled.record.created_at, at(0));
+    assert_eq!(cancelled.record.updated_at, at(30));
+    assert_eq!(cancelled.event.as_ref().expect("event").timestamp(), at(30));
+}
+
+#[test]
+fn terminal_records_fail_closed_when_their_evidence_changes() {
+    let (file, mut store) = open_store(&["codex"]);
+    let failed = admit(&mut store, &codex("/work/alpha"));
+    let failed_fence = claim(&mut store, failed);
+    store
+        .finish_harness_dispatch(&report(
+            failed,
+            failed_fence,
+            AttemptOutcome::Failed,
+            Some(DispatchError::TurnFailed),
+        ))
+        .expect("failed finish");
+    let completed = admit(&mut store, &codex("/work/beta"));
+    let completed_fence = claim(&mut store, completed);
+    store
+        .finish_harness_dispatch(&clean_finish(completed, completed_fence))
+        .expect("clean finish");
+    let raw = Connection::open(file.path()).expect("open raw database");
+
+    // A failed Run promoted to succeeded outside the dispatch API.
+    raw.execute(
+        "UPDATE projections SET state_json = replace(state_json, '\"status\":\"failed\"', '\"status\":\"succeeded\"') WHERE entity_kind = 'run' AND entity_id = ?",
+        [record(&store, failed).run_id.to_string()],
+    )
+    .expect("edit run projection");
+    assert!(matches!(
+        store.harness_dispatch(failed),
+        Err(StoreError::HarnessDispatchProjectionMismatch)
+    ));
+
+    // A completed record whose exit evidence no longer justifies success.
+    raw.execute(
+        "UPDATE harness_dispatches SET record_json = replace(record_json, '\"exit_code\":0', '\"exit_code\":1') WHERE request_id = ?",
+        [completed.to_string()],
+    )
+    .expect("edit record json");
+    assert!(matches!(
+        store.harness_dispatch(completed),
+        Err(StoreError::HarnessDispatchProjectionMismatch)
+    ));
 }

@@ -19,6 +19,7 @@ pub use a2a::A2aCommitOutcome;
 pub use harness_dispatch::{
     ClaimFence, HARNESS_DISPATCH_RECORD_SCHEMA_VERSION, HarnessDispatchAdmission,
     HarnessDispatchClaim, HarnessDispatchCommit, HarnessDispatchFinish, HarnessDispatchRecord,
+    HarnessDispatchRecovery, QuarantinedDispatch,
 };
 
 pub const STORE_SCHEMA_VERSION: u32 = 4;
@@ -690,30 +691,39 @@ impl SqliteStore {
         draft: EventDraft,
     ) -> Result<CommitOutcome, StoreError> {
         draft.validate()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let owned_by = |table: &str, column: &str, id: String| -> Result<bool, StoreError> {
+            Ok(transaction.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?)"),
+                [id],
+                |row| row.get(0),
+            )?)
+        };
         let (owner_column, owner_id) = match &projection {
             Projection::Task(task) => ("task_id", task.task_id().to_string()),
             Projection::Run(run) => ("run_id", run.run_id().to_string()),
         };
-        let owned_by = |table: &str| -> Result<bool, StoreError> {
-            Ok(self.connection.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {owner_column}=?)"),
-                [&owner_id],
-                |row| row.get(0),
-            )?)
-        };
-        if owned_by("a2a_runs")? {
+        if owned_by("a2a_runs", owner_column, owner_id.clone())? {
             return Err(StoreError::A2aBoundProjection);
         }
-        if owned_by("harness_dispatches")? {
+        let dispatch_owned = owned_by("harness_dispatches", owner_column, owner_id)?
+            || match &projection {
+                // A new Run under a dispatch-owned Task would attach foreign
+                // work to the dispatch.
+                Projection::Run(run) => {
+                    owned_by("harness_dispatches", "task_id", run.task_id().to_string())?
+                }
+                Projection::Task(_) => false,
+            };
+        if dispatch_owned {
             return Err(StoreError::HarnessDispatchBoundProjection);
         }
         let idempotency_key = draft
             .idempotency_key
             .clone()
             .ok_or(StoreError::IdempotencyKeyRequired)?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let duplicate: Option<String> = transaction
             .query_row(
                 "SELECT envelope_json FROM events WHERE idempotency_key = ?",

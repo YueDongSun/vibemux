@@ -9,6 +9,8 @@
 
 mod dispatch_rows;
 
+use std::fmt;
+
 use rusqlite::{Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -25,7 +27,7 @@ use vibemux_harness::{
             self, AdmittedPayload, DispatchEventContext, FinishedPayload, ProcessSummary,
             RecoveredPayload,
         },
-        request::request_fingerprint,
+        request::{MAX_PROMPT_BYTES, request_fingerprint},
     },
 };
 use vibemux_types::{ProjectId, Run, RunId, RunSpec, Task, TaskId, TaskSpec};
@@ -39,6 +41,8 @@ pub const HARNESS_DISPATCH_RECORD_SCHEMA_VERSION: u32 = 1;
 /// Task title prefix; the harness command name follows.
 const DISPATCH_TASK_TITLE_PREFIX: &str = "harness dispatch ";
 const DISPATCH_RUN_ROLE: &str = "dispatch";
+/// Savepoint that isolates each attempt during startup recovery.
+const RECOVERY_SAVEPOINT: &str = "harness_dispatch_recovery";
 
 /// Adds `harness_dispatches`. `migrate` runs it and the version marker in
 /// one immediate transaction, so a failure leaves the database at schema 3.
@@ -105,7 +109,10 @@ pub struct HarnessDispatchRecord {
     pub phase: DispatchPhase,
     pub version: u64,
     pub outcome: Option<AttemptOutcome>,
-    /// The latest fixed failure code recorded for the attempt.
+    /// The latest fixed failure code recorded for the attempt. Each event
+    /// carries only the code its own transition produced, so a later edge
+    /// without a code (for example, cancelling `recovery_pending`) leaves
+    /// the earlier code here.
     pub error_code: Option<DispatchError>,
     pub process: Option<ProcessSummary>,
     pub capture: Option<CaptureSummary>,
@@ -126,11 +133,36 @@ pub struct HarnessDispatchCommit {
     pub sequence: u64,
 }
 
+/// Startup recovery result.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HarnessDispatchRecovery {
+    /// Attempts that recovery changed, in admission order.
+    pub recovered: Vec<HarnessDispatchCommit>,
+    /// Attempts whose stored row failed validation. They are left untouched,
+    /// so a reserving row keeps its working-directory reservation.
+    pub quarantined: Vec<QuarantinedDispatch>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuarantinedDispatch {
+    /// `None` when the stored key is not a request UUID.
+    pub request_id: Option<Uuid>,
+    /// Fixed store code of the validation failure.
+    pub code: &'static str,
+}
+
 /// Proof that an executor holds the current claim. Minted by
 /// [`SqliteStore::claim_harness_dispatch`] and required by
-/// [`SqliteStore::finish_harness_dispatch`]. Recovery invalidates it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// [`SqliteStore::finish_harness_dispatch`]. Recovery invalidates it. `Debug`
+/// is redacted so the fence never reaches a log.
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ClaimFence(Uuid);
+
+impl fmt::Debug for ClaimFence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ClaimFence(<redacted>)")
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HarnessDispatchClaim {
@@ -162,6 +194,10 @@ impl SqliteStore {
     ) -> Result<HarnessDispatchCommit, StoreError> {
         if admission.request_id.is_nil() || !admission.protocol.accepts(admission.harness) {
             return Err(StoreError::HarnessDispatch(DispatchError::InvalidRequest));
+        }
+        if admission.prompt.byte_count == 0 || admission.prompt.byte_count > MAX_PROMPT_BYTES as u64
+        {
+            return Err(StoreError::HarnessDispatch(DispatchError::InvalidPrompt));
         }
         if !admission.protocol.supports_execution() {
             return Err(StoreError::HarnessDispatch(
@@ -272,9 +308,10 @@ impl SqliteStore {
         })
     }
 
-    /// Fenced finish. A finish that repeats the fence of an attempt it
-    /// already finished writes nothing; any other fence is stale.
-    /// `Completed` is accepted only with a clean, error-free exit.
+    /// Fenced finish. The executor that finished an attempt may repeat the
+    /// same report, which writes nothing; a different report with that fence
+    /// is a conflict, and any other fence is stale. `Completed` is accepted
+    /// only with a clean, error-free exit; a failure needs its fixed code.
     pub fn finish_harness_dispatch(
         &mut self,
         finish: &HarnessDispatchFinish,
@@ -285,6 +322,9 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let stored = dispatch_rows::load_existing(&transaction, finish.request_id)?;
         if stored.record.phase.is_terminal() && stored.fence == Some(finish.fence) {
+            if !records_finish(&stored.record, finish) {
+                return Err(StoreError::HarnessDispatch(DispatchError::Conflict));
+            }
             return Ok(stored.unchanged());
         }
         let (commit, _) = commit_transition(
@@ -325,30 +365,49 @@ impl SqliteStore {
     /// Startup recovery in one transaction: `admitted` attempts fail as
     /// interrupted (nothing was launched); `running` and `cancel_requested`
     /// attempts become `recovery_pending`, keep the reservation, and lose
-    /// their fence. Returns only the attempts it changed.
+    /// their fence. Each attempt recovers inside its own savepoint, so a row
+    /// that fails validation is quarantined (left untouched and reported)
+    /// while the others still recover. Any other failure aborts recovery.
     pub fn recover_harness_dispatches(
         &mut self,
         timestamp: OffsetDateTime,
-    ) -> Result<Vec<HarnessDispatchCommit>, StoreError> {
+    ) -> Result<HarnessDispatchRecovery, StoreError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut commits = Vec::new();
-        for request_id in dispatch_rows::active_request_ids(&transaction)? {
-            let stored = dispatch_rows::load_existing(&transaction, request_id)?;
-            let (commit, _) = commit_transition(
-                &transaction,
-                stored,
-                DispatchTrigger::Recover,
-                None,
-                timestamp,
-            )?;
-            if commit.event.is_some() {
-                commits.push(commit);
+        let mut recovery = HarnessDispatchRecovery::default();
+        for request_key in dispatch_rows::active_request_keys(&transaction)? {
+            let Ok(request_id) = Uuid::parse_str(&request_key) else {
+                recovery.quarantined.push(QuarantinedDispatch {
+                    request_id: None,
+                    code: StoreError::HarnessDispatchProjectionMismatch.code(),
+                });
+                continue;
+            };
+            let recovered = in_savepoint(&transaction, || {
+                let stored = dispatch_rows::load_existing(&transaction, request_id)?;
+                commit_transition(
+                    &transaction,
+                    stored,
+                    DispatchTrigger::Recover,
+                    None,
+                    timestamp,
+                )
+            });
+            match recovered {
+                Ok((commit, _)) if commit.event.is_some() => recovery.recovered.push(commit),
+                Ok(_) => {}
+                Err(error) if is_row_defect(&error) => {
+                    recovery.quarantined.push(QuarantinedDispatch {
+                        request_id: Some(request_id),
+                        code: error.code(),
+                    });
+                }
+                Err(error) => return Err(error),
             }
         }
         transaction.commit()?;
-        Ok(commits)
+        Ok(recovery)
     }
 
     /// The validated record for `request_id`, if one was admitted.
@@ -363,7 +422,9 @@ impl SqliteStore {
 /// Applies `trigger` through the pure machine and commits the change: the
 /// Task/Run transitions, the fence effect, the record, and the event. An
 /// idempotent repeat returns the stored record and writes nothing. Also
-/// returns the fence column's new value.
+/// returns the fence column's new value. A timestamp earlier than the
+/// record's last update is raised to it, so neither the record nor its
+/// events move backwards if the clock does.
 fn commit_transition(
     transaction: &Transaction<'_>,
     stored: StoredDispatch,
@@ -404,9 +465,13 @@ fn commit_transition(
         .transpose()
         .map_err(|_| StoreError::HarnessDispatchProjectionMismatch)?;
 
+    let timestamp = timestamp.max(stored.record.updated_at);
     let previous_version = stored.record.version;
     let mut record = stored.record;
-    let error_code = finish.map_or(transition.error_code, |finish| finish.decision.error_code);
+    // The code this transition produced: the executor's, else the machine's.
+    let error_code = finish
+        .and_then(|finish| finish.decision.error_code)
+        .or(transition.error_code);
     record.phase = transition.to;
     record.version = previous_version
         .checked_add(1)
@@ -417,7 +482,7 @@ fn commit_transition(
         record.process = Some(finish.process);
         record.capture = Some(finish.capture);
     }
-    record.updated_at = record.updated_at.max(timestamp);
+    record.updated_at = timestamp;
 
     let draft = transition_event(&record, trigger, &transition, finish, error_code, timestamp)
         .map_err(StoreError::HarnessDispatch)?;
@@ -517,20 +582,117 @@ fn admitted_entities(
     Ok((task, run))
 }
 
-/// `Succeeded` is written only for a clean, error-free exit; a probe is
-/// never a dispatch outcome.
+/// A probe is never a dispatch outcome, `Succeeded` is written only for a
+/// clean, error-free exit, and a failure always carries its fixed code, as
+/// `decide_outcome` guarantees.
 fn validate_finish(finish: &HarnessDispatchFinish) -> Result<(), StoreError> {
-    match finish.decision.outcome {
-        AttemptOutcome::Probed => Err(StoreError::HarnessDispatch(
-            DispatchError::InvalidTransition,
-        )),
-        AttemptOutcome::Completed
-            if finish.decision.error_code.is_some()
-                || finish.process.exit_code != Some(0)
-                || finish.process.forced_termination =>
-        {
-            Err(StoreError::HarnessDispatch(DispatchError::InvalidRequest))
+    let decision = finish.decision;
+    let valid = match decision.outcome {
+        AttemptOutcome::Probed => {
+            return Err(StoreError::HarnessDispatch(
+                DispatchError::InvalidTransition,
+            ));
         }
-        _ => Ok(()),
+        AttemptOutcome::Completed => is_clean_completion(decision.error_code, &finish.process),
+        AttemptOutcome::Failed | AttemptOutcome::Unverified => decision.error_code.is_some(),
+        AttemptOutcome::Cancelled => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(StoreError::HarnessDispatch(DispatchError::InvalidRequest))
+    }
+}
+
+/// The only evidence under which a Run may be `Succeeded`.
+fn is_clean_completion(error_code: Option<DispatchError>, process: &ProcessSummary) -> bool {
+    error_code.is_none() && process.exit_code == Some(0) && !process.forced_termination
+}
+
+/// Whether a terminal record holds exactly this finish report. Attempts
+/// that reach a terminal phase through a finish carry no earlier code, so
+/// the recorded code is the report's own.
+fn records_finish(record: &HarnessDispatchRecord, finish: &HarnessDispatchFinish) -> bool {
+    record.outcome == Some(finish.decision.outcome)
+        && record.error_code == finish.decision.error_code
+        && record.process == Some(finish.process)
+        && record.capture == Some(finish.capture)
+}
+
+/// Runs `step` in a savepoint that is kept on success and rolled back on
+/// error; the enclosing transaction stays usable either way.
+fn in_savepoint<T>(
+    transaction: &Transaction<'_>,
+    step: impl FnOnce() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    transaction.execute_batch(&format!("SAVEPOINT {RECOVERY_SAVEPOINT}"))?;
+    let result = step();
+    let end = if result.is_ok() {
+        format!("RELEASE {RECOVERY_SAVEPOINT}")
+    } else {
+        format!("ROLLBACK TO {RECOVERY_SAVEPOINT}; RELEASE {RECOVERY_SAVEPOINT}")
+    };
+    transaction.execute_batch(&end)?;
+    result
+}
+
+/// Whether `error` describes a defective stored row rather than a failure
+/// of the database itself. Recovery quarantines only row defects.
+fn is_row_defect(error: &StoreError) -> bool {
+    matches!(
+        error,
+        StoreError::HarnessDispatch(_)
+            | StoreError::HarnessDispatchProjectionMismatch
+            | StoreError::HarnessDispatchVersionConflict
+            | StoreError::Json(_)
+            | StoreError::Event(_)
+            | StoreError::Database(
+                rusqlite::Error::FromSqlConversionFailure(..)
+                    | rusqlite::Error::InvalidColumnType(..)
+                    | rusqlite::Error::IntegralValueOutOfRange(..)
+            )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_step_rolls_back_only_its_own_savepoint() {
+        let file = tempfile::NamedTempFile::new().expect("temporary database");
+        let mut store = SqliteStore::open(file.path()).expect("open store");
+        let transaction = store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("transaction");
+        transaction
+            .execute_batch("CREATE TEMP TABLE savepoint_probe(value INTEGER NOT NULL)")
+            .expect("probe table");
+        let insert = |value: i64| -> Result<(), StoreError> {
+            transaction.execute("INSERT INTO savepoint_probe(value) VALUES (?)", [value])?;
+            Ok(())
+        };
+
+        in_savepoint(&transaction, || insert(1)).expect("kept step");
+        let failed = in_savepoint(&transaction, || {
+            insert(2)?;
+            Err::<(), _>(StoreError::HarnessDispatchProjectionMismatch)
+        });
+        assert!(matches!(
+            failed,
+            Err(StoreError::HarnessDispatchProjectionMismatch)
+        ));
+        insert(3).expect("the transaction stays usable");
+
+        let mut statement = transaction
+            .prepare("SELECT value FROM savepoint_probe ORDER BY value")
+            .expect("probe query");
+        let values = statement
+            .query_map([], |row| row.get::<_, i64>(0))
+            .expect("probe rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("probe values");
+        assert_eq!(values, [1, 3]);
     }
 }

@@ -240,6 +240,37 @@ fn every_edge_is_a_legal_canonical_task_and_run_transition() {
 }
 
 #[test]
+fn allowed_statuses_are_exactly_the_pairs_the_machine_reaches() {
+    let mut reached = vec![(P::Admitted, ADMISSION_TASK_STATUS, ADMISSION_RUN_STATUS)];
+    for transition in transitions() {
+        let (task, run) = transition
+            .from
+            .canonical_statuses()
+            .expect("only non-terminal phases change");
+        let pair = (
+            transition.task_status.unwrap_or(task),
+            transition.run_status.unwrap_or(run),
+        );
+        assert!(
+            transition.to.allowed_statuses().contains(&pair),
+            "{transition:?}"
+        );
+        reached.push((transition.to, pair.0, pair.1));
+    }
+    for phase in P::ALL {
+        if let Some(canonical) = phase.canonical_statuses() {
+            assert_eq!(phase.allowed_statuses(), [canonical], "{phase:?}");
+        }
+        for &(task, run) in phase.allowed_statuses() {
+            assert!(
+                reached.contains(&(phase, task, run)),
+                "{phase:?} ({task:?}, {run:?}) is never reached"
+            );
+        }
+    }
+}
+
+#[test]
 fn only_a_structured_completion_carries_success_authority() {
     let mut succeeded = 0;
     for transition in transitions() {
