@@ -21,6 +21,11 @@ vibemux = "vibemux.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/vibemux"]
 
+# The canonical palette export stays in config/ (pinned by the Rust
+# palette_parity test); wheels carry a copy inside the package.
+[tool.hatch.build.targets.wheel.force-include]
+"config/theme_palettes.json" = "vibemux/theme_palettes.json"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

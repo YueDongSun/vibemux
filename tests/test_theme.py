@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,13 @@ from vibemux.terminal_theme import (
 )
 from vibemux.theme import (
     DEFAULT_THEME_NAME,
+    PALETTE_FILE_CANDIDATES,
+    PALETTE_FILE_NAME,
     THEME_ENV_VAR,
     ThemePaletteError,
     active_palette,
     load_palettes,
+    palette_file_path,
     parse_hex_rgb,
     resolve_palette,
     rich_theme,
@@ -60,6 +64,27 @@ def test_repository_palette_file_loads_six_themes() -> None:
     assert palettes["nord"].terminal_bg == "#242933"
     assert palettes["gruvbox"].accent == "#FE8019"
     assert palettes["gruvbox"].terminal_bg == "#1D2021"
+
+
+def test_palette_file_path_prefers_first_existing_candidate(tmp_path: Path) -> None:
+    packaged = tmp_path / "package" / PALETTE_FILE_NAME
+    checkout = tmp_path / "config" / PALETTE_FILE_NAME
+    assert palette_file_path((packaged, checkout)) == checkout
+    checkout.parent.mkdir()
+    checkout.write_text("{}", encoding="utf-8")
+    assert palette_file_path((packaged, checkout)) == checkout
+    packaged.parent.mkdir()
+    packaged.write_text("{}", encoding="utf-8")
+    assert palette_file_path((packaged, checkout)) == packaged
+
+
+def test_wheel_force_includes_the_palette_the_package_expects() -> None:
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert force_include["config/theme_palettes.json"] == f"vibemux/{PALETTE_FILE_NAME}"
+    assert (REPO_ROOT / "config" / "theme_palettes.json").is_file()
+    assert PALETTE_FILE_CANDIDATES[0].parent.name == "vibemux"
+    assert PALETTE_FILE_CANDIDATES[-1] == REPO_ROOT / "config" / PALETTE_FILE_NAME
 
 
 def test_parse_hex_rgb_accepts_and_rejects() -> None:

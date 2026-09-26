@@ -24,6 +24,15 @@ from .errors import VibeMuxError
 SCHEMA_VERSION = 1
 DEFAULT_THEME_NAME = "claude"
 THEME_ENV_VAR = "VIBEMUX_THEME"
+PALETTE_FILE_NAME = "theme_palettes.json"
+# Wheel builds force-include config/theme_palettes.json into the package
+# (see pyproject.toml); source checkouts and editable installs read the
+# canonical config/ copy directly. The packaged copy is tried first.
+_PACKAGE_DIR = Path(__file__).resolve().parent
+PALETTE_FILE_CANDIDATES: tuple[Path, ...] = (
+    _PACKAGE_DIR / PALETTE_FILE_NAME,
+    _PACKAGE_DIR.parents[1] / "config" / PALETTE_FILE_NAME,
+)
 
 _HEX_FIELDS: tuple[str, ...] = (
     "bg",
@@ -73,9 +82,16 @@ class ThemePalette:
     terminal_cursor: str
 
 
-def palette_file_path() -> Path:
-    """Resolve the exported palette file relative to this checkout."""
-    return Path(__file__).resolve().parents[2] / "config" / "theme_palettes.json"
+def palette_file_path(candidates: tuple[Path, ...] = PALETTE_FILE_CANDIDATES) -> Path:
+    """Return the first existing palette file among ``candidates``.
+
+    When none exists, the last candidate (the checkout location) is
+    returned so the missing-file error names the canonical path.
+    """
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[-1]
 
 
 def parse_hex_rgb(value: str) -> tuple[int, int, int] | None:

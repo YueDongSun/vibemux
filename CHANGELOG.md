@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix non-editable Python installs: wheels now force-include `config/theme_palettes.json` as `vibemux/theme_palettes.json`, and `src/vibemux/theme.py` reads the packaged copy before the checkout copy, so `VIBEMUX_THEME` and `vibemux theme` work outside a source checkout. The WezTerm observer now matches pane directories by file identity (`same-file`, the same check the daemon applies) instead of comparing canonical paths as text.
 - Replace the dashboard home with the native Supervisor Chat workspace (ADR 028): Studio appearance, flat project/task navigation, grouped task activity, persistent drafts, and docked or independent task views. Existing dark palettes and theme preferences remain compatible. Continuous chat remains explicitly unavailable; fixture transcripts are absent from the normal runtime.
 - Add Control v4 task/run/activity/artifact queries through the authoritative writer, preserving v1-v3 operations and SQLite schema v3. Add a bounded native WezTerm observation plugin, explicit session-local pane links, revalidation before focus, and capability-aware frontend feedback. Observation never implies execution ownership or task completion.
 
