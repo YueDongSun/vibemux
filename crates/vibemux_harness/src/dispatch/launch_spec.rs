@@ -49,6 +49,13 @@ pub fn build_launch_spec(
     if !route.protocol.accepts(route.harness) {
         return Err(DispatchError::ConfigRouteInvalid);
     }
+    // Repeats the admission gate so no caller can build a prompt-bearing
+    // launch for a route that may not execute.
+    if mode == SessionMode::Execute
+        && (!route.allow_execution || !route.protocol.supports_execution())
+    {
+        return Err(DispatchError::ExecutionDisabled);
+    }
     let arguments = protocol_arguments(route, mode)?;
     let mut environment_names: Vec<String> = SYSTEM_ENVIRONMENT_NAMES
         .iter()

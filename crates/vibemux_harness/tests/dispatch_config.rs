@@ -45,7 +45,7 @@ fn route_json(harness: &str, protocol: &str) -> Value {
         "executable": native_executable(&format!("{PRIVATE_SENTINEL}_{harness}")),
         "environment_names": [format!("{PRIVATE_SENTINEL}_KEY")],
         "enabled": true,
-        "allow_execution": true,
+        "allow_execution": protocol != "acp",
     })
 }
 
@@ -368,7 +368,7 @@ fn execution_gates_run_in_a_fixed_order_before_any_state_change() {
             "enabled",
             json!(false),
         ),
-        with(route_json("grok", "acp"), "allow_execution", json!(false)),
+        route_json("grok", "acp"),
     ]))
     .unwrap();
     let codex = request(AgentKind::Codex, PROMPT);
@@ -412,7 +412,7 @@ fn execution_gates_run_in_a_fixed_order_before_any_state_change() {
 fn probe_gates_skip_execution_consent_but_not_detection() {
     let config = parse(&config_json(vec![
         route_json("codex", "codex_exec"),
-        with(route_json("grok", "acp"), "allow_execution", json!(false)),
+        route_json("grok", "acp"),
         with(
             route_json("claude", "claude_stream_json"),
             "enabled",
@@ -442,7 +442,7 @@ fn probe_gates_skip_execution_consent_but_not_detection() {
 fn catalog_and_debug_output_carry_no_paths_or_environment_names() {
     let config = parse(&config_json(vec![
         route_json("codex", "codex_exec"),
-        with(route_json("grok", "acp"), "allow_execution", json!(false)),
+        route_json("grok", "acp"),
     ]))
     .unwrap();
     let catalog = config.catalog();
@@ -620,13 +620,63 @@ fn launch_argv_is_owned_by_the_protocol_profile() {
         (AgentKind::Grok, vec!["agent", "stdio"]),
     ] {
         let acp = route(harness, NativeProtocol::Acp, None);
-        assert_eq!(argv(&acp, SessionMode::Execute), expected, "{harness:?}");
+        assert_eq!(argv(&acp, SessionMode::Probe), expected, "{harness:?}");
+        assert_eq!(
+            build_launch_spec(&acp, SessionMode::Execute).unwrap_err(),
+            DispatchError::ExecutionDisabled,
+            "{harness:?}"
+        );
     }
     assert_eq!(
         build_launch_spec(&codex_exec, SessionMode::Execute)
             .unwrap()
             .executable,
         PathBuf::from(native_executable(&format!("{PRIVATE_SENTINEL}_codex")))
+    );
+}
+
+#[test]
+fn acp_routes_are_probe_only_at_every_gate() {
+    let supports: Vec<bool> = NativeProtocol::ALL
+        .iter()
+        .map(|protocol| protocol.supports_execution())
+        .collect();
+    assert_eq!(supports, [true, true, true, false]);
+    for harness in ["open_code", "copilot", "grok"] {
+        assert_eq!(
+            parse_route(with(
+                route_json(harness, "acp"),
+                "allow_execution",
+                json!(true)
+            ))
+            .unwrap_err(),
+            DispatchError::ConfigRouteInvalid,
+            "{harness}"
+        );
+    }
+    // A config assembled without `validate` still cannot execute over ACP.
+    let mut unvalidated = parse_route(route_json("grok", "acp")).unwrap();
+    unvalidated.routes[0].allow_execution = true;
+    assert_eq!(
+        unvalidated
+            .execution_route(&request(AgentKind::Grok, PROMPT), true)
+            .unwrap_err(),
+        DispatchError::ExecutionDisabled
+    );
+    assert_eq!(
+        build_launch_spec(&unvalidated.routes[0], SessionMode::Execute).unwrap_err(),
+        DispatchError::ExecutionDisabled
+    );
+    assert!(build_launch_spec(&unvalidated.routes[0], SessionMode::Probe).is_ok());
+    let consentless = parse_route(with(
+        route_json("codex", "codex_exec"),
+        "allow_execution",
+        json!(false),
+    ))
+    .unwrap();
+    assert_eq!(
+        build_launch_spec(&consentless.routes[0], SessionMode::Execute).unwrap_err(),
+        DispatchError::ExecutionDisabled
     );
 }
 

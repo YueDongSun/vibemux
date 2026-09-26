@@ -98,6 +98,15 @@ impl NativeProtocol {
     pub const fn supports_probe(self) -> bool {
         !matches!(self, Self::CodexExec)
     }
+
+    /// Whether prompt execution is allowed in this slice. ACP vendors grant
+    /// their own tool permissions (OpenCode allows edit and bash by
+    /// default) and no verified per-vendor deny posture exists yet, so ACP
+    /// routes are probe-only (ADR 029).
+    #[must_use]
+    pub const fn supports_execution(self) -> bool {
+        !matches!(self, Self::Acp)
+    }
 }
 
 /// Executable rule for the host the daemon runs on.
@@ -272,7 +281,7 @@ impl DispatchConfig {
     ) -> Result<&DispatchRoute, DispatchError> {
         request.validate()?;
         let route = self.route(request.harness)?;
-        if !route.allow_execution {
+        if !route.allow_execution || !route.protocol.supports_execution() {
             return Err(DispatchError::ExecutionDisabled);
         }
         if !harness_detected {
@@ -314,7 +323,9 @@ impl DispatchConfig {
 }
 
 fn validate_route(route: &DispatchRoute, policy: ExecutablePolicy) -> Result<(), DispatchError> {
-    if !route.protocol.accepts(route.harness) {
+    if !route.protocol.accepts(route.harness)
+        || (route.allow_execution && !route.protocol.supports_execution())
+    {
         return Err(DispatchError::ConfigRouteInvalid);
     }
     validate_executable(&route.executable, policy)?;

@@ -163,7 +163,8 @@ it and rejects any edge not listed here.
   cannot stay complete. A per-protocol allowlist can be added later as an
   additive schema change.
 - **Gates, all checked before any state change:** valid request, route
-  `enabled` and `allow_execution`, harness `detected` in the persisted
+  `enabled` and `allow_execution` on a protocol that permits execution
+  (Codex and Claude only; see below), harness `detected` in the persisted
   registry (ADR 013), and no other active reservation.
 - **Working directory and concurrency (this slice):** vendor processes run in
   the canonical project root with the read-only protocol profiles from
@@ -175,7 +176,12 @@ it and rejects any edge not listed here.
   permission requests their own configuration asks for. OpenCode documents
   `allow` as the default for most permissions, including `edit` and `bash`,
   and a project `opencode.json` can change it, so declining requests does not
-  make an ACP route read-only (see Open decisions). Because the
+  make an ACP route read-only. **ACP routes are therefore probe-only in this
+  slice:** the config rejects `allow_execution: true` on an `acp` route
+  (`harness_dispatch_config_route_invalid`), and both the admission gate and
+  the launch builder refuse ACP execution (`harness_dispatch_execution_disabled`)
+  even for a config that bypassed validation. The ACP execution session model
+  stays as tested pure replay logic that the daemon cannot reach. Because the
   reservation key is the working directory, there is **at most one active
   dispatch per project**. These protocol settings are not an OS sandbox.
   Writable dispatch and concurrency both require owned per-Run worktrees and a
@@ -280,6 +286,9 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   cancels.
 - With one dispatch per project, this slice does not yet provide concurrent
   multi-harness execution.
+- Prompts execute only through the Codex and Claude routes. OpenCode, Copilot,
+  and Grok are reachable for initialize-only probes until a verified ACP deny
+  posture exists.
 - `unsafe` surface grows by two narrow platform modules. That needs deep
   review and Windows plus POSIX tests.
 - Vendor protocol churn is caught by the pure fixture-replay tests. Live
@@ -336,16 +345,16 @@ is one reviewable commit with its own tests.
 
 ### Open decisions before Stage 4
 
-Stage 1 executes nothing, so these do not block it. Each needs a recorded
-decision before the executor can launch a vendor process:
+Stage 1 executes nothing, so these do not block it. Each open item needs a
+recorded decision before the executor can launch a vendor process:
 
-1. **ACP execution posture.** OpenCode's permissive defaults (Decision 4) mean
-   an ACP prompt can edit files and run shell commands without a request.
-   Options: keep ACP routes probe-only in this slice (reject
-   `allow_execution` for `acp`); add a protocol-owned deny configuration per
-   vendor (for OpenCode, an injected permission config), verified live; or
-   treat `allow_execution` as an explicit per-project operator trust grant.
-   Copilot and Grok defaults are unverified.
+1. **ACP execution posture — resolved: probe-only in this slice.**
+   OpenCode's permissive defaults (Decision 4) mean an ACP prompt can edit
+   files and run shell commands without a request, and Copilot and Grok
+   defaults are unverified. ACP routes accept probes only (Decision 4, stage 1
+   amendment). Enabling ACP execution needs a protocol-owned, per-vendor deny
+   posture verified live (for OpenCode, an injected permission config) and a
+   new recorded decision.
 2. **Executable trust.** `.vibemux/harness_dispatch.json` lives in the project
    tree, so it can arrive with a cloned repository and name any absolute
    `.exe`. The loader must bind the executable to something the repository
