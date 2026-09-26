@@ -1,7 +1,9 @@
 # ADR 029: Daemon-owned harness request dispatch and output capture
 
-Status: Proposed. Implementation has not started; nothing in this ADR is
-implemented until `PROGRESS.md` records it.
+Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic) is
+implemented on `feat/harness_dispatch_port`; nothing is wired into the daemon,
+store, or Control IPC, and nothing in this ADR is implemented on `main` until
+`PROGRESS.md` records it.
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
 (local control IPC), and ADR 024 (versioned run records). Amends the
@@ -148,20 +150,32 @@ it and rejects any edge not listed here.
   non-symlink file of at most 64 KiB. Its SHA-256 is computed from the same
   bytes that are validated, and that digest is pinned for the daemon's
   lifetime. If the file is missing, dispatch ops return
-  `harness_dispatch_unconfigured`. If it is invalid, they return
-  `harness_dispatch_config_invalid`. Neither case blocks daemon startup.
+  `harness_dispatch_unconfigured`. If it is invalid, they return the
+  `harness_dispatch_config_*` code of the first failed check (shape, size,
+  route, executable, or environment). Neither case blocks daemon startup.
   Executables must be absolute paths, canonicalized, and `.exe` on Windows;
   `.cmd`, `.bat`, and PowerShell shims are rejected rather than shimmed. The
   file's trust boundary is the same logon SID as the rest of `.vibemux/`; no
-  extra ACL is promised.
+  extra ACL is promised. Schema 1 carries **no operator argv**: every argument
+  comes from the protocol profile. The installed CLIs expose more than 60
+  permission, sandbox, working-directory, network, and config-source flags,
+  and both clap and commander accept clustered short flags, so a denylist
+  cannot stay complete. A per-protocol allowlist can be added later as an
+  additive schema change.
 - **Gates, all checked before any state change:** valid request, route
   `enabled` and `allow_execution`, harness `detected` in the persisted
   registry (ADR 013), and no other active reservation.
 - **Working directory and concurrency (this slice):** vendor processes run in
   the canonical project root with the read-only protocol profiles from
   `a955484`: Codex `sandbox: read-only` and `approvalPolicy: never`; Claude
-  `--bare`, `--tools=`, and `dontAsk`; ACP `fs` and `terminal` capabilities
-  false; every approval or permission request declined. Because the
+  `--bare`, `--tools=`, `--strict-mcp-config`, `--restricted`, and `dontAsk`
+  (no built-in tools, no project or user MCP servers or settings files); ACP
+  `fs` and `terminal` capabilities false; every approval or permission request
+  declined. ACP agents run their own built-in tools and send only the
+  permission requests their own configuration asks for. OpenCode documents
+  `allow` as the default for most permissions, including `edit` and `bash`,
+  and a project `opencode.json` can change it, so declining requests does not
+  make an ACP route read-only (see Open decisions). Because the
   reservation key is the working directory, there is **at most one active
   dispatch per project**. These protocol settings are not an OS sandbox.
   Writable dispatch and concurrency both require owned per-Run worktrees and a
@@ -187,8 +201,8 @@ it and rejects any edge not listed here.
 - **Default limits** (validated ranges live in the config module): native
   frame 128 KiB; capture 16 MiB and 16,384 records per attempt; request
   deadline 600 s (1 s to 3,600 s); shutdown grace 2 s (0.1 s to 10 s);
-  environment allowlist of at most 24 names; at most 24 fixed arguments
-  (4 KiB each, 12 KiB total); at most 16 routes.
+  environment allowlist of at most 24 names; a model name of at most
+  256 bytes; at most 16 routes.
 
 ### 5. Output capture
 
@@ -228,7 +242,7 @@ versions. Arguments are JSON strings in `argument`, matching the style of
 
 | Operation | Argument | Result (content-free unless noted) |
 |---|---|---|
-| `harness_dispatch_catalog` | none | Routes: harness, protocol, `enabled`, `allow_execution`, `configured`; no paths, arguments, or environment |
+| `harness_dispatch_catalog` | none | Routes: harness, protocol, `enabled`, `allow_execution`, `probe_supported`; no paths, model, or environment names |
 | `harness_dispatch_probe` | `{harness}` | Initialize-only handshake: status, codes, counts. Sends no prompt and writes no canonical state |
 | `harness_dispatch_submit` | `{schema_version, request_id, harness, prompt}` | Admission receipt `{request_id, task_id, run_id, phase, duplicate, sequence}`, returned right after the durable admit |
 | `harness_dispatch_status` | `{request_id}` | Phase, outcome, fixed codes, aggregates, and live counters while running |
@@ -239,12 +253,19 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   The daemon also checks the encoded size of every output page against the
   frame limit before sending it.
 - Error codes use the `harness_` namespace, so they round-trip as
-  `ControlError::Remote{code}` today. New codes are
-  `harness_dispatch_{unconfigured, config_invalid, route_unavailable,
-  execution_disabled, busy, conflict, not_found, invalid_request,
-  invalid_prompt, output_unavailable, terminal, interrupted}`, plus the fixed
-  vendor and protocol codes from `a955484`, which are filtered through an
-  allowlist.
+  `ControlError::Remote{code}` today. The closed set is the
+  `vibemux_harness::dispatch::DispatchError` enum; nothing else is sent:
+  - `harness_dispatch_{unconfigured, config_invalid, config_too_large,
+    config_route_invalid, config_executable_invalid,
+    config_environment_invalid, route_unavailable, execution_disabled,
+    not_detected, probe_unsupported, invalid_request, invalid_prompt, busy,
+    conflict, not_found, output_unavailable, terminal, invalid_transition,
+    stale_fence, interrupted, cancelled, deadline_exceeded, internal}`;
+  - `harness_protocol_*` for framing, JSON-RPC, correlation, and terminal
+    evidence failures (for example `harness_protocol_eof_without_terminal`);
+  - `harness_capture_too_large`;
+  - `harness_process_*` for executable, working-directory, environment,
+    spawn, containment, pipe, and exit failures.
 - `vibemuxctl dispatch {catalog|probe|submit|status|output|cancel}` are thin
   clients. `submit` reads the prompt from `--prompt-file` or stdin; the prompt
   is data and never goes through argv or a shell.
@@ -297,7 +318,7 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (proposed; not started)
+## Implementation plan (proposed; stage 1 done on the branch)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -305,13 +326,40 @@ is one reviewable commit with its own tests.
 
 | Stage | Owned files | Content | Gate |
 |---|---|---|---|
-| 1 | `crates/vibemux_harness/src/dispatch/{mod,request,route_config,launch_spec,protocol_session,observation,json_line_framer,capture_budget,attempt,outcome,events}.rs`, `tests/dispatch_*.rs`, `tests/fixtures/dispatch/*.jsonl` | Port the pure logic from `a955484`; add the attempt machine and `decide_outcome` | Unit and fixture-replay tests for every protocol; exhaustive transition table; framer split, CRLF, oversize, and UTF-8 cases |
+| 1 | `crates/vibemux_harness/src/dispatch/{mod,error_code,digest,request,route_config,launch_spec,protocol_session,observation,json_line_framer,capture_budget,attempt,outcome,events}.rs`, `tests/dispatch_*.rs`, `tests/fixtures/dispatch/*.jsonl` | Port the pure logic from `a955484`; add the attempt machine and `decide_outcome` | Unit and fixture-replay tests for every protocol; exhaustive transition table; framer split, CRLF, oversize, and UTF-8 cases |
 | 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `Cargo.toml` feature | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX); deep review of `unsafe` |
 | 3 | `crates/vibemux_store/src/harness_dispatch.rs` (+ tests), `lib.rs` migration hook | Schema 4 and transactions | Idempotent admit; conflict; unique reservation; single-use claim; fence; cancel before and after claim; recovery; `Succeeded` only with authority; atomic migration and reopen |
 | 4 | `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,native_process,executor,transcript_store}.rs`, writer arms in `lib.rs`, `src/bin/vibemux_native_fixture.rs` (`test_helpers`) | Service, executor, capture, recovery at writer start | Per-protocol integration tests with the fixture binary, ported from `a955484`'s `process_dispatch.rs` (19 scenarios); shutdown during a run; restart to `recovery_pending`; leak scan |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table and version, `crates/vibemux_cli/src/*` | Control v5 and `vibemuxctl dispatch` | Version gating (v5 ops refused at v4; v1–v4 accepted); code round-trip; output page reassembles byte-exact within the frame budget |
 | 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, this ADR → Accepted | Documentation matches the code | Link check; `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features` (serial on Windows, issue #6); Python regression |
 | 7 | `docs/evidence/harness_dispatch_validation.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Otherwise recorded as unverified |
+
+### Open decisions before Stage 4
+
+Stage 1 executes nothing, so these do not block it. Each needs a recorded
+decision before the executor can launch a vendor process:
+
+1. **ACP execution posture.** OpenCode's permissive defaults (Decision 4) mean
+   an ACP prompt can edit files and run shell commands without a request.
+   Options: keep ACP routes probe-only in this slice (reject
+   `allow_execution` for `acp`); add a protocol-owned deny configuration per
+   vendor (for OpenCode, an injected permission config), verified live; or
+   treat `allow_execution` as an explicit per-project operator trust grant.
+   Copilot and Grok defaults are unverified.
+2. **Executable trust.** `.vibemux/harness_dispatch.json` lives in the project
+   tree, so it can arrive with a cloned repository and name any absolute
+   `.exe`. The loader must bind the executable to something the repository
+   cannot choose. For example, it could require the probe cache's resolved
+   path for that harness, reject executables under the project root, or read
+   routes from a per-user location.
+3. **Claude flags.** `--strict-mcp-config` and `--restricted` are verified
+   only by `--help`; the Stage 7 initialize probe confirms they combine with
+   `--bare` stream-json.
+4. **Forced exit after a terminal.** A correlated terminal followed by a
+   forced kill (for example, an app-server that does not exit within the
+   grace period after stdin closes) is `failed` with `harness_process_failed`.
+   This is conservative and may need a narrower rule once Stage 4 observes
+   real shutdown behavior.
 
 Out of scope: writable or owned-worktree dispatch, more than one dispatch per
 project, multi-turn or resume, executing approvals, the frontend Send action,

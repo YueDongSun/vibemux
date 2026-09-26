@@ -9,7 +9,12 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true
+uuid.workspace = true
 vibemux_events = { path = "../vibemux_events" }
 vibemux_types = { path = "../vibemux_types" }
+
+[dev-dependencies]
+proptest.workspace = true

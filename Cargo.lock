@@ -4479,10 +4479,13 @@ dependencies = [
 name = "vibemux_harness"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "time",
+ "uuid",
  "vibemux_events",
  "vibemux_types",
 ]

@@ -7,8 +7,13 @@
 //! inputs are injected by callers (the daemon reads the trusted probe cache
 //! owned by `vibemux_probe::cache`), which keeps the types -> harness ->
 //! store dependency direction acyclic per AGENTS.md §4.2.
+//!
+//! [`dispatch`] holds the pure contracts and state machines for sending one
+//! prompt to a first-party structured harness adapter (ADR 029); `vibemuxd`
+//! owns every process, pipe, and store effect that applies them.
 
 pub mod agent;
+pub mod dispatch;
 
 use std::collections::BTreeMap;
 

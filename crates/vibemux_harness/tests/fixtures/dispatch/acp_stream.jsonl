@@ -1,0 +1,9 @@
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}
+{"jsonrpc":"2.0","id":2,"result":{"sessionId":"synthetic_session"}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"synthetic_session","update":{"sessionUpdate":"tool_call","toolCallId":"tool_one","status":"pending"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"synthetic_session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"first chunk"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"synthetic_session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"second chunk"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"synthetic_session","update":{"sessionUpdate":"usage_update","used":12,"size":100}}}
+{"jsonrpc":"2.0","id":8,"method":"session/request_permission","params":{"sessionId":"synthetic_session","toolCall":{"toolCallId":"tool_one"},"options":[]}}
+{"jsonrpc":"2.0","method":"vendor/extension","params":{"unknown":{"preserve":[1,2,3]}}}
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"preserve":true}}}
