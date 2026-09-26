@@ -190,8 +190,8 @@ it and rejects any edge not listed here.
   separate ADR.
 - **Executor.** One owned tokio task per attempt, held in the dispatch
   service's `JoinSet`, with a `watch` cancellation signal. Order of work:
-  claim, spawn, attach containment, send the initial message or prompt, then
-  loop. Each stdout chunk goes to the pure framer. Each record is classified
+  claim, spawn the launch trampoline (Decision 6), attach containment, send
+  the go byte, send the initial message or prompt, then loop. Each stdout chunk goes to the pure framer. Each record is classified
   and passed to the session state machine; its replies go to stdin. Records
   flow to the capture over a bounded channel (capacity 16). When the loop ends,
   the pure `decide_outcome` is applied, then a fenced finish. A finish that
@@ -261,11 +261,9 @@ command line, or environment. The daemon maps them to
   - Members killed only by closing the handle report exit code 0, so an exit
     status is never evidence of success. The outcome rules already require a
     correlated terminal record.
-  - Assignment happens after `CreateProcess`, so it is not atomic. Nothing
-    is written to stdin until `contain` succeeds, which covers descendants
-    started in response to input. A descendant the vendor CLI starts on its
-    own during that window, before reading any input, escapes the job. This
-    residual risk is open decision 5.
+  - Assignment happens after `CreateProcess`, so it is not atomic. The
+    vendor CLI is therefore never the process that `contain` assigns; the
+    launch trampoline below is (open decision 5).
   - A read-only `active_process_count()` exposes the job's accounting for the
     Stage 4 leak scan.
 - **POSIX** (`process_tree/posix_process_group.rs`, safe code): `std`'s
@@ -284,6 +282,30 @@ command line, or environment. The daemon maps them to
   - The group id stays reserved only while a member, or the un-reaped leader,
     exists. The executor therefore terminates (or drops the tree) before
     reaping the leader; the rustdoc on `terminate` and `Drop` states this.
+
+**Launch trampoline (Stage 4).** The executor never spawns a vendor CLI
+directly. It spawns `vibemux_launch_trampoline`, a first-party binary built
+from the `vibemuxd` package, with the vendor executable and argv as its own
+arguments and with the route's environment and working directory. The
+executor contains the trampoline, then writes one go byte to its stdin.
+Only after reading that byte does the trampoline spawn the vendor CLI. The
+vendor is therefore a member from its first instruction, as is everything it
+starts.
+- The go byte is read from an unbuffered stdin handle, exactly one byte, so
+  no protocol byte the executor writes afterwards is consumed.
+- The vendor inherits the trampoline's stdin, stdout, and stderr. The
+  trampoline waits for it and exits with its exit code. If the vendor could
+  not be spawned or ended without a code, the trampoline exits nonzero. The
+  attempt is then not clean, and so is never `Completed`.
+- Anything other than the go byte, including end of file, makes the
+  trampoline exit without spawning.
+- The trampoline logic is safe code in `vibemux_platform`. The binary is a
+  thin entry point, needs no tokio, and is used on every platform, so Linux
+  CI exercises the same launch path. On POSIX the group already exists
+  before exec, so there the trampoline adds uniformity, not safety.
+- The daemon resolves the trampoline once at startup, as a regular file next
+  to its own executable. If it is missing, dispatch ops return
+  `harness_process_executable_unavailable`, and nothing is spawned.
 
 `windows-sys` gains the `Win32_System_JobObjects` feature, and `rustix`
 (`process`, `std`) becomes a Unix-only dependency. This amends ADR 025's
@@ -364,6 +386,8 @@ versions. Arguments are JSON strings in `argument`, matching the style of
 - `unsafe` surface grows by one narrow Windows platform module (Job Object
   create, assign, terminate, and query). POSIX containment is safe code. The
   module needs deep review, and its tests run on Windows and Linux.
+- Every dispatch runs one extra first-party process, the launch trampoline,
+  which must be installed next to `vibemuxd`.
 - Vendor protocol churn is caught by the pure fixture-replay tests. Live
   vendor behavior is only verified against installed CLIs, and paid model
   inference runs only with explicit authorization.
@@ -411,7 +435,7 @@ is one reviewable commit with its own tests.
 | 1 | `crates/vibemux_harness/src/dispatch/{mod,error_code,digest,request,route_config,launch_spec,protocol_session,observation,json_line_framer,capture_budget,attempt,outcome,events}.rs`, `tests/dispatch_*.rs`, `tests/fixtures/dispatch/*.jsonl` | Port the pure logic from `a955484`; add the attempt machine and `decide_outcome` | Unit and fixture-replay tests for every protocol; exhaustive transition table; framer split, CRLF, oversize, and UTF-8 cases |
 | 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `lib.rs` export and error variant, `tests/{process_tree,unsafe_containment}.rs`, `windows-sys` feature and Unix `rustix` dependency | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX) and, on Windows, when the owner dies; breakaway is refused on Windows; the own id, init, and the own group are refused; deep review of `unsafe` |
 | 3 | `crates/vibemux_store/src/harness_dispatch.rs` (+ tests), `lib.rs` migration hook | Schema 4 and transactions | Idempotent admit; conflict; unique reservation; single-use claim; fence; cancel before and after claim; recovery; `Succeeded` only with authority; atomic migration and reopen |
-| 4 | `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,native_process,executor,transcript_store}.rs`, writer arms in `lib.rs`, `src/bin/vibemux_native_fixture.rs` (`test_helpers`) | Service, executor, capture, recovery at writer start | Per-protocol integration tests with the fixture binary, ported from `a955484`'s `process_dispatch.rs` (19 scenarios); shutdown during a run; restart to `recovery_pending`; leak scan |
+| 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs` (+ tests), `crates/vibemuxd/src/bin/vibemux_launch_trampoline.rs`, `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,native_process,executor,transcript_store}.rs`, writer arms in `lib.rs`, `src/bin/vibemux_native_fixture.rs` (`test_helpers`) | Trampoline, service, executor, capture, recovery at writer start | A descendant the vendor starts before reading input is contained; the trampoline consumes exactly the go byte and propagates the exit code; per-protocol integration tests with the fixture binary, ported from `a955484`'s `process_dispatch.rs` (19 scenarios); shutdown during a run; restart to `recovery_pending`; leak scan |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table and version, `crates/vibemux_cli/src/*` | Control v5 and `vibemuxctl dispatch` | Version gating (v5 ops refused at v4; v1–v4 accepted); code round-trip; output page reassembles byte-exact within the frame budget |
 | 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, this ADR → Accepted | Documentation matches the code | Link check; `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features` (serial on Windows, issue #6); Python regression |
 | 7 | `docs/evidence/harness_dispatch_validation.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Otherwise recorded as unverified |
@@ -442,15 +466,16 @@ recorded decision before the executor can launch a vendor process:
    grace period after stdin closes) is `failed` with `harness_process_failed`.
    This is conservative and may need a narrower rule once Stage 4 observes
    real shutdown behavior.
-5. **Windows startup window.** Job assignment follows `CreateProcess`
-   (Decision 6), so a descendant that a vendor CLI starts before `contain`
-   returns, without waiting for input, escapes the job. The options are:
-   - accept the window and let the Stage 4 leak scan report it;
-   - launch through a first-party trampoline that is contained first and
-     starts the vendor CLI only after it reads a go byte;
-   - create the child with `CREATE_SUSPENDED` and resume its main thread after
-     assignment. `std` cannot resume the thread, so this needs more `unsafe`
-     in the Job Object module.
+5. **Windows startup window — resolved: launch trampoline.** Job
+   assignment follows `CreateProcess` (Decision 6), so a descendant that a
+   vendor CLI starts before `contain` returns, without waiting for input,
+   would escape the job. Vendor CLIs are launched through the first-party
+   trampoline (Decision 6), which is contained before it starts them.
+   Rejected alternatives:
+   - accepting the window and reporting escapes through the leak scan, which
+     detects an escape only after the fact;
+   - `CREATE_SUSPENDED` with a resume after assignment. `std` cannot resume
+     the main thread, so this needs more `unsafe` in the Job Object module.
 
 Out of scope: writable or owned-worktree dispatch, more than one dispatch per
 project, multi-turn or resume, executing approvals, the frontend Send action,
