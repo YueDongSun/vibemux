@@ -1,9 +1,11 @@
 # ADR 029: Daemon-owned harness request dispatch and output capture
 
-Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic) is
+Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic) and
+Stage 2 (the `vibemux_platform::ProcessTree` containment primitive) are
 implemented on `feat/harness_dispatch_port`; nothing is wired into the daemon,
 store, or Control IPC, and nothing in this ADR is implemented on `main` until
-`PROGRESS.md` records it.
+`PROGRESS.md` records it. The Stage 2 `unsafe` module needs this ADR accepted
+before merge (AGENTS.md §7.2).
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
 (local control IPC), and ADR 024 (versioned run records). Amends the
@@ -225,19 +227,89 @@ it and rejects any edge not listed here.
 
 ### 6. Process-tree containment (`vibemux_platform`)
 
-A new `process_tree` module provides one safe API: create a containment,
-assign a child to it, and terminate the whole tree.
+`vibemux_platform::ProcessTree` is one safe API with three steps:
 
-- **Windows:** a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so a
-  daemon crash also kills the vendor process tree.
-- **POSIX:** a process group created with `process_group(0)`, killed as a group.
+1. `ProcessTree::prepare_command(&mut std::process::Command)` before spawn.
+   Tokio callers pass `Command::as_std_mut()`.
+2. `ProcessTree::contain(process_id)` right after spawn and before any input
+   is written.
+3. `terminate()`, or dropping the tree, kills every remaining member.
 
-Each implementation lives in its own narrow `unsafe` module, with a
-`// SAFETY:` comment on every block and focused tests. The `windows-sys` crate
-gains the `Win32_System_JobObjects` feature. This amends ADR 025's "exactly one
-`unsafe` module" rule to name these modules. Containment is assigned after
-process creation and before the prompt is sent, so it is not atomic with
-startup.
+The API takes the child's id because tokio's `Child` exposes only a raw
+Windows handle, which safe code cannot borrow. The caller must still hold
+the un-reaped child, so the id cannot be reused. `contain` refuses the
+daemon's own id on both platforms. If `contain` fails, the child keeps
+running uncontained, and the executor must kill and reap it before reporting
+the failure. Errors are `PlatformError::ProcessTree { operation, os_code }`
+with a fixed step name (`platform_process_tree_failed`). They carry no path,
+command line, or environment. The daemon maps them to
+`harness_process_containment_failed`.
+
+- **Windows** (`process_tree/windows_job_object.rs`, the only new `unsafe`
+  module):
+  - an unnamed Job Object with a non-inheritable handle and only
+    `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so a daemon crash also kills the
+    tree;
+  - breakaway is never permitted, so a member's `CreateProcess` with
+    `CREATE_BREAKAWAY_FROM_JOB` fails with access denied. Processes that
+    system services start on a member's behalf (WMI, Task Scheduler, COM
+    servers) are outside the job, and containment does not cover them;
+  - the child is opened by id with `PROCESS_SET_QUOTA | PROCESS_TERMINATE`
+    and assigned; descendants created later join the job automatically;
+  - every `terminate` call runs `TerminateJobObject` with exit code 1, so a
+    repeated call also kills members created while an earlier call ran.
+  - Members killed only by closing the handle report exit code 0, so an exit
+    status is never evidence of success. The outcome rules already require a
+    correlated terminal record.
+  - Assignment happens after `CreateProcess`, so it is not atomic. Nothing
+    is written to stdin until `contain` succeeds, which covers descendants
+    started in response to input. A descendant the vendor CLI starts on its
+    own during that window, before reading any input, escapes the job. This
+    residual risk is open decision 5.
+  - A read-only `active_process_count()` exposes the job's accounting for the
+    Stage 4 leak scan.
+- **POSIX** (`process_tree/posix_process_group.rs`, safe code): `std`'s
+  `process_group(0)` makes the child lead a new group. `contain` verifies,
+  through `rustix`'s safe `getpgid` and `getpgrp`, that the child leads its
+  own group, and refuses a child spawned without preparation. It also
+  refuses id 1, because signalling group 1 is `kill(-1)` and reaches every
+  process the user may signal, and it refuses the daemon's own group.
+  `terminate` sends `SIGKILL` to the group with `kill_process_group`;
+  `ESRCH` means the group is already empty. After the first success it sends
+  nothing more, so a later call cannot reach a reused id.
+  - A member can leave the group with `setsid` or `setpgid`.
+  - A daemon crash leaves the group running, because POSIX has no
+    kill-on-close. Its stdin closes, and startup recovery marks the attempt
+    `recovery_pending` without killing anything.
+  - The group id stays reserved only while a member, or the un-reaped leader,
+    exists. The executor therefore terminates (or drops the tree) before
+    reaping the leader; the rustdoc on `terminate` and `Drop` states this.
+
+`windows-sys` gains the `Win32_System_JobObjects` feature, and `rustix`
+(`process`, `std`) becomes a Unix-only dependency. This amends ADR 025's
+"exactly one `unsafe` module" rule to add `windows_job_object` as the second
+reviewed module; `tests/unsafe_containment.rs` pins both.
+
+Tests re-execute the test binary as a contained parent that spawns a
+grandchild sharing its stdout. End of file on that pipe proves both exited,
+on both platforms:
+- both die on `terminate` and on drop;
+- on Windows, both die when the owning process is killed, and a member's
+  breakaway attempt fails with access denied;
+- a negative control shows the grandchild outliving its killed parent until
+  the tree is terminated;
+- ids 0, 1, `u32::MAX`, and the test's own id are refused; on POSIX, so are
+  a child outside its own group and a member naming its own group's leader.
+
+A test that would otherwise be handed an unexpectedly contained tree leaks
+it with `mem::forget` instead of dropping it, so a regression cannot signal
+the test's own process or group, or everything through group 1.
+
+Each of these mutations fails at least one test: on Windows, removing
+kill-on-close, turning `terminate` into a no-op, permitting breakaway, or
+removing the own-id check; on Linux, a no-op group kill, removing the
+own-group check, or removing the init check (run under `setsid`, so that the
+own-group check does not also catch id 1).
 
 ### 7. Control IPC v5
 
@@ -289,8 +361,9 @@ versions. Arguments are JSON strings in `argument`, matching the style of
 - Prompts execute only through the Codex and Claude routes. OpenCode, Copilot,
   and Grok are reachable for initialize-only probes until a verified ACP deny
   posture exists.
-- `unsafe` surface grows by two narrow platform modules. That needs deep
-  review and Windows plus POSIX tests.
+- `unsafe` surface grows by one narrow Windows platform module (Job Object
+  create, assign, terminate, and query). POSIX containment is safe code. The
+  module needs deep review, and its tests run on Windows and Linux.
 - Vendor protocol churn is caught by the pure fixture-replay tests. Live
   vendor behavior is only verified against installed CLIs, and paid model
   inference runs only with explicit authorization.
@@ -327,7 +400,7 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (proposed; stage 1 done on the branch)
+## Implementation plan (proposed; stages 1 and 2 done on the branch)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -336,7 +409,7 @@ is one reviewable commit with its own tests.
 | Stage | Owned files | Content | Gate |
 |---|---|---|---|
 | 1 | `crates/vibemux_harness/src/dispatch/{mod,error_code,digest,request,route_config,launch_spec,protocol_session,observation,json_line_framer,capture_budget,attempt,outcome,events}.rs`, `tests/dispatch_*.rs`, `tests/fixtures/dispatch/*.jsonl` | Port the pure logic from `a955484`; add the attempt machine and `decide_outcome` | Unit and fixture-replay tests for every protocol; exhaustive transition table; framer split, CRLF, oversize, and UTF-8 cases |
-| 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `Cargo.toml` feature | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX); deep review of `unsafe` |
+| 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `lib.rs` export and error variant, `tests/{process_tree,unsafe_containment}.rs`, `windows-sys` feature and Unix `rustix` dependency | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX) and, on Windows, when the owner dies; breakaway is refused on Windows; the own id, init, and the own group are refused; deep review of `unsafe` |
 | 3 | `crates/vibemux_store/src/harness_dispatch.rs` (+ tests), `lib.rs` migration hook | Schema 4 and transactions | Idempotent admit; conflict; unique reservation; single-use claim; fence; cancel before and after claim; recovery; `Succeeded` only with authority; atomic migration and reopen |
 | 4 | `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,native_process,executor,transcript_store}.rs`, writer arms in `lib.rs`, `src/bin/vibemux_native_fixture.rs` (`test_helpers`) | Service, executor, capture, recovery at writer start | Per-protocol integration tests with the fixture binary, ported from `a955484`'s `process_dispatch.rs` (19 scenarios); shutdown during a run; restart to `recovery_pending`; leak scan |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table and version, `crates/vibemux_cli/src/*` | Control v5 and `vibemuxctl dispatch` | Version gating (v5 ops refused at v4; v1–v4 accepted); code round-trip; output page reassembles byte-exact within the frame budget |
@@ -369,6 +442,15 @@ recorded decision before the executor can launch a vendor process:
    grace period after stdin closes) is `failed` with `harness_process_failed`.
    This is conservative and may need a narrower rule once Stage 4 observes
    real shutdown behavior.
+5. **Windows startup window.** Job assignment follows `CreateProcess`
+   (Decision 6), so a descendant that a vendor CLI starts before `contain`
+   returns, without waiting for input, escapes the job. The options are:
+   - accept the window and let the Stage 4 leak scan report it;
+   - launch through a first-party trampoline that is contained first and
+     starts the vendor CLI only after it reads a go byte;
+   - create the child with `CREATE_SUSPENDED` and resume its main thread after
+     assignment. `std` cannot resume the thread, so this needs more `unsafe`
+     in the Job Object module.
 
 Out of scope: writable or owned-worktree dispatch, more than one dispatch per
 project, multi-turn or resume, executing approvals, the frontend Send action,
