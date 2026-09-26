@@ -2463,3 +2463,27 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - No WezTerm installation/running GUI was found in inspected paths/processes, so real pane focus/native TUI integration is not live-verified. No software or global terminal configuration was installed/changed.
 - Continuous coordinator chat, automatic coding-harness dispatch and embedded terminal rendering remain separate future capabilities. No model inference, deployment, remote A2A or hosted CI was performed.
 - Full evidence and screenshots: `docs/evidence/supervisor_frontend_validation.md`. Existing uncommitted theme/CLI changes and `.zcode` were preserved; this task did not commit or push them.
+
+### 2026-09-27 (2) - Branch audit and open-work integration (`feat/integrate-open-work`)
+
+**Branch dispositions** (checked against `origin/main` at `b577c11`)
+- Fully contained in `origin/main` (0 commits ahead, nothing to merge): `a2a_basic_share`, `codex/supervisor_chat_ui`, `codex/supervisor_state_api`, `daemon_local_ipc`, `daemon_process_cli`, `daemon_stale_recovery`, `daemon_windows_security`, `daemon_writer_worker`, `feat/gui-theme-nord-gruvbox`, `integration_core`, `main` (local ref is 34 behind `origin/main`), `plugin_protocol_core`, `plugin_supervisor_core`, `probe_unified_frontend`, `python_reference_p0`, `python_source_reference`, `rust_core_refactor`, `rust_store_daemon`, and every `origin/*`/`linux/*` remote branch except the one below.
+- `feat/scheduling-and-visual-optimizations`: its PR (#3) was closed as superseded after head `4d96fc2` landed on main as a content-equivalent squash. The only unlanded commit, `a698f64` (architecture docs consolidation), is ported here as a curated merge: newer main content it would have dropped (CLAUDE.md command reference, README supervisor workflow commands, Control v4/terminal observer/Supervisor Chat text) is kept, and the architecture reference is brought up to date. A stray conflict marker committed to this file on main is removed.
+- `codex/harness_request_dispatch` and `codex/harness_request_dispatch_latest` (same commit `a955484`, 40 behind): **not merged**. A trial merge conflicts in 12 files (including add/add on `crates/vibemux_harness`), the branch puts process/session I/O inside `vibemux_harness` against the "pure logic, no I/O" boundary, and main's issue #4 harness port supersedes its registry. Its uncommitted worktree ADR draft also reuses number 025. Harness dispatch/capture should be re-ported onto the daemon-owned architecture as a separate task.
+- A detached Codex worktree held uncommitted "Document role" headers in five docs; they are superseded by the `a698f64` cross-references and not included.
+
+**Integrated in this branch**
+- The previously uncommitted work-area changes: ADR 026 Python theme CLI and terminal snippets, the Control v4 task queries plus the bounded WezTerm terminal observer (ADR 028), the Supervisor Chat frontend with Nord/Gruvbox/Studio palettes (ADR 026-028), their ledger entries, and the docs consolidation above. No behavior was changed while splitting them into commits.
+
+**Validation executed on the integrated tree**
+- `cargo fmt --all -- --check`: pass. `cargo clippy --workspace --all-targets --all-features -j 2 -- -D warnings`: pass.
+- `cargo test --workspace --all-features -j 2 -- --test-threads=1` (debug info and incremental builds disabled because of disk space): **340 passed / 0 failed / 2 ignored**.
+- Project interpreter: `python -m pytest` 61 passed; `ruff check` and `ruff format --check` clean; `mypy src/vibemux` clean (17 files); `scripts/smoke_test.py` PASS (mock workflow).
+- Relative links and anchors in AGENTS.md, CLAUDE.md, PROGRESS.md, README.md and `docs/architecture.md`: 0 broken.
+
+**Known follow-ups**
+- `crates/vibemux_frontend/src/gui/{app,overview,workbench,stub_bank}.rs` are no longer in the module tree; they reference only each other and their tests do not compile. Delete them or bring them back in a dedicated change.
+- Port harness request dispatch/capture from `a955484` onto `vibemuxd`-owned I/O.
+- Stale local branches and worktrees listed above can be pruned after this merges. That needs a cleanup plan and was not done here.
+- The dependency diagrams in AGENTS.md §4.2 and CLAUDE.md still disagree on where `harness`/`probe` sit.
+- Parallel Windows test runs remain sensitive to shared ACL-marker interference (issue #6); WezTerm focus is still not live-verified.
