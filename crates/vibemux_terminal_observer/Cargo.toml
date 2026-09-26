@@ -1,24 +1,18 @@
 [package]
-name = "vibemux_plugin_supervisor"
+name = "vibemux_terminal_observer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-test_helpers = []
-
-[[bin]]
-name = "vibemux_mock_plugin"
-path = "src/bin/vibemux_mock_plugin.rs"
-required-features = ["test_helpers"]
-
 [dependencies]
 prost.workspace = true
 serde.workspace = true
-thiserror.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
 tokio.workspace = true
+url.workspace = true
 vibemux_plugin_protocol = { path = "../vibemux_plugin_protocol" }
 
 [dev-dependencies]

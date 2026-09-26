@@ -140,6 +140,8 @@ type InboundItem = Result<Envelope, PluginSupervisorError>;
 
 pub struct PluginSession {
     session_id: String,
+    granted_capabilities: Vec<String>,
+    granted_permissions: Vec<String>,
     lifecycle: CoreSessionLifecycle,
     child: Option<Child>,
     outbound: mpsc::Sender<Envelope>,
@@ -228,26 +230,27 @@ pub async fn spawn_plugin(
         lifecycle.mark_core_hello_sent(&negotiated.core_hello)?;
         let ready = read_envelope(&mut stdout, frame_config).await?;
         lifecycle.receive(&ready)?;
-        Ok::<_, PluginSupervisorError>((lifecycle, frame_config))
+        Ok::<_, PluginSupervisorError>((lifecycle, frame_config, negotiated))
     };
 
-    let (lifecycle, frame_config) = match timeout(config.handshake_timeout, handshake).await {
-        Ok(Ok(handshake)) => handshake,
-        Ok(Err(error)) => {
-            let cleanup = terminate_child(&mut child, config.shutdown_timeout).await;
-            stderr_task.abort();
-            let _ = stderr_task.await;
-            cleanup?;
-            return Err(error);
-        }
-        Err(_) => {
-            let cleanup = terminate_child(&mut child, config.shutdown_timeout).await;
-            stderr_task.abort();
-            let _ = stderr_task.await;
-            cleanup?;
-            return Err(PluginSupervisorError::HandshakeTimeout);
-        }
-    };
+    let (lifecycle, frame_config, negotiated) =
+        match timeout(config.handshake_timeout, handshake).await {
+            Ok(Ok(handshake)) => handshake,
+            Ok(Err(error)) => {
+                let cleanup = terminate_child(&mut child, config.shutdown_timeout).await;
+                stderr_task.abort();
+                let _ = stderr_task.await;
+                cleanup?;
+                return Err(error);
+            }
+            Err(_) => {
+                let cleanup = terminate_child(&mut child, config.shutdown_timeout).await;
+                stderr_task.abort();
+                let _ = stderr_task.await;
+                cleanup?;
+                return Err(PluginSupervisorError::HandshakeTimeout);
+            }
+        };
 
     let (outbound, mut outbound_receiver) = mpsc::channel(config.outbound_capacity);
     let (inbound_sender, inbound) = mpsc::channel(config.inbound_capacity);
@@ -279,6 +282,8 @@ pub async fn spawn_plugin(
     stderr_abort_guard.abort_handle.take();
     Ok(PluginSession {
         session_id: config.session_id,
+        granted_capabilities: negotiated.granted_capabilities,
+        granted_permissions: negotiated.granted_permissions,
         lifecycle,
         child: Some(child),
         outbound,
@@ -297,6 +302,18 @@ pub async fn spawn_plugin(
 }
 
 impl PluginSession {
+    /// Effective grants, after intersecting the manifest, peer hello and policy.
+    #[must_use]
+    pub fn permits(&self, capability: &str, permission: &str) -> bool {
+        self.granted_capabilities
+            .iter()
+            .any(|item| item == capability)
+            && self
+                .granted_permissions
+                .iter()
+                .any(|item| item == permission)
+    }
+
     #[must_use]
     pub fn process_id(&self) -> Option<u32> {
         self.child.as_ref().and_then(Child::id)

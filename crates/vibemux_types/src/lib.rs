@@ -8,6 +8,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod a2a;
+pub mod frontend;
 mod restore;
 
 const MAX_TITLE_BYTES: usize = 512;

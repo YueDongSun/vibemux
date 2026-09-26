@@ -24,6 +24,7 @@ use vibemux_store::{
 use vibemux_types::{
     ProjectId, RunId, TaskId,
     a2a::{A2aRunRecord, A2aRunStart, A2aRunUpdate},
+    frontend::{FrontendTaskDetail, FrontendTasksPage, FrontendTasksQuery},
 };
 
 /// Writer queue capacity: 64 absorbs burst commits from multiple CLI clients
@@ -41,10 +42,12 @@ pub mod control;
 pub mod model_peer_process;
 pub mod plugin_configuration;
 pub mod plugin_registry;
+pub mod plugin_requests;
 pub mod process;
 pub mod recovery;
 pub mod supervisor_service;
 pub mod supervisor_workflow;
+pub mod terminal_observer;
 
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -167,6 +170,14 @@ enum WriterRequest {
     A2aRuns {
         task_id: TaskId,
         response: mpsc::Sender<Result<Vec<A2aRunRecord>, WriterError>>,
+    },
+    FrontendTasks {
+        query: FrontendTasksQuery,
+        response: mpsc::Sender<Result<FrontendTasksPage, WriterError>>,
+    },
+    FrontendTask {
+        task_id: TaskId,
+        response: mpsc::Sender<Result<Option<FrontendTaskDetail>, WriterError>>,
     },
     Health(mpsc::Sender<Result<WriterHealth, WriterError>>),
     /// O(1) `project_id()` accessor (typed `SELECT envelope_json ... LIMIT 1`
@@ -300,6 +311,24 @@ impl WriterHandle {
     pub fn a2a_runs(&self, task_id: TaskId) -> Result<Vec<A2aRunRecord>, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::A2aRuns { task_id, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn frontend_tasks(
+        &self,
+        query: FrontendTasksQuery,
+    ) -> Result<FrontendTasksPage, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::FrontendTasks { query, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn frontend_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<FrontendTaskDetail>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::FrontendTask { task_id, response })?;
         receive(receiver, self.response_timeout)
     }
 
@@ -615,6 +644,18 @@ fn writer_loop(
             WriterRequest::A2aRuns { task_id, response } => {
                 let result = store
                     .a2a_runs(task_id)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::FrontendTasks { query, response } => {
+                let result = store
+                    .frontend_tasks(&query)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::FrontendTask { task_id, response } => {
+                let result = store
+                    .frontend_task(task_id)
                     .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }

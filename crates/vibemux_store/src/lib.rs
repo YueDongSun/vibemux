@@ -13,6 +13,7 @@ use vibemux_harness::{
 use vibemux_types::{ProjectId, Run, Task};
 
 mod a2a;
+mod frontend;
 pub use a2a::A2aCommitOutcome;
 
 pub const STORE_SCHEMA_VERSION: u32 = 3;
@@ -91,6 +92,10 @@ pub enum StoreError {
     InvalidHarnessState(&'static str),
     #[error("unknown harness name: {0}")]
     UnknownHarness(String),
+    #[error("frontend query limit is invalid")]
+    InvalidFrontendLimit,
+    #[error("frontend projection identity is inconsistent")]
+    FrontendProjectionMismatch,
 }
 
 impl StoreError {
@@ -115,6 +120,8 @@ impl StoreError {
             Self::NewerSchema { .. } => "store_newer_schema",
             Self::InvalidHarnessState(code) => code,
             Self::UnknownHarness(_) => "store_unknown_harness",
+            Self::InvalidFrontendLimit => "store_frontend_invalid_limit",
+            Self::FrontendProjectionMismatch => "store_frontend_projection_mismatch",
         }
     }
 }

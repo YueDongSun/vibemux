@@ -109,3 +109,32 @@ message ProtocolError {
   string code = 1;
   optional string related_message_id = 2;
 }
+
+// Optional terminal observation capability v1. These payloads travel inside
+// Request/Response; existing plugins need not implement these methods.
+message TerminalInventoryRequest {
+  string expected_cwd = 1;
+}
+
+message TerminalPane {
+  string pane_id = 1;
+  string cwd = 2;
+  string workspace = 3;
+  string window_id = 4;
+  string tab_id = 5;
+}
+
+message TerminalInventory {
+  string instance_id = 1;
+  repeated TerminalPane panes = 2;
+}
+
+message TerminalFocusRequest {
+  string instance_id = 1;
+  string pane_id = 2;
+  string expected_cwd = 3;
+}
+
+message TerminalFocusResult {
+  bool focused = 1;
+}

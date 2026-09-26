@@ -4463,11 +4463,16 @@ dependencies = [
  "crossterm",
  "eframe",
  "egui",
+ "image",
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
+ "time",
  "tokio",
  "vibemux_probe",
+ "vibemux_types",
+ "vibemuxd",
 ]
 
 [[package]]
@@ -4532,6 +4537,7 @@ dependencies = [
 name = "vibemux_plugin_supervisor"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "prost",
  "serde",
  "tempfile",
  "thiserror 2.0.20",
@@ -4574,6 +4580,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibemux_terminal_observer"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "prost",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "url",
+ "vibemux_plugin_protocol",
+]
+
+[[package]]
 name = "vibemux_types"
 version = "0.2.0-alpha.0"
 dependencies = [
@@ -4606,6 +4626,7 @@ dependencies = [
  "async-trait",
  "futures",
  "getrandom 0.4.3",
+ "prost",
  "same-file",
  "serde",
  "serde_json",
