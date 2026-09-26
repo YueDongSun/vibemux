@@ -1,22 +1,22 @@
 #![forbid(unsafe_code)]
-//! egui-based VibeMux shell. Two switchable shells:
-//!
-//! - **Overview** (canvas): an editorial landing that shows every
-//!   harness at once plus system facts. Clicking a harness enters it.
-//! - **Workbench** (seat): an icon rail, a large terminal "stage" for
-//!   the focused harness, and a right-hand inspector.
-//!
-//! Settings and diagnostics open as lightweight overlays; there are no
-//! navigation pages. All interactive elements are stubs.
+//! egui-based Supervisor Chat shell. The coordinator conversation is the
+//! default view; probe-backed agent details and task detail windows remain
+//! separate, read-only surfaces.
 
-mod app;
-mod overview;
-mod stub_bank;
+mod agents;
+mod chat;
+mod design;
+mod diagnostics;
+mod settings;
+mod sidebar;
+mod supervisor_app;
+mod supervisor_state;
+mod task_detail;
 mod theme;
-mod topbar;
-mod workbench;
 
-pub use app::VibeMuxApp;
+pub use chat::wrapped_label as render_wrapped_label;
+pub use supervisor_app::SupervisorApp as VibeMuxApp;
+pub use supervisor_state::{MainPage, SupervisorUiState, TaskDetailSelection, TaskDetailTab};
 pub use theme::apply_theme;
 
 use eframe::egui::{Color32, ViewportBuilder};
@@ -26,19 +26,18 @@ use eframe::egui::{Color32, ViewportBuilder};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct C {
     pub bg: Color32,
-    pub alt: Color32,
+    /// Mid surface (Primer "canvas subtle"): sidebar and box headers.
+    pub surf: Color32,
+    pub raised: Color32,
+    pub border: Color32,
     pub txt: Color32,
     pub muted: Color32,
     pub faint: Color32,
-    pub hair: Color32,
-    pub hair2: Color32,
     pub accent: Color32,
-    pub accent_2: Color32,
     pub accent_bg: Color32,
     pub ok: Color32,
     pub warn: Color32,
-    pub term_bg: Color32,
-    pub term_fg: Color32,
+    pub danger: Color32,
 }
 
 pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
@@ -46,19 +45,17 @@ pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
     let accent = hex(&p.accent);
     C {
         bg,
-        alt: hex(&p.surface_alt),
+        surf: hex(&p.surface),
+        raised: hex(&p.surface_alt),
+        border: hex(&p.border),
         txt: hex(&p.text_primary),
         muted: hex(&p.text_muted),
-        faint: mix(&bg, &hex(&p.text_muted), 0.45),
-        hair: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
-        hair2: Color32::from_rgba_unmultiplied(255, 255, 255, 9),
+        faint: hex(&p.text_muted),
         accent,
-        accent_2: hex(&p.accent_alt),
-        accent_bg: mix(&bg, &accent, 0.13),
+        accent_bg: mix(&bg, &accent, 0.17),
         ok: hex(&p.success),
         warn: hex(&p.warning),
-        term_bg: hex(&p.terminal_bg),
-        term_fg: hex(&p.terminal_fg),
+        danger: hex(&p.danger),
     }
 }
 
@@ -96,11 +93,12 @@ pub fn run_gui(
     eframe::run_native(
         &title,
         options,
-        Box::new(|cc| Ok(Box::new(VibeMuxApp::new(cc, vm, config)))),
+        Box::new(|cc| {
+            let app = VibeMuxApp::new(cc, vm, config);
+            Ok(Box::new(crate::live_app::LiveApp::new(
+                app,
+                cc.egui_ctx.clone(),
+            )))
+        }),
     )
-}
-
-/// Monogram letters per harness index (drawn in a small rounded tile).
-pub(crate) fn monogram(idx: usize) -> &'static str {
-    ["C", "X", "O", "K", "G"].get(idx).copied().unwrap_or("?")
 }

@@ -14,8 +14,23 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
         visuals,
         ..Default::default()
     };
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Heading, egui::FontId::proportional(20.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
     ctx.set_style(style);
     // Let egui honor the OS display scale (do not pin pixels_per_point
     // to 1.0): on high-DPI monitors the UI would otherwise render far
@@ -23,21 +38,31 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
 }
 
 fn build_visuals(p: &ThemePalette) -> Visuals {
-    let mut visuals = Visuals::dark();
-    visuals.dark_mode = true;
+    let light = p.name == "studio";
+    let mut visuals = if light {
+        Visuals::light()
+    } else {
+        Visuals::dark()
+    };
     visuals.override_text_color = Some(color(&p.text_primary));
     visuals.hyperlink_color = color(&p.accent);
+    // Primer window chrome: 1px border-colored stroke, palette radius.
+    visuals.window_stroke = egui::Stroke::new(p.border_width, color(&p.border));
+    visuals.window_corner_radius = egui::CornerRadius::same(p.corner_radius as u8);
+    visuals.menu_corner_radius = egui::CornerRadius::same(p.corner_radius as u8);
+    visuals.text_cursor.stroke = egui::Stroke::new(1.0, color(&p.accent));
 
     visuals.widgets.noninteractive.bg_fill = color(&p.surface);
     visuals.widgets.noninteractive.weak_bg_fill = color(&p.surface);
     visuals.widgets.noninteractive.bg_stroke.color = color(&p.border);
+    visuals.widgets.noninteractive.fg_stroke.color = color(&p.border);
     visuals.widgets.noninteractive.bg_stroke.width = p.border_width;
     visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(p.corner_radius as u8);
 
     visuals.widgets.inactive.bg_fill = color(&p.surface_alt);
     visuals.widgets.inactive.weak_bg_fill = color(&p.surface_alt);
     visuals.widgets.inactive.bg_stroke.color = color(&p.border);
-    visuals.widgets.inactive.bg_stroke.width = p.border_width;
+    visuals.widgets.inactive.bg_stroke.width = 0.0;
     visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(p.corner_radius as u8);
 
     visuals.widgets.hovered.bg_fill = color(&p.surface_alt);

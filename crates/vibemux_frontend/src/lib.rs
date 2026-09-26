@@ -9,9 +9,16 @@
 //! backend shape never diverges across UIs.
 
 pub mod gui;
+mod live_app;
+#[cfg(feature = "gui_screenshot")]
+pub mod preview;
 pub mod probe_env;
+pub mod supervisor_client;
+mod supervisor_mapping;
+pub mod supervisor_model;
 pub mod theme;
 pub mod tui;
 pub mod view_model;
 
+pub use supervisor_model::*;
 pub use view_model::ViewModel;

@@ -155,9 +155,9 @@ mod tests {
     }
 
     #[test]
-    fn user_config_default_has_claude_and_1280x800() {
+    fn user_config_default_has_studio_and_1280x800() {
         let cfg = UserConfig::default();
-        assert_eq!(cfg.theme, ThemeId::Claude);
+        assert_eq!(cfg.theme, ThemeId::Studio);
         assert_eq!(cfg.window_size.width, 1280);
         assert_eq!(cfg.window_size.height, 800);
         assert_eq!(cfg.schema_version, SCHEMA_VERSION);

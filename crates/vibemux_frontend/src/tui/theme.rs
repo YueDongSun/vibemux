@@ -3,8 +3,9 @@
 //!
 //! Ported from the single-shell frontend's audited `Theme` system
 //! (classic / high-contrast / mono / light) with the WCAG AA contrast
-//! audit. The TUI owns this ratatui-named-color system; the GUI keeps
-//! its own persisted hex `ThemeId` palettes, so the debug view no longer
+//! audit, extended with the `nord` and `gruvbox` brand palettes. The
+//! TUI owns this ratatui-named-color system; the GUI keeps its own
+//! persisted hex `ThemeId` palettes, so the debug view no longer
 //! mirrors the GUI's theme file.
 
 use ratatui::style::{Color, Modifier, Style};
@@ -16,8 +17,11 @@ use crate::view_model::Health;
 ///
 /// `Classic` targets 8-color dark terminals, `HighContrast` uses light
 /// variants for bright environments and low-vision users, `Mono` drops
-/// foreground colors entirely (emphasis via bold/dim only), and `Light`
-/// inverts to dark variants tuned for white backgrounds.
+/// foreground colors entirely (emphasis via bold/dim only), `Light`
+/// inverts to dark variants tuned for white backgrounds, and `Nord` /
+/// `Gruvbox` map the brand palettes onto xterm-256 indices so the
+/// dashboard renders the same hues on every supported backend
+/// (WezTerm on Windows, tmux on POSIX) without a truecolor dependency.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Theme {
     #[default]
@@ -25,11 +29,20 @@ pub enum Theme {
     HighContrast,
     Mono,
     Light,
+    Nord,
+    Gruvbox,
 }
 
 impl Theme {
     /// Every theme in CLI listing order.
-    pub const ALL: [Theme; 4] = [Self::Classic, Self::HighContrast, Self::Mono, Self::Light];
+    pub const ALL: [Theme; 6] = [
+        Self::Classic,
+        Self::HighContrast,
+        Self::Mono,
+        Self::Light,
+        Self::Nord,
+        Self::Gruvbox,
+    ];
 
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -38,6 +51,8 @@ impl Theme {
             Self::HighContrast => "high-contrast",
             Self::Mono => "mono",
             Self::Light => "light",
+            Self::Nord => "nord",
+            Self::Gruvbox => "gruvbox",
         }
     }
 
@@ -48,6 +63,8 @@ impl Theme {
             "high-contrast" => Some(Self::HighContrast),
             "mono" => Some(Self::Mono),
             "light" => Some(Self::Light),
+            "nord" => Some(Self::Nord),
+            "gruvbox" => Some(Self::Gruvbox),
             _ => None,
         }
     }
@@ -59,7 +76,9 @@ impl Theme {
             Self::Classic => Self::HighContrast,
             Self::HighContrast => Self::Mono,
             Self::Mono => Self::Light,
-            Self::Light => Self::Classic,
+            Self::Light => Self::Nord,
+            Self::Nord => Self::Gruvbox,
+            Self::Gruvbox => Self::Classic,
         }
     }
 
@@ -101,6 +120,25 @@ pub fn state_style(theme: Theme, state: ProbeState) -> Style {
             Color::Rgb(150, 75, 0),
             Color::Rgb(96, 96, 96),
         ),
+        // Nord: xterm-256 indices resolved from the brand hex values
+        // (snow-storm greens and yellows, frost blues). Idle recedes as
+        // neutral gray. The nearest index to the brand red measures only
+        // 4.64:1 against black — inside the audit gate but too close to
+        // trust across terminals — so failure takes the brighter 167.
+        Theme::Nord => (
+            Color::Indexed(144),
+            Color::Indexed(167),
+            Color::Indexed(186),
+            Color::Indexed(244),
+        ),
+        // Gruvbox: olive green, bright red, and yellow resolved from the
+        // brand hex values; muted foregrounds use the bg4 gray ramp.
+        Theme::Gruvbox => (
+            Color::Indexed(142),
+            Color::Indexed(203),
+            Color::Indexed(214),
+            Color::Indexed(245),
+        ),
     };
     let style = match state {
         ProbeState::Verified => Style::default().fg(ok),
@@ -131,6 +169,18 @@ pub fn route_style(theme: Theme, route: RouteKind) -> Style {
             Color::Rgb(0, 110, 110),
             Color::Rgb(96, 96, 96),
         ),
+        // Nord keeps the frost-blue gateway distinct from the direct green;
+        // Gruvbox pairs the olive direct with the aqua gateway.
+        Theme::Nord => (
+            Color::Indexed(144),
+            Color::Indexed(110),
+            Color::Indexed(244),
+        ),
+        Theme::Gruvbox => (
+            Color::Indexed(142),
+            Color::Indexed(108),
+            Color::Indexed(245),
+        ),
     };
     match route {
         RouteKind::Direct => Style::default().fg(direct),
@@ -148,6 +198,18 @@ pub fn health_style(theme: Theme, health: Health) -> Style {
         // below the WCAG AA 4.5:1 audit the light theme advertises; reuse the
         // dark variants already audited for the light state cells.
         Theme::Light => (Color::Rgb(0, 110, 0), Color::Rgb(150, 75, 0), Color::Red),
+        // Nord and Gruvbox reuse their state ramps: brand greens for ok,
+        // brand yellows for warning, bright brand reds for failure.
+        Theme::Nord => (
+            Color::Indexed(144),
+            Color::Indexed(186),
+            Color::Indexed(167),
+        ),
+        Theme::Gruvbox => (
+            Color::Indexed(142),
+            Color::Indexed(214),
+            Color::Indexed(203),
+        ),
     };
     match health {
         Health::Ok => Style::default().fg(ok),
@@ -162,6 +224,10 @@ pub fn title_style(theme: Theme) -> Style {
         Theme::HighContrast => Style::default().fg(Color::White),
         Theme::Mono => Style::default(),
         Theme::Light => Style::default().fg(Color::Rgb(0, 110, 110)),
+        // The title takes each brand's signature hue: Nord's frost blue
+        // and Gruvbox's bright orange.
+        Theme::Nord => Style::default().fg(Color::Indexed(110)),
+        Theme::Gruvbox => Style::default().fg(Color::Indexed(208)),
     }
 }
 
@@ -190,6 +256,24 @@ pub fn telemetry_style(theme: Theme, available: bool, failures: u64) -> Style {
             };
             Style::default().fg(color)
         }
+        // Nord and Gruvbox mirror the state ramps: brand reds on failure,
+        // brand greens for a healthy line.
+        Theme::Nord => {
+            let color = if failures > 0 {
+                Color::Indexed(167)
+            } else {
+                Color::Indexed(144)
+            };
+            Style::default().fg(color)
+        }
+        Theme::Gruvbox => {
+            let color = if failures > 0 {
+                Color::Indexed(203)
+            } else {
+                Color::Indexed(142)
+            };
+            Style::default().fg(color)
+        }
         _ => {
             let color = if failures > 0 {
                 Color::LightRed
@@ -207,6 +291,10 @@ pub fn muted_style(theme: Theme) -> Style {
         Theme::HighContrast => Style::default().fg(Color::White),
         Theme::Mono => Style::default().add_modifier(Modifier::DIM),
         Theme::Light => Style::default().fg(Color::Rgb(96, 96, 96)),
+        // Neutral grays that pass AA on black while staying clearly
+        // dimmer than any state color in the same theme.
+        Theme::Nord => Style::default().fg(Color::Indexed(244)),
+        Theme::Gruvbox => Style::default().fg(Color::Indexed(245)),
     }
 }
 
@@ -216,7 +304,7 @@ mod tests {
 
     #[test]
     fn theme_names_round_trip_and_cycle_covers_all() {
-        assert_eq!(Theme::ALL.len(), 4);
+        assert_eq!(Theme::ALL.len(), 6);
         for theme in Theme::ALL {
             assert_eq!(Theme::from_name(theme.name()), Some(theme));
         }
@@ -246,7 +334,52 @@ mod tests {
             Color::White => (229, 229, 229),
             Color::Gray => (229, 229, 229),
             Color::Rgb(r, g, b) => (r, g, b),
+            Color::Indexed(index) => indexed_rgb(index),
             _ => (229, 229, 229),
+        }
+    }
+
+    /// Resolve an xterm-256 index to the RGB value standard terminals
+    /// emit: the 16-color base ramp, the 6x6x6 color cube, then the
+    /// grayscale ramp.
+    fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+        match index {
+            0..=15 => ansi_base_rgb(index),
+            16..=231 => {
+                let offset = u16::from(index - 16);
+                let levels = [0u8, 95, 135, 175, 215, 255];
+                let red = levels[usize::from(offset / 36)];
+                let green = levels[usize::from((offset / 6) % 6)];
+                let blue = levels[usize::from(offset % 6)];
+                (red, green, blue)
+            }
+            _ => {
+                // The `_` arm only receives 232..=255, so the gray step
+                // 8 + 10 * n stays within u8 (max 238).
+                let gray = 8 + 10 * (index - 232);
+                (gray, gray, gray)
+            }
+        }
+    }
+
+    fn ansi_base_rgb(index: u8) -> (u8, u8, u8) {
+        match index {
+            0 => (0, 0, 0),
+            1 => (205, 0, 0),
+            2 => (0, 205, 0),
+            3 => (205, 205, 0),
+            4 => (0, 0, 238),
+            5 => (205, 0, 205),
+            6 => (0, 205, 205),
+            7 => (229, 229, 229),
+            8 => (127, 127, 127),
+            9 => (255, 0, 0),
+            10 => (0, 255, 0),
+            11 => (255, 255, 0),
+            12 => (92, 92, 255),
+            13 => (255, 0, 255),
+            14 => (0, 255, 255),
+            _ => (255, 255, 255),
         }
     }
 
@@ -382,6 +515,47 @@ mod tests {
         ] {
             let ratio = contrast_ratio(color, Color::White);
             assert!(ratio >= 4.5, "{label} on white contrast {ratio:.2} < 4.5");
+        }
+        // The brand themes map their hex palettes onto xterm-256 indices;
+        // the audit measures the RGB real terminals emit for those
+        // indices, so every accent must clear AA on black exactly like
+        // the classic ramp. Nord first.
+        for (label, color) in [
+            ("nord state ok", Color::Indexed(144)),
+            ("nord state failure", Color::Indexed(167)),
+            ("nord state degraded", Color::Indexed(186)),
+            ("nord state idle", Color::Indexed(244)),
+            ("nord health ok", Color::Indexed(144)),
+            ("nord health warning", Color::Indexed(186)),
+            ("nord health failure", Color::Indexed(167)),
+            ("nord title", Color::Indexed(110)),
+            ("nord route direct", Color::Indexed(144)),
+            ("nord route gateway", Color::Indexed(110)),
+            ("nord route unknown", Color::Indexed(244)),
+            ("nord muted", Color::Indexed(244)),
+        ] {
+            let ratio = contrast_ratio(color, Color::Black);
+            assert!(ratio >= 4.5, "{label} on black contrast {ratio:.2} < 4.5");
+        }
+        // Then Gruvbox. The muted gray (245) is deliberately brighter
+        // than classic's DarkGray because the olive/aqua accents leave
+        // less headroom; the audit is the same gate either way.
+        for (label, color) in [
+            ("gruvbox state ok", Color::Indexed(142)),
+            ("gruvbox state failure", Color::Indexed(203)),
+            ("gruvbox state degraded", Color::Indexed(214)),
+            ("gruvbox state idle", Color::Indexed(245)),
+            ("gruvbox health ok", Color::Indexed(142)),
+            ("gruvbox health warning", Color::Indexed(214)),
+            ("gruvbox health failure", Color::Indexed(203)),
+            ("gruvbox title", Color::Indexed(208)),
+            ("gruvbox route direct", Color::Indexed(142)),
+            ("gruvbox route gateway", Color::Indexed(108)),
+            ("gruvbox route unknown", Color::Indexed(245)),
+            ("gruvbox muted", Color::Indexed(245)),
+        ] {
+            let ratio = contrast_ratio(color, Color::Black);
+            assert!(ratio >= 4.5, "{label} on black contrast {ratio:.2} < 4.5");
         }
     }
 }

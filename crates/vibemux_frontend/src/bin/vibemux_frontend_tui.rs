@@ -4,13 +4,23 @@
 //!
 //! Flags (ported from the single-shell frontend):
 //! - `--json`              print the versioned probe report as JSON and exit
-//! - `--theme <name>`      start with classic|high-contrast|mono|light
+//! - `--theme <name>`      start with any theme from `Theme::ALL`
 //!   (`VIBEMUX_FRONTEND_THEME` applies when no flag is given); unknown
 //!   themes or unknown arguments exit with code 4.
 
 use std::process::ExitCode;
 
 use vibemux_frontend::{ViewModel, tui};
+
+/// The `--theme` usage hint, derived from `Theme::ALL` so the error
+/// text can never drift from the real theme registry.
+fn expected_themes() -> String {
+    tui::Theme::ALL
+        .iter()
+        .map(|theme| theme.name())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -23,7 +33,8 @@ async fn main() -> ExitCode {
             "--theme" => {
                 let Some(value) = arguments.next() else {
                     eprintln!(
-                        "unknown or missing --theme value (expected one of: classic, high-contrast, mono, light)"
+                        "unknown or missing --theme value (expected one of: {})",
+                        expected_themes()
                     );
                     return ExitCode::from(4);
                 };
@@ -31,7 +42,8 @@ async fn main() -> ExitCode {
                     Some(resolved) => theme = resolved,
                     None => {
                         eprintln!(
-                            "unknown or missing --theme value (expected one of: classic, high-contrast, mono, light)"
+                            "unknown or missing --theme value (expected one of: {})",
+                            expected_themes()
                         );
                         return ExitCode::from(4);
                     }

@@ -11,6 +11,11 @@ description = "VibeMux unified frontend: read-only TUI debug view + egui-based c
 # default `lib` target
 
 [[bin]]
+name = "vibemux_frontend_preview"
+path = "src/bin/vibemux_frontend_preview.rs"
+required-features = ["gui_screenshot"]
+
+[[bin]]
 name = "vibemux_frontend"
 path = "src/bin/vibemux_frontend.rs"
 
@@ -19,7 +24,7 @@ path = "src/bin/vibemux_frontend.rs"
 # `EFRAME_SCREENSHOT_TO=<path>.png` set, the GUI renders a couple of
 # frames and exits after saving the framebuffer to <path>. Used by
 # local verification scripts only; never enabled in normal builds.
-gui_screenshot = ["eframe/__screenshot"]
+gui_screenshot = ["eframe/__screenshot", "dep:image"]
 
 [[bin]]
 name = "vibemux_frontend_tui"
@@ -38,3 +43,10 @@ eframe.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vibemux_probe = { path = "../vibemux_probe" }
+vibemuxd = { path = "../vibemuxd" }
+vibemux_types = { path = "../vibemux_types" }
+time.workspace = true
+image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

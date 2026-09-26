@@ -29,10 +29,10 @@ pub use theme::Theme;
 /// cycles the theme.
 ///
 /// The TUI keeps its own audited `Theme` system (classic /
-/// high-contrast / mono / light) and deliberately does not mirror the
-/// GUI's persisted hex palettes: the debug view is a terminal surface
-/// governed by terminal color semantics, and the GUI remains the
-/// human-persistent interface.
+/// high-contrast / mono / light / nord / gruvbox) and deliberately does
+/// not mirror the GUI's persisted hex palettes: the debug view is a
+/// terminal surface governed by terminal color semantics, and the GUI
+/// remains the human-persistent interface.
 pub fn run_tui(view_model: &ViewModel, theme: Theme) -> io::Result<()> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;

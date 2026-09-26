@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-//! Theme system: 3 switchable palettes on a shared black-and-white
-//! grayscale ramp.
+//! Theme system: a light Studio palette and five compatible dark palettes.
+//! background-to-border ramp and semantic accent set.
 //!
 //! - `ThemeId` selects which palette is active.
 //! - `ThemePalette` is the value stored on disk and applied to the
@@ -8,9 +8,10 @@
 //! - `serialize` owns the on-disk JSON layout and read/write
 //!   lifecycle for `UserConfig`.
 //!
-//! All three palettes share the same grayscale ramp (the "B&W base").
-//! The differences are entirely in the accent color, accent_alt, font,
-//! corner radius, density, and font size.
+//! The compiled-in palettes are the canonical values; the exported
+//! `config/theme_palettes.json` mirrors them exactly (pinned by the
+//! `palette_parity` integration test) so the Python CLI and the
+//! WezTerm/tmux theme generators consume the same colors.
 
 mod palette;
 pub mod serialize;
@@ -29,19 +30,32 @@ pub enum ThemeId {
     Claude,
     Github,
     Vscode,
+    Nord,
+    Gruvbox,
+    Studio,
 }
 
 impl ThemeId {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Github, Self::Vscode];
+    pub const ALL: [Self; 6] = [
+        Self::Claude,
+        Self::Github,
+        Self::Vscode,
+        Self::Nord,
+        Self::Gruvbox,
+        Self::Studio,
+    ];
 
     /// Cycle to the next theme in the canonical order:
-    /// `Claude -> GitHub -> VSCode -> Claude`.
+    /// `Claude -> GitHub -> VSCode -> Nord -> Gruvbox -> Studio -> Claude`.
     #[must_use]
     pub const fn cycle(self) -> Self {
         match self {
             Self::Claude => Self::Github,
             Self::Github => Self::Vscode,
-            Self::Vscode => Self::Claude,
+            Self::Vscode => Self::Nord,
+            Self::Nord => Self::Gruvbox,
+            Self::Gruvbox => Self::Studio,
+            Self::Studio => Self::Claude,
         }
     }
 
@@ -52,13 +66,17 @@ impl ThemeId {
             Self::Claude => "claude",
             Self::Github => "github",
             Self::Vscode => "vscode",
+            Self::Nord => "nord",
+            Self::Gruvbox => "gruvbox",
+            Self::Studio => "studio",
         }
     }
 }
 
 impl Default for ThemeId {
     fn default() -> Self {
-        Self::Claude
+        // New profiles use Studio; existing serialized theme IDs are preserved.
+        Self::Studio
     }
 }
 
@@ -85,7 +103,10 @@ mod tests {
     fn theme_id_cycle_wraps() {
         assert_eq!(ThemeId::Claude.cycle(), ThemeId::Github);
         assert_eq!(ThemeId::Github.cycle(), ThemeId::Vscode);
-        assert_eq!(ThemeId::Vscode.cycle(), ThemeId::Claude);
+        assert_eq!(ThemeId::Vscode.cycle(), ThemeId::Nord);
+        assert_eq!(ThemeId::Nord.cycle(), ThemeId::Gruvbox);
+        assert_eq!(ThemeId::Gruvbox.cycle(), ThemeId::Studio);
+        assert_eq!(ThemeId::Studio.cycle(), ThemeId::Claude);
     }
 
     #[test]
@@ -96,8 +117,8 @@ mod tests {
     }
 
     #[test]
-    fn theme_id_default_is_claude() {
-        assert_eq!(ThemeId::default(), ThemeId::Claude);
+    fn theme_id_default_is_studio() {
+        assert_eq!(ThemeId::default(), ThemeId::Studio);
     }
 
     #[test]
@@ -118,11 +139,29 @@ mod tests {
     }
 
     #[test]
-    fn all_palettes_returns_three_in_canonical_order() {
+    fn all_palettes_returns_six_in_canonical_order() {
         let palettes = all_palettes();
-        assert_eq!(palettes.len(), 3);
+        assert_eq!(palettes.len(), 6);
         assert_eq!(palettes[0].name, "claude");
         assert_eq!(palettes[1].name, "github");
         assert_eq!(palettes[2].name, "vscode");
+        assert_eq!(palettes[3].name, "nord");
+        assert_eq!(palettes[4].name, "gruvbox");
+        assert_eq!(palettes[5].name, "studio");
+    }
+
+    #[test]
+    fn cycle_covers_every_theme_once() {
+        let mut id = ThemeId::default();
+        for _ in 0..ThemeId::ALL.len() {
+            id = id.cycle();
+        }
+        assert_eq!(id, ThemeId::default());
+        for candidate in ThemeId::ALL {
+            assert!(
+                ThemeId::ALL.iter().any(|seen| seen.cycle() == candidate),
+                "cycle must reach {candidate:?}"
+            );
+        }
     }
 }
