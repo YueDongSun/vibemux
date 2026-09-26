@@ -59,21 +59,41 @@ impl DispatchRequest {
         protocol: NativeProtocol,
         config_digest: Sha256Digest,
     ) -> Sha256Digest {
-        let project = project_id.to_string();
-        let request_id = self.request_id.as_hyphenated().to_string();
-        let prompt = self.prompt_digest();
-        hash_fields(
-            FINGERPRINT_DOMAIN,
-            &[
-                project.as_bytes(),
-                request_id.as_bytes(),
-                self.harness.command_name().as_bytes(),
-                protocol.as_str().as_bytes(),
-                prompt.sha256.as_bytes(),
-                config_digest.as_bytes(),
-            ],
+        request_fingerprint(
+            project_id,
+            self.request_id,
+            self.harness,
+            protocol,
+            self.prompt_digest().sha256,
+            config_digest,
         )
     }
+}
+
+/// [`DispatchRequest::fingerprint`] from the persisted facts alone, so the
+/// store can derive it without ever seeing the prompt.
+#[must_use]
+pub fn request_fingerprint(
+    project_id: ProjectId,
+    request_id: Uuid,
+    harness: AgentKind,
+    protocol: NativeProtocol,
+    prompt_sha256: Sha256Digest,
+    config_digest: Sha256Digest,
+) -> Sha256Digest {
+    let project = project_id.to_string();
+    let request_id = request_id.as_hyphenated().to_string();
+    hash_fields(
+        FINGERPRINT_DOMAIN,
+        &[
+            project.as_bytes(),
+            request_id.as_bytes(),
+            harness.command_name().as_bytes(),
+            protocol.as_str().as_bytes(),
+            prompt_sha256.as_bytes(),
+            config_digest.as_bytes(),
+        ],
+    )
 }
 
 impl fmt::Debug for DispatchRequest {

@@ -10,7 +10,7 @@ use vibemux_harness::{
         DispatchConfig, DispatchError, DispatchLimits, DispatchRequest, DispatchRoute,
         NativeProtocol, Sha256Digest,
         launch_spec::{SYSTEM_ENVIRONMENT_NAMES, SessionMode, build_launch_spec},
-        request::{DISPATCH_REQUEST_SCHEMA_VERSION, MAX_PROMPT_BYTES},
+        request::{DISPATCH_REQUEST_SCHEMA_VERSION, MAX_PROMPT_BYTES, request_fingerprint},
         route_config::{
             DispatchCatalogEntry, ExecutablePolicy, MAX_EXECUTABLE_PATH_BYTES,
             MAX_ROUTE_CONFIG_BYTES, validate_executable,
@@ -532,6 +532,18 @@ fn the_fingerprint_changes_with_every_input_and_nothing_else() {
         fingerprint,
         base.clone()
             .fingerprint(project, NativeProtocol::CodexExec, config)
+    );
+    assert_eq!(
+        fingerprint,
+        request_fingerprint(
+            project,
+            base.request_id,
+            base.harness,
+            NativeProtocol::CodexExec,
+            base.prompt_digest().sha256,
+            config,
+        ),
+        "the store derives the same fingerprint without the prompt"
     );
 
     let other_project = ProjectId::from_uuid(Uuid::from_u128(2)).unwrap();

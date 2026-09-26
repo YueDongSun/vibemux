@@ -4578,6 +4578,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "time",
+ "uuid",
  "vibemux_events",
  "vibemux_harness",
  "vibemux_types",

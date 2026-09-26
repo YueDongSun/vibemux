@@ -1,9 +1,11 @@
 # ADR 029: Daemon-owned harness request dispatch and output capture
 
-Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic) and
-Stage 2 (the `vibemux_platform::ProcessTree` containment primitive) are
-implemented on `feat/harness_dispatch_port`; nothing is wired into the daemon,
-store, or Control IPC, and nothing in this ADR is implemented on `main` until
+Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic),
+Stage 2 (the `vibemux_platform::ProcessTree` containment primitive), and
+Stage 3 (store schema 4 and the dispatch transactions) are implemented on
+`feat/harness_dispatch_port`; nothing is wired into the daemon or Control IPC,
+no writer calls the store transactions yet, and nothing in this ADR is
+implemented on `main` until
 `PROGRESS.md` records it. The Stage 2 `unsafe` module needs this ADR accepted
 before merge (AGENTS.md §7.2).
 
@@ -86,20 +88,40 @@ updates, and the state change committed in the same transaction as its event.
 
 ```text
 harness_dispatches(
-  request_key TEXT PRIMARY KEY,        -- project_id + request UUID
+  request_id TEXT PRIMARY KEY,         -- request UUID; the store belongs to one project
   task_id TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL UNIQUE,
   fingerprint TEXT NOT NULL,           -- see below
   resource_key TEXT NOT NULL,          -- SHA-256 of the canonical working directory; no path stored
-  phase TEXT NOT NULL, claim_fence TEXT, version INTEGER NOT NULL CHECK(version > 0),
-  record_json TEXT NOT NULL, updated_sequence INTEGER NOT NULL REFERENCES events(sequence))
-UNIQUE INDEX ... ON harness_dispatches(resource_key)
+  phase TEXT NOT NULL CHECK(phase IN (<the eight phase names>)),
+  claim_fence TEXT, version INTEGER NOT NULL CHECK(version > 0),
+  record_json TEXT NOT NULL, updated_sequence INTEGER NOT NULL REFERENCES events(sequence),
+  CHECK(claim_fence IS NOT NULL for running/cancel_requested,
+        claim_fence IS NULL for admitted/recovery_pending))
+UNIQUE INDEX harness_dispatches_active_resource ON harness_dispatches(resource_key)
   WHERE phase IN ('admitted','running','cancel_requested','recovery_pending')
 ```
 
 - The fingerprint is SHA-256 over the project ID, request UUID, harness,
-  protocol, prompt SHA-256, and config digest. The same request UUID with the
-  same fingerprint returns the existing receipt (`duplicate: true`) and never
-  launches again. A different fingerprint returns `harness_dispatch_conflict`.
+  protocol, prompt SHA-256, and config digest. The store resolves the project
+  ID and derives the fingerprint itself (`request_fingerprint`); the writer
+  does not supply it. The same request UUID with the same fingerprint returns
+  the existing receipt (`duplicate: true`) and never launches again. A
+  different fingerprint returns `harness_dispatch_conflict`.
+- Admission rechecks what the store can see: the protocol accepts the harness
+  (`harness_dispatch_invalid_request`) and supports execution
+  (`harness_dispatch_execution_disabled`), the harness is detected in the
+  persisted registry (`harness_dispatch_not_detected`), and no reserving
+  attempt holds the resource key (`harness_dispatch_busy`).
+- The claim fence is stored only in its column, never in `record_json` or in
+  an event. A terminal finish keeps it, so a retried finish with the same
+  fence returns the stored result unchanged. Recovery clears it.
+- Every load cross-checks the indexed columns against `record_json`,
+  recomputes the fingerprint, and checks that a non-terminal phase still
+  matches its canonical Task/Run statuses. Any disagreement fails closed with
+  `store_harness_dispatch_projection_mismatch`.
+- The Task and Run belong to the dispatch record. The generic projection
+  commit refuses them (`store_harness_dispatch_bound_projection`), and A2A
+  refuses to bind a dispatch-owned task.
 - The prompt is never persisted. Events and records store only its SHA-256 and
   byte length (AGENTS.md §11.2).
 - Task title is `harness dispatch <harness>`, description is empty,
@@ -107,8 +129,11 @@ UNIQUE INDEX ... ON harness_dispatches(resource_key)
   is the project `HEAD`, which the daemon resolves with the shell-free Git
   runner at admission. It records an observation, not an attestation of a
   clean tree.
-- Only `WriterWorker` calls these transactions: `admit`, `claim`, `finish`,
-  `request_cancel`, `recover`, and a read by request.
+- Only `WriterWorker` calls these transactions: `admit_harness_dispatch`,
+  `claim_harness_dispatch`, `finish_harness_dispatch`,
+  `cancel_harness_dispatch`, `recover_harness_dispatches` (one transaction
+  that returns only the attempts it changed), and the read
+  `harness_dispatch`.
 
 ### 3. Attempt phases and canonical mapping
 
@@ -424,7 +449,7 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (proposed; stages 1 and 2 done on the branch)
+## Implementation plan (proposed; stages 1 to 3 done on the branch)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -434,7 +459,7 @@ is one reviewable commit with its own tests.
 |---|---|---|---|
 | 1 | `crates/vibemux_harness/src/dispatch/{mod,error_code,digest,request,route_config,launch_spec,protocol_session,observation,json_line_framer,capture_budget,attempt,outcome,events}.rs`, `tests/dispatch_*.rs`, `tests/fixtures/dispatch/*.jsonl` | Port the pure logic from `a955484`; add the attempt machine and `decide_outcome` | Unit and fixture-replay tests for every protocol; exhaustive transition table; framer split, CRLF, oversize, and UTF-8 cases |
 | 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `lib.rs` export and error variant, `tests/{process_tree,unsafe_containment}.rs`, `windows-sys` feature and Unix `rustix` dependency | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX) and, on Windows, when the owner dies; breakaway is refused on Windows; the own id, init, and the own group are refused; deep review of `unsafe` |
-| 3 | `crates/vibemux_store/src/harness_dispatch.rs` (+ tests), `lib.rs` migration hook | Schema 4 and transactions | Idempotent admit; conflict; unique reservation; single-use claim; fence; cancel before and after claim; recovery; `Succeeded` only with authority; atomic migration and reopen |
+| 3 | `crates/vibemux_store/src/harness_dispatch{,/dispatch_rows}.rs`, `tests/harness_dispatch.rs`, `lib.rs` migration hook, error variants and projection guard, `a2a.rs` binding guard, `uuid` dependency; `request_fingerprint` in `vibemux_harness` | Schema 4 and transactions | Idempotent admit; conflict; unique reservation; single-use claim; fence; cancel before and after claim; recovery; `Succeeded` only with authority; atomic migration and reopen; corrupted rows fail closed |
 | 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs` (+ tests), `crates/vibemuxd/src/bin/vibemux_launch_trampoline.rs`, `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,native_process,executor,transcript_store}.rs`, writer arms in `lib.rs`, `src/bin/vibemux_native_fixture.rs` (`test_helpers`) | Trampoline, service, executor, capture, recovery at writer start | A descendant the vendor starts before reading input is contained; the trampoline consumes exactly the go byte and propagates the exit code; per-protocol integration tests with the fixture binary, ported from `a955484`'s `process_dispatch.rs` (19 scenarios); shutdown during a run; restart to `recovery_pending`; leak scan |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table and version, `crates/vibemux_cli/src/*` | Control v5 and `vibemuxctl dispatch` | Version gating (v5 ops refused at v4; v1–v4 accepted); code round-trip; output page reassembles byte-exact within the frame budget |
 | 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, this ADR → Accepted | Documentation matches the code | Link check; `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features` (serial on Windows, issue #6); Python regression |

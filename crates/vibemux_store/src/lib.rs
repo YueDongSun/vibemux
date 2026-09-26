@@ -14,9 +14,14 @@ use vibemux_types::{ProjectId, Run, Task};
 
 mod a2a;
 mod frontend;
+mod harness_dispatch;
 pub use a2a::A2aCommitOutcome;
+pub use harness_dispatch::{
+    ClaimFence, HARNESS_DISPATCH_RECORD_SCHEMA_VERSION, HarnessDispatchAdmission,
+    HarnessDispatchClaim, HarnessDispatchCommit, HarnessDispatchFinish, HarnessDispatchRecord,
+};
 
-pub const STORE_SCHEMA_VERSION: u32 = 3;
+pub const STORE_SCHEMA_VERSION: u32 = 4;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -76,6 +81,14 @@ pub enum StoreError {
     A2aProjectionMismatch,
     #[error("A2A-bound entities require the validated A2A command API")]
     A2aBoundProjection,
+    #[error("harness dispatch request was rejected")]
+    HarnessDispatch(#[source] vibemux_harness::dispatch::DispatchError),
+    #[error("harness dispatch projection integrity check failed")]
+    HarnessDispatchProjectionMismatch,
+    #[error("harness dispatch state version changed")]
+    HarnessDispatchVersionConflict,
+    #[error("dispatch-owned entities require the harness dispatch API")]
+    HarnessDispatchBoundProjection,
     #[error("SQLite store operation failed")]
     Database(#[source] rusqlite::Error),
     #[error("canonical JSON operation failed")]
@@ -112,6 +125,11 @@ impl StoreError {
             Self::A2aCapacity => "store_a2a_capacity_exhausted",
             Self::A2aProjectionMismatch => "store_a2a_projection_mismatch",
             Self::A2aBoundProjection => "store_a2a_bound_projection",
+            // The dispatch code itself, so it reaches Control IPC unchanged.
+            Self::HarnessDispatch(error) => error.code(),
+            Self::HarnessDispatchProjectionMismatch => "store_harness_dispatch_projection_mismatch",
+            Self::HarnessDispatchVersionConflict => "store_harness_dispatch_version_conflict",
+            Self::HarnessDispatchBoundProjection => "store_harness_dispatch_bound_projection",
             Self::Database(_) => "store_database_error",
             Self::Json(_) => "store_json_error",
             Self::Event(_) => "store_event_error",
@@ -654,6 +672,15 @@ impl SqliteStore {
             seed_harness_projections(&transaction)?;
             transaction.commit()?;
         }
+        if found < 4 {
+            // The table, the index, and the marker commit together or not
+            // at all.
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(harness_dispatch::MIGRATION_V4)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -663,20 +690,22 @@ impl SqliteStore {
         draft: EventDraft,
     ) -> Result<CommitOutcome, StoreError> {
         draft.validate()?;
-        let bound: bool = match &projection {
-            Projection::Task(task) => self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM a2a_runs WHERE task_id=?)",
-                [task.task_id().to_string()],
-                |row| row.get(0),
-            )?,
-            Projection::Run(run) => self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM a2a_runs WHERE run_id=?)",
-                [run.run_id().to_string()],
-                |row| row.get(0),
-            )?,
+        let (owner_column, owner_id) = match &projection {
+            Projection::Task(task) => ("task_id", task.task_id().to_string()),
+            Projection::Run(run) => ("run_id", run.run_id().to_string()),
         };
-        if bound {
+        let owned_by = |table: &str| -> Result<bool, StoreError> {
+            Ok(self.connection.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {owner_column}=?)"),
+                [&owner_id],
+                |row| row.get(0),
+            )?)
+        };
+        if owned_by("a2a_runs")? {
             return Err(StoreError::A2aBoundProjection);
+        }
+        if owned_by("harness_dispatches")? {
+            return Err(StoreError::HarnessDispatchBoundProjection);
         }
         let idempotency_key = draft
             .idempotency_key
@@ -1004,21 +1033,132 @@ mod tests {
 
     #[test]
     fn newer_schema_fails_closed() {
+        let future = STORE_SCHEMA_VERSION + 1;
         let temporary = tempfile::NamedTempFile::new().expect("temporary database");
         let connection = Connection::open(temporary.path()).expect("open raw database");
         connection
             .execute_batch(
-                "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL); INSERT INTO schema_migrations VALUES (4, 'future');",
+                "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
             )
             .expect("future migration registry");
+        connection
+            .execute(
+                "INSERT INTO schema_migrations VALUES (?, 'future')",
+                [future],
+            )
+            .expect("future migration marker");
         drop(connection);
         assert!(matches!(
             SqliteStore::open(temporary.path()),
             Err(StoreError::NewerSchema {
-                found: 4,
+                found,
                 supported: STORE_SCHEMA_VERSION
-            })
+            }) if found == future
         ));
+    }
+
+    /// A schema-3 database built by the same migrations `migrate` ran before
+    /// schema 4 existed.
+    fn schema_3_database(path: &Path) {
+        let mut connection = Connection::open(path).expect("open raw database");
+        connection.execute_batch(INITIAL_SCHEMA).expect("schema 1");
+        connection
+            .execute_batch(a2a::MIGRATION_V2)
+            .expect("schema 2");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("schema 3 transaction");
+        transaction
+            .execute_batch(MIGRATION_V3)
+            .expect("schema 3 marker");
+        seed_harness_projections(&transaction).expect("schema 3 seed");
+        transaction.commit().expect("schema 3 commit");
+    }
+
+    fn schema_version(path: &Path) -> u32 {
+        Connection::open(path)
+            .expect("open raw database")
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("schema version")
+    }
+
+    fn event_log(path: &Path) -> Vec<String> {
+        let connection = Connection::open(path).expect("open raw database");
+        let mut statement = connection
+            .prepare("SELECT envelope_json FROM events ORDER BY sequence")
+            .expect("event query");
+        statement
+            .query_map([], |row| row.get(0))
+            .expect("event rows")
+            .collect::<Result<_, _>>()
+            .expect("event log")
+    }
+
+    #[test]
+    fn schema_3_database_migrates_to_schema_4_and_keeps_its_history() {
+        let temporary = tempfile::NamedTempFile::new().expect("temporary database");
+        schema_3_database(temporary.path());
+        let history = event_log(temporary.path());
+        assert!(!history.is_empty());
+
+        drop(SqliteStore::open(temporary.path()).expect("migrate to schema 4"));
+        assert_eq!(schema_version(temporary.path()), 4);
+        assert_eq!(event_log(temporary.path()), history);
+        let connection = Connection::open(temporary.path()).expect("open raw database");
+        for (kind, name) in [
+            ("table", "harness_dispatches"),
+            ("index", "harness_dispatches_active_resource"),
+        ] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?)",
+                    [kind, name],
+                    |row| row.get(0),
+                )
+                .expect("schema object query");
+            assert!(exists, "missing {kind} {name}");
+        }
+        drop(connection);
+
+        drop(SqliteStore::open(temporary.path()).expect("reopen at schema 4"));
+        assert_eq!(schema_version(temporary.path()), 4);
+        assert_eq!(event_log(temporary.path()), history);
+    }
+
+    /// A MIGRATION_V4 that fails after creating its table rolls back the
+    /// table, the index, and the marker together, so every reopen retries it
+    /// from the start and fails the same way.
+    #[test]
+    fn failed_schema_4_migration_stays_at_schema_3_across_reopen() {
+        let temporary = tempfile::NamedTempFile::new().expect("temporary database");
+        schema_3_database(temporary.path());
+        Connection::open(temporary.path())
+            .expect("open raw database")
+            .execute_batch(
+                "CREATE TABLE occupied(value TEXT); CREATE INDEX harness_dispatches_active_resource ON occupied(value);",
+            )
+            .expect("conflicting index name");
+        let history = event_log(temporary.path());
+        for attempt in ["open", "reopen"] {
+            match SqliteStore::open(temporary.path()) {
+                Err(StoreError::Database(_)) => {}
+                Err(other) => panic!("{attempt}: unexpected error {other:?}"),
+                Ok(_) => panic!("{attempt}: a failed migration must not open"),
+            }
+            assert_eq!(schema_version(temporary.path()), 3, "{attempt}");
+            assert_eq!(event_log(temporary.path()), history, "{attempt}");
+            let table_exists: bool = Connection::open(temporary.path())
+                .expect("open raw database")
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'harness_dispatches')",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("schema object query");
+            assert!(!table_exists, "{attempt}: the table must roll back");
+        }
     }
 
     /// Regression for the MIGRATION_V3 atomicity contract: a corrupt first
