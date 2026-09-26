@@ -4584,6 +4584,7 @@ name = "vibemux_terminal_observer"
 version = "0.2.0-alpha.0"
 dependencies = [
  "prost",
+ "same-file",
  "serde",
  "serde_json",
  "sysinfo",

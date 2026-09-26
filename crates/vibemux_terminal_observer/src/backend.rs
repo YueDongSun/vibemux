@@ -112,11 +112,12 @@ struct WeztermPane {
     is_dead: bool,
 }
 
+/// File-identity comparison (volume serial + file index on Windows, device +
+/// inode elsewhere), the same check the daemon applies to every returned pane.
+/// Comparing canonical paths lexically could drop a valid pane whose reported
+/// spelling differs in case, which `canonicalize` does not promise to fold.
 pub fn same_directory(left: &str, right: &str) -> bool {
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    same_file::is_same_file(left, right).unwrap_or(false)
 }
 
 pub fn parse_inventory(
@@ -191,5 +192,30 @@ mod tests {
         assert!(parse_inventory(b"invalid", "missing").is_err());
         assert!(parse_inventory(&vec![b' '; MAX_OUTPUT_BYTES + 1], "missing").is_err());
         assert!(!same_directory("missing", "missing"));
+    }
+    #[test]
+    fn directory_identity_ignores_path_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().into_owned();
+        assert!(same_directory(
+            &cwd,
+            &format!("{cwd}{}.", std::path::MAIN_SEPARATOR)
+        ));
+        assert!(!same_directory(&cwd, &other.path().to_string_lossy()));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_inventory_matches_differently_cased_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let reported = format!(
+            "file:///{}",
+            cwd.to_uppercase().replace(std::path::MAIN_SEPARATOR, "/")
+        );
+        let input = serde_json::json!([{"pane_id":1,"window_id":2,"tab_id":3,"cwd":reported}]);
+        let panes =
+            parse_inventory(&serde_json::to_vec(&input).unwrap(), &cwd.to_lowercase()).unwrap();
+        assert_eq!(panes.len(), 1);
     }
 }
