@@ -12,10 +12,15 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use vibemux_plugin_protocol::{manifest::PluginManifest, negotiation::CorePluginPolicy};
+use vibemux_plugin_protocol::{
+    frame::FrameCodecConfig,
+    manifest::{ManifestPluginKind, PluginManifest, SupportedPlatform},
+    negotiation::CorePluginPolicy,
+    terminal::{FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD, OBSERVE_PERMISSION},
+};
 use vibemux_plugin_supervisor::{PluginSupervisorConfig, ResolvedPluginLaunch};
 
-pub const PLUGIN_CONFIGURATION_VERSION: u32 = 1;
+pub const PLUGIN_CONFIGURATION_VERSION: u32 = 2;
 pub const MAX_PLUGIN_CONFIGURATION_BYTES: usize = 64 * 1024;
 const HEARTBEAT_GRACE_INTERVALS: u32 = 3;
 
@@ -44,7 +49,7 @@ impl PluginStartup {
     }
 
     /// An operator-supplied local file authorizes only explicit startup launches.
-    /// Manifest permissions are declarations: none are granted in M4.2.
+    /// Grants are explicit and restricted to the terminal observation surface.
     pub fn from_path(path: &Path) -> Result<Self, &'static str> {
         let invalid = "plugin_configuration_invalid";
         let metadata = std::fs::symlink_metadata(path).map_err(|_| invalid)?;
@@ -62,7 +67,7 @@ impl PluginStartup {
             return Err(invalid);
         }
         let file: PluginConfiguration = serde_json::from_slice(&bytes).map_err(|_| invalid)?;
-        if file.schema_version != PLUGIN_CONFIGURATION_VERSION {
+        if !matches!(file.schema_version, 1 | PLUGIN_CONFIGURATION_VERSION) {
             return Err(invalid);
         }
         let registry_config = PluginRegistryConfig {
@@ -77,6 +82,11 @@ impl PluginStartup {
             registrations: Vec::new(),
         };
         for entry in file.plugins {
+            if file.schema_version == 1
+                && (!entry.granted_permissions.is_empty() || !entry.granted_capabilities.is_empty())
+            {
+                return Err(invalid);
+            }
             if !entry.manifest_path.is_absolute()
                 || !entry.executable.is_absolute()
                 || !entry.working_directory.is_absolute()
@@ -84,6 +94,38 @@ impl PluginStartup {
                 return Err(invalid);
             }
             let manifest = PluginManifest::from_path(&entry.manifest_path).map_err(|_| invalid)?;
+            if entry
+                .granted_capabilities
+                .iter()
+                .any(|name| !matches!(name.as_str(), INVENTORY_METHOD | FOCUS_METHOD))
+                || entry.granted_permissions.iter().any(|name| {
+                    !matches!(
+                        name.as_str(),
+                        OBSERVE_PERMISSION | FOCUS_PERMISSION | "process:execute"
+                    )
+                })
+                || ((!entry.granted_capabilities.is_empty()
+                    || !entry.granted_permissions.is_empty())
+                    && manifest.kind != ManifestPluginKind::Terminal)
+            {
+                return Err(invalid);
+            }
+            let platform = if cfg!(windows) {
+                SupportedPlatform::Windows
+            } else if cfg!(target_os = "macos") {
+                SupportedPlatform::Macos
+            } else {
+                SupportedPlatform::Linux
+            };
+            let plugin_policy = CorePluginPolicy::new(
+                entry.granted_capabilities,
+                entry.granted_permissions,
+                FrameCodecConfig::default(),
+                8,
+                1000,
+                platform,
+            )
+            .map_err(|_| invalid)?;
             let launch = ResolvedPluginLaunch::new(
                 &manifest,
                 entry.executable,
@@ -94,7 +136,7 @@ impl PluginStartup {
             let mut config = PluginSupervisorConfig::new(
                 manifest,
                 launch,
-                CorePluginPolicy::default(),
+                plugin_policy,
                 "startup_validation".to_string(),
             );
             config.receive_timeout = Duration::from_millis(config.policy.heartbeat_interval_ms())
@@ -137,6 +179,10 @@ struct PluginEntry {
     executable: PathBuf,
     working_directory: PathBuf,
     #[serde(default)]
+    granted_capabilities: Vec<String>,
+    #[serde(default)]
+    granted_permissions: Vec<String>,
+    #[serde(default)]
     restart: Option<RestartConfiguration>,
 }
 
@@ -158,7 +204,7 @@ mod tests {
         let path = temp.path().join("plugins.json");
         for input in [
             br#"{"schema_version":1,"plugins":[],"task":"mutate"}"#.as_slice(),
-            br#"{"schema_version":2,"plugins":[]}"#.as_slice(),
+            br#"{"schema_version":3,"plugins":[]}"#.as_slice(),
             br#"{"schema_version":1,"max_plugins":33,"plugins":[]}"#.as_slice(),
             br#"{"schema_version":1,"plugins":[{"manifest_path":"relative.toml","executable":"relative.exe","working_directory":"."}]}"#.as_slice(),
             &vec![b' '; MAX_PLUGIN_CONFIGURATION_BYTES + 1],

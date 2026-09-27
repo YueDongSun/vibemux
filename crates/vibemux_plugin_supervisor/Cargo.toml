@@ -15,6 +15,7 @@ path = "src/bin/vibemux_mock_plugin.rs"
 required-features = ["test_helpers"]
 
 [dependencies]
+prost.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

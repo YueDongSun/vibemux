@@ -20,6 +20,7 @@ path = "src/bin/vibemux_model_fixture.rs"
 required-features = ["test_helpers"]
 
 [dependencies]
+prost.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 time.workspace = true

@@ -12,7 +12,9 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Rust core / `vibemuxd` | `VERIFIED` within M3 | Typed IDs and state machines, canonical events, SQLite store, single-writer worker, authenticated local IPC, and start/health/inspect/recover/stop | Complete Task/Run CLI parity and Python-to-Rust state migration/default cutover |
 | Plugin protocol / supervisor | `PARTIAL` overall M4 | Wire foundation, shell-free supervision, daemon registry, bounded restart/quarantine and read-only status | Writable plugin control, operator recovery, real vendor CLI plugins and SDKs |
 | A2A / supervisor | `PARTIAL — LOCAL STATEFUL` | Authenticated HTTP+JSON/JSONRPC/gRPC; canonical bindings, artifacts, cancellation, subscriptions, independent review/verifier gates and local model-peer workflow | Remote/TLS deployment, full official ITK, message history, automatic restart recovery and unrestricted coding-harness integration |
-| Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes and a Ratatui shell | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
+| Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
+
+Authoritative milestones, evidence, and release plan: [PROGRESS.md](PROGRESS.md).
 
 ## Python behavior-reference quick start (Windows PowerShell)
 
@@ -127,11 +129,42 @@ Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` sto
 
 The frontend crate builds three binaries:
 
-- `vibemux_frontend` — an egui/eframe GUI (overview canvas plus a workbench seat per harness). It takes no CLI flags and owns its own persisted hex theme palettes (`claude`/`github`/`vscode`). Harness seats display stub transcripts; there is no PTY/ConPTY attach.
+- `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps Agents/Settings/Diagnostics secondary, and preserves all five appearance palettes. The composer retains a local draft but Send is unavailable until a continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
 
-The TUI ships four themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), and `light` (dark variants tuned for white or very light terminal backgrounds). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
+The redesigned GUI defaults to **Studio**: an off-white canvas, quiet sidebar,
+dark-green accent, native Windows typography, and a continuous task activity
+list. Six themes are available in **Settings → Appearance**: `studio`, `github`,
+`claude`, `vscode`, `nord`, and `gruvbox`. Existing saved appearance preferences
+are preserved; select Studio in Settings to adopt the new light style.
+
+Task windows have Overview, Activity, Artifacts and Terminal tabs. Closing a
+window does not stop its task. `Ctrl+1..0` accesses the ten harness diagnostics;
+Escape closes overlays before returning to Coordinator. Task and terminal
+connection states are separate. An explicitly configured WezTerm observer can
+associate an existing native pane with an A2A-backed Run and focus it after
+identity checks. Watch and interact with the CLI in WezTerm; embedded terminal
+rendering and harness launch/input remain future work. See
+[terminal observation setup and protocol](docs/terminal_observer_protocol.md).
+
+Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
+`cargo run -p vibemux_frontend --bin vibemux_frontend`. The GUI does not start
+the daemon automatically. A stopped or older daemon produces an explicit
+unavailable state. The existing structured supervisor recipe is not a continuous
+coding-agent chat service.
+
+The screenshot-only `vibemux_frontend_preview` binary is built with
+`--features gui_screenshot`; its scenes are visibly marked **DEMO DATA** and
+never contact a daemon or model. Example:
+`cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat studio 1440 900 1`.
+Add an absolute PNG path as the last argument to capture a settled native frame.
+Scenes are `chat`, `drawer`, `task`, `task_terminal`, and `disconnected`.
+The `task` scenes capture the actual independent native viewport.
+
+The TUI ships six themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), `light` (dark variants tuned for white or very light terminal backgrounds), and the brand themes `nord` and `gruvbox` (xterm-256 indices resolved from the brand palettes, so they render the same hues on WezTerm and tmux without a truecolor dependency). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
+
+The canonical GUI palette values are exported to `config/theme_palettes.json` (pinned to the compiled-in palettes by a parity test) and consumed by the Python CLI: `VIBEMUX_THEME=<name>` restyles human-facing `vibemux` output (tables, errors, status lines), while `--json` output stays theme-independent. `vibemux theme --list` prints the available themes, and `vibemux theme --backend wezterm|tmux --theme <name>` prints a matching pane-chrome snippet (WezTerm `config.colors` lua table, or tmux `set -g` options) that you adopt yourself — VibeMux never writes or mutates your terminal configuration (see [ADR 026](docs/adr/026_multi_surface_theme_palettes.md)).
 
 Machine-readable evidence for scripts and CI: `vibemux_frontend_tui --json` prints the versioned probe report; `vibemux_frontend_dump` prints a plain-text snapshot. Theme selection never affects either output.
 
@@ -164,6 +197,13 @@ cargo run -p vibemux_frontend --bin vibemux_frontend_tui
 cargo run -p vibemux_frontend --bin vibemux_frontend
 ```
 
-`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the egui GUI. All ten harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi) appear as dashboard rows and GUI seats showing stub transcripts only; real PTY/ConPTY attach is not implemented and must not be treated as usable.
+`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the Supervisor Chat GUI described above. All ten harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi) appear as TUI dashboard rows and GUI diagnostics; real PTY/ConPTY attach is not implemented and must not be treated as usable.
 
-See [docs/architecture.md](docs/architecture.md), [docs/platform_support.md](docs/platform_support.md), [docs/protocol_boundaries.md](docs/protocol_boundaries.md), and `docs/adr/`.
+## See also
+
+- [docs/architecture.md](docs/architecture.md) — current modules, data flow, and contracts
+- [docs/platform_support.md](docs/platform_support.md) — supported platforms and validation environments
+- [docs/protocol_boundaries.md](docs/protocol_boundaries.md) — wire contracts and what is/isn't supported
+- [docs/adr/](docs/adr/) — accepted architecture decisions
+- [AGENTS.md](AGENTS.md) — engineering rules for contributors and agents
+- [PROGRESS.md](PROGRESS.md) — milestones, evidence, and release plan

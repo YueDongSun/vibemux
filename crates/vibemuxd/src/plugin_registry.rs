@@ -5,14 +5,22 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use crate::plugin_requests::{PluginRequest, PluginRequestClient, REQUEST_CAPACITY, RequestRoute};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    sync::watch,
+    sync::{mpsc, watch},
     task::JoinHandle,
     time::{Instant, sleep},
 };
-use vibemux_plugin_protocol::wire::envelope;
+use vibemux_plugin_protocol::{
+    PROTOCOL_MAJOR, PROTOCOL_MINOR,
+    terminal::{
+        FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD, MAX_TERMINAL_PAYLOAD_BYTES,
+        OBSERVE_PERMISSION,
+    },
+    wire::{Envelope, Request, ResponseStatus, envelope},
+};
 use vibemux_plugin_supervisor::{
     PluginSession, PluginSupervisorConfig, PluginSupervisorError, spawn_plugin,
 };
@@ -169,6 +177,7 @@ impl PluginStatusReader {
 }
 
 struct RegistryEntry {
+    requests: mpsc::Sender<PluginRequest>,
     cancellation: watch::Sender<bool>,
     status: watch::Receiver<PluginStatus>,
     status_updates: watch::Sender<PluginStatus>,
@@ -178,6 +187,7 @@ struct RegistryEntry {
 /// One daemon owns this object and explicitly awaits `shutdown` before releasing
 /// its writer/runtime. Dropping it is only an emergency abort fallback.
 pub struct PluginRegistry {
+    routes: watch::Sender<BTreeMap<String, RequestRoute>>,
     config: PluginRegistryConfig,
     entries: BTreeMap<String, RegistryEntry>,
     snapshots: watch::Sender<Vec<watch::Receiver<PluginStatus>>>,
@@ -188,7 +198,9 @@ impl PluginRegistry {
     pub fn new(config: PluginRegistryConfig) -> Result<Self, PluginRegistryError> {
         config.validate()?;
         let (snapshots, _) = watch::channel(Vec::new());
+        let (routes, _) = watch::channel(BTreeMap::new());
         Ok(Self {
+            routes,
             config,
             entries: BTreeMap::new(),
             snapshots,
@@ -248,15 +260,18 @@ impl PluginRegistry {
         };
         let (status_sender, status) = watch::channel(initial);
         let (cancellation, cancel_receiver) = watch::channel(false);
+        let (requests, request_receiver) = mpsc::channel(REQUEST_CAPACITY);
         let worker = runtime.spawn(plugin_worker(
             config,
             policy,
             cancel_receiver,
             status_sender.clone(),
+            request_receiver,
         ));
         self.entries.insert(
             plugin_id,
             RegistryEntry {
+                requests,
                 cancellation,
                 status,
                 status_updates: status_sender,
@@ -269,7 +284,28 @@ impl PluginRegistry {
                 .map(|entry| entry.status.clone())
                 .collect(),
         );
+        self.routes.send_replace(
+            self.entries
+                .iter()
+                .map(|(id, entry)| {
+                    (
+                        id.clone(),
+                        RequestRoute {
+                            requests: entry.requests.clone(),
+                            status: entry.status.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        );
         Ok(())
+    }
+
+    #[must_use]
+    pub fn request_client(&self) -> PluginRequestClient {
+        PluginRequestClient {
+            routes: self.routes.subscribe(),
+        }
     }
 
     #[must_use]
@@ -347,6 +383,7 @@ async fn plugin_worker(
     policy: PluginRestartPolicy,
     mut cancellation: watch::Receiver<bool>,
     status: watch::Sender<PluginStatus>,
+    mut requests: mpsc::Receiver<PluginRequest>,
 ) -> Result<(), PluginRegistryError> {
     let mut restarts = 0;
     loop {
@@ -369,7 +406,14 @@ async fn plugin_worker(
                     snapshot.state = PluginState::Active;
                     snapshot.process_id = session.process_id();
                 });
-                match monitor_session(&mut session, &mut cancellation, config.receive_timeout).await
+                match monitor_session(
+                    &mut session,
+                    &mut cancellation,
+                    config.receive_timeout,
+                    &mut requests,
+                    &config.session_id,
+                )
+                .await
                 {
                     SessionOutcome::Cancelled => return stop_session(session, &status).await,
                     SessionOutcome::Failed(failure) => {
@@ -453,17 +497,92 @@ async fn monitor_session(
     session: &mut PluginSession,
     cancellation: &mut watch::Receiver<bool>,
     heartbeat_timeout: Duration,
+    requests: &mut mpsc::Receiver<PluginRequest>,
+    session_id: &str,
 ) -> SessionOutcome {
     let mut heartbeat_deadline = Instant::now() + heartbeat_timeout;
+    let mut pending: BTreeMap<String, PluginRequest> = BTreeMap::new();
     loop {
         let remaining = heartbeat_deadline.saturating_duration_since(Instant::now());
+        let next_deadline = pending
+            .values()
+            .map(|request| request.deadline)
+            .min()
+            .unwrap_or(heartbeat_deadline)
+            .min(heartbeat_deadline);
         let envelope = tokio::select! {
             biased;
             _ = wait_for_cancellation(cancellation) => return SessionOutcome::Cancelled,
+            _ = tokio::time::sleep_until(next_deadline) => {
+                if Instant::now() >= heartbeat_deadline {
+                    return SessionOutcome::Failed(SessionFailure::from_supervisor(PluginSupervisorError::ReceiveTimeout));
+                }
+                // A timed-out focus is not retried. Close the session so a late
+                // response can never be accepted by a later request generation.
+                for (_, request) in pending {
+                    let _ = request.response.send(Err("terminal_request_timeout"));
+                }
+                return SessionOutcome::Failed(SessionFailure::permanent("plugin_registry_request_timeout"));
+            }
+            request = requests.recv(), if pending.len() < REQUEST_CAPACITY => {
+                if let Some(request) = request {
+                    let permission = match request.method.as_str() {
+                        INVENTORY_METHOD => OBSERVE_PERMISSION,
+                        FOCUS_METHOD => FOCUS_PERMISSION,
+                        _ => "",
+                    };
+                    if request.session_id != session_id || request.deadline <= Instant::now() || request.response.is_closed() {
+                        let _ = request.response.send(Err("terminal_session_changed"));
+                    } else if permission.is_empty() || !session.permits(&request.method, permission) || !session.permits(&request.method, "process:execute") {
+                        let _ = request.response.send(Err("terminal_permission_denied"));
+                    } else {
+                        let request_id = uuid::Uuid::new_v4().simple().to_string();
+                        let remaining_ms = request.deadline.saturating_duration_since(Instant::now()).as_millis();
+                        let unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+                        let envelope = Envelope {
+                            protocol_major: PROTOCOL_MAJOR, protocol_minor: PROTOCOL_MINOR,
+                            message_id: request_id.clone(), correlation_id: Some(request_id.clone()), causation_id: None,
+                            body: Some(envelope::Body::Request(Request {
+                                request_id: request_id.clone(), method: request.method.clone(), payload: request.payload.clone(),
+                                deadline_unix_ms: u64::try_from(unix_ms.saturating_add(remaining_ms)).unwrap_or(u64::MAX), idempotency_key: None,
+                            })),
+                        };
+                        if session.try_send(envelope).is_err() {
+                            let _ = request.response.send(Err("terminal_queue_unavailable"));
+                        } else { pending.insert(request_id, request); }
+                    }
+                }
+                continue;
+            }
             received = session.receive_with_timeout(remaining) => received,
         };
         match envelope {
             Ok(envelope) => match envelope.body {
+                Some(envelope::Body::Response(response)) => {
+                    let Some(request) = pending.remove(&response.request_id) else {
+                        return SessionOutcome::Failed(SessionFailure::permanent(
+                            "plugin_registry_unsolicited_response",
+                        ));
+                    };
+                    if envelope.correlation_id.as_deref() != Some(&response.request_id)
+                        || response.payload.len() > MAX_TERMINAL_PAYLOAD_BYTES
+                    {
+                        let _ = request.response.send(Err("terminal_invalid_response"));
+                        return SessionOutcome::Failed(SessionFailure::permanent(
+                            "plugin_registry_invalid_response",
+                        ));
+                    }
+                    let outcome = if Instant::now() >= request.deadline {
+                        Err("terminal_request_timeout")
+                    } else if response.status == i32::from(ResponseStatus::Ok)
+                        && response.error_code.is_none()
+                    {
+                        Ok(response.payload)
+                    } else {
+                        Err("terminal_peer_error")
+                    };
+                    let _ = request.response.send(outcome);
+                }
                 Some(envelope::Body::Heartbeat(_)) => {
                     heartbeat_deadline = Instant::now() + heartbeat_timeout
                 }
@@ -584,6 +703,7 @@ mod tests {
             Ok(())
         });
         let mut entry = RegistryEntry {
+            requests: mpsc::channel(1).0,
             cancellation,
             status,
             status_updates,

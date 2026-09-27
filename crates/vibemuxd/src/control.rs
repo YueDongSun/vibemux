@@ -30,10 +30,21 @@ use crate::plugin_registry::{
 #[cfg(windows)]
 use crate::process::DaemonPaths;
 use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
+use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapshot};
 use crate::{WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow};
+#[path = "control_terminal.rs"]
+mod terminal;
+use vibemux_types::{
+    TaskId,
+    frontend::{
+        FrontendTaskDetail, FrontendTaskQuery, FrontendTasksPage, FrontendTasksQuery,
+        MAX_FRONTEND_TASKS,
+    },
+};
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = 3;
+pub const CONTROL_PROTOCOL_VERSION: u32 = 4;
+pub const CONTROL_PROTOCOL_V3: u32 = 3;
 /// V2 is grandfathered for `Health`/`PluginStatus` exactly like v1 is for
 /// `Health`/`Shutdown`; the harness surface still requires v3.
 pub const CONTROL_PROTOCOL_V2: u32 = 2;
@@ -57,6 +68,12 @@ pub enum ControlOperation {
     HarnessRefresh,
     HarnessSnapshot,
     HarnessSwitch,
+    FrontendTasks,
+    FrontendTask,
+    TerminalInspect,
+    TerminalLink,
+    TerminalFocus,
+    TerminalUnlink,
     Shutdown,
 }
 
@@ -67,10 +84,17 @@ impl ControlOperation {
     #[must_use]
     pub const fn minimum_protocol_version(&self) -> u32 {
         match self {
+            Self::TerminalInspect
+            | Self::TerminalLink
+            | Self::TerminalFocus
+            | Self::TerminalUnlink => 4,
             Self::Health => 1,
             Self::Shutdown => 1,
             Self::PluginStatus => 2,
-            Self::HarnessRefresh | Self::HarnessSnapshot | Self::HarnessSwitch => 3,
+            Self::HarnessRefresh | Self::HarnessSnapshot | Self::HarnessSwitch => {
+                CONTROL_PROTOCOL_V3
+            }
+            Self::FrontendTasks | Self::FrontendTask => CONTROL_PROTOCOL_VERSION,
         }
     }
 }
@@ -133,10 +157,16 @@ impl fmt::Debug for ControlRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "data")]
 pub enum ControlPayload {
+    TerminalSnapshot(TerminalSnapshot),
+    TerminalBinding(TerminalBinding),
+    TerminalFocused,
+    TerminalUnlinked,
     Health(DaemonHealth),
     PluginStatus(Vec<PluginStatus>),
     HarnessSnapshot(Vec<HarnessRow>),
     HarnessSwitched { from: String, to: String },
+    FrontendTasks(FrontendTasksPage),
+    FrontendTask(Option<FrontendTaskDetail>),
     ShutdownAccepted,
 }
 
@@ -474,6 +504,7 @@ impl Drop for SocketPathGuard {
 }
 
 struct ServerState {
+    terminal: TerminalObserver,
     writer: Mutex<Option<WriterWorker>>,
     plugins: PluginStatusReader,
     process_id: u32,
@@ -829,6 +860,7 @@ impl DaemonControlServer {
             let a2a_grpc_base_url = supervisor.as_ref().map(SupervisorService::grpc_base_url);
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
+                terminal: TerminalObserver::new(registry.request_client()),
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -908,6 +940,7 @@ impl DaemonControlServer {
             let a2a_grpc_base_url = supervisor.as_ref().map(SupervisorService::grpc_base_url);
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
+                terminal: TerminalObserver::new(registry.request_client()),
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1021,6 +1054,12 @@ pub struct ControlClient {
 }
 
 impl ControlClient {
+    /// Compare runtime generations without exposing endpoint or bearer material.
+    #[must_use]
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.descriptor == other.descriptor
+    }
+
     pub fn from_descriptor(path: &Path) -> Result<Self, ControlError> {
         let descriptor = read_descriptor(path)?;
         if !supported_control_version(descriptor.version) {
@@ -1107,6 +1146,48 @@ impl ControlClient {
             .await?
         {
             ControlPayload::HarnessSwitched { from, to } => Ok((from, to)),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
+    pub async fn frontend_tasks(
+        &self,
+        query: FrontendTasksQuery,
+    ) -> Result<FrontendTasksPage, ControlError> {
+        self.require_operation(ControlOperation::FrontendTasks)?;
+        if query.limit == 0 || query.limit > MAX_FRONTEND_TASKS {
+            return Err(ControlError::InvalidRequest);
+        }
+        let argument = serde_json::to_string(&query).map_err(|_| ControlError::InvalidRequest)?;
+        match self
+            .request_with_argument(
+                ControlOperation::FrontendTasks,
+                Some(argument),
+                CONTROL_DEADLINE,
+            )
+            .await?
+        {
+            ControlPayload::FrontendTasks(page) => Ok(page),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
+    pub async fn frontend_task(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Option<FrontendTaskDetail>, ControlError> {
+        self.require_operation(ControlOperation::FrontendTask)?;
+        let argument = serde_json::to_string(&FrontendTaskQuery { task_id })
+            .map_err(|_| ControlError::InvalidRequest)?;
+        match self
+            .request_with_argument(
+                ControlOperation::FrontendTask,
+                Some(argument),
+                CONTROL_DEADLINE,
+            )
+            .await?
+        {
+            ControlPayload::FrontendTask(detail) => Ok(detail),
             _ => Err(ControlError::InvalidFrame),
         }
     }
@@ -1212,6 +1293,19 @@ where
 
     let request_id = request.request_id;
     let (mut response, should_shutdown) = match request.operation {
+        operation @ (ControlOperation::TerminalInspect
+        | ControlOperation::TerminalLink
+        | ControlOperation::TerminalFocus
+        | ControlOperation::TerminalUnlink) => {
+            let result = terminal::dispatch(state, operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
         ControlOperation::Health => match writer_health(state).await {
             Ok(health) => (
                 ControlResponse::success(request_id, ControlPayload::Health(health)),
@@ -1255,6 +1349,45 @@ where
                     false,
                 ),
                 Err(error) => (ControlResponse::error(request_id, &error), false),
+            }
+        }
+        ControlOperation::FrontendTasks => {
+            let query = request
+                .argument
+                .as_deref()
+                .and_then(|argument| serde_json::from_str::<FrontendTasksQuery>(argument).ok())
+                .filter(|query| query.limit > 0 && query.limit <= MAX_FRONTEND_TASKS);
+            match query {
+                Some(query) => match frontend_tasks(state.clone(), query).await {
+                    Ok(page) => (
+                        ControlResponse::success(request_id, ControlPayload::FrontendTasks(page)),
+                        false,
+                    ),
+                    Err(error) => (ControlResponse::error(request_id, &error), false),
+                },
+                None => (
+                    ControlResponse::error(request_id, &ControlError::InvalidRequest),
+                    false,
+                ),
+            }
+        }
+        ControlOperation::FrontendTask => {
+            let query = request
+                .argument
+                .as_deref()
+                .and_then(|argument| serde_json::from_str::<FrontendTaskQuery>(argument).ok());
+            match query {
+                Some(query) => match frontend_task(state.clone(), query.task_id).await {
+                    Ok(detail) => (
+                        ControlResponse::success(request_id, ControlPayload::FrontendTask(detail)),
+                        false,
+                    ),
+                    Err(error) => (ControlResponse::error(request_id, &error), false),
+                },
+                None => (
+                    ControlResponse::error(request_id, &ControlError::InvalidRequest),
+                    false,
+                ),
             }
         }
         // Acceptance only. The owner joins plugins before releasing the writer.
@@ -1403,6 +1536,42 @@ async fn harness_snapshot(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, Co
         // Cached reads: derive rows from the persisted registry/config via
         // build_rows_from_registry (no synthetic detections payload).
         Ok(writer.harness_rows()?)
+    })
+    .await
+    .map_err(|_| ControlError::ServerTerminated)?
+}
+
+async fn frontend_tasks(
+    state: Arc<ServerState>,
+    query: FrontendTasksQuery,
+) -> Result<FrontendTasksPage, ControlError> {
+    tokio::task::spawn_blocking(move || {
+        let writer = state
+            .writer
+            .lock()
+            .map_err(|_| ControlError::ServerTerminated)?
+            .as_ref()
+            .ok_or(ControlError::ServerTerminated)?
+            .handle()?;
+        writer.frontend_tasks(query).map_err(ControlError::from)
+    })
+    .await
+    .map_err(|_| ControlError::ServerTerminated)?
+}
+
+async fn frontend_task(
+    state: Arc<ServerState>,
+    task_id: TaskId,
+) -> Result<Option<FrontendTaskDetail>, ControlError> {
+    tokio::task::spawn_blocking(move || {
+        let writer = state
+            .writer
+            .lock()
+            .map_err(|_| ControlError::ServerTerminated)?
+            .as_ref()
+            .ok_or(ControlError::ServerTerminated)?
+            .handle()?;
+        writer.frontend_task(task_id).map_err(ControlError::from)
     })
     .await
     .map_err(|_| ControlError::ServerTerminated)?
@@ -1676,7 +1845,10 @@ fn endpoint_kind(_endpoint: &str) -> ControlEndpointKind {
 fn supported_control_version(version: u32) -> bool {
     matches!(
         version,
-        LEGACY_CONTROL_PROTOCOL_VERSION | CONTROL_PROTOCOL_V2 | CONTROL_PROTOCOL_VERSION
+        LEGACY_CONTROL_PROTOCOL_VERSION
+            | CONTROL_PROTOCOL_V2
+            | CONTROL_PROTOCOL_VERSION
+            | CONTROL_PROTOCOL_V3
     )
 }
 
@@ -1748,6 +1920,14 @@ fn remote_error(code: String) -> ControlError {
         "control_invalid_request" => ControlError::InvalidRequest,
         "control_unauthorized" => ControlError::Unauthorized,
         "control_unsupported_version" => ControlError::UnsupportedVersion,
+        _ if code.starts_with("terminal_")
+            && code.len() <= 80
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_') =>
+        {
+            ControlError::Remote { code }
+        }
         _ if code.starts_with("writer_")
             || code.starts_with("store_")
             || code.starts_with("harness_")
@@ -2162,12 +2342,13 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_v2_v3() {
+    fn control_contract_accepts_v1_v2_v3_v4() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
         assert!(supported_control_version(LEGACY_CONTROL_PROTOCOL_VERSION));
         assert!(supported_control_version(CONTROL_PROTOCOL_V2));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V3));
         assert!(supported_control_version(CONTROL_PROTOCOL_VERSION));
         assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(!supported_control_version(0));
@@ -2188,16 +2369,102 @@ mod tests {
         );
         assert_eq!(
             ControlOperation::HarnessRefresh.minimum_protocol_version(),
-            CONTROL_PROTOCOL_VERSION
+            CONTROL_PROTOCOL_V3
         );
         assert_eq!(
             ControlOperation::HarnessSnapshot.minimum_protocol_version(),
-            CONTROL_PROTOCOL_VERSION
+            CONTROL_PROTOCOL_V3
         );
         assert_eq!(
             ControlOperation::HarnessSwitch.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V3
+        );
+        assert_eq!(
+            ControlOperation::FrontendTasks.minimum_protocol_version(),
             CONTROL_PROTOCOL_VERSION
         );
+        assert_eq!(
+            ControlOperation::FrontendTask.minimum_protocol_version(),
+            CONTROL_PROTOCOL_VERSION
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frontend_queries_require_v4_and_validate_arguments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        let page = client
+            .frontend_tasks(FrontendTasksQuery::default())
+            .await
+            .expect("empty page");
+        assert!(page.tasks.is_empty());
+        assert!(page.next_cursor.is_none());
+        assert!(
+            client
+                .frontend_task(TaskId::new())
+                .await
+                .expect("missing detail")
+                .is_none()
+        );
+
+        let mut v3 = client.clone();
+        v3.descriptor.version = CONTROL_PROTOCOL_V3;
+        assert_eq!(
+            v3.frontend_tasks(FrontendTasksQuery::default())
+                .await
+                .expect_err("v3 rejected"),
+            ControlError::UnsupportedVersion
+        );
+        assert!(v3.health().await.expect("v3 health").healthy);
+        assert_eq!(
+            v3.request_raw(ControlRequest {
+                version: CONTROL_PROTOCOL_V3,
+                request_id: "v3_query".to_string(),
+                token: v3.descriptor.token.clone(),
+                operation: ControlOperation::FrontendTasks,
+                argument: Some(
+                    serde_json::to_string(&FrontendTasksQuery::default()).expect("query")
+                ),
+            })
+            .await
+            .expect_err("server rejects v3 query"),
+            ControlError::UnsupportedVersion
+        );
+
+        for argument in [
+            None,
+            Some("{}".to_string()),
+            Some("{\"after\":null,\"limit\":0}".to_string()),
+            Some("{\"after\":null,\"limit\":33}".to_string()),
+        ] {
+            assert_eq!(
+                client
+                    .request_raw(ControlRequest {
+                        version: CONTROL_PROTOCOL_VERSION,
+                        request_id: Uuid::new_v4().to_string(),
+                        token: client.descriptor.token.clone(),
+                        operation: ControlOperation::FrontendTasks,
+                        argument,
+                    })
+                    .await
+                    .expect_err("invalid query"),
+                ControlError::InvalidRequest
+            );
+        }
+        assert_eq!(
+            client
+                .frontend_tasks(FrontendTasksQuery {
+                    after: None,
+                    limit: 33
+                })
+                .await
+                .expect_err("client limit"),
+            ControlError::InvalidRequest
+        );
+        server.shutdown().await.expect("shutdown");
     }
 
     #[test]

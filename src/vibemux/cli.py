@@ -14,6 +14,7 @@ from rich.table import Table
 from . import __version__
 from .config import config_path, database_path, require_config
 from .errors import VibeMuxError
+from .models import RunStatus
 from .services import (
     HarnessService,
     ProjectService,
@@ -21,9 +22,20 @@ from .services import (
     TaskService,
     choose_terminal_backend,
 )
+from .terminal_theme import render_tmux_theme, render_wezterm_scheme
+from .theme import active_palette, load_palettes, rich_theme
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, invoke_without_command=True)
-console = Console()
+console = Console(theme=rich_theme(active_palette()))
+
+_STATUS_ROLES = {
+    RunStatus.PREPARING: "vm.muted",
+    RunStatus.RUNNING: "vm.accent",
+    RunStatus.STOPPED: "vm.muted",
+    RunStatus.FAILED: "vm.error",
+    RunStatus.SUCCEEDED: "vm.success",
+    RunStatus.STALE: "vm.warning",
+}
 
 
 def root() -> Path:
@@ -40,7 +52,9 @@ def callback(version: bool = typer.Option(False, "--version", is_eager=True)) ->
 @app.command()
 def init(terminal_backend: str = typer.Option("auto", "--terminal-backend")) -> None:
     config = ProjectService(root()).initialize(terminal_backend)
-    typer.echo(f"initialized {config.project_id} ({config.terminal_backend})")
+    console.print(
+        f"[vm.success]initialized[/vm.success] {config.project_id} ({config.terminal_backend})"
+    )
 
 
 @app.command()
@@ -63,7 +77,7 @@ def doctor(as_json: bool = typer.Option(False, "--json")) -> None:
     if as_json:
         typer.echo(json.dumps(checks, ensure_ascii=False, indent=2))
         return
-    table = Table("component", "status")
+    table = Table("component", "status", border_style="vm.border")
     for key, value in checks.items():
         table.add_row(key, str(value))
     console.print(table)
@@ -88,7 +102,16 @@ def status(as_json: bool = typer.Option(False, "--json")) -> None:
     if as_json:
         typer.echo(json.dumps(rows, ensure_ascii=False, indent=2))
         return
-    table = Table("run_id", "task_id", "status", "harness", "role", "branch", "pane")
+    table = Table(
+        "run_id",
+        "task_id",
+        "status",
+        "harness",
+        "role",
+        "branch",
+        "pane",
+        border_style="vm.border",
+    )
     for row in rows:
         table.add_row(
             *(
@@ -151,7 +174,15 @@ def harnesses(
         typer.echo(json.dumps(rows, ensure_ascii=False, indent=2))
         return
     table = Table(
-        "default", "name", "command", "protocol", "provider", "available", "roles", "path"
+        "default",
+        "name",
+        "command",
+        "protocol",
+        "provider",
+        "available",
+        "roles",
+        "path",
+        border_style="vm.border",
     )
     for row in rows:
         command = row["command"]
@@ -176,7 +207,7 @@ def harnesses(
 @app.command()
 def switch(harness: str) -> None:
     config = HarnessService(root()).switch(harness)
-    typer.echo(f"default harness -> {config.default_harness}")
+    console.print(f"[vm.success]default harness[/vm.success] -> {config.default_harness}")
 
 
 @app.command()
@@ -209,14 +240,56 @@ def trace() -> None:
 
 @app.command()
 def stop(run_id: str) -> None:
-    typer.echo(RunService(root()).stop(UUID(run_id)).status.value)
+    run = RunService(root()).stop(UUID(run_id))
+    console.print(run.status.value, style=_STATUS_ROLES.get(run.status, "vm.text"))
+
+
+@app.command("theme")
+def theme_command(
+    as_list: bool = typer.Option(False, "--list", help="List available theme names."),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="Generate an appearance snippet for wezterm or tmux.",
+    ),
+    theme_name: str | None = typer.Option(
+        None, "--theme", help="Theme name to generate for (see --list)."
+    ),
+) -> None:
+    """List themes or generate terminal backend appearance snippets.
+
+    Generation only: the snippet is printed to stdout and the user opts
+    in by pasting or sourcing it. Machine-readable outputs of other
+    commands are never affected by theme selection.
+    """
+    if as_list:
+        for entry in load_palettes().values():
+            typer.echo(
+                f"{entry.name} accent={entry.accent} success={entry.success} "
+                f"warning={entry.warning} danger={entry.danger}"
+            )
+        return
+    if backend is None:
+        raise VibeMuxError("theme requires --list or --backend wezterm|tmux")
+    if backend not in {"wezterm", "tmux"}:
+        raise VibeMuxError(f"unknown theme backend {backend!r} (expected wezterm or tmux)")
+    if theme_name is None:
+        raise VibeMuxError(f"--backend {backend} requires --theme (see 'vibemux theme --list')")
+    palettes = load_palettes()
+    palette = palettes.get(theme_name)
+    if palette is None:
+        raise VibeMuxError(f"unknown theme {theme_name!r} (expected one of: {', '.join(palettes)})")
+    if backend == "wezterm":
+        typer.echo(render_wezterm_scheme(palette))
+    else:
+        typer.echo(render_tmux_theme(palette))
 
 
 def main() -> None:
     try:
         app()
     except VibeMuxError as exc:
-        console.print(f"[red]error:[/red] {exc}")
+        console.print(f"[vm.error]error:[/vm.error] {exc}")
         # typer.Exit raised here would escape click's handler and print a traceback.
         raise SystemExit(4) from exc
 

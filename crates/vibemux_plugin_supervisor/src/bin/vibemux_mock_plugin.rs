@@ -1,4 +1,9 @@
+use prost::Message;
 use std::time::Duration;
+use vibemux_plugin_protocol::{
+    terminal::{FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD, OBSERVE_PERMISSION},
+    wire::{TerminalFocusResult, TerminalInventory, TerminalInventoryRequest, TerminalPane},
+};
 
 use tokio::io::{AsyncWriteExt, stderr, stdin, stdout};
 use vibemux_plugin_protocol::{
@@ -40,9 +45,25 @@ async fn main() {
             plugin_id: std::env::var("VIBEMUX_MOCK_PLUGIN_ID")
                 .unwrap_or_else(|_| "mock.harness".to_string()),
             plugin_version: "1.0.0".to_string(),
-            kind: PluginKind::Harness.into(),
-            capabilities: vec!["mock:cancel".to_string(), "mock:echo".to_string()],
-            requested_permissions: vec![],
+            kind: if mode.starts_with("terminal_") {
+                PluginKind::Terminal.into()
+            } else {
+                PluginKind::Harness.into()
+            },
+            capabilities: if mode.starts_with("terminal_") {
+                vec![INVENTORY_METHOD.into(), FOCUS_METHOD.into()]
+            } else {
+                vec!["mock:cancel".to_string(), "mock:echo".to_string()]
+            },
+            requested_permissions: if mode.starts_with("terminal_") {
+                vec![
+                    OBSERVE_PERMISSION.into(),
+                    FOCUS_PERMISSION.into(),
+                    "process:execute".into(),
+                ]
+            } else {
+                vec![]
+            },
             minimum_protocol_minor: 0,
             maximum_protocol_minor: 0,
         }),
@@ -149,7 +170,7 @@ async fn main() {
                         Ok(incoming) => break incoming,
                         Err(_) => return,
                     },
-                    _ = heartbeat_timer.tick(), if mode == "periodic_heartbeat" => {
+                    _ = heartbeat_timer.tick(), if mode == "periodic_heartbeat" || mode.starts_with("terminal_") => {
                         heartbeat_sequence += 1;
                         let heartbeat = envelope(
                             &format!("plugin_heartbeat_{heartbeat_sequence}"),
@@ -164,7 +185,29 @@ async fn main() {
         message_counter = message_counter.saturating_add(1);
         match incoming.body {
             Some(envelope::Body::Request(request)) => {
-                let payload = if request.method == "mock:environment" {
+                if mode == "terminal_timeout" {
+                    continue;
+                }
+                let payload = if mode.starts_with("terminal_") && request.method == INVENTORY_METHOD
+                {
+                    let Ok(request) = TerminalInventoryRequest::decode(request.payload.as_slice())
+                    else {
+                        return;
+                    };
+                    TerminalInventory {
+                        instance_id: "fixture_instance".into(),
+                        panes: vec![TerminalPane {
+                            pane_id: "1".into(),
+                            cwd: request.expected_cwd,
+                            workspace: "fixture".into(),
+                            window_id: "2".into(),
+                            tab_id: "3".into(),
+                        }],
+                    }
+                    .encode_to_vec()
+                } else if mode.starts_with("terminal_") && request.method == FOCUS_METHOD {
+                    TerminalFocusResult { focused: true }.encode_to_vec()
+                } else if request.method == "mock:environment" {
                     format!(
                         "allowed={};path_present={}",
                         std::env::var("ALLOWED_VALUE").unwrap_or_default(),
@@ -176,7 +219,11 @@ async fn main() {
                 };
                 let response = envelope(
                     &format!("plugin_response_{message_counter}"),
-                    incoming.correlation_id,
+                    if mode == "terminal_wrong_correlation" {
+                        Some("incorrect_correlation".into())
+                    } else {
+                        incoming.correlation_id
+                    },
                     envelope::Body::Response(Response {
                         request_id: request.request_id,
                         status: ResponseStatus::Ok.into(),

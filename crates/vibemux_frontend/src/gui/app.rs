@@ -13,8 +13,8 @@ use crate::theme::{
 use crate::view_model::ViewModel;
 
 use super::overview;
+use super::sidebar;
 use super::stub_bank;
-use super::topbar;
 use super::workbench::{self, Session};
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -48,12 +48,6 @@ impl Sessions {
 enum Shell {
     Overview,
     Workbench { agent: usize },
-}
-
-impl Shell {
-    fn is_overview(self) -> bool {
-        matches!(self, Shell::Overview)
-    }
 }
 
 pub struct VibeMuxApp {
@@ -183,29 +177,53 @@ impl eframe::App for VibeMuxApp {
         self.handle_keyboard(ctx);
         let vm = self.view_model.clone();
 
-        // Top chrome.
-        egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
-            ui.add_space(5.0);
-            let acts = topbar::render(
-                ui,
-                &c,
-                self.theme_id,
-                "E:\\lab\\vibemux",
-                self.shell.is_overview(),
-                self.diag_open,
-                self.settings_open,
-            );
-            if let Some(id) = acts.picked_theme {
-                self.set_theme(id);
-            }
-            if acts.toggle_settings {
-                self.settings_open = !self.settings_open;
-            }
-            if acts.toggle_diag {
-                self.diag_open = !self.diag_open;
-            }
-            ui.add_space(5.0);
-        });
+        // Persistent left sidebar (ADR 027 shell): navigation, agent
+        // list, theme picker, utility toggles.
+        let mut shell_change: Option<Shell> = None;
+        egui::SidePanel::left("sidebar")
+            .exact_width(sidebar::SIDEBAR_WIDTH)
+            .resizable(false)
+            .frame(egui::Frame::new().fill(c.surf))
+            .show(ctx, |ui| {
+                let acts = sidebar::render(
+                    ui,
+                    &c,
+                    &vm,
+                    self.theme_id,
+                    self.focused(),
+                    self.settings_open,
+                    self.diag_open,
+                );
+                if let Some(id) = acts.picked_theme {
+                    self.set_theme(id);
+                }
+                if acts.toggle_settings {
+                    self.settings_open = !self.settings_open;
+                }
+                if acts.toggle_diag {
+                    self.diag_open = !self.diag_open;
+                }
+                if acts.to_overview {
+                    shell_change = Some(Shell::Overview);
+                }
+                if let Some(i) = acts.open {
+                    shell_change = Some(Shell::Workbench { agent: i });
+                }
+            });
+        if let Some(s) = shell_change {
+            self.shell = s;
+        }
+
+        // Thin status bar pinned to the very bottom of the window.
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(c.surf)
+                    .inner_margin(egui::Margin::symmetric(12, 5)),
+            )
+            .show(ctx, |ui| {
+                status_bar(ui, &c, &vm);
+            });
 
         match self.shell {
             Shell::Overview => {
@@ -213,7 +231,7 @@ impl eframe::App for VibeMuxApp {
                     .frame(
                         egui::Frame::new()
                             .fill(c.bg)
-                            .inner_margin(egui::Margin::symmetric(120, 12)),
+                            .inner_margin(egui::Margin::same(20)),
                     )
                     .show(ctx, |ui| {
                         let mut open: Option<usize> = None;
@@ -329,30 +347,6 @@ impl VibeMuxApp {
         vm: &ViewModel,
         agent: usize,
     ) {
-        // Left rail.
-        let mut shell_change: Option<Shell> = None;
-        egui::SidePanel::left("rail")
-            .exact_width(64.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(c.bg)
-                    .inner_margin(egui::Margin::symmetric(13, 14)),
-            )
-            .show(ctx, |ui| {
-                let out = workbench::rail(ui, c, vm, Some(agent));
-                if let Some(i) = out.open {
-                    shell_change = Some(Shell::Workbench { agent: i });
-                }
-                if out.to_overview {
-                    shell_change = Some(Shell::Overview);
-                }
-            });
-        if let Some(s) = shell_change {
-            self.shell = s;
-            return;
-        }
-
         // Right inspector.
         egui::SidePanel::right("inspector")
             .exact_width(280.0)
@@ -366,33 +360,40 @@ impl VibeMuxApp {
                 workbench::inspector(ui, c, vm, agent);
             });
 
-        // Composer pinned above the central terminal.
+        // Composer pinned above the status bar (Claude-style rounded
+        // input).
         let can_send = vm
             .agents
             .get(agent)
             .is_some_and(|a| matches!(a.launcher_state, vibemux_probe::ProbeState::Verified));
         let mut clear_now = false;
-        egui::TopBottomPanel::bottom("composer").show(ctx, |ui| {
-            ui.add_space(6.0);
-            if let Some(s) = self.sessions.list.get_mut(agent) {
-                clear_now = workbench::composer(ui, c, s, can_send);
-            }
-            ui.add_space(6.0);
-        });
+        egui::TopBottomPanel::bottom("composer")
+            .frame(
+                egui::Frame::new()
+                    .fill(c.bg)
+                    .inner_margin(egui::Margin::symmetric(16, 8)),
+            )
+            .show(ctx, |ui| {
+                if let Some(s) = self.sessions.list.get_mut(agent) {
+                    clear_now = workbench::composer(ui, c, s, can_send);
+                }
+            });
         if clear_now {
             if let Some(s) = self.sessions.list.get_mut(agent) {
                 s.text = self.sessions.seeds[agent].clone();
             }
         }
 
-        // Central terminal stage.
+        // Central: seat header + transcript card.
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(c.bg)
-                    .inner_margin(egui::Margin::symmetric(20, 10)),
+                    .inner_margin(egui::Margin::same(20)),
             )
             .show(ctx, |ui| {
+                workbench::seat_header(ui, c, vm, agent);
+                ui.add_space(12.0);
                 if let Some(s) = self.sessions.list.get_mut(agent) {
                     workbench::stage_body(ui, c, vm, agent, s);
                 }
@@ -575,6 +576,44 @@ fn backend_label(b: BackendKind) -> &'static str {
         BackendKind::WezTerm => "wezterm",
         BackendKind::Tmux => "tmux",
     }
+}
+
+/// Thin bottom status bar: probe facts on the left, aggregate health
+/// with a colored dot on the right.
+fn status_bar(ui: &mut egui::Ui, c: &super::C, vm: &ViewModel) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("schema {} · {}", vm.schema_version, vm.platform))
+                .color(c.faint)
+                .size(9.5)
+                .monospace(),
+        );
+        ui.label(
+            egui::RichText::new(format!("observed {}", vm.observed_at))
+                .color(c.faint)
+                .size(9.5)
+                .monospace(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let (health_label, health_color) = match vm.health {
+                crate::view_model::Health::Ok => ("healthy", c.ok),
+                crate::view_model::Health::Warning => ("degraded", c.warn),
+                crate::view_model::Health::Failure => ("failing", c.danger),
+            };
+            ui.label(
+                egui::RichText::new(format!("● {health_label}"))
+                    .color(health_color)
+                    .size(9.5)
+                    .monospace(),
+            );
+            ui.label(
+                egui::RichText::new(vm.overall_status.clone())
+                    .color(c.muted)
+                    .size(9.5)
+                    .monospace(),
+            );
+        });
+    });
 }
 
 fn mono_def(ui: &mut egui::Ui, c: &super::C, k: &str, v: &str) {

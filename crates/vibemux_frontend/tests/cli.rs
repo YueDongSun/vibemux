@@ -30,8 +30,10 @@ fn json_mode_emits_versioned_probe_report() {
 
 #[test]
 fn theme_flag_combines_with_json() {
-    // --theme with --json: JSON output stays theme-independent.
-    for theme in ["mono", "light"] {
+    // --theme with --json: JSON output stays theme-independent. The two
+    // structural themes and the two 256-color brand themes are covered;
+    // classic is the no-flag default exercised everywhere else.
+    for theme in ["mono", "light", "nord", "gruvbox"] {
         let (code, stdout, _stderr) = run_tui(&["--theme", theme, "--json"]);
         assert_eq!(code, 0, "--theme {theme} --json must succeed");
         let value: serde_json::Value =
@@ -65,6 +67,22 @@ fn unknown_arguments_exit_with_code_four() {
     let (code, _stdout, stderr) = run_tui(&["--theme", "neon"]);
     assert_eq!(code, 4);
     assert!(stderr.contains("unknown or missing --theme value"));
+    // The usage hint is derived from Theme::ALL; pin that every theme
+    // name is advertised so the error text cannot drift from the
+    // registry.
+    for theme in [
+        "classic",
+        "high-contrast",
+        "mono",
+        "light",
+        "nord",
+        "gruvbox",
+    ] {
+        assert!(
+            stderr.contains(theme),
+            "--theme usage hint must list {theme}"
+        );
+    }
 }
 
 #[test]

@@ -81,14 +81,49 @@ pub fn palette_for(id: ThemeId) -> ThemePalette {
         ThemeId::Claude => claude_palette(),
         ThemeId::Github => github_palette(),
         ThemeId::Vscode => vscode_palette(),
+        ThemeId::Nord => nord_palette(),
+        ThemeId::Gruvbox => gruvbox_palette(),
+        ThemeId::Studio => studio_palette(),
     }
 }
 
-/// All three palettes in canonical order. Useful for the cycle helper
+/// All five palettes in canonical order. Useful for the cycle helper
 /// and for tests.
 #[must_use]
-pub fn all_palettes() -> [ThemePalette; 3] {
-    [claude_palette(), github_palette(), vscode_palette()]
+pub fn all_palettes() -> [ThemePalette; 6] {
+    [
+        claude_palette(),
+        github_palette(),
+        vscode_palette(),
+        nord_palette(),
+        gruvbox_palette(),
+        studio_palette(),
+    ]
+}
+
+fn studio_palette() -> ThemePalette {
+    ThemePalette {
+        name: "studio".into(),
+        bg: "#FAFAF8".into(),
+        surface: "#F0F1ED".into(),
+        surface_alt: "#FFFFFF".into(),
+        border: "#DDDFD9".into(),
+        text_primary: "#202822".into(),
+        text_muted: "#657068".into(),
+        accent: "#28654B".into(),
+        accent_alt: "#DCEBE1".into(),
+        success: "#28714D".into(),
+        warning: "#93671D".into(),
+        danger: "#B3463C".into(),
+        terminal_bg: "#17221C".into(),
+        terminal_fg: "#DCE7DE".into(),
+        terminal_cursor: "#8FC8A0".into(),
+        font_family: "Segoe UI".into(),
+        font_size: 15.0,
+        corner_radius: 10.0,
+        border_width: 1.0,
+        density: Density::Comfortable,
+    }
 }
 
 fn claude_palette() -> ThemePalette {
@@ -119,20 +154,23 @@ fn claude_palette() -> ThemePalette {
 fn github_palette() -> ThemePalette {
     ThemePalette {
         name: "github".to_string(),
-        bg: "#0B0B0F".to_string(),
-        surface: "#111318".to_string(),
-        surface_alt: "#1A1D24".to_string(),
-        border: "#262B33".to_string(),
-        text_primary: "#E6EDF3".to_string(),
-        text_muted: "#8B949E".to_string(),
-        accent: "#58A6FF".to_string(),
-        accent_alt: "#A5D6FF".to_string(),
-        success: "#3FB950".to_string(),
-        warning: "#D29922".to_string(),
-        danger: "#F85149".to_string(),
-        terminal_bg: "#08090C".to_string(),
-        terminal_fg: "#E6EDF3".to_string(),
-        terminal_cursor: "#58A6FF".to_string(),
+        // GitHub Primer dark tokens: canvas default, canvas subtle,
+        // canvas inset, border default, fg default / muted, accent
+        // emphasis, and the semantic success/attention/danger colors.
+        bg: "#0d1117".to_string(),
+        surface: "#161b22".to_string(),
+        surface_alt: "#21262d".to_string(),
+        border: "#30363d".to_string(),
+        text_primary: "#e6edf3".to_string(),
+        text_muted: "#8b949e".to_string(),
+        accent: "#2f81f7".to_string(),
+        accent_alt: "#a5d6ff".to_string(),
+        success: "#3fb950".to_string(),
+        warning: "#d29922".to_string(),
+        danger: "#f85149".to_string(),
+        terminal_bg: "#010409".to_string(),
+        terminal_fg: "#e6edf3".to_string(),
+        terminal_cursor: "#2f81f7".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
         corner_radius: 6.0,
@@ -160,6 +198,56 @@ fn vscode_palette() -> ThemePalette {
         terminal_cursor: "#007ACC".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.5,
+        corner_radius: 4.0,
+        border_width: 1.0,
+        density: Density::Comfortable,
+    }
+}
+
+fn nord_palette() -> ThemePalette {
+    ThemePalette {
+        name: "nord".to_string(),
+        bg: "#2E3440".to_string(),
+        surface: "#3B4252".to_string(),
+        surface_alt: "#434C5E".to_string(),
+        border: "#4C566A".to_string(),
+        text_primary: "#ECEFF4".to_string(),
+        text_muted: "#98A4BC".to_string(),
+        accent: "#88C0D0".to_string(),
+        accent_alt: "#8FBCBB".to_string(),
+        success: "#A3BE8C".to_string(),
+        warning: "#EBCB8B".to_string(),
+        danger: "#BF616A".to_string(),
+        terminal_bg: "#242933".to_string(),
+        terminal_fg: "#ECEFF4".to_string(),
+        terminal_cursor: "#88C0D0".to_string(),
+        font_family: "Cascadia Code".to_string(),
+        font_size: 13.0,
+        corner_radius: 6.0,
+        border_width: 1.0,
+        density: Density::Comfortable,
+    }
+}
+
+fn gruvbox_palette() -> ThemePalette {
+    ThemePalette {
+        name: "gruvbox".to_string(),
+        bg: "#282828".to_string(),
+        surface: "#3C3836".to_string(),
+        surface_alt: "#504945".to_string(),
+        border: "#665C54".to_string(),
+        text_primary: "#EBDBB2".to_string(),
+        text_muted: "#A89984".to_string(),
+        accent: "#FE8019".to_string(),
+        accent_alt: "#FFA56D".to_string(),
+        success: "#B8BB26".to_string(),
+        warning: "#FABD2F".to_string(),
+        danger: "#FB4934".to_string(),
+        terminal_bg: "#1D2021".to_string(),
+        terminal_fg: "#EBDBB2".to_string(),
+        terminal_cursor: "#FE8019".to_string(),
+        font_family: "Cascadia Code".to_string(),
+        font_size: 13.0,
         corner_radius: 4.0,
         border_width: 1.0,
         density: Density::Comfortable,
@@ -195,14 +283,25 @@ mod tests {
             let (sr, sg, sb) = surface;
             let lum_bg = 0.2126 * br as f32 + 0.7152 * bg as f32 + 0.0722 * bb as f32;
             let lum_surface = 0.2126 * sr as f32 + 0.7152 * sg as f32 + 0.0722 * sb as f32;
-            assert!(lum_surface > lum_bg, "surface must be lighter than bg");
+            assert!(
+                if palette.name == "studio" {
+                    lum_surface < lum_bg
+                } else {
+                    lum_surface > lum_bg
+                },
+                "surface must be visibly separated from canvas"
+            );
             let (pr, pg, pb) = primary;
             let (mr, mg, mb) = muted;
             let lum_primary = 0.2126 * pr as f32 + 0.7152 * pg as f32 + 0.0722 * pb as f32;
             let lum_muted = 0.2126 * mr as f32 + 0.7152 * mg as f32 + 0.0722 * mb as f32;
             assert!(
-                lum_primary > lum_muted,
-                "primary text must be lighter than muted"
+                if palette.name == "studio" {
+                    lum_primary < lum_muted
+                } else {
+                    lum_primary > lum_muted
+                },
+                "primary text must contrast more strongly than muted text"
             );
         }
     }
@@ -217,8 +316,9 @@ mod tests {
     #[test]
     fn github_uses_blue_accent() {
         let p = palette_for(ThemeId::Github);
-        assert_eq!(p.accent, "#58A6FF");
-        assert_eq!(p.accent_alt, "#A5D6FF");
+        assert_eq!(p.accent, "#2f81f7");
+        assert_eq!(p.accent_alt, "#a5d6ff");
+        assert_eq!(p.bg, "#0d1117");
     }
 
     #[test]
@@ -226,6 +326,20 @@ mod tests {
         let p = palette_for(ThemeId::Vscode);
         assert_eq!(p.accent, "#007ACC");
         assert_eq!(p.accent_alt, "#75BEFF");
+    }
+
+    #[test]
+    fn nord_uses_frost_teal_accent() {
+        let p = palette_for(ThemeId::Nord);
+        assert_eq!(p.accent, "#88C0D0");
+        assert_eq!(p.accent_alt, "#8FBCBB");
+    }
+
+    #[test]
+    fn gruvbox_uses_bright_orange_accent() {
+        let p = palette_for(ThemeId::Gruvbox);
+        assert_eq!(p.accent, "#FE8019");
+        assert_eq!(p.accent_alt, "#FFA56D");
     }
 
     #[test]

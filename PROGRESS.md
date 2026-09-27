@@ -92,88 +92,21 @@ The current Python implementation remains valuable as:
 
 Python must not receive new authoritative orchestration, A2A routing, event-broker, scheduler, or public plugin behavior. It must also not become a concurrent writer to the Rust database.
 
-### 3.2 Process topology
+### 3.2 Process topology, crate layout, and contracts
 
-```text
-PowerShell / shell / future GUI
-              |
-              | local authenticated IPC
-              v
-        +-------------+
-        | vibemux CLI |
-        +-------------+
-              |
-              v
-+--------------------------------------------------+
-|                  vibemuxd                         |
-|                                                  |
-| Rust core:                                       |
-| - canonical IDs, Task/Run/Event state machines   |
-| - append-only event sequencing and projections   |
-| - SQLite migrations and single-writer policy     |
-| - bounded async routing and backpressure          |
-| - plugin supervision and capability registry      |
-| - A2A client/server gateway                       |
-| - policy, cancellation, reconciliation, audit     |
-+-------------+-------------------+----------------+
-              |                   |
-      plugin protocol             | A2A v1 transports
-  framed messages over stdio      | gRPC / JSON-RPC / REST
-              |                   |
-      +-------+--------+      remote/local A2A peers
-      |       |        |
-  harness  terminal  sandbox
-  plugins   plugins   plugins
-      |
-  OpenCode / Claude / Copilot / Pi / Grok / Gemini
-```
+Detailed process topology, current crate responsibilities, dependency direction, core/plugin boundary, plugin model, and A2A transport policy live in [docs/architecture.md](docs/architecture.md). The decision summary in §3.1 above captures what is accepted and what remains unimplemented.
 
 ### 3.3 Core versus plugin boundary
 
-| Capability | Core | Plugin |
-|---|---:|---:|
-| Canonical Task/Run/Event types | Yes | No |
-| State transition validation | Yes | No |
-| Event sequencing and idempotency | Yes | No |
-| SQLite schema and migrations | Yes | No |
-| A2A Agent Card, task mapping, streaming, routing | Yes | No |
-| Backpressure, cancellation, deadlines | Yes | No |
-| Plugin process supervision | Yes | No |
-| Policy enforcement and permission decisions | Yes | Optional policy extension, core remains authoritative |
-| Git worktree safety invariants | Yes | Optional platform helper only |
-| Terminal-specific commands | No | Yes |
-| Harness-specific launch and structured protocol | No | Yes |
-| Sandbox implementation | No | Yes |
-| UI, notifications, GitHub integrations | No | Yes |
-| Model-provider configuration helpers | No | Yes |
-| Benchmark reporters/exporters | No | Yes |
-| Direct database writes | Yes, single writer | Never |
+See [docs/architecture.md §Core versus plugin boundary](docs/architecture.md#core-versus-plugin-boundary).
 
 ### 3.4 Plugin model
 
-V1 plugins are out-of-process executables. The project will not expose a Rust `cdylib` ABI as the public plugin interface.
-
-Initial plugin transport:
-
-- child process managed by `vibemuxd`;
-- length-delimited, versioned Protobuf frames over stdin/stdout;
-- stderr reserved for human-readable diagnostics;
-- optional JSON debug codec for development only;
-- capability negotiation during handshake;
-- bounded frame size, bounded queues, deadlines, cancellation, heartbeat, and structured shutdown;
-- no direct access to the core SQLite database;
-- explicit permission manifest and platform declaration.
-
-Future long-lived plugins may use Windows named pipes or Unix domain sockets. Local unauthenticated TCP is not the default plugin transport.
+See [docs/architecture.md §Plugin model](docs/architecture.md#plugin-model) and [ADR 013](docs/adr/013_rust_core_plugins.md) and [ADR 021](docs/adr/021_plugin_protocol_v1_foundation.md).
 
 ### 3.5 External A2A transport policy
 
-- External compatibility: JSON-RPC and HTTP+JSON/REST.
-- High-throughput VibeMux-to-VibeMux path: gRPC when both Agent Cards advertise it.
-- Streaming: transport-native streaming with bounded buffering and cancellation propagation.
-- The core canonical event model remains independent of A2A wire objects.
-- Internal `Task` and external A2A `Task` are related through an explicit binding table; they are not assumed to be the same object.
-- Protocol types from the official Rust SDK must be wrapped behind a VibeMux-owned adapter crate so SDK churn does not leak through the whole codebase.
+See [docs/architecture.md §External A2A transport policy](docs/architecture.md#external-a2a-transport-policy) and [ADR 024](docs/adr/024_stateful_a2a_supervisor.md).
 
 ---
 
@@ -192,10 +125,10 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
 | A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
-| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection and reserved Ratatui slots exist; real PTY/ConPTY attachment and native-TUI lifecycle do not |
+| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) exist; continuous coordinator chat, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
-| Rust terminal plugins and native-TUI attachment | `PLANNED` | no terminal plugin/ConPTY implementation | Mock/WezTerm/tmux plugin parity and ownership are not implemented |
+| Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Structured vendor harness plugins | `PLANNED` | mock fixture only | No OpenCode/Claude/Copilot/Pi/Grok/Gemini production adapter is integrated |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
@@ -295,32 +228,7 @@ M4.2 delivery and remaining gates:
 
 ### 5.1 Current `main`
 
-```text
-vibemux/
-├── Cargo.toml
-├── rust-toolchain.toml
-├── crates/
-│   ├── vibemux_types/          # IDs, domain objects, state machines
-│   ├── vibemux_events/         # canonical envelopes and invariants
-│   ├── vibemux_store/          # SQLite migrations and repositories
-│   ├── vibemux_platform/       # Windows/POSIX process and IPC primitives
-│   ├── vibemux_a2a/            # official SDK adapter; loopback slice only
-│   ├── vibemux_probe/          # read-only launcher/gateway probes
-│   ├── vibemux_frontend/       # Ratatui shell with reserved native-TUI slots
-│   ├── vibemux_plugin_protocol/
-│   │   └── proto/vibemux_plugin_v1.proto
-│   ├── vibemux_plugin_supervisor/
-│   ├── vibemuxd/               # long-lived local core
-│   └── vibemux_cli/             # thin lifecycle client and daemon bootstrap
-├── src/vibemux/                 # Python behavior-reference package
-├── tests/                       # Python tests and fixtures
-├── scripts/                     # smoke and benchmark scripts
-├── docs/                        # architecture, ADRs, boundaries, and labs
-├── AGENTS.md
-└── PROGRESS.md
-```
-
-The root `Cargo.toml` is authoritative for current workspace membership.
+The current crate responsibilities, process topology, and dependency direction live in [docs/architecture.md](docs/architecture.md). The root `Cargo.toml` remains the authoritative source for workspace membership.
 
 ### 5.2 Planned additions
 
@@ -1848,7 +1756,6 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 - Final exact-index checks: 77 intended files; 13 Markdown files and six JSON files validated; no broken staged local links; diff/cached-diff whitespace and ignore/example checks passed. Independent review in a separate worktree found no newly introduced operational credentials, private endpoints/profile IDs, machine-user paths or raw runtime/config artifacts. The only unstaged file is the unrelated toolchain component edit.
 
-<<<<<<< HEAD
 ### 2026-09-04 - Frontend agent-table truncation fix
 
 **Bug**
@@ -2507,3 +2414,76 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Validation**
 - Windows gates on this change: `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` — 56 suites (55 + the new `unsafe_containment` integration target), **319 passed / 0 failed / 2 ignored** (+4 over Stage 2). All new production code paths are `#[cfg(windows)]`-gated; the unix compile surface is unchanged.
 - Real-machine smoke (release binaries): healthy start/health/stop on a fresh scratch project; marker-only loosen (`icacls /grant *S-1-1-0:F`) → CLI classify reports `daemon_control_runtime_security_invalid` (V2 evidence); marker restored, NULL DACL applied via `SetNamedSecurityInfoW` on the runtime leaf → daemon refuses WITHOUT a crash (V1 evidence) and a later healthy start/stop confirms recovery; smoke state cleaned.
+
+### 2026-09-26 - Nord and Gruvbox themes across GUI, TUI, Python CLI, and terminal backends (ADR 026)
+
+**Change**
+- The egui GUI (`ThemeId`) gains `nord` and `gruvbox` as full persisted hex palettes (background ramp, text pair, accent pair, success/warning/danger, terminal colors) following the existing palette invariants; the cycle order becomes `claude -> github -> vscode -> nord -> gruvbox -> claude`, and the default stays `claude`. Adding serde enum variants keeps old persisted configs loading (unknown names fall back to defaults).
+- `config/theme_palettes.json` (schema_version 1) now exports all five GUI palettes; the new `vibemux_frontend` `palette_parity` integration test pins the file to the serialized `all_palettes()` output, so the Rust palettes stay the single canonical source and the file is the shared consumer boundary.
+- The Ratatui TUI `Theme` gains `nord` and `gruvbox` expressed as xterm-256 `Color::Indexed` values (chosen over `Rgb` so WezTerm on Windows and tmux on POSIX render the same hues without a truecolor dependency). Nearest-index mapping was audit-driven: the nearest index to Nord's brand red measures 4.64:1 against black — inside the gate but too close to trust — so the failure accent uses the brighter index 167. The TUI WCAG AA audit test now resolves `Color::Indexed` through the standard xterm-256 table (base ramp, 6x6x6 cube, grayscale) and covers every new accent pair; the `--theme` usage hint is derived from `Theme::ALL` instead of a hardcoded list; four new golden fixtures (nord/gruvbox at 80x24 and 120x32) pin the layouts, and the eight existing fixtures are byte-identical.
+- The Python prototype gains `src/vibemux/theme.py` (loads and validates the exported palette file, resolves `VIBEMUX_THEME` with a stderr warning and fallback to `claude` for unknown values, degrades to built-in default colors when the file is unreadable, maps roles onto rich styles) and `src/vibemux/terminal_theme.py` (renders a palette as a WezTerm `config.colors` lua table or a tmux `set -g` option block using nearest xterm-256 `colour<N>` values). `vibemux theme --list` and `vibemux theme --backend wezterm|tmux --theme <name>` print to stdout; generation only — VibeMux never writes terminal configuration or mutates a running terminal. Human-facing CLI output (tables, error lines, init/switch/stop) is role-styled; `--json` outputs stay theme-independent.
+
+**Validation**
+- `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` — **324 passed / 0 failed / 2 ignored**. (One run showed 2 load-flake failures in `vibemux_cli` recovery tests; both pass in isolation and in the re-run, consistent with the known issue #6 load sensitivity.)
+- Python gates: `python -m ruff format --check .` clean; `python -m ruff check .` clean; `python -m mypy .` — 20 errors, identical to the pre-change baseline (tools/a2a_* optional-stub gaps and one pre-existing `tests/test_harness.py` finding; no new findings); `python -m pytest` — **61 passed / 0 failed** (14 new theme tests).
+- Live Windows render: `vibemux_frontend` built with `--features gui_screenshot` and rendered via `EFRAME_SCREENSHOT_TO` with a scratch `APPDATA` config per theme — nord and gruvbox screenshots verified visually (correct ramps, accents, picker state, no layout drift) against a claude baseline; scratch configs and screenshots deleted afterwards. TUI live ANSI emission for the new themes is covered by the audit test's index assertions and the `--theme nord|gruvbox --json` integration runs; no separate manual ANSI capture was recorded for this change.
+- tmux snippets are generated and pinned by unit tests but not live-applied on POSIX in this change (Windows-first repository); the WezTerm snippet uses hex values directly and was not loaded into a user WezTerm config (generation-only by design).
+
+**Docs**: ADR 026 records the decision; README frontend/theme section, `docs/architecture.md` frontend boundary, and CHANGELOG updated in the same change.
+
+### 2026-09-26 (2) - GitHub-Primer sidebar shell GUI redesign (ADR 027)
+
+**Change**
+- The egui GUI is redesigned around a persistent left sidebar (ADR 027): brand, Overview entry, ten harness rows with live status dots and `Ctrl+<digit>` accelerator hints, and a pinned footer (theme ComboBox, Settings/Diagnostics toggles, shortcut hint). The main area switches between an Overview dashboard (page header with count badge, four bordered summary cards, agent table in a bordered box with hairline separators and bordered state pills) and a Seat page (header with state pill, bordered transcript card, Claude-style rounded composer, right inspector), with a thin probe/health status bar spanning the bottom. The `topbar` module (theme chips, hardcoded workspace label) is deleted.
+- The `github` palette is now the exact GitHub Primer dark token set (`#0d1117`/`#161b22`/`#21262d`/`#30363d`, `#e6edf3`/`#8b949e`, `#2f81f7` accent, `#3fb950`/`#d29922`/`#f85149` semantics, `#010409` terminal canvas), and the **default theme changes from `claude` to `github`** so the stock look matches the shell (persisted user configs unaffected; `config/theme_palettes.json` updated in the same commit under the `palette_parity` pin). The shared palette color struct gained the mid-surface and danger colors.
+- Preserved contracts: Ctrl+1..0 opens all ten seats (issue #5), Escape closes overlays before leaving a seat, Ctrl+T cycles themes, Ctrl+,/Ctrl+; toggle overlays, theme persistence via debounced `UserConfig` writes, `handle_stub_send`/`harness_terminal` semantics, stub-only transcripts, no PTY attach.
+
+**Validation**
+- `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` — **324 passed / 0 failed / 2 ignored** (headless render guards rewritten to mirror the new shell: sidebar+overview and sidebar+seat; all keyboard-accelerator, theme-persistence, and stub-send tests pass unchanged).
+- Live Windows render: `gui_screenshot` builds rendered github/nord/gruvbox/claude/vscode at 1280x800 via a scratch `APPDATA`; github and nord screenshots verified visually (Primer tokens, sidebar active state, footer picker, cards, pills, status bar). Three rendering defects found and fixed during screenshot review: the sidebar footer content clipped under a content-sized nested bottom panel (pinned `min_height`), the Diagnostics footer button label clipped because the second half-width was computed from the already-shrunk available width (widths captured up front), and long version strings collided with the route label in agent rows (single truncated `route · version` string). Scratch configs and screenshots deleted afterwards.
+
+**Docs**: ADR 027 records the redesign; ADR 026's default-theme sentence is amended; README, `docs/architecture.md`, and CHANGELOG updated in the same change.
+
+### 2026-09-27 - Supervisor Chat workspace and explicit terminal observation (ADR 028)
+
+**Implemented**
+- Replaced the runtime dashboard/fixture seats with a single Supervisor Chat home, continuous task activity, project/task sidebar, docked details and independent native task windows. The final user-requested visual revision introduces Studio (light canvas, restrained green, Segoe UI/CJK fonts); all five existing dark palettes remain supported. Existing appearance preferences are preserved. Old dirty GUI source files were preserved but are no longer imported by the normal runtime.
+- Added the production `LiveApp`/`FrontendClient` bridge: authenticated Control v4 task/run/event/artifact reads, bounded pagination and action queues, daemon-generation invalidation, explicit disconnected/capability states, and no simulated send/reply. The primary composer retains a local draft while continuous coordinator chat is unavailable.
+- Added optional versioned terminal observation payloads and a standalone Rust WezTerm observer; daemon request routing checks effective grants, session, request/correlation identity, deadlines and bounded responses. Explicit Run-scoped links are observation-only. Focus revalidates project, workspace, plugin and native endpoint generation; closing a task window never cancels execution.
+- Control v1-v3 operations remain compatible, store schema stays v3, and plugin envelope stays v1.0. Startup configuration v2 adds explicit terminal grants; v1 keeps no grants. Terminal setup and failure codes are documented in `docs/terminal_observer_protocol.md`.
+
+**Validation executed**
+- `cargo fmt --all -- --check`: pass. `cargo clippy --workspace --all-targets --all-features -- -D warnings`: pass.
+- `cargo test --workspace --all-features -j 2 --target-dir target/supervisor_delivery -- --test-threads=1`: **340 passed / 0 failed / 2 ignored**, 63 groups. This run used `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_INCREMENTAL=0` after an initial debug build exhausted disk space and hit MSVC PDB LIMIT. Only task-created duplicate build caches were removed.
+- Ordinary parallel workspace tests hit two pre-existing CLI recovery failures while another test loosened the shared ACL marker. Source inspection confirmed the cross-test interference; the final serial run preserves every assertion. Parallel Windows suite readiness remains unverified.
+- Python project interpreter: `python -m pytest` 61 passed; Ruff lint and format checks passed; `python -m mypy src/vibemux` passed (17 files). Full-tree `mypy .` still reports optional A2A dependency/stub gaps and an existing test typing error. `cargo nextest`, `cargo deny`, `cargo audit` are unavailable.
+- Native egui preview: 54 captures across six themes, three logical sizes (960x600/1280x800/1920x1080) and 100/150/200 percent renderer scaling, plus independent task/terminal and disconnected views. Representative frames visually inspected; five final DEMO screenshots retained under `docs/frontend_previews`. IME shortcut interception and Unicode layout have automated coverage; real IME candidate windows and physical monitor DPI transitions remain manual gates.
+
+**Limits**
+- No WezTerm installation/running GUI was found in inspected paths/processes, so real pane focus/native TUI integration is not live-verified. No software or global terminal configuration was installed/changed.
+- Continuous coordinator chat, automatic coding-harness dispatch and embedded terminal rendering remain separate future capabilities. No model inference, deployment, remote A2A or hosted CI was performed.
+- Full evidence and screenshots: `docs/evidence/supervisor_frontend_validation.md`. Existing uncommitted theme/CLI changes and `.zcode` were preserved; this task did not commit or push them.
+
+### 2026-09-27 (2) - Branch audit and open-work integration (`feat/integrate-open-work`)
+
+**Branch dispositions** (checked against `origin/main` at `b577c11`)
+- Fully contained in `origin/main` (0 commits ahead, nothing to merge): `a2a_basic_share`, `codex/supervisor_chat_ui`, `codex/supervisor_state_api`, `daemon_local_ipc`, `daemon_process_cli`, `daemon_stale_recovery`, `daemon_windows_security`, `daemon_writer_worker`, `feat/gui-theme-nord-gruvbox`, `integration_core`, `main` (local ref is 34 behind `origin/main`), `plugin_protocol_core`, `plugin_supervisor_core`, `probe_unified_frontend`, `python_reference_p0`, `python_source_reference`, `rust_core_refactor`, `rust_store_daemon`, and every `origin/*`/`linux/*` remote branch except the one below.
+- `feat/scheduling-and-visual-optimizations`: its PR (#3) was closed as superseded after head `4d96fc2` landed on main as a content-equivalent squash. The only unlanded commit, `a698f64` (architecture docs consolidation), is ported here as a curated merge: newer main content it would have dropped (CLAUDE.md command reference, README supervisor workflow commands, Control v4/terminal observer/Supervisor Chat text) is kept, and the architecture reference is brought up to date. A stray conflict marker committed to this file on main is removed.
+- `codex/harness_request_dispatch` and `codex/harness_request_dispatch_latest` (same commit `a955484`, 40 behind): **not merged**. A trial merge conflicts in 12 files (including add/add on `crates/vibemux_harness`), the branch puts process/session I/O inside `vibemux_harness` against the "pure logic, no I/O" boundary, and main's issue #4 harness port supersedes its registry. Its uncommitted worktree ADR draft also reuses number 025. Harness dispatch/capture should be re-ported onto the daemon-owned architecture as a separate task.
+- A detached Codex worktree held uncommitted "Document role" headers in five docs; they are superseded by the `a698f64` cross-references and not included.
+
+**Integrated in this branch**
+- The previously uncommitted work-area changes: ADR 026 Python theme CLI and terminal snippets, the Control v4 task queries plus the bounded WezTerm terminal observer (ADR 028), the Supervisor Chat frontend with Nord/Gruvbox/Studio palettes (ADR 026-028), their ledger entries, and the docs consolidation above. No behavior was changed while splitting them into commits.
+
+**Validation executed on the integrated tree**
+- `cargo fmt --all -- --check`: pass. `cargo clippy --workspace --all-targets --all-features -j 2 -- -D warnings`: pass.
+- `cargo test --workspace --all-features -j 2 -- --test-threads=1` (debug info and incremental builds disabled because of disk space): **340 passed / 0 failed / 2 ignored**.
+- Project interpreter: `python -m pytest` 61 passed; `ruff check` and `ruff format --check` clean; `mypy src/vibemux` clean (17 files); `scripts/smoke_test.py` PASS (mock workflow).
+- Relative links and anchors in AGENTS.md, CLAUDE.md, PROGRESS.md, README.md and `docs/architecture.md`: 0 broken.
+
+**Known follow-ups**
+- `crates/vibemux_frontend/src/gui/{app,overview,workbench,stub_bank}.rs` are no longer in the module tree; they reference only each other and their tests do not compile. Delete them or bring them back in a dedicated change.
+- Port harness request dispatch/capture from `a955484` onto `vibemuxd`-owned I/O.
+- Stale local branches and worktrees listed above can be pruned after this merges. That needs a cleanup plan and was not done here.
+- The dependency diagrams in AGENTS.md §4.2 and CLAUDE.md still disagree on where `harness`/`probe` sit.
+- Parallel Windows test runs remain sensitive to shared ACL-marker interference (issue #6); WezTerm focus is still not live-verified.

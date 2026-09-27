@@ -7,6 +7,7 @@ pub mod lifecycle;
 pub mod limits;
 pub mod manifest;
 pub mod negotiation;
+pub mod terminal;
 pub mod wire;
 
 pub use error::PluginProtocolError;
