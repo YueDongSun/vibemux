@@ -20,7 +20,7 @@
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence only) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows) |
 | Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), and harness dispatch (control protocol v5) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
@@ -129,7 +129,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
-| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified only against a fixture binary on Windows and Linux; no live vendor CLI evidence, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
+| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; no live execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -619,7 +619,7 @@ Rollback:
 
 ### M6 — Structured harness plugins
 
-**Status:** `PARTIAL` — [ADR 029](docs/adr/029_daemon_harness_dispatch.md) implements first-party structured adapters inside `vibemuxd` (the vendor CLI still runs as a separate contained process) for one-shot Codex and Claude turns, with ACP initialize-only probes. Evidence is fixture-only, and the exit criteria below are not yet demonstrated.
+**Status:** `PARTIAL` — [ADR 029](docs/adr/029_daemon_harness_dispatch.md) implements first-party structured adapters inside `vibemuxd` (the vendor CLI still runs as a separate contained process) for one-shot Codex and Claude turns, with ACP initialize-only probes. Evidence is fixture tests plus live initialize-only probes on native Windows, with no live execution turn, and the exit criteria below are not yet demonstrated.
 
 Implementation order:
 
@@ -853,7 +853,7 @@ The next implementation work should follow this order:
 
 The M4.2 registry/status slice is integrated and locally tested with mock children. The user-requested M7.1/M8.0 path now proves a local structured-data supervisor loop using real providers, with the necessary owned-worktree subset. Neither establishes full workspace/terminal parity, vendor CLI readiness, remote readiness, or overall M7/M8 completion.
 
-The user-requested ADR 029 harness dispatch slice (one daemon-owned dispatch per project, read-only protocol profiles, Codex/Claude execution, ACP probes) was implemented ahead of item 5 and has fixture evidence only. It does not establish vendor plugin readiness, concurrent multi-harness execution, or the M6 exit criteria.
+The user-requested ADR 029 harness dispatch slice (one daemon-owned dispatch per project, read-only protocol profiles, Codex/Claude execution, ACP probes) was implemented ahead of item 5 and has only fixture evidence and live initialize-only probes. It does not establish vendor plugin readiness, concurrent multi-harness execution, or the M6 exit criteria.
 
 ---
 
@@ -2532,3 +2532,31 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - POSIX containment does not survive a daemon crash, and a member can leave its group with `setsid`. Windows containment does not cover processes that system services start on a member's behalf.
 - Vendor protocol drift is caught only by fixture replay until Stage 7 records live evidence.
 - The Windows evidence above is serial; parallel Windows runs remain sensitive to issue #6.
+
+### 2026-09-27 (4) - Harness dispatch Stage 7 live probe evidence (ADR 029, `feat/harness_dispatch_port`)
+
+**Status change**
+- Structured vendor harness adapters (§4.1) and M6 stay `PARTIAL`. The evidence now includes live initialize-only probes on native Windows; no live execution turn has run.
+- ADR 029 open decision 3 (Claude flags) is resolved for flag parsing. Open decision 4 (forced exit after a terminal record) stays open, now with live evidence.
+
+**Implemented**
+- [docs/evidence/harness_dispatch_validation.md](docs/evidence/harness_dispatch_validation.md) records the Stage 7 probes. ADR 029, README, CLAUDE.md, CHANGELOG, `docs/architecture.md`, `docs/protocol_boundaries.md`, `docs/platform_support.md`, and this ledger now say that live validation covers initialize-only probes. No code changed.
+
+**Evidence** (native Windows 11 Pro 10.0.26200, debug binaries built from `4302c13`, a scratch project, every route `allow_execution: false`)
+- live validation: `vibemuxctl dispatch probe` against Codex 0.157.1 (`codex_app_server`), Claude Code 2.1.283 (`claude_stream_json`), and three `acp` routes: OpenCode 1.18.32, GitHub Copilot CLI 1.0.87-0, and Grok 1.0.41. Initialize only; no prompt and no inference.
+- Default limits: Codex, Claude, OpenCode, and Copilot are `probed` with exit code 0 and no forced termination. Grok is `failed` with `harness_process_failed`, exit code 1, and forced termination in 3 of 3 probes.
+- A temporary replay outside the daemon showed that Grok answers initialize after about 0.3 s and exits with code 0 2.12 to 2.14 s after stdin closes, past the 2 s default grace. With `limits.shutdown_grace_ms` at 5,000, all five probes are `probed` with exit code 0 and no forced termination.
+- Claude accepted the full route argv (`--bare` stream-json with `--strict-mcp-config`, `--restricted`, `--tools=`, `--permission-mode dontAsk`, and `--no-session-persistence`) and exited on its own.
+- The 12 daemon probes left no `harness_dispatches` row, and no vendor process launched with a probe argv was left running.
+- tests: not rerun, because this change is documentation only. Relative links and anchors in the eleven edited documents: 93 checked, 0 broken.
+- commit/PR: branch `feat/harness_dispatch_port`; not merged.
+
+**Remaining**
+- A live `submit` (Codex and Claude execution, `output`, and `cancel`) needs explicit authorization of paid inference.
+- Decide open decision 4: a larger default grace, a per-route grace, or a narrower rule for a forced kill after a correlated terminal record.
+- Verify which forwarded environment names each vendor needs to authenticate during a real turn.
+- As in entry (3): rebase onto `main` after PR #9 lands, and reviewer approval of the `windows_job_object` `unsafe` module.
+
+**Known risks**
+- The live evidence covers one host and the listed vendor versions. Protocol drift in later vendor versions shows only when the probes are run again.
+- Until decision 4 is settled, a vendor that exits more slowly than the grace makes a probe or a turn report `failed` although it ended cleanly.

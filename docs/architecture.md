@@ -210,7 +210,7 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 - **Capture.** Raw vendor records are kept byte-exact in a bounded in-memory transcript and are returned only by `harness_dispatch_output`; events, logs, status, and errors stay content-free (prompt hash and size only). Transcripts are lost on daemon restart.
 - **Control.** `harness_dispatch_{catalog, probe, submit, status, output, cancel}` require Control v5; `vibemuxctl dispatch` is the thin client.
 
-Live vendor CLIs have not been exercised yet; see [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the evidence and remaining gates.
+Live vendor CLIs have been exercised only through initialize-only probes on native Windows ([Stage 7 evidence](evidence/harness_dispatch_validation.md)); no live execution turn has run. See [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the remaining gates.
 
 ## Probe and unified frontend boundary
 

@@ -3,9 +3,13 @@
 Status: Accepted for pre-alpha implementation. Stages 1 to 6 are implemented
 on `feat/harness_dispatch_port` and reach `main` only when that branch
 merges. Before the merge, the Stage 2 `windows_job_object` `unsafe` module
-still needs reviewer approval on the pull request (AGENTS.md §7.2). No live
-vendor CLI has been exercised yet (Stage 7), so open decisions 3 and 4 stay
-open.
+still needs reviewer approval on the pull request (AGENTS.md §7.2). Stage 7
+recorded live initialize-only probes of the installed Codex, Claude,
+OpenCode, Copilot, and Grok CLIs on native Windows
+([evidence](../evidence/harness_dispatch_validation.md)). No live submit has
+run, because that needs explicit authorization of paid inference. Open
+decision 3 is resolved for flag parsing; open decision 4 stays open with
+live evidence.
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
 (local control IPC), and ADR 024 (versioned run records). Amends the
@@ -593,7 +597,7 @@ Control request prints only the argument's byte count.
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (stages 1 to 6 done on the branch)
+## Implementation plan (stages 1 to 6 done on the branch, Stage 7 partial)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -607,12 +611,13 @@ is one reviewable commit with its own tests.
 | 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs`, `leader_exited` in `process_tree{,/posix_process_group}.rs` (+ tests), `executable_names_harness` in `vibemux_harness`, `crates/vibemuxd/src/bin/{vibemux_launch_trampoline,vibemux_native_fixture}.rs` (the fixture only with `test_helpers`), `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,git_head,native_process,executor,transcript_store}.rs`, writer arms and startup recovery in `lib.rs`, service start and join in `control.rs`, `tests/{launch_trampoline,harness_dispatch}.rs` | Trampoline, service, executor, capture, recovery at writer start | Done: the trampoline passes the bytes after the go byte through intact, propagates the exit code, starts nothing unreleased, and contains a descendant the vendor starts before reading input. Fixture-binary integration tests, ported from `a955484`'s `process_dispatch.rs`: each execution protocol completes with a byte-exact transcript; probes for ACP, app-server, and Claude; admission gates and ACP probe-only; duplicate, conflict, and concurrent repeats; busy; confirmed and forced cancel; deadline; protocol violations; stderr counted only; a vendor that never reads its prompt; a vendor-started descendant ends with the attempt; shutdown during a run; restart to `recovery_pending`; the executable trust rules; and no prompt, vendor output, stderr, or path in the canonical database |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table, payloads, version, and shutdown signal, `crates/vibemuxd/src/harness_dispatch/{mod,output_page,transcript_store}.rs` (output pages, live capture, probe cap, `begin_shutdown`), the fixture's `hang_initialize` mode, `tests/control_harness_dispatch.rs`, `crates/vibemux_cli/src/{dispatch_commands,lib,main}.rs`, `uuid` dependency in `vibemux_cli` | Control v5 and `vibemuxctl dispatch` | Done: v5 ops refused at v4 by client and server, v1–v5 accepted; malformed and oversized arguments refused; codes round-trip; over real Control IPC with the fixture binary, a submit near the prompt limit completes and its multi-page output reassembles byte-exact (SHA-256 of every record matches); duplicate submit; live capture and cancel of a running attempt; terminal cancel; a Control shutdown ends a waiting probe promptly (the test fails without the shutdown signal); the largest page, status, and ordinary prompt fit the frame; CLI parsing, prompt bounds, and error codes |
 | 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `docs/platform_support.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, the AGENTS.md §3.2 exception, ADR 025's status line, this ADR → Accepted | Documentation matches the code | Done: relative links and anchors in the edited documents resolve; `cargo fmt --check` and `clippy -D warnings` are clean; `cargo test --workspace --all-features -- --test-threads=1` on Windows passes 488 tests with 2 ignored; Python pytest (63 tests), Ruff lint and format, mypy, and the mock smoke pass |
-| 7 | `docs/evidence/harness_dispatch_validation.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Otherwise recorded as unverified |
+| 7 | `docs/evidence/harness_dispatch_validation.md`, the status lines of this ADR and of the documents Stage 6 edited, `PROGRESS.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Partial: initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs are recorded in the [evidence](../evidence/harness_dispatch_validation.md). With the default grace, four are `probed` and Grok is `failed` by a forced kill after a clean but slow exit; with a 5 s grace, all five are `probed`. `submit` was not run and stays unverified until paid inference is authorized |
 
 ### Open decisions before Stage 4
 
-Items 1, 2, and 5 are resolved and implemented. Items 3 and 4 stay open with
-the conservative behavior described; the Stage 7 live evidence revisits them.
+Items 1, 2, and 5 are resolved and implemented. Stage 7 resolved item 3 for
+flag parsing. Item 4 stays open with the conservative behavior described,
+now with live evidence.
 Since Stage 5, `harness_dispatch_submit` and `harness_dispatch_probe` are the
 only Control operations that launch a vendor process, and only through a
 route in a valid `.vibemux/harness_dispatch.json`.
@@ -637,14 +642,22 @@ route in a valid `.vibemux/harness_dispatch.json`.
    resolved path, which ties dispatch to a cache refresh and to `PATH`
    order; and a per-user route file, which adds a second configuration
    location and precedence rules.
-3. **Claude flags.** `--strict-mcp-config` and `--restricted` are verified
-   only by `--help`; the Stage 7 initialize probe confirms they combine with
-   `--bare` stream-json.
+3. **Claude flags — resolved for parsing (Stage 7).** `--strict-mcp-config`
+   and `--restricted` were first verified only by `--help`. The Stage 7
+   initialize probe of Claude Code 2.1.283 accepted the full route argv,
+   including `--bare` stream-json, got a successful initialize response, and
+   exited with code 0 on its own. Their effect during a turn stays
+   unverified until a live submit runs.
 4. **Forced exit after a terminal.** A correlated terminal followed by a
    forced kill (for example, an app-server that does not exit within the
    grace period after stdin closes) is `failed` with `harness_process_failed`.
    This is conservative and may need a narrower rule once Stage 4 observes
-   real shutdown behavior.
+   real shutdown behavior. Stage 7 observed it live: Grok 1.0.41 answers an
+   ACP initialize and exits with code 0 about 2.1 s after stdin closes, just
+   past the 2 s default grace, so its probe is `failed`; with
+   `limits.shutdown_grace_ms` at 5,000 it is `probed`. A larger default, a
+   per-route grace, or a narrower rule is still undecided. The grace also
+   bounds the wait after a cancel.
 5. **Windows startup window — resolved: launch trampoline.** Job
    assignment follows `CreateProcess` (Decision 6), so a descendant that a
    vendor CLI starts before `contain` returns, without waiting for input,
