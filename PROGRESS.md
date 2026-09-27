@@ -2579,3 +2579,19 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Remaining**
 - Merge PR #9, then open this branch's pull request into `main`. Reviewer approval of the `windows_job_object` `unsafe` module and the Stage 7 items from entry (4) still apply.
+
+### 2026-09-27 (6) - PR #9 merged; harness dispatch pull request (`feat/harness_dispatch_port`)
+
+**Status change**
+- PR #9 (`feat/integrate-open-work`) merged into `main` as the merge commit `6e6df7f`. The ADR 029 dispatch status from entries (3) to (5) is unchanged; it reaches `main` only when this branch's pull request merges.
+
+**Implemented**
+- Merged `origin/main` at `6e6df7f` into `feat/harness_dispatch_port` in `4d74a24`. Both parents of `6e6df7f` were already in the branch, so the tree is unchanged; the merge leaves one merge base with `main`, so the pull request shows only the ADR 029 work (71 files).
+- This branch's pull request into `main` is opened with this change.
+
+**Evidence**
+- tests: not rerun. The tree of `4d74a24` is identical to the tree tested in entry (5); this change edits only this ledger and the ADR 029 plan line.
+- commit/PR: PR #9 merged; this branch's pull request is open.
+
+**Remaining**
+- Review of the pull request, including reviewer approval of the `windows_job_object` `unsafe` module (AGENTS.md §7.2). The Stage 7 items from entry (4) still apply.
