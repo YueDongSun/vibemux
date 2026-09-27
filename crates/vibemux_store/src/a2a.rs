@@ -1146,6 +1146,27 @@ mod tests {
     }
 
     #[test]
+    fn legacy_snapshot_api_cannot_attach_new_run_to_a2a_task() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut store = SqliteStore::open(&directory.path().join("state.sqlite3")).expect("store");
+        let task = task();
+        store
+            .start_a2a_run(start_request(&task, "worker", "worker_peer"))
+            .expect("start");
+        let events_before = store.events().expect("events").len();
+        // A brand-new run_id is not in a2a_runs, but its Task is A2A-owned.
+        let foreign = start_request(&task, "intruder", "intruder_peer").run;
+        assert!(matches!(
+            store.commit_run(
+                &foreign,
+                fixture_draft(task.project_id(), "legacy_foreign_run", "run_preparing")
+            ),
+            Err(StoreError::A2aBoundProjection)
+        ));
+        assert_eq!(store.events().expect("events").len(), events_before);
+    }
+
+    #[test]
     fn failed_verification_write_rolls_back_both_runs_task_and_event() {
         let directory = tempfile::tempdir().expect("directory");
         let mut store = SqliteStore::open(&directory.path().join("state.sqlite3")).expect("store");

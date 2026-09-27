@@ -656,28 +656,36 @@ impl SqliteStore {
         draft: EventDraft,
     ) -> Result<CommitOutcome, StoreError> {
         draft.validate()?;
-        let bound: bool = match &projection {
-            Projection::Task(task) => self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM a2a_runs WHERE task_id=?)",
-                [task.task_id().to_string()],
+        // The ownership checks share the write transaction so an A2A binding
+        // cannot land between the check and the projection write.
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let owned_by = |table: &str, column: &str, id: String| -> Result<bool, StoreError> {
+            Ok(transaction.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?)"),
+                [id],
                 |row| row.get(0),
-            )?,
-            Projection::Run(run) => self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM a2a_runs WHERE run_id=?)",
-                [run.run_id().to_string()],
-                |row| row.get(0),
-            )?,
+            )?)
         };
-        if bound {
+        let (owner_column, owner_id) = match &projection {
+            Projection::Task(task) => ("task_id", task.task_id().to_string()),
+            Projection::Run(run) => ("run_id", run.run_id().to_string()),
+        };
+        let a2a_owned = owned_by("a2a_runs", owner_column, owner_id)?
+            || match &projection {
+                // A new Run under an A2A-owned Task would attach foreign work
+                // to the binding.
+                Projection::Run(run) => owned_by("a2a_runs", "task_id", run.task_id().to_string())?,
+                Projection::Task(_) => false,
+            };
+        if a2a_owned {
             return Err(StoreError::A2aBoundProjection);
         }
         let idempotency_key = draft
             .idempotency_key
             .clone()
             .ok_or(StoreError::IdempotencyKeyRequired)?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let duplicate: Option<String> = transaction
             .query_row(
                 "SELECT envelope_json FROM events WHERE idempotency_key = ?",
