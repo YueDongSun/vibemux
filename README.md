@@ -2,7 +2,7 @@
 
 VibeMux is a Windows-first, local-first, terminal-native collaboration environment for multiple coding harnesses. The official target is Windows 10/11 + PowerShell; WSL2/Linux is for development and the optional tmux backend. Windows Terminal is only the entry point; WezTerm is the first programmable terminal backend.
 
-> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, plus a local stateful A2A gateway and bounded supervisor workflow. VibeMux is not yet a functional multi-harness alpha.
+> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, a local stateful A2A gateway and bounded supervisor workflow, and opt-in one-shot harness dispatch that has not yet been validated against live vendor CLIs. VibeMux is not yet a functional multi-harness alpha.
 
 ## Current status
 
@@ -12,6 +12,7 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Rust core / `vibemuxd` | `VERIFIED` within M3 | Typed IDs and state machines, canonical events, SQLite store, single-writer worker, authenticated local IPC, and start/health/inspect/recover/stop | Complete Task/Run CLI parity and Python-to-Rust state migration/default cutover |
 | Plugin protocol / supervisor | `PARTIAL` overall M4 | Wire foundation, shell-free supervision, daemon registry, bounded restart/quarantine and read-only status | Writable plugin control, operator recovery, real vendor CLI plugins and SDKs |
 | A2A / supervisor | `PARTIAL — LOCAL STATEFUL` | Authenticated HTTP+JSON/JSONRPC/gRPC; canonical bindings, artifacts, cancellation, subscriptions, independent review/verifier gates and local model-peer workflow | Remote/TLS deployment, full official ITK, message history, automatic restart recovery and unrestricted coding-harness integration |
+| Harness dispatch (ADR 029) | `PARTIAL` | Opt-in daemon-owned one-shot Codex and Claude turns, ACP initialize-only probes, contained vendor process trees, schema-4 dispatch records, Control v5, and `vibemuxctl dispatch`; verified with fixture binaries on Windows and Linux | Live vendor CLI validation, ACP execution, writable or concurrent dispatch, durable transcripts, and frontend Send |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
 
 Authoritative milestones, evidence, and release plan: [PROGRESS.md](PROGRESS.md).
@@ -39,9 +40,9 @@ The Python behavior reference includes Mock, a WezTerm command adapter, a tmux a
 
 `99d1f8e` is only the original Python audit baseline; it is not the current implementation baseline. The Python package remains the behavior reference and complete prototype workflow entry point, but new orchestration, A2A, event-broker, scheduler, and public plugin behavior must target Rust.
 
-The Rust 2024 workspace (`0.2.0-alpha.0`, MSRV 1.85) implements platform-independent typed IDs and Task/Run state machines, a canonical event envelope, SQLite migrations/WAL and atomic state-plus-event foundations, a dedicated single-writer worker, authenticated Windows named-pipe/POSIX UDS control, standalone `vibemuxd`, the pre-alpha `vibemuxctl` daemon lifecycle, explicit stale-runtime recovery, the declared Windows per-user control-runtime boundary, authenticated loopback A2A v1 HTTP+JSON/JSONRPC/gRPC task services, a bounded supervisor workflow, read-only probe/frontend shells, and the M4 plugin foundations/registry.
+The Rust 2024 workspace (`0.2.0-alpha.0`, MSRV 1.85) implements platform-independent typed IDs and Task/Run state machines, a canonical event envelope, SQLite migrations/WAL and atomic state-plus-event foundations, a dedicated single-writer worker, authenticated Windows named-pipe/POSIX UDS control, standalone `vibemuxd`, the pre-alpha `vibemuxctl` daemon lifecycle, explicit stale-runtime recovery, the declared Windows per-user control-runtime boundary, authenticated loopback A2A v1 HTTP+JSON/JSONRPC/gRPC task services, a bounded supervisor workflow, read-only probe/frontend shells, the M4 plugin foundations/registry, and opt-in daemon-owned harness dispatch (ADR 029).
 
-Python `vibemux` remains the complete prototype entry point; Rust `vibemuxctl` provides daemon lifecycle commands only. Complete Rust Task/Run command parity, Python-to-Rust state migration/default cutover, full Rust workspace/terminal parity, real vendor CLI plugins, plugin SDKs, remote A2A and full ITK conformance remain incomplete. Authoritative milestones and verification boundaries live in [PROGRESS.md](PROGRESS.md).
+Python `vibemux` remains the complete prototype entry point; Rust `vibemuxctl` provides daemon lifecycle, harness listing/switching, and harness dispatch commands. Complete Rust Task/Run command parity, Python-to-Rust state migration/default cutover, full Rust workspace/terminal parity, real vendor CLI plugins, plugin SDKs, remote A2A and full ITK conformance remain incomplete. Authoritative milestones and verification boundaries live in [PROGRESS.md](PROGRESS.md).
 
 The Rust workspace also includes the isolated `vibemux_plugin_protocol` M4.0 foundation: a checked-in Protobuf v1 schema, bounded framing, a TOML manifest, permission/capability negotiation, and a handshake lifecycle. The wire crate itself does not spawn processes and cannot mutate Task/Run state or SQLite.
 
@@ -90,6 +91,64 @@ The release-start performance can be re-measured with a fixed script; the script
 cargo build --release -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl
 .\scripts\benchmark_daemon_start.ps1 -project_root C:\path\to\test_project -sample_count 20
 ```
+
+## Harness dispatch (pre-alpha, ADR 029)
+
+A running daemon can send one prompt to an installed Codex or Claude CLI, capture its structured output, and record the outcome as a canonical Task/Run. Dispatch is off until you create `.vibemux/harness_dispatch.json`. The daemon reads it once at startup, so restart the daemon after editing it. Example (adjust the executable paths):
+
+```json
+{
+  "schema_version": 1,
+  "routes": [
+    {
+      "harness": "codex",
+      "protocol": "codex_app_server",
+      "executable": "C:\\Tools\\codex\\codex.exe",
+      "environment_names": ["USERPROFILE", "APPDATA", "LOCALAPPDATA"],
+      "enabled": true,
+      "allow_execution": true
+    },
+    {
+      "harness": "claude",
+      "protocol": "claude_stream_json",
+      "executable": "C:\\Tools\\claude\\claude.exe",
+      "environment_names": ["USERPROFILE", "APPDATA", "LOCALAPPDATA"],
+      "enabled": true,
+      "allow_execution": true
+    },
+    {
+      "harness": "open_code",
+      "protocol": "acp",
+      "executable": "C:\\Tools\\opencode\\opencode.exe",
+      "enabled": true
+    }
+  ]
+}
+```
+
+- `protocol` is `codex_exec` or `codex_app_server` for Codex, `claude_stream_json` for Claude, and `acp` for OpenCode (`open_code`), Copilot, and Grok. ACP routes are probe-only: `allow_execution: true` on an `acp` route is rejected. `codex_exec` supports `submit` but not `probe`.
+- `executable` must be an absolute path to a `.exe` on Windows (`.cmd`, `.bat`, and PowerShell shims are rejected) that lies outside the project and whose file name is the harness command (`codex.exe`, `claude.exe`, `opencode.exe`, ...). The config accepts no extra arguments; each protocol profile fixes the argv, including its read-only posture.
+- The vendor starts with an empty environment plus `SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP`, and the listed `environment_names` (uppercase names, at most 24, no `VIBEMUX_` prefix). Which variables a vendor CLI needs to find its login is vendor-specific and not yet verified live.
+- Optional: a `model` on a Codex or Claude route, and a top-level `limits` object (`frame_bytes`, `capture_bytes`, `record_count`, `deadline_ms`, `shutdown_grace_ms`; defaults 128 KiB, 16 MiB, 16,384 records, 600 s, and 2 s).
+
+Build the launch trampoline with the daemon, refresh detection, then use `vibemuxctl dispatch`:
+
+```powershell
+cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemux_cli --bin vibemuxctl -p vibemux_probe --bin vibemux_probe
+.\target\debug\vibemux_probe.exe --write-cache --project-root .
+.\target\debug\vibemuxctl.exe daemon start --project-root .
+.\target\debug\vibemuxctl.exe harnesses --project-root .
+.\target\debug\vibemuxctl.exe dispatch catalog --project-root .
+.\target\debug\vibemuxctl.exe dispatch probe claude --project-root .
+.\target\debug\vibemuxctl.exe dispatch submit codex --prompt-file prompt.txt --project-root .
+.\target\debug\vibemuxctl.exe dispatch status <request_id> --project-root .
+.\target\debug\vibemuxctl.exe dispatch output <request_id> --project-root .
+.\target\debug\vibemuxctl.exe dispatch cancel <request_id> --project-root .
+```
+
+- `probe` runs the initialize handshake only and sends no prompt. `submit` sends a real prompt to the vendor CLI, which may use paid model inference. It reads the prompt from the file, or from stdin for `-`, never from the command line; refuses a blank, non-UTF-8, or over-32-KiB prompt; and returns a receipt as soon as the attempt is durably admitted. Pass `--request-id <uuid>` to make a retry idempotent.
+- `status` is content-free. `output` is the only command that prints vendor content: whole raw JSON records, plus `next_after_sequence` for a later `--after-sequence`. Every command prints one JSON object; errors print `ok: false` with an `error_code`.
+- Limits: Codex and Claude execution only; at most one active dispatch per project; vendor processes run in the project root with read-only protocol profiles, which are **not** an OS sandbox; transcripts live in daemon memory and are lost on restart. If the daemon stops during a run, the attempt becomes `recovery_pending` and blocks new dispatches until you `dispatch cancel` it. No live vendor CLI has been validated yet; see [ADR 029](docs/adr/029_daemon_harness_dispatch.md).
 
 ## Mock workflow
 

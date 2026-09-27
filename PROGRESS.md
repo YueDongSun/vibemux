@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle and the harness registry/switch surface (control protocol v3) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence only) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), and harness dispatch (control protocol v5) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -120,7 +120,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Windows-first product path | `PARTIAL` | README, platform docs, Windows CI, protected control runtime | Native daemon lifecycle and the declared ACL boundary have evidence; live WezTerm/ConPTY multi-harness operation is not implemented |
 | Rust workspace and canonical domain/event core | `PARTIAL` | root `Cargo.toml`, `vibemux_types`, `vibemux_events` | Rust 2024/MSRV workspace, typed IDs, state machines, events, and property tests exist; tracing and public compatibility policy remain incomplete |
 | Rust SQLite store and single-writer daemon | `VERIFIED` | `vibemux_store`, `vibemuxd`, `vibemux_cli`, `vibemux_platform` | M3 is implemented within scope: migrations/WAL, atomic state+event, replay/idempotency, bounded writer, authenticated IPC, lifecycle, explicit recovery, and Windows protected runtime |
-| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop` | Lifecycle commands exist; Task/Run/workspace/plugin command parity does not |
+| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, and `dispatch` | Lifecycle, harness registry, and one-shot harness dispatch commands exist; Task/Run/workspace/plugin command parity does not |
 | Plugin protocol v1 foundation | `VERIFIED` | `vibemux_plugin_protocol`, checked-in Protobuf/TOML fixtures | M4.0 is verified as an isolated private pre-alpha wire/manifest/negotiation/lifecycle foundation; it does not spawn or mutate state |
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
@@ -129,7 +129,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
-| Structured vendor harness plugins | `PLANNED` | mock fixture only | No OpenCode/Claude/Copilot/Pi/Grok/Gemini production adapter is integrated |
+| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified only against a fixture binary on Windows and Linux; no live vendor CLI evidence, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -619,7 +619,7 @@ Rollback:
 
 ### M6 — Structured harness plugins
 
-**Status:** `PLANNED`
+**Status:** `PARTIAL` — [ADR 029](docs/adr/029_daemon_harness_dispatch.md) implements first-party structured adapters inside `vibemuxd` (the vendor CLI still runs as a separate contained process) for one-shot Codex and Claude turns, with ACP initialize-only probes. Evidence is fixture-only, and the exit criteria below are not yet demonstrated.
 
 Implementation order:
 
@@ -852,6 +852,8 @@ The next implementation work should follow this order:
 6. Perform Python-to-Rust state cutover and expand remote A2A only after the preceding ownership, migration, and conformance gates pass; the explicitly requested local stateful supervisor slice is already verified within its narrower contract.
 
 The M4.2 registry/status slice is integrated and locally tested with mock children. The user-requested M7.1/M8.0 path now proves a local structured-data supervisor loop using real providers, with the necessary owned-worktree subset. Neither establishes full workspace/terminal parity, vendor CLI readiness, remote readiness, or overall M7/M8 completion.
+
+The user-requested ADR 029 harness dispatch slice (one daemon-owned dispatch per project, read-only protocol profiles, Codex/Claude execution, ACP probes) was implemented ahead of item 5 and has fixture evidence only. It does not establish vendor plugin readiness, concurrent multi-harness execution, or the M6 exit criteria.
 
 ---
 
@@ -2487,3 +2489,46 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - Stale local branches and worktrees listed above can be pruned after this merges. That needs a cleanup plan and was not done here.
 - The dependency diagrams in AGENTS.md §4.2 and CLAUDE.md still disagree on where `harness`/`probe` sit.
 - Parallel Windows test runs remain sensitive to shared ACL-marker interference (issue #6); WezTerm focus is still not live-verified.
+
+### 2026-09-27 (3) - Daemon-owned harness dispatch port (ADR 029, `feat/harness_dispatch_port`)
+
+**Status change**
+- Structured vendor harness adapters (§4.1) and M6: `PLANNED` → `PARTIAL` (fixture evidence only).
+- ADR 029: Proposed → Accepted for pre-alpha implementation. The `windows_job_object` `unsafe` module still needs reviewer approval on the pull request (AGENTS.md §7.2).
+
+**Implemented** (the capability of `a955484` re-ported onto the daemon-owned architecture; the codex branches and their worktrees are unchanged)
+- Stage 1 (`abee927`, `9b910e2`): pure `vibemux_harness::dispatch`. Request and route-config validation, the launch argv builder, Codex `exec --json`/`app-server`, Claude stream-json, and ACP session machines, the incremental JSON-line framer, the capture budget, the attempt phase machine with its Task/Run mapping, `decide_outcome`, and content-free event drafts. ACP routes are probe-only.
+- Stage 2 (`0f882f4`, `cb63015`): `vibemux_platform::ProcessTree`. A kill-on-close Windows Job Object that refuses breakaway (the second reviewed `unsafe` module, pinned by `tests/unsafe_containment.rs`) and a POSIX process group in safe code.
+- Stage 3 (`4951001`, `1b2f55b`): store schema 4 `harness_dispatches`. Idempotent admission with a store-derived fingerprint, one active reservation per project, a single-use fenced claim, fenced finish and cancel, and startup recovery with per-attempt quarantine. The generic projection commit and A2A binding refuse dispatch-owned Tasks and Runs.
+- Stage 4 (`e62d867`): the `vibemux_launch_trampoline` binary; the `vibemuxd` dispatch service and executor with a bounded stdin queue, deadlines, cancellation, and a shutdown drain; the config loader with the executable trust rules; a Git `HEAD` reader; bounded in-memory transcripts; and recovery before the writer reports ready.
+- Stage 5 (`e7e26d9`): Control IPC v5 with `harness_dispatch_{catalog, probe, submit, status, output, cancel}`, paged byte-exact output with `OutputReassembler`, the 60 s probe cap, the shutdown signal, and `vibemuxctl dispatch`.
+- Stage 6 (this change): ADR 029 accepted; `docs/architecture.md`, `docs/protocol_boundaries.md`, `docs/platform_support.md`, README, CLAUDE.md, CHANGELOG, the AGENTS.md §3.2 exception, ADR 025's status line, and this ledger updated.
+
+**Evidence**
+- tests (native Windows, target directory outside the repository): `cargo test --workspace --all-features -- --test-threads=1`: **488 passed / 0 failed / 2 ignored** in 74 test binaries, on the Stage 5 code (Stage 6 changes documentation only). Dispatch binaries: `vibemux_harness` `dispatch_protocols` 14, `dispatch_framing` 8, `dispatch_config` 16, `dispatch_attempt` 12; `vibemux_platform` `process_tree` 7, `unsafe_containment` 3; `vibemux_store` `harness_dispatch` 18; `vibemuxd` `launch_trampoline` 6, `harness_dispatch` 23, `control_harness_dispatch` 3; plus unit tests.
+- tests (Linux container `rust:1.85-slim-bookworm`, read-only source mount, at `e7e26d9`): `cargo test -p vibemux_harness -p vibemuxd -p vibemux_cli -p vibemux_platform --all-features --no-fail-fast`: **237 passed / 0 failed** in 33 test binaries.
+- `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`: pass.
+- Python, project interpreter with the worktree sources: `python -m pytest` 63 passed; `ruff check` and `ruff format --check` clean; `mypy src/vibemux` clean (17 files); `scripts/smoke_test.py` PASS.
+- Relative links and anchors in the ten edited documents: 80 checked, 0 broken.
+- CLI smoke (real `vibemuxd`/`vibemuxctl`, scratch project, no vendor CLI): without a config, `dispatch catalog` returns `harness_dispatch_unconfigured`; an unknown request returns `harness_dispatch_not_found`; a blank prompt returns `harness_dispatch_invalid_prompt`; an unreadable prompt file returns `cli_prompt_unavailable`; an unknown harness returns `store_unknown_harness` with exit 2; health reports `store_schema_version: 4`; the daemon stops cleanly.
+- live validation: **none**. No vendor CLI was launched. Every process test uses the first-party `vibemux_native_fixture` binary.
+- commit/PR: branch `feat/harness_dispatch_port`, based on the PR #9 line (merge base with `origin/main` `b577c11`); not merged.
+
+**Remaining**
+- Stage 7: live native Windows `dispatch probe` against the installed CLIs (initialize only). A real `submit` needs explicit authorization of paid inference. Open decisions 3 (Claude `--strict-mcp-config`/`--restricted` with `--bare` stream-json) and 4 (forced exit after a terminal record) wait on that evidence.
+- Rebase onto `main` after PR #9 lands. `main` now has `5873573` (generic Runs refused under A2A-owned Tasks), which touches the same projection-guard area as Stage 3.
+- Reviewer approval of the `windows_job_object` `unsafe` module.
+- ACP execution needs a verified per-vendor deny posture and a new decision. Writable dispatch, owned per-Run worktrees, and more than one dispatch per project need a separate ADR. Durable transcript artifacts, a Control operation for the recovery report, the frontend Send action, and A2A exposure are out of scope.
+
+**Compatibility / migration**
+- Store schema 3 → 4 is additive, atomic, and forward-only. A schema-3 binary cannot open a schema-4 store; to downgrade, restore a backup taken while the daemon was stopped.
+- Control v5 only adds operations. A pre-v5 `vibemuxctl` refuses a v5 descriptor, so upgrade `vibemuxctl` and `vibemuxd` together and install `vibemux_launch_trampoline` next to `vibemuxd`.
+- Rollback without a downgrade: remove `.vibemux/harness_dispatch.json` and restart the daemon; every dispatch operation then returns `harness_dispatch_unconfigured` and nothing is spawned.
+- Plugin wire v1.0 and the Python reference are unchanged.
+
+**Known risks**
+- Read-only protocol profiles are not an OS sandbox; a vendor defect or a changed flag meaning could still write in the project root.
+- A crash during `running` keeps the project's reservation until an operator cancels the attempt. A quarantined row blocks dispatch until a backup is restored; there is no repair tool.
+- POSIX containment does not survive a daemon crash, and a member can leave its group with `setsid`. Windows containment does not cover processes that system services start on a member's behalf.
+- Vendor protocol drift is caught only by fixture replay until Stage 7 records live evidence.
+- The Windows evidence above is serial; parallel Windows runs remain sensitive to issue #6.

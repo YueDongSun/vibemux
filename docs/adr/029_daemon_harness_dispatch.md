@@ -1,14 +1,11 @@
 # ADR 029: Daemon-owned harness request dispatch and output capture
 
-Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic),
-Stage 2 (the `vibemux_platform::ProcessTree` containment primitive), Stage 3
-(store schema 4 and the dispatch transactions), Stage 4 (the launch
-trampoline, the `vibemuxd` dispatch service and executor, in-memory
-transcripts, and recovery at writer start), and Stage 5 (Control IPC v5 and
-`vibemuxctl dispatch`) are implemented on `feat/harness_dispatch_port`.
-Nothing in this ADR is implemented on `main` until `PROGRESS.md` records it,
-and no live vendor CLI has been exercised yet (Stage 7). The Stage 2
-`unsafe` module needs this ADR accepted before merge (AGENTS.md §7.2).
+Status: Accepted for pre-alpha implementation. Stages 1 to 6 are implemented
+on `feat/harness_dispatch_port` and reach `main` only when that branch
+merges. Before the merge, the Stage 2 `windows_job_object` `unsafe` module
+still needs reviewer approval on the pull request (AGENTS.md §7.2). No live
+vendor CLI has been exercised yet (Stage 7), so open decisions 3 and 4 stay
+open.
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
 (local control IPC), and ADR 024 (versioned run records). Amends the
@@ -596,7 +593,7 @@ Control request prints only the argument's byte count.
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (proposed; stages 1 to 5 done on the branch)
+## Implementation plan (stages 1 to 6 done on the branch)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -609,7 +606,7 @@ is one reviewable commit with its own tests.
 | 3 | `crates/vibemux_store/src/harness_dispatch{,/dispatch_rows}.rs`, `tests/harness_dispatch.rs`, `lib.rs` migration hook, error variants and projection guard, `a2a.rs` binding guard, `uuid` dependency; `request_fingerprint` in `vibemux_harness` | Schema 4 and transactions | Idempotent admit; conflict; prompt bounds; unique reservation; single-use claim; redacted fence; cancel before and after claim; recovery with per-attempt quarantine; a retried finish must repeat its report; failures carry a code; monotonic timestamps; `Succeeded` only with authority; atomic migration and reopen; corrupted rows and changed terminal evidence fail closed |
 | 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs`, `leader_exited` in `process_tree{,/posix_process_group}.rs` (+ tests), `executable_names_harness` in `vibemux_harness`, `crates/vibemuxd/src/bin/{vibemux_launch_trampoline,vibemux_native_fixture}.rs` (the fixture only with `test_helpers`), `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,git_head,native_process,executor,transcript_store}.rs`, writer arms and startup recovery in `lib.rs`, service start and join in `control.rs`, `tests/{launch_trampoline,harness_dispatch}.rs` | Trampoline, service, executor, capture, recovery at writer start | Done: the trampoline passes the bytes after the go byte through intact, propagates the exit code, starts nothing unreleased, and contains a descendant the vendor starts before reading input. Fixture-binary integration tests, ported from `a955484`'s `process_dispatch.rs`: each execution protocol completes with a byte-exact transcript; probes for ACP, app-server, and Claude; admission gates and ACP probe-only; duplicate, conflict, and concurrent repeats; busy; confirmed and forced cancel; deadline; protocol violations; stderr counted only; a vendor that never reads its prompt; a vendor-started descendant ends with the attempt; shutdown during a run; restart to `recovery_pending`; the executable trust rules; and no prompt, vendor output, stderr, or path in the canonical database |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table, payloads, version, and shutdown signal, `crates/vibemuxd/src/harness_dispatch/{mod,output_page,transcript_store}.rs` (output pages, live capture, probe cap, `begin_shutdown`), the fixture's `hang_initialize` mode, `tests/control_harness_dispatch.rs`, `crates/vibemux_cli/src/{dispatch_commands,lib,main}.rs`, `uuid` dependency in `vibemux_cli` | Control v5 and `vibemuxctl dispatch` | Done: v5 ops refused at v4 by client and server, v1–v5 accepted; malformed and oversized arguments refused; codes round-trip; over real Control IPC with the fixture binary, a submit near the prompt limit completes and its multi-page output reassembles byte-exact (SHA-256 of every record matches); duplicate submit; live capture and cancel of a running attempt; terminal cancel; a Control shutdown ends a waiting probe promptly (the test fails without the shutdown signal); the largest page, status, and ordinary prompt fit the frame; CLI parsing, prompt bounds, and error codes |
-| 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, this ADR → Accepted | Documentation matches the code | Link check; `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features` (serial on Windows, issue #6); Python regression |
+| 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `docs/platform_support.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, the AGENTS.md §3.2 exception, ADR 025's status line, this ADR → Accepted | Documentation matches the code | Done: relative links and anchors in the edited documents resolve; `cargo fmt --check` and `clippy -D warnings` are clean; `cargo test --workspace --all-features -- --test-threads=1` on Windows passes 488 tests with 2 ignored; Python pytest (63 tests), Ruff lint and format, mypy, and the mock smoke pass |
 | 7 | `docs/evidence/harness_dispatch_validation.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Otherwise recorded as unverified |
 
 ### Open decisions before Stage 4
