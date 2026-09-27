@@ -2,14 +2,13 @@
 
 Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic),
 Stage 2 (the `vibemux_platform::ProcessTree` containment primitive), Stage 3
-(store schema 4 and the dispatch transactions), and Stage 4 (the launch
+(store schema 4 and the dispatch transactions), Stage 4 (the launch
 trampoline, the `vibemuxd` dispatch service and executor, in-memory
-transcripts, and recovery at writer start) are implemented on
-`feat/harness_dispatch_port`. The daemon starts the dispatch service and
-joins it at shutdown, but no Control IPC operation reaches it until Stage 5,
-and nothing in this ADR is implemented on `main` until `PROGRESS.md` records
-it. The Stage 2 `unsafe` module needs this ADR accepted
-before merge (AGENTS.md §7.2).
+transcripts, and recovery at writer start), and Stage 5 (Control IPC v5 and
+`vibemuxctl dispatch`) are implemented on `feat/harness_dispatch_port`.
+Nothing in this ADR is implemented on `main` until `PROGRESS.md` records it,
+and no live vendor CLI has been exercised yet (Stage 7). The Stage 2
+`unsafe` module needs this ADR accepted before merge (AGENTS.md §7.2).
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
 (local control IPC), and ADR 024 (versioned run records). Amends the
@@ -292,16 +291,19 @@ it and rejects any edge not listed here.
   Claude `interrupt`) and reads trailing records for up to the shutdown grace.
   If the vendor does not confirm within the grace, or the protocol has no
   cancel message (`codex exec`), the contained tree is force-killed.
-- **Shutdown.** Control shutdown first stops admission and signals every
-  in-flight attempt and probe, whose tasks cancel as above and commit their
-  own finishes. It waits for the tasks up to the grace period plus 15 s;
+- **Shutdown.** The Control `shutdown` op stops admission and signals every
+  in-flight attempt and probe before it replies, so a connection waiting on a
+  probe ends before the server drains its connections. The attempt tasks
+  cancel as above and commit their own finishes. After the drain, the daemon
+  waits for the tasks up to the grace period plus 15 s;
   tasks still running then are aborted, which kills their trees, and startup
   recovery settles any attempt whose finish was not committed. Only then do
   plugin cleanup and writer shutdown run (existing order).
 - **Probes** run in their own task, one at a time
   (`harness_dispatch_busy` otherwise), with the same launch, exchange, and
   teardown; their records are counted and discarded, and they write no
-  canonical state.
+  canonical state. A probe's deadline is the request deadline capped at
+  60 s, because the Control connection waits for its report.
 - **Default limits** (validated ranges live in the config module): native
   frame 128 KiB; capture 16 MiB and 16,384 records per attempt; request
   deadline 600 s (1 s to 3,600 s); shutdown grace 2 s (0.1 s to 10 s);
@@ -439,27 +441,61 @@ removing the own-id check; on Linux, a no-op group kill, removing the
 own-group check, or removing the init check (run under `setsid`, so that the
 own-group check does not also catch id 1).
 
-### 7. Control IPC v5
+### 7. Control IPC v5 (Stage 5)
 
-`CONTROL_PROTOCOL_VERSION` goes from 4 to 5. The new operations require
-version 5. All v1–v4 operations stay accepted with their existing minimum
-versions. Arguments are JSON strings in `argument`, matching the style of
-`frontend_tasks`.
+`CONTROL_PROTOCOL_VERSION` goes from 4 to 5. The six new operations require
+version 5: the client refuses them against a v4 descriptor and the server
+refuses them in a v4 request, both with `control_unsupported_version`. All
+v1–v4 operations keep their minimum versions, and the daemon accepts v1–v5
+requests. Arguments are compact JSON strings in `argument`, matching
+`frontend_tasks`. Unknown fields, a missing argument, any argument to
+`harness_dispatch_catalog`, or a lookup argument over 1 KiB return
+`control_invalid_request`. The server side lives in
+`crates/vibemuxd/src/control_harness_dispatch.rs`. The `Debug` form of a
+Control request prints only the argument's byte count.
 
 | Operation | Argument | Result (content-free unless noted) |
 |---|---|---|
-| `harness_dispatch_catalog` | none | Routes: harness, protocol, `enabled`, `allow_execution`, `probe_supported`; no paths, model, or environment names |
-| `harness_dispatch_probe` | `{harness}` | Initialize-only handshake: status, codes, counts. Sends no prompt and writes no canonical state |
-| `harness_dispatch_submit` | `{schema_version, request_id, harness, prompt}` | Admission receipt `{request_id, task_id, run_id, phase, duplicate, sequence}`, returned right after the durable admit |
-| `harness_dispatch_status` | `{request_id}` | Phase, outcome, fixed codes, aggregates, and live counters while running |
-| `harness_dispatch_output` | `{request_id, after_sequence, cursor_offset}` | **Raw record fragments** `{sequence, kind, total_bytes, offset, fragment}`, at most 24 KiB of raw bytes and 256 items per page, split on UTF-8 boundaries, plus the next cursor and `complete` |
-| `harness_dispatch_cancel` | `{request_id}` | New phase. Idempotent; cancelling a completed or failed attempt returns `harness_dispatch_terminal` |
+| `harness_dispatch_catalog` | none | Routes `{harness, protocol, enabled, allow_execution, probe_supported}`; no paths, model, or environment names |
+| `harness_dispatch_probe` | `{harness}` | Initialize-only report `{harness, protocol, outcome, error_code, process, capture}`. Sends no prompt and writes no canonical state |
+| `harness_dispatch_submit` | `{schema_version, request_id, harness, prompt}` | Receipt `{request_id, task_id, run_id, harness, protocol, phase, duplicate, sequence}`, returned right after the durable admit; `sequence` is the event that last changed the attempt |
+| `harness_dispatch_status` | `{request_id}` | Allowlisted record `{request_id, task_id, run_id, harness, protocol, phase, version, outcome, error_code, process, capture, live_capture, prompt_bytes, base_commit, created_at, updated_at}` |
+| `harness_dispatch_output` | `{request_id, cursor: {after_sequence, cursor_offset}}` | **Raw record fragments** `{fragments: [{sequence, kind, total_bytes, offset, fragment}], next, complete}`, the only result that carries vendor content |
+| `harness_dispatch_cancel` | `{request_id}` | The status record after the cancel. Idempotent while in flight; cancelling a completed or failed attempt returns `harness_dispatch_terminal` |
 
-- Prompts are limited to 32 KiB so a submit fits the 64 KiB control frame.
-  The daemon also checks the encoded size of every output page against the
-  frame limit before sending it.
+- **Status** omits the prompt hash, the fingerprint, the config digest, and
+  the project ID. `live_capture` `{record_count, record_bytes}` is present
+  only while the attempt runs in this daemon; `capture` is the durable final
+  summary. An unknown request UUID returns `harness_dispatch_not_found` from
+  status, output, and cancel.
+- **Output pages.** Records are numbered from 1 in capture order. The cursor
+  names the next byte to send: `after_sequence` is the last record fully
+  delivered, and `cursor_offset` is a byte offset into the record after it.
+  A nonzero offset must fall inside that record on a UTF-8 boundary;
+  otherwise the op returns `harness_dispatch_invalid_request`. A page holds
+  at most 24 KiB of raw record bytes and 256 fragments. The daemon sizes it
+  by its exact encoded length, JSON escaping included, so it stays 2 KiB
+  under the 64 KiB frame. A record longer than a page is split on UTF-8
+  character boundaries. `next` is the cursor for the following call.
+  `complete` is true only when the attempt has finished and `next` is past
+  the last record; an empty page with `complete: false` means the reader has
+  caught up with a running attempt. A known attempt whose transcript is gone
+  (daemon restart or eviction) returns `harness_dispatch_output_unavailable`.
+  `vibemuxd::harness_dispatch::OutputReassembler` checks that each page
+  starts at the previous cursor and that `next` matches, and yields whole,
+  byte-exact records.
+- **Frame budget.** Prompts are limited to 32 KiB. A submit carries the
+  prompt JSON-escaped twice (in the argument string, then in the frame), so
+  ordinary text up to the limit fits. A prompt dense in quotes, backslashes,
+  or control characters can exceed the 64 KiB frame; the client then refuses
+  it with `control_frame_too_large` before sending anything. The daemon
+  checks every dispatch response against the frame budget and returns
+  `control_frame_too_large` instead of an oversized frame.
+- **Deadlines.** Operations use the 10 s Control deadline, except that the
+  client waits up to 90 s for a probe: the 60 s probe cap, the 10 s maximum
+  shutdown grace, and a 20 s margin.
 - Error codes use the `harness_` namespace, so they round-trip as
-  `ControlError::Remote{code}` today. The closed set is the
+  `ControlError::Remote{code}`. The closed set is the
   `vibemux_harness::dispatch::DispatchError` enum; nothing else is sent:
   - `harness_dispatch_{unconfigured, config_invalid, config_too_large,
     config_route_invalid, config_executable_invalid,
@@ -472,9 +508,34 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   - `harness_capture_too_large`;
   - `harness_process_*` for executable, working-directory, environment,
     spawn, containment, pipe, and exit failures.
-- `vibemuxctl dispatch {catalog|probe|submit|status|output|cancel}` are thin
-  clients. `submit` reads the prompt from `--prompt-file` or stdin; the prompt
-  is data and never goes through argv or a shell.
+- **CLI.** `vibemuxctl dispatch` (`crates/vibemux_cli/src/dispatch_commands.rs`)
+  is a thin client that needs a running daemon and never starts one. Each
+  command prints one JSON object; errors print `{ok: false, error_code,
+  error}`.
+
+  ```text
+  vibemuxctl dispatch catalog [--project-root <path>]
+  vibemuxctl dispatch probe <harness> [--project-root <path>]
+  vibemuxctl dispatch submit <harness> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
+  vibemuxctl dispatch status <request_id> [--project-root <path>]
+  vibemuxctl dispatch output <request_id> [--after-sequence <n>] [--project-root <path>]
+  vibemuxctl dispatch cancel <request_id> [--project-root <path>]
+  ```
+
+  - A harness is named by its command (`opencode`) or wire name
+    (`open_code`).
+  - `submit` reads the prompt from the file, or from stdin for `-`, never
+    from argv or a shell. It reads at most 32 KiB plus one byte and refuses a
+    blank, non-UTF-8, or oversized prompt with
+    `harness_dispatch_invalid_prompt` before contacting the daemon; an
+    unreadable source returns `cli_prompt_unavailable`. Without
+    `--request-id` it generates a UUID v4; submitting again with the same id
+    is an idempotent retry.
+  - `output` reads pages until `complete` or caught up (at most 4,096 pages)
+    and prints whole records `{sequence, kind, raw_json}` with
+    `next_after_sequence` for a later `--after-sequence`.
+  - A dispatch command against a pre-v5 daemon returns
+    `control_unsupported_version`, not a stale-runtime error.
 
 ## Consequences
 
@@ -524,14 +585,18 @@ versions. Arguments are JSON strings in `argument`, matching the style of
 - Store schema 3 → 4 is additive, atomic, and forward-only, with
   historical-fixture migration tests. A schema-3 binary cannot open a schema-4
   store. To downgrade, restore a backup taken while the daemon was stopped.
-- Control v5 is additive. Older clients keep working. New clients probing an
-  older daemon receive the existing `control_version_unsupported` error.
+- Control v5 adds operations and changes none. The daemon still accepts
+  v1–v4 requests, but a pre-v5 client refuses a daemon descriptor that
+  advertises v5 (`control_unsupported_version`, as at the v3 to v4 bump), so
+  `vibemuxctl` and `vibemuxd` are upgraded together. A v5 client against a
+  v4 daemon keeps every older operation and receives
+  `control_unsupported_version` for the dispatch operations.
 - Plugin wire v1.0 and the Python reference are unchanged.
 - To roll back: delete or rename `.vibemux/harness_dispatch.json` and restart
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (proposed; stages 1 to 4 done on the branch)
+## Implementation plan (proposed; stages 1 to 5 done on the branch)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -543,7 +608,7 @@ is one reviewable commit with its own tests.
 | 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `lib.rs` export and error variant, `tests/{process_tree,unsafe_containment}.rs`, `windows-sys` feature and Unix `rustix` dependency | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX) and, on Windows, when the owner dies; breakaway is refused on Windows; the own id, init, and the own group are refused; deep review of `unsafe` |
 | 3 | `crates/vibemux_store/src/harness_dispatch{,/dispatch_rows}.rs`, `tests/harness_dispatch.rs`, `lib.rs` migration hook, error variants and projection guard, `a2a.rs` binding guard, `uuid` dependency; `request_fingerprint` in `vibemux_harness` | Schema 4 and transactions | Idempotent admit; conflict; prompt bounds; unique reservation; single-use claim; redacted fence; cancel before and after claim; recovery with per-attempt quarantine; a retried finish must repeat its report; failures carry a code; monotonic timestamps; `Succeeded` only with authority; atomic migration and reopen; corrupted rows and changed terminal evidence fail closed |
 | 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs`, `leader_exited` in `process_tree{,/posix_process_group}.rs` (+ tests), `executable_names_harness` in `vibemux_harness`, `crates/vibemuxd/src/bin/{vibemux_launch_trampoline,vibemux_native_fixture}.rs` (the fixture only with `test_helpers`), `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,git_head,native_process,executor,transcript_store}.rs`, writer arms and startup recovery in `lib.rs`, service start and join in `control.rs`, `tests/{launch_trampoline,harness_dispatch}.rs` | Trampoline, service, executor, capture, recovery at writer start | Done: the trampoline passes the bytes after the go byte through intact, propagates the exit code, starts nothing unreleased, and contains a descendant the vendor starts before reading input. Fixture-binary integration tests, ported from `a955484`'s `process_dispatch.rs`: each execution protocol completes with a byte-exact transcript; probes for ACP, app-server, and Claude; admission gates and ACP probe-only; duplicate, conflict, and concurrent repeats; busy; confirmed and forced cancel; deadline; protocol violations; stderr counted only; a vendor that never reads its prompt; a vendor-started descendant ends with the attempt; shutdown during a run; restart to `recovery_pending`; the executable trust rules; and no prompt, vendor output, stderr, or path in the canonical database |
-| 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table and version, `crates/vibemux_cli/src/*` | Control v5 and `vibemuxctl dispatch` | Version gating (v5 ops refused at v4; v1–v4 accepted); code round-trip; output page reassembles byte-exact within the frame budget |
+| 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table, payloads, version, and shutdown signal, `crates/vibemuxd/src/harness_dispatch/{mod,output_page,transcript_store}.rs` (output pages, live capture, probe cap, `begin_shutdown`), the fixture's `hang_initialize` mode, `tests/control_harness_dispatch.rs`, `crates/vibemux_cli/src/{dispatch_commands,lib,main}.rs`, `uuid` dependency in `vibemux_cli` | Control v5 and `vibemuxctl dispatch` | Done: v5 ops refused at v4 by client and server, v1–v5 accepted; malformed and oversized arguments refused; codes round-trip; over real Control IPC with the fixture binary, a submit near the prompt limit completes and its multi-page output reassembles byte-exact (SHA-256 of every record matches); duplicate submit; live capture and cancel of a running attempt; terminal cancel; a Control shutdown ends a waiting probe promptly (the test fails without the shutdown signal); the largest page, status, and ordinary prompt fit the frame; CLI parsing, prompt bounds, and error codes |
 | 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, this ADR → Accepted | Documentation matches the code | Link check; `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features` (serial on Windows, issue #6); Python regression |
 | 7 | `docs/evidence/harness_dispatch_validation.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Otherwise recorded as unverified |
 
@@ -551,7 +616,9 @@ is one reviewable commit with its own tests.
 
 Items 1, 2, and 5 are resolved and implemented. Items 3 and 4 stay open with
 the conservative behavior described; the Stage 7 live evidence revisits them.
-No Control operation can launch a vendor process before Stage 5.
+Since Stage 5, `harness_dispatch_submit` and `harness_dispatch_probe` are the
+only Control operations that launch a vendor process, and only through a
+route in a valid `.vibemux/harness_dispatch.json`.
 
 1. **ACP execution posture — resolved: probe-only in this slice.**
    OpenCode's permissive defaults (Decision 4) mean an ACP prompt can edit

@@ -1,7 +1,9 @@
 use serde_json::json;
 use vibemux_cli::{
     CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome, daemon_executable,
-    daemon_health, daemon_paths, harness_list, harness_switch, parse_cli_arguments,
+    daemon_health, daemon_paths,
+    dispatch_commands::run_dispatch,
+    harness_list, harness_switch, parse_cli_arguments,
     recovery::{inspect_runtime, recover_runtime},
     start_daemon, stop_daemon,
 };
@@ -106,6 +108,13 @@ async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
                 "to": to,
             }))
         }
+        CliCommand::Dispatch {
+            project_root,
+            command,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            run_dispatch(&paths, command).await
+        }
         CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
     }
 }
@@ -134,7 +143,13 @@ fn error_json(error: &DaemonCliError) -> serde_json::Value {
 
 fn print_help() {
     println!(
-        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n  vibemuxctl harnesses [--cached] [--project-root <path>]\n  vibemuxctl switch <harness> [--project-root <path>]"
+        "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n  vibemuxctl harnesses [--cached] [--project-root <path>]\n  vibemuxctl switch <harness> [--project-root <path>]
+  vibemuxctl dispatch catalog [--project-root <path>]
+  vibemuxctl dispatch probe <harness> [--project-root <path>]
+  vibemuxctl dispatch submit <harness> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
+  vibemuxctl dispatch status <request_id> [--project-root <path>]
+  vibemuxctl dispatch output <request_id> [--after-sequence <n>] [--project-root <path>]
+  vibemuxctl dispatch cancel <request_id> [--project-root <path>]"
     );
 }
 

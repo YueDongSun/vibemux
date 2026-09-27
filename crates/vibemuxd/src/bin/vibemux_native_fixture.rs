@@ -92,8 +92,8 @@ fn run() -> Result<i32> {
             io::copy(&mut io::stdin().lock(), &mut io::stdout().lock())?;
             return Ok(0);
         }
-        "normal" | "failed" | "hang" | "cancel" | "malformed" | "oversized" | "stderr"
-        | "wrong_id" | "eof" | "descendant" => {}
+        "normal" | "failed" | "hang" | "hang_initialize" | "cancel" | "malformed" | "oversized"
+        | "stderr" | "wrong_id" | "eof" | "descendant" => {}
         _ => return Err("fixture_mode_invalid".into()),
     }
     let mut fixture = Fixture {
@@ -181,6 +181,14 @@ impl Fixture {
             return self.receive_claude(message, output);
         }
         match message["method"].as_str() {
+            // Never answers, so a probe waits until it is cancelled.
+            Some("initialize") if self.mode == "hang_initialize" => {
+                if let Some(ready_path) = &self.ready_path {
+                    write_ready(ready_path, "ready")?;
+                }
+                std::thread::sleep(SLEEP_LIMIT);
+                return Ok(true);
+            }
             Some("initialize") => {
                 let id = if self.mode == "wrong_id" {
                     json!(99)

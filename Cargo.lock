@@ -4438,6 +4438,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
  "vibemux_harness",
  "vibemux_platform",
  "vibemux_probe",

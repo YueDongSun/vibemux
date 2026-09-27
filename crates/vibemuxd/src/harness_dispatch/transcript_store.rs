@@ -13,8 +13,11 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vibemux_harness::dispatch::{DispatchError, ObservedRecord};
+
+use super::output_page::{DispatchOutputPage, OutputCursor, OutputPageLimits, build_output_page};
 
 pub const MAX_RETAINED_TRANSCRIPTS: usize = 4;
 pub const MAX_RETAINED_TRANSCRIPT_BYTES: usize = 64 * 1024 * 1024;
@@ -26,6 +29,14 @@ pub struct TranscriptPage {
     pub records: Vec<ObservedRecord>,
     /// The attempt finished capturing; no record will be added.
     pub complete: bool,
+}
+
+/// Content-free size of a transcript still capturing.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveCapture {
+    pub record_count: u64,
+    pub record_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -89,15 +100,7 @@ impl TranscriptStore {
         max_records: usize,
     ) -> Result<TranscriptPage, DispatchError> {
         let state = self.lock();
-        let (transcript, complete) = match state.live.get(&request_id) {
-            Some(transcript) => (transcript, false),
-            None => state
-                .finished
-                .iter()
-                .find(|(id, _)| *id == request_id)
-                .map(|(_, transcript)| (transcript, true))
-                .ok_or(DispatchError::OutputUnavailable)?,
-        };
+        let (transcript, complete) = state.find(request_id)?;
         let records = transcript
             .records
             .iter()
@@ -108,6 +111,30 @@ impl TranscriptStore {
         Ok(TranscriptPage { records, complete })
     }
 
+    /// The page at `cursor`, built under the lock so only the page's bytes
+    /// are copied.
+    pub fn output_page(
+        &self,
+        request_id: Uuid,
+        cursor: OutputCursor,
+        limits: OutputPageLimits,
+    ) -> Result<DispatchOutputPage, DispatchError> {
+        let state = self.lock();
+        let (transcript, complete) = state.find(request_id)?;
+        build_output_page(&transcript.records, complete, cursor, limits)
+    }
+
+    /// Size of the transcript an attempt is still capturing.
+    pub fn live_capture(&self, request_id: Uuid) -> Option<LiveCapture> {
+        self.lock()
+            .live
+            .get(&request_id)
+            .map(|transcript| LiveCapture {
+                record_count: transcript.records.len() as u64,
+                record_bytes: transcript.bytes as u64,
+            })
+    }
+
     fn lock(&self) -> MutexGuard<'_, TranscriptState> {
         // Every update leaves the state consistent before it can panic, so
         // a poisoned lock still guards valid data.
@@ -116,6 +143,18 @@ impl TranscriptStore {
 }
 
 impl TranscriptState {
+    /// The transcript and whether it is finished.
+    fn find(&self, request_id: Uuid) -> Result<(&Transcript, bool), DispatchError> {
+        if let Some(transcript) = self.live.get(&request_id) {
+            return Ok((transcript, false));
+        }
+        self.finished
+            .iter()
+            .find(|(id, _)| *id == request_id)
+            .map(|(_, transcript)| (transcript, true))
+            .ok_or(DispatchError::OutputUnavailable)
+    }
+
     fn remove_finished(&mut self, request_id: Uuid) {
         if let Some(index) = self.finished.iter().position(|(id, _)| *id == request_id) {
             if let Some((_, removed)) = self.finished.remove(index) {
@@ -150,14 +189,31 @@ mod tests {
         for sequence in 1..=3 {
             store.append(request_id, record(sequence, "chunk"));
         }
+        assert_eq!(
+            store.live_capture(request_id),
+            Some(LiveCapture {
+                record_count: 3,
+                record_bytes: 3 * record(1, "chunk").byte_count() as u64,
+            })
+        );
         let page = store.records(request_id, 1, 1).expect("live page");
         assert!(!page.complete);
         assert_eq!(page.records.len(), 1);
         assert_eq!(page.records[0].sequence(), 2);
         store.finish(request_id);
+        assert_eq!(store.live_capture(request_id), None);
         let page = store.records(request_id, 0, 8).expect("finished page");
         assert!(page.complete);
         assert_eq!(page.records.len(), 3);
+        let output = store
+            .output_page(
+                request_id,
+                OutputCursor::default(),
+                OutputPageLimits::within(60 * 1024),
+            )
+            .expect("output page");
+        assert!(output.complete);
+        assert_eq!(output.fragments.len(), 3);
     }
 
     #[test]

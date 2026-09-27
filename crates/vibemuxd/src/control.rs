@@ -23,7 +23,9 @@ use uuid::Uuid;
 #[cfg(windows)]
 use tokio::time::{Instant, sleep};
 
-use crate::harness_dispatch::{DispatchServiceSettings, HarnessDispatchService};
+use crate::harness_dispatch::{
+    DispatchOutputPage, DispatchServiceSettings, HarnessDispatchService, ProbeReport,
+};
 use crate::plugin_configuration::PluginStartup;
 use crate::plugin_registry::{
     PluginRegistry, PluginRegistryError, PluginStatus, PluginStatusReader,
@@ -33,9 +35,15 @@ use crate::process::DaemonPaths;
 use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapshot};
 use crate::{WriterError, WriterHealth, WriterWorker};
-use vibemux_harness::{HarnessDetection, HarnessRow};
+use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
+#[path = "control_harness_dispatch.rs"]
+mod harness_dispatch_ops;
 #[path = "control_terminal.rs"]
 mod terminal;
+pub use harness_dispatch_ops::{
+    HARNESS_DISPATCH_PROBE_DEADLINE, HarnessDispatchLookup, HarnessDispatchOutputQuery,
+    HarnessDispatchReceipt, HarnessDispatchStatus, HarnessDispatchTarget,
+};
 use vibemux_types::{
     TaskId,
     frontend::{
@@ -44,7 +52,11 @@ use vibemux_types::{
     },
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = 4;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V5;
+/// V5 adds harness request dispatch (ADR 029 §7).
+pub const CONTROL_PROTOCOL_V5: u32 = 5;
+/// V4 added the frontend queries and terminal operations.
+pub const CONTROL_PROTOCOL_V4: u32 = 4;
 pub const CONTROL_PROTOCOL_V3: u32 = 3;
 /// V2 is grandfathered for `Health`/`PluginStatus` exactly like v1 is for
 /// `Health`/`Shutdown`; the harness surface still requires v3.
@@ -75,6 +87,12 @@ pub enum ControlOperation {
     TerminalLink,
     TerminalFocus,
     TerminalUnlink,
+    HarnessDispatchCatalog,
+    HarnessDispatchProbe,
+    HarnessDispatchSubmit,
+    HarnessDispatchStatus,
+    HarnessDispatchOutput,
+    HarnessDispatchCancel,
     Shutdown,
 }
 
@@ -88,14 +106,20 @@ impl ControlOperation {
             Self::TerminalInspect
             | Self::TerminalLink
             | Self::TerminalFocus
-            | Self::TerminalUnlink => 4,
+            | Self::TerminalUnlink => CONTROL_PROTOCOL_V4,
             Self::Health => 1,
             Self::Shutdown => 1,
             Self::PluginStatus => 2,
             Self::HarnessRefresh | Self::HarnessSnapshot | Self::HarnessSwitch => {
                 CONTROL_PROTOCOL_V3
             }
-            Self::FrontendTasks | Self::FrontendTask => CONTROL_PROTOCOL_VERSION,
+            Self::FrontendTasks | Self::FrontendTask => CONTROL_PROTOCOL_V4,
+            Self::HarnessDispatchCatalog
+            | Self::HarnessDispatchProbe
+            | Self::HarnessDispatchSubmit
+            | Self::HarnessDispatchStatus
+            | Self::HarnessDispatchOutput
+            | Self::HarnessDispatchCancel => CONTROL_PROTOCOL_V5,
         }
     }
 }
@@ -109,7 +133,8 @@ pub struct ControlRequest {
     pub operation: ControlOperation,
     /// Optional operation argument (e.g. the harness name for
     /// `harness_switch`). Absent for parameterless operations; validated
-    /// against the operation before dispatch.
+    /// against the operation before dispatch. May carry a prompt, so it is
+    /// redacted from `Debug`.
     #[serde(default)]
     pub argument: Option<String>,
 }
@@ -150,7 +175,7 @@ impl fmt::Debug for ControlRequest {
             .field("request_id", &self.request_id)
             .field("token", &"[redacted]")
             .field("operation", &self.operation)
-            .field("argument", &self.argument)
+            .field("argument_bytes", &self.argument.as_ref().map(String::len))
             .finish()
     }
 }
@@ -165,9 +190,18 @@ pub enum ControlPayload {
     Health(DaemonHealth),
     PluginStatus(Vec<PluginStatus>),
     HarnessSnapshot(Vec<HarnessRow>),
-    HarnessSwitched { from: String, to: String },
+    HarnessSwitched {
+        from: String,
+        to: String,
+    },
     FrontendTasks(FrontendTasksPage),
     FrontendTask(Option<FrontendTaskDetail>),
+    HarnessDispatchCatalog(Vec<DispatchCatalogEntry>),
+    HarnessDispatchProbe(ProbeReport),
+    HarnessDispatchReceipt(HarnessDispatchReceipt),
+    /// Answer to both the status and the cancel operation.
+    HarnessDispatchStatus(Box<HarnessDispatchStatus>),
+    HarnessDispatchOutput(DispatchOutputPage),
     ShutdownAccepted,
 }
 
@@ -506,8 +540,8 @@ impl Drop for SocketPathGuard {
 
 struct ServerState {
     terminal: TerminalObserver,
-    /// Harness dispatch (ADR 029); no control operation reaches it before
-    /// Control v5, but its attempts are joined at shutdown.
+    /// Harness dispatch (ADR 029), reached by the Control v5 operations;
+    /// its attempts are joined at shutdown.
     dispatch: HarnessDispatchService,
     writer: Mutex<Option<WriterWorker>>,
     plugins: PluginStatusReader,
@@ -549,6 +583,7 @@ impl DaemonControlServer {
             plugins,
             None,
             paths.probe_cache_path(),
+            Some(dispatch_settings_for(paths)),
             Some(paths),
         )
         .await
@@ -573,6 +608,7 @@ impl DaemonControlServer {
             plugins,
             None,
             probe_cache_path,
+            None,
             None,
         )
         .await
@@ -608,6 +644,7 @@ impl DaemonControlServer {
             None,
             probe_cache_path,
             None,
+            None,
         )
         .await
     }
@@ -627,6 +664,35 @@ impl DaemonControlServer {
             PluginStartup::default(),
             None,
             probe_cache_path,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::start`] with a harness dispatch service configured from
+    /// `settings`, so tests reach Control v5 dispatch without the trusted
+    /// project layout.
+    #[cfg(feature = "test_helpers")]
+    pub async fn start_with_dispatch(
+        database_path: &Path,
+        runtime_dir: &Path,
+        settings: DispatchServiceSettings,
+    ) -> Result<Self, ControlError> {
+        let writer_lock_path = crate::writer_lock_path_for_database(database_path);
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        let probe_cache_path = crate::process::probe_cache_path_for_state_dir(state_dir);
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            &writer_lock_path,
+            None,
+            PluginStartup::default(),
+            None,
+            probe_cache_path,
+            Some(settings),
             None,
         )
         .await
@@ -655,6 +721,7 @@ impl DaemonControlServer {
             plugins,
             Some(supervisor),
             paths.probe_cache_path(),
+            Some(dispatch_settings_for(paths)),
             Some(paths),
         )
         .await
@@ -691,20 +758,21 @@ async fn verify_control_phase(
     Ok(())
 }
 
-/// Harness dispatch for one daemon start (ADR 029). Only a start with
-/// project paths has the state directory that holds the operator route
-/// config; the raw constructors get an unconfigured service.
+/// Production dispatch inputs: the operator route config lives in the
+/// validated state directory.
+fn dispatch_settings_for(paths: &crate::process::DaemonPaths) -> DispatchServiceSettings {
+    DispatchServiceSettings::for_project(paths.project_root(), paths.state_dir())
+}
+
+/// Harness dispatch for one daemon start (ADR 029). Without settings (the
+/// raw constructors) the service is unconfigured.
 async fn start_dispatch(
     writer: &WriterWorker,
-    security: Option<&crate::process::DaemonPaths>,
+    settings: Option<DispatchServiceSettings>,
 ) -> Result<HarnessDispatchService, WriterError> {
     let handle = writer.handle()?;
-    Ok(match security {
-        Some(paths) => {
-            let settings =
-                DispatchServiceSettings::for_project(paths.project_root(), paths.state_dir());
-            HarnessDispatchService::start(handle, settings).await
-        }
+    Ok(match settings {
+        Some(settings) => HarnessDispatchService::start(handle, settings).await,
         None => HarnessDispatchService::unconfigured(handle),
     })
 }
@@ -732,7 +800,7 @@ impl DaemonControlServer {
     /// publication). Raw-path constructors pass `None` because their
     /// runtime directories (often plain test tempdirs) are not part of the
     /// protected surface.
-    #[allow(clippy::too_many_arguments)] // eight params is the honest signature of a trusted start
+    #[allow(clippy::too_many_arguments)] // nine params is the honest signature of a trusted start
     async fn start_with_writer_locks(
         database_path: &Path,
         runtime_dir: &Path,
@@ -741,6 +809,7 @@ impl DaemonControlServer {
         plugins: PluginStartup,
         supervisor: Option<SupervisorServiceConfig>,
         probe_cache_path: PathBuf,
+        dispatch_settings: Option<DispatchServiceSettings>,
         security: Option<&crate::process::DaemonPaths>,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
@@ -851,7 +920,7 @@ impl DaemonControlServer {
                 // writer returns early, so a healthy start still owns it.
                 return Err(ControlError::ServerTerminated);
             };
-            let dispatch = match start_dispatch(&writer, security).await {
+            let dispatch = match start_dispatch(&writer, dispatch_settings).await {
                 Ok(dispatch) => dispatch,
                 Err(error) => {
                     let _ = registry.shutdown().await;
@@ -926,8 +995,9 @@ impl DaemonControlServer {
             use std::os::unix::fs::PermissionsExt;
             use tokio::net::UnixListener;
 
-            // The ACL re-verification is Windows-only (ADR 020); on unix
-            // `security` only selects the harness dispatch config.
+            // The ACL re-verification is Windows-only (ADR 020); keep the
+            // parameter honest on unix without changing behavior.
+            let _ = security;
             let socket_path = PathBuf::from(&endpoint);
             let listener =
                 UnixListener::bind(&socket_path).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -953,7 +1023,7 @@ impl DaemonControlServer {
                     return Err(error.into());
                 }
             }
-            let dispatch = match start_dispatch(&writer, security).await {
+            let dispatch = match start_dispatch(&writer, dispatch_settings).await {
                 Ok(dispatch) => dispatch,
                 Err(error) => {
                     let _ = registry.shutdown().await;
@@ -1351,6 +1421,21 @@ where
                 false,
             )
         }
+        operation @ (ControlOperation::HarnessDispatchCatalog
+        | ControlOperation::HarnessDispatchProbe
+        | ControlOperation::HarnessDispatchSubmit
+        | ControlOperation::HarnessDispatchStatus
+        | ControlOperation::HarnessDispatchOutput
+        | ControlOperation::HarnessDispatchCancel) => {
+            let result = harness_dispatch_ops::dispatch(&state, operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
         ControlOperation::Health => match writer_health(state).await {
             Ok(health) => (
                 ControlResponse::success(request_id, ControlPayload::Health(health)),
@@ -1436,10 +1521,15 @@ where
             }
         }
         // Acceptance only. The owner joins plugins before releasing the writer.
-        ControlOperation::Shutdown => (
-            ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
-            true,
-        ),
+        // Dispatch cancellation starts now, so a connection waiting on a
+        // probe ends before the server drains connections.
+        ControlOperation::Shutdown => {
+            state.dispatch.begin_shutdown();
+            (
+                ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
+                true,
+            )
+        }
     };
     response.version = request.version;
     send_response(stream, &response).await;
@@ -1892,8 +1982,9 @@ fn supported_control_version(version: u32) -> bool {
         version,
         LEGACY_CONTROL_PROTOCOL_VERSION
             | CONTROL_PROTOCOL_V2
-            | CONTROL_PROTOCOL_VERSION
             | CONTROL_PROTOCOL_V3
+            | CONTROL_PROTOCOL_V4
+            | CONTROL_PROTOCOL_V5
     )
 }
 
@@ -2387,14 +2478,16 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_v2_v3_v4() {
+    fn control_contract_accepts_v1_through_v5() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
         assert!(supported_control_version(LEGACY_CONTROL_PROTOCOL_VERSION));
         assert!(supported_control_version(CONTROL_PROTOCOL_V2));
         assert!(supported_control_version(CONTROL_PROTOCOL_V3));
-        assert!(supported_control_version(CONTROL_PROTOCOL_VERSION));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V4));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V5));
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V5);
         assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(!supported_control_version(0));
         // The minimum-version table is the single source of truth that
@@ -2424,14 +2517,134 @@ mod tests {
             ControlOperation::HarnessSwitch.minimum_protocol_version(),
             CONTROL_PROTOCOL_V3
         );
+        for operation in [
+            ControlOperation::FrontendTasks,
+            ControlOperation::FrontendTask,
+            ControlOperation::TerminalInspect,
+            ControlOperation::TerminalLink,
+            ControlOperation::TerminalFocus,
+            ControlOperation::TerminalUnlink,
+        ] {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V4);
+        }
+        for operation in HARNESS_DISPATCH_OPERATIONS {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V5);
+        }
+    }
+
+    const HARNESS_DISPATCH_OPERATIONS: [ControlOperation; 6] = [
+        ControlOperation::HarnessDispatchCatalog,
+        ControlOperation::HarnessDispatchProbe,
+        ControlOperation::HarnessDispatchSubmit,
+        ControlOperation::HarnessDispatchStatus,
+        ControlOperation::HarnessDispatchOutput,
+        ControlOperation::HarnessDispatchCancel,
+    ];
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn harness_dispatch_requires_v5_and_validates_arguments() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        let remote = |code: &str| ControlError::Remote {
+            code: code.to_string(),
+        };
+        // A raw start has no route config, but status still reaches the store.
         assert_eq!(
-            ControlOperation::FrontendTasks.minimum_protocol_version(),
-            CONTROL_PROTOCOL_VERSION
+            client.harness_dispatch_catalog().await,
+            Err(remote("harness_dispatch_unconfigured"))
         );
         assert_eq!(
-            ControlOperation::FrontendTask.minimum_protocol_version(),
-            CONTROL_PROTOCOL_VERSION
+            client
+                .harness_dispatch_probe(vibemux_harness::AgentKind::Codex)
+                .await,
+            Err(remote("harness_dispatch_unconfigured"))
         );
+        assert_eq!(
+            client.harness_dispatch_status(Uuid::new_v4()).await,
+            Err(remote("harness_dispatch_not_found"))
+        );
+        assert_eq!(
+            client
+                .harness_dispatch_output(HarnessDispatchOutputQuery {
+                    request_id: Uuid::new_v4(),
+                    cursor: crate::harness_dispatch::OutputCursor::default(),
+                })
+                .await,
+            Err(remote("harness_dispatch_not_found"))
+        );
+
+        let mut v4 = client.clone();
+        v4.descriptor.version = CONTROL_PROTOCOL_V4;
+        assert_eq!(
+            v4.harness_dispatch_catalog().await,
+            Err(ControlError::UnsupportedVersion)
+        );
+        assert!(v4.health().await.expect("v4 health").healthy);
+        for operation in HARNESS_DISPATCH_OPERATIONS {
+            assert_eq!(
+                v4.request_raw(ControlRequest {
+                    version: CONTROL_PROTOCOL_V4,
+                    request_id: "v4_dispatch".to_string(),
+                    token: v4.descriptor.token.clone(),
+                    operation,
+                    argument: None,
+                })
+                .await,
+                Err(ControlError::UnsupportedVersion)
+            );
+        }
+
+        let lookup = serde_json::to_string(&HarnessDispatchLookup {
+            request_id: Uuid::new_v4(),
+        })
+        .expect("lookup");
+        let cases = [
+            (
+                ControlOperation::HarnessDispatchCatalog,
+                Some(lookup.clone()),
+            ),
+            (ControlOperation::HarnessDispatchProbe, None),
+            (
+                ControlOperation::HarnessDispatchProbe,
+                Some(r#"{"harness":"vim"}"#.to_string()),
+            ),
+            (ControlOperation::HarnessDispatchSubmit, None),
+            (
+                ControlOperation::HarnessDispatchSubmit,
+                Some(lookup.clone()),
+            ),
+            (
+                ControlOperation::HarnessDispatchStatus,
+                Some("{}".to_string()),
+            ),
+            (
+                ControlOperation::HarnessDispatchOutput,
+                Some(lookup.clone()),
+            ),
+            (
+                ControlOperation::HarnessDispatchCancel,
+                Some(format!("{}{}", lookup, " ".repeat(2048))),
+            ),
+        ];
+        for (operation, argument) in cases {
+            assert_eq!(
+                client
+                    .request_raw(ControlRequest {
+                        version: CONTROL_PROTOCOL_VERSION,
+                        request_id: Uuid::new_v4().to_string(),
+                        token: client.descriptor.token.clone(),
+                        operation: operation.clone(),
+                        argument,
+                    })
+                    .await,
+                Err(ControlError::InvalidRequest),
+                "{operation:?}"
+            );
+        }
+        server.shutdown().await.expect("shutdown");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -16,6 +16,7 @@ mod config_loader;
 mod executor;
 mod git_head;
 mod native_process;
+mod output_page;
 mod transcript_store;
 
 use std::{
@@ -25,6 +26,7 @@ use std::{
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::{
@@ -36,8 +38,8 @@ use uuid::Uuid;
 use vibemux_harness::{
     AgentKind,
     dispatch::{
-        AttemptOutcome, DispatchError, DispatchPhase, DispatchRequest, DispatchRoute,
-        NativeProtocol, ProtocolSession, attempt,
+        AttemptOutcome, DispatchError, DispatchLimits, DispatchPhase, DispatchRequest,
+        DispatchRoute, NativeProtocol, ProtocolSession, attempt,
         capture_budget::{CaptureBudget, CaptureSummary},
         events::ProcessSummary,
         launch_spec::{SessionMode, build_launch_spec},
@@ -49,8 +51,13 @@ use vibemux_store::{HarnessDispatchAdmission, HarnessDispatchRecord};
 use crate::{WriterError, WriterHandle};
 
 pub use config_loader::{DISPATCH_CONFIG_FILE_NAME, LoadedDispatchConfig, load_dispatch_config};
+pub use output_page::{
+    DispatchOutputFragment, DispatchOutputPage, MAX_OUTPUT_PAGE_FRAGMENTS,
+    MAX_OUTPUT_PAGE_RAW_BYTES, OutputCursor, OutputPageLimits, OutputReassembler,
+    OutputReassemblyError, ReassembledRecord, build_output_page,
+};
 pub use transcript_store::{
-    MAX_RETAINED_TRANSCRIPT_BYTES, MAX_RETAINED_TRANSCRIPTS, TranscriptPage,
+    LiveCapture, MAX_RETAINED_TRANSCRIPT_BYTES, MAX_RETAINED_TRANSCRIPTS, TranscriptPage,
 };
 
 use executor::{ExecutionPlan, call_writer};
@@ -62,6 +69,9 @@ pub const LAUNCH_TRAMPOLINE_NAME: &str = "vibemux_launch_trampoline";
 /// Extra time shutdown waits for attempts beyond the configured grace: the
 /// forced kill, reaping, and the final writer call.
 const SHUTDOWN_JOIN_MARGIN: Duration = Duration::from_secs(15);
+/// Upper bound on a probe's deadline, whatever the configured attempt
+/// deadline: an initialize handshake that takes longer has failed.
+pub const PROBE_DEADLINE_MS: u64 = 60_000;
 
 /// Where the service finds its inputs.
 #[derive(Clone)]
@@ -137,10 +147,14 @@ pub struct DispatchReceipt {
     /// The request id was already admitted with the same content; nothing
     /// new was written.
     pub duplicate: bool,
+    /// Sequence of the event that last changed the record.
+    pub sequence: u64,
 }
 
-/// Content-free result of an initialize-only probe.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Content-free result of an initialize-only probe; also the Control v5
+/// probe payload.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeReport {
     pub harness: AgentKind,
     pub protocol: NativeProtocol,
@@ -269,6 +283,7 @@ impl HarnessDispatchService {
         let receipt = DispatchReceipt {
             duplicate: commit.event.is_none(),
             record: commit.record,
+            sequence: commit.sequence,
         };
         if receipt.record.phase == DispatchPhase::Admitted {
             let plan = ExecutionPlan {
@@ -327,7 +342,10 @@ impl HarnessDispatchService {
             launch,
             session,
             budget,
-            limits: config.limits,
+            limits: DispatchLimits {
+                deadline_ms: config.limits.deadline_ms.min(PROBE_DEADLINE_MS),
+                ..config.limits
+            },
         };
         let (report_sender, report) = oneshot::channel();
         {
@@ -385,20 +403,56 @@ impl HarnessDispatchService {
         }
     }
 
+    /// The output page at `cursor`, fragmenting records larger than the
+    /// page (ADR 029 §7). Like [`Self::transcript`], an unknown request is
+    /// `harness_dispatch_not_found` and evicted output is
+    /// `harness_dispatch_output_unavailable`.
+    pub async fn output(
+        &self,
+        request_id: Uuid,
+        cursor: OutputCursor,
+        limits: OutputPageLimits,
+    ) -> Result<DispatchOutputPage, DispatchServiceError> {
+        match self
+            .inner
+            .transcripts
+            .output_page(request_id, cursor, limits)
+        {
+            Err(DispatchError::OutputUnavailable) => {
+                self.status(request_id).await?;
+                Err(DispatchError::OutputUnavailable.into())
+            }
+            page => page.map_err(Into::into),
+        }
+    }
+
+    /// Size of the transcript a running attempt is capturing; `None` once
+    /// it finished or if it never started.
+    #[must_use]
+    pub fn live_capture(&self, request_id: Uuid) -> Option<LiveCapture> {
+        self.inner.transcripts.live_capture(request_id)
+    }
+
+    /// Stops admission and signals every attempt and probe to cancel,
+    /// without waiting. The Control shutdown operation calls it before the
+    /// server drains connections, so a connection waiting on a probe ends
+    /// promptly.
+    pub fn begin_shutdown(&self) {
+        let mut registry = self.inner.registry();
+        registry.accepting = false;
+        for signal in registry.attempts.values().chain(registry.probe.iter()) {
+            let _ = signal.send(true);
+        }
+    }
+
     /// Stops admission, cancels every attempt and probe, and waits for their
     /// tasks up to the grace period plus [`SHUTDOWN_JOIN_MARGIN`]; tasks
     /// still running then are aborted, which kills their process trees. An
     /// attempt that could not report its finish is recovered at the next
     /// start. Runs before the writer shuts down.
     pub async fn shutdown(&self) {
-        let mut tasks = {
-            let mut registry = self.inner.registry();
-            registry.accepting = false;
-            for signal in registry.attempts.values().chain(registry.probe.iter()) {
-                let _ = signal.send(true);
-            }
-            std::mem::take(&mut registry.tasks)
-        };
+        self.begin_shutdown();
+        let mut tasks = std::mem::take(&mut self.inner.registry().tasks);
         let grace = self.inner.setup.as_ref().map_or(Duration::ZERO, |setup| {
             Duration::from_millis(setup.config.config().limits.shutdown_grace_ms)
         });
