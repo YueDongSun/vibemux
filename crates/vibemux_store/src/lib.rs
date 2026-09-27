@@ -691,6 +691,9 @@ impl SqliteStore {
         draft: EventDraft,
     ) -> Result<CommitOutcome, StoreError> {
         draft.validate()?;
+        // The ownership checks share the write transaction so an A2A binding
+        // or a dispatch admission cannot land between the check and the
+        // projection write.
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -705,7 +708,14 @@ impl SqliteStore {
             Projection::Task(task) => ("task_id", task.task_id().to_string()),
             Projection::Run(run) => ("run_id", run.run_id().to_string()),
         };
-        if owned_by("a2a_runs", owner_column, owner_id.clone())? {
+        let a2a_owned = owned_by("a2a_runs", owner_column, owner_id.clone())?
+            || match &projection {
+                // A new Run under an A2A-owned Task would attach foreign work
+                // to the binding.
+                Projection::Run(run) => owned_by("a2a_runs", "task_id", run.task_id().to_string())?,
+                Projection::Task(_) => false,
+            };
+        if a2a_owned {
             return Err(StoreError::A2aBoundProjection);
         }
         let dispatch_owned = owned_by("harness_dispatches", owner_column, owner_id)?
