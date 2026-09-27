@@ -16,10 +16,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use time::OffsetDateTime;
+use uuid::Uuid;
 use vibemux_harness::{HarnessDetection, HarnessRow};
 use vibemux_store::{
-    A2aCommitOutcome, HarnessSnapshotOutcome, HarnessSwitchOutcome, STORE_SCHEMA_VERSION,
-    SqliteStore,
+    A2aCommitOutcome, HarnessDispatchAdmission, HarnessDispatchClaim, HarnessDispatchCommit,
+    HarnessDispatchFinish, HarnessDispatchRecord, HarnessSnapshotOutcome, HarnessSwitchOutcome,
+    QuarantinedDispatch, STORE_SCHEMA_VERSION, SqliteStore,
 };
 use vibemux_types::{
     ProjectId, RunId, TaskId,
@@ -39,6 +42,7 @@ pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
 pub mod control;
+pub mod harness_dispatch;
 pub mod model_peer_process;
 pub mod plugin_configuration;
 pub mod plugin_registry;
@@ -116,6 +120,18 @@ impl SharedWriterState {
     fn reset_watermark(&self, to: usize) {
         self.high_watermark.store(to, Ordering::Release);
     }
+}
+
+/// What startup dispatch recovery changed (ADR 029 §3). The writer runs it
+/// once, after opening the store and before reporting ready, so no executor
+/// can claim an attempt that a previous daemon left behind.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HarnessDispatchRecoveryReport {
+    /// Attempts recovery moved, in admission order: `admitted` ones failed as
+    /// interrupted; running ones now wait in `recovery_pending`.
+    pub recovered: Vec<Uuid>,
+    /// Attempts whose stored row failed validation and was left untouched.
+    pub quarantined: Vec<QuarantinedDispatch>,
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -202,6 +218,31 @@ enum WriterRequest {
     /// harness undetected).
     HarnessRows {
         response: mpsc::Sender<Result<Vec<HarnessRow>, WriterError>>,
+    },
+    AdmitHarnessDispatch {
+        admission: Box<HarnessDispatchAdmission>,
+        response: mpsc::Sender<Result<HarnessDispatchCommit, WriterError>>,
+    },
+    ClaimHarnessDispatch {
+        request_id: Uuid,
+        timestamp: OffsetDateTime,
+        response: mpsc::Sender<Result<HarnessDispatchClaim, WriterError>>,
+    },
+    FinishHarnessDispatch {
+        finish: HarnessDispatchFinish,
+        response: mpsc::Sender<Result<HarnessDispatchCommit, WriterError>>,
+    },
+    CancelHarnessDispatch {
+        request_id: Uuid,
+        timestamp: OffsetDateTime,
+        response: mpsc::Sender<Result<HarnessDispatchCommit, WriterError>>,
+    },
+    HarnessDispatch {
+        request_id: Uuid,
+        response: mpsc::Sender<Result<Option<HarnessDispatchRecord>, WriterError>>,
+    },
+    HarnessDispatchRecovery {
+        response: mpsc::Sender<Result<HarnessDispatchRecoveryReport, WriterError>>,
     },
     Shutdown(mpsc::Sender<Result<(), WriterError>>),
     #[cfg(test)]
@@ -375,6 +416,74 @@ impl WriterHandle {
     pub fn project_id(&self) -> Result<Option<ProjectId>, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::ProjectId(response))?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn admit_harness_dispatch(
+        &self,
+        admission: HarnessDispatchAdmission,
+    ) -> Result<HarnessDispatchCommit, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::AdmitHarnessDispatch {
+            admission: Box::new(admission),
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn claim_harness_dispatch(
+        &self,
+        request_id: Uuid,
+        timestamp: OffsetDateTime,
+    ) -> Result<HarnessDispatchClaim, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::ClaimHarnessDispatch {
+            request_id,
+            timestamp,
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn finish_harness_dispatch(
+        &self,
+        finish: HarnessDispatchFinish,
+    ) -> Result<HarnessDispatchCommit, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::FinishHarnessDispatch { finish, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn cancel_harness_dispatch(
+        &self,
+        request_id: Uuid,
+        timestamp: OffsetDateTime,
+    ) -> Result<HarnessDispatchCommit, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::CancelHarnessDispatch {
+            request_id,
+            timestamp,
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn harness_dispatch(
+        &self,
+        request_id: Uuid,
+    ) -> Result<Option<HarnessDispatchRecord>, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::HarnessDispatch {
+            request_id,
+            response,
+        })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    /// The report of the recovery this writer ran at startup.
+    pub fn harness_dispatch_recovery(&self) -> Result<HarnessDispatchRecoveryReport, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::HarnessDispatchRecovery { response })?;
         receive(receiver, self.response_timeout)
     }
 
@@ -614,6 +723,22 @@ fn writer_loop(
             return;
         }
     };
+    // Recover before reporting ready, so nothing can be admitted or claimed
+    // until every attempt a previous daemon left behind is settled.
+    let recovery = match store.recover_harness_dispatches(OffsetDateTime::now_utc()) {
+        Ok(recovery) => HarnessDispatchRecoveryReport {
+            recovered: recovery
+                .recovered
+                .iter()
+                .map(|commit| commit.record.request_id)
+                .collect(),
+            quarantined: recovery.quarantined,
+        },
+        Err(error) => {
+            let _ = ready_sender.send(Err(store_error(error.code())));
+            return;
+        }
+    };
     if ready_sender.send(Ok(())).is_err() {
         return;
     }
@@ -712,6 +837,53 @@ fn writer_loop(
                     ))
                 })();
                 let _ = response.send(result);
+            }
+            WriterRequest::AdmitHarnessDispatch {
+                admission,
+                response,
+            } => {
+                let result = store
+                    .admit_harness_dispatch(&admission)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::ClaimHarnessDispatch {
+                request_id,
+                timestamp,
+                response,
+            } => {
+                let result = store
+                    .claim_harness_dispatch(request_id, timestamp)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::FinishHarnessDispatch { finish, response } => {
+                let result = store
+                    .finish_harness_dispatch(&finish)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::CancelHarnessDispatch {
+                request_id,
+                timestamp,
+                response,
+            } => {
+                let result = store
+                    .cancel_harness_dispatch(request_id, timestamp)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::HarnessDispatch {
+                request_id,
+                response,
+            } => {
+                let result = store
+                    .harness_dispatch(request_id)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::HarnessDispatchRecovery { response } => {
+                let _ = response.send(Ok(recovery.clone()));
             }
             WriterRequest::Shutdown(response) => {
                 let _ = response.send(Ok(()));

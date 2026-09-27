@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Thin lifecycle client and controlled bootstrap for the Rust daemon.
 
+pub mod dispatch_commands;
 pub mod recovery;
 
 use std::{
@@ -254,6 +255,10 @@ pub enum CliCommand {
         project_root: Option<PathBuf>,
         harness: String,
     },
+    Dispatch {
+        project_root: Option<PathBuf>,
+        command: dispatch_commands::DispatchCommand,
+    },
     Help,
     Version,
 }
@@ -296,6 +301,10 @@ pub enum DaemonCliError {
     HarnessNotDetected(String),
     #[error("unknown harness: {0}")]
     UnknownHarness(String),
+    #[error("dispatch prompt could not be read")]
+    PromptUnavailable,
+    #[error("dispatch prompt must be non-blank UTF-8 of at most 32 KiB")]
+    InvalidPrompt,
 }
 
 impl DaemonCliError {
@@ -319,6 +328,8 @@ impl DaemonCliError {
             Self::HarnessProbeCacheMissing(_) => "harness_probe_cache_missing",
             Self::HarnessNotDetected(_) => "harness_not_detected",
             Self::UnknownHarness(_) => "store_unknown_harness",
+            Self::PromptUnavailable => "cli_prompt_unavailable",
+            Self::InvalidPrompt => "harness_dispatch_invalid_prompt",
         }
     }
 }
@@ -464,6 +475,9 @@ pub fn parse_cli_arguments(
         .ok_or(DaemonCliError::InvalidArguments)?;
     if verb == "harnesses" || verb == "switch" {
         return parse_harness_arguments(verb, &arguments[1..]);
+    }
+    if verb == "dispatch" {
+        return dispatch_commands::parse_dispatch_arguments(&arguments[1..]);
     }
     if verb != "daemon" {
         return Err(DaemonCliError::InvalidArguments);

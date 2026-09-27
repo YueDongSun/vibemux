@@ -1,18 +1,28 @@
 #![deny(unsafe_code)]
 //! Reviewed platform boundaries that remain independent from domain and storage types.
 //!
-//! `unsafe` is denied at this crate root and allowed in exactly one narrow
-//! module: [`windows_acl_native`], the read-only Win32 ACL verification
-//! surface reviewed and recorded by ADR 025 (amending ADR 020's read path).
-//! ACL writes stay on the fixed, reviewed PowerShell companion in
-//! [`windows_security`]. Every other workspace crate keeps
+//! `unsafe` is denied at this crate root and allowed in exactly two narrow
+//! modules: [`windows_acl_native`], the read-only Win32 ACL verification
+//! surface reviewed and recorded by ADR 025 (amending ADR 020's read path),
+//! and `process_tree::windows_job_object`, the Job Object containment
+//! surface recorded by ADR 029. ACL writes stay on the fixed, reviewed
+//! PowerShell companion in [`windows_security`]; POSIX process-tree
+//! containment is safe code. Every other workspace crate keeps
 //! `#![forbid(unsafe_code)]`.
 
+#[cfg(any(windows, unix))]
+mod process_tree;
 #[cfg(windows)]
 mod windows_acl_native;
 #[cfg(windows)]
 mod windows_security;
 
+#[cfg(any(windows, unix))]
+pub use process_tree::{
+    LAUNCH_GO_BYTE, ProcessTree, ProcessTreeOperation, TRAMPOLINE_EXIT_NO_CODE,
+    TRAMPOLINE_EXIT_NOT_RELEASED, TRAMPOLINE_EXIT_SPAWN_FAILED, TRAMPOLINE_EXIT_USAGE,
+    run_launch_trampoline,
+};
 #[cfg(windows)]
 pub use windows_security::{
     WindowsAclSummary, secure_user_directory, verify_restricted_path_acl,
@@ -44,6 +54,15 @@ pub enum PlatformError {
     /// meanings match [`PlatformError::AccessControlInvalid`].
     #[error("platform access-control verification failed at stage {stage} for path index {index}")]
     AccessControlInvalidAt { stage: u32, index: u32 },
+    /// A process-tree containment step failed (ADR 029). Carries the fixed
+    /// step name and the OS error number only; never a path, command line,
+    /// or environment.
+    #[cfg(any(windows, unix))]
+    #[error("process-tree containment failed during {operation}")]
+    ProcessTree {
+        operation: ProcessTreeOperation,
+        os_code: Option<i32>,
+    },
 }
 
 impl PlatformError {
@@ -56,6 +75,8 @@ impl PlatformError {
             Self::AccessControlInvalid { .. } | Self::AccessControlInvalidAt { .. } => {
                 "platform_access_control_invalid"
             }
+            #[cfg(any(windows, unix))]
+            Self::ProcessTree { .. } => "platform_process_tree_failed",
         }
     }
 }

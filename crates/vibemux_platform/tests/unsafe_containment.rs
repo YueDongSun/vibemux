@@ -1,10 +1,10 @@
 //! Mechanical enforcement of the workspace `unsafe` containment policy
-//! (ADR 020/025): `vibemux_platform` denies unsafe at the crate root and
-//! allows it in exactly one reviewed module (`windows_acl_native`), and
-//! every other workspace library crate keeps `#![forbid(unsafe_code)]`.
-//! Review code alone drifts (code-review V13 finding on issue #8); these
-//! tests fail the moment a second module opts into unsafe or a crate root
-//! loses its lint.
+//! (ADR 020/025/029): `vibemux_platform` denies unsafe at the crate root and
+//! allows it in exactly two reviewed modules (`windows_acl_native`, ADR 025;
+//! `process_tree/windows_job_object`, ADR 029), and every other workspace
+//! library crate keeps `#![forbid(unsafe_code)]`. Review code alone drifts
+//! (code-review V13 finding on issue #8); these tests fail the moment
+//! another module opts into unsafe or a crate root loses its lint.
 
 #![forbid(unsafe_code)]
 
@@ -50,7 +50,7 @@ fn platform_crate_root_denies_unsafe_code() {
 }
 
 #[test]
-fn unsafe_allow_is_confined_to_the_reviewed_acl_module() {
+fn unsafe_allow_is_confined_to_the_reviewed_modules() {
     let mut files = Vec::new();
     rust_files(&crate_root().join("src"), &mut files);
     assert!(
@@ -65,13 +65,20 @@ fn unsafe_allow_is_confined_to_the_reviewed_acl_module() {
             allow_sites.push((file.clone(), hits));
         }
     }
-    let reviewed = crate_root().join("src/windows_acl_native.rs");
+    allow_sites.sort();
+    let mut reviewed = vec![
+        (
+            crate_root().join("src/process_tree/windows_job_object.rs"),
+            1,
+        ),
+        (crate_root().join("src/windows_acl_native.rs"), 1),
+    ];
+    reviewed.sort();
     assert_eq!(
-        allow_sites,
-        vec![(reviewed, 1)],
-        "`#![allow(unsafe_code)]` must appear exactly once, in the single \
-         module ADR 025 reviewed; any other site widens the unsafe surface \
-         without an accepted ADR"
+        allow_sites, reviewed,
+        "`#![allow(unsafe_code)]` must appear exactly once in each module \
+         ADR 025 and ADR 029 reviewed; any other site widens the unsafe \
+         surface without an accepted ADR"
     );
 }
 

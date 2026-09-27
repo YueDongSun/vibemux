@@ -63,6 +63,14 @@ impl SqliteStore {
             return Ok(outcome);
         }
         let task_id = start.task.task_id();
+        let dispatch_owned: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM harness_dispatches WHERE task_id=?)",
+            [task_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if dispatch_owned {
+            return Err(StoreError::A2aBindingConflict);
+        }
         let current = load_task(&transaction, task_id)?;
         let task = match current {
             Some(task) => {
@@ -1396,5 +1404,52 @@ mod tests {
                 .all(|record| record.task.status() == TaskStatus::Cancelled
                     && record.run.status() == RunStatus::Failed)
         );
+    }
+
+    #[test]
+    fn a2a_cannot_bind_a_dispatch_owned_task() {
+        use vibemux_harness::{
+            AgentKind, HarnessDetection,
+            dispatch::{NativeProtocol, PromptDigest, Sha256Digest, attempt::resource_key},
+        };
+
+        let directory = tempfile::tempdir().expect("directory");
+        let mut store = SqliteStore::open(&directory.path().join("state.sqlite3")).expect("store");
+        let detections = std::collections::BTreeMap::from([(
+            "codex".to_string(),
+            HarnessDetection {
+                detected: true,
+                path: None,
+                launcher: None,
+                version: Some("1.0.0".to_string()),
+            },
+        )]);
+        store
+            .commit_harness_snapshot(&detections, "2026-09-27T00:00:00Z", "probe")
+            .expect("detect codex");
+        let dispatch = store
+            .admit_harness_dispatch(&crate::HarnessDispatchAdmission {
+                request_id: uuid::Uuid::new_v4(),
+                harness: AgentKind::Codex,
+                protocol: NativeProtocol::CodexExec,
+                prompt: PromptDigest {
+                    sha256: Sha256Digest::of(b"prompt"),
+                    byte_count: 6,
+                },
+                config_sha256: Sha256Digest::of(b"config"),
+                resource_key: resource_key("/vibemux_test/dispatch"),
+                base_commit: "a".repeat(40),
+                timestamp: time::OffsetDateTime::from_unix_timestamp(1_800_000_000)
+                    .expect("timestamp"),
+            })
+            .expect("admit dispatch")
+            .record;
+        let task = load_task(&store.connection, dispatch.task_id)
+            .expect("task query")
+            .expect("dispatch task");
+        assert!(matches!(
+            store.start_a2a_run(start_request(&task, "worker", "worker_peer")),
+            Err(StoreError::A2aBindingConflict)
+        ));
     }
 }

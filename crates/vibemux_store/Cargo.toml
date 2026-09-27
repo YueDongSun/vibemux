@@ -13,6 +13,7 @@ sha2.workspace = true
 time.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 vibemux_events = { path = "../vibemux_events" }
 vibemux_harness = { path = "../vibemux_harness" }
 vibemux_types = { path = "../vibemux_types" }

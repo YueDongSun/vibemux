@@ -4438,6 +4438,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
  "vibemux_harness",
  "vibemux_platform",
  "vibemux_probe",
@@ -4479,10 +4480,13 @@ dependencies = [
 name = "vibemux_harness"
 version = "0.2.0-alpha.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "time",
+ "uuid",
  "vibemux_events",
  "vibemux_types",
 ]
@@ -4512,6 +4516,7 @@ name = "vibemux_platform"
 version = "0.2.0-alpha.0"
 dependencies = [
  "base64",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.20",
  "windows-sys 0.59.0",
@@ -4574,6 +4579,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "time",
+ "uuid",
  "vibemux_events",
  "vibemux_harness",
  "vibemux_types",

@@ -1,0 +1,9 @@
+{"type":"control_response","response":{"subtype":"success","request_id":"vibemux_initialize","response":{}}}
+{"type":"system","subtype":"init","session_id":"synthetic_session"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Preparing a tool"},{"type":"tool_use","id":"tool_one","name":"synthetic_tool","input":{"value":"literal $(synthetic_command); & | > < `token`"}}]}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"first chunk"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"second chunk"}}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}}
+{"type":"control_request","request_id":"permission_one","request":{"subtype":"can_use_tool","tool_name":"synthetic_tool","input":{}}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_one","is_error":true,"content":"synthetic tool failure"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"synthetic final answer","usage":{"output_tokens":2},"extension":{"preserve":true}}

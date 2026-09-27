@@ -18,5 +18,10 @@ thiserror.workspace = true
 base64.workspace = true
 windows-sys.workspace = true
 
+# Safe process-group lookup and signalling for process-tree containment
+# (ADR 029 §6); no `unsafe` is needed on POSIX.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true

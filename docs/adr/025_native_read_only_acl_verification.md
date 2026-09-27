@@ -1,6 +1,6 @@
 # ADR 025: Native read-only ACL verification for the Windows control runtime
 
-Status: Accepted for pre-alpha implementation. Amends [ADR 020](020_windows_control_runtime_acl.md) for the read-only verification path only.
+Status: Accepted for pre-alpha implementation. Amends [ADR 020](020_windows_control_runtime_acl.md) for the read-only verification path only. The single-`unsafe`-module rule is amended by [ADR 029](029_daemon_harness_dispatch.md), which adds `process_tree::windows_job_object` as a second reviewed module.
 
 ## Context
 

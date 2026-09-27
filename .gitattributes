@@ -4,3 +4,6 @@
 # CRLF at checkout and fail the snapshot test before any code runs.
 # eol=lf keeps every platform's checkout byte-identical.
 crates/vibemux_frontend/tests/fixtures/golden/*.txt text eol=lf
+# Harness dispatch fixtures are replayed byte-for-byte against the capture
+# digest and raw-record assertions.
+crates/vibemux_harness/tests/fixtures/dispatch/*.jsonl text eol=lf
