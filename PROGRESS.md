@@ -2560,3 +2560,22 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Known risks**
 - The live evidence covers one host and the listed vendor versions. Protocol drift in later vendor versions shows only when the probes are run again.
 - Until decision 4 is settled, a vendor that exits more slowly than the grace makes a probe or a turn report `failed` although it ended cleanly.
+
+### 2026-09-27 (5) - Merge `main` into the harness dispatch branch (`feat/harness_dispatch_port`)
+
+**Status change**
+- None. The dispatch status from entries (3) and (4) is unchanged.
+
+**Implemented**
+- Merged `origin/main` at `5873573` (generic Runs refused under A2A-owned Tasks) into `feat/harness_dispatch_port` in `e9f1e0d`. The branch is published, so it takes a merge instead of the rebase that entries (3) and (4) planned.
+- One conflict, in `SqliteStore::commit_projection` (`crates/vibemux_store/src/lib.rs`): both sides had moved the ownership checks into the Immediate write transaction. The resolution keeps both rules in order. First `main`'s A2A rule: a Task or Run bound in `a2a_runs`, or a new Run under an A2A-owned Task, is refused with `A2aBoundProjection`. Then the Stage 3 dispatch rule: a Task or Run owned by a harness dispatch, or a new Run under a dispatch-owned Task, is refused with `HarnessDispatchBoundProjection`. `crates/vibemux_store/src/a2a.rs` merged cleanly and keeps both new tests.
+
+**Evidence**
+- tests (native Windows, serial): `cargo test --workspace --all-features --no-fail-fast -- --test-threads=1`: **489 passed / 0 failed / 2 ignored** in 74 test binaries (the 488 of entry (3) plus `main`'s new store test).
+- tests (Linux container `rust:1.85-slim-bookworm`, read-only source mount): `cargo test -p vibemux_store -p vibemux_harness -p vibemuxd -p vibemux_cli -p vibemux_platform --all-features --no-fail-fast`: **290 passed / 0 failed** in 36 test binaries.
+- `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings`: pass.
+- live validation: not applicable; no dispatch behavior changed.
+- commit/PR: branch `feat/harness_dispatch_port`; PR #9 is still open, and this branch has no pull request yet.
+
+**Remaining**
+- Merge PR #9, then open this branch's pull request into `main`. Reviewer approval of the `windows_job_object` `unsafe` module and the Stage 7 items from entry (4) still apply.

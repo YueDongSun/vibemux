@@ -599,7 +599,9 @@ Control request prints only the argument's byte count.
 
 ## Implementation plan (stages 1 to 6 done on the branch, Stage 7 partial)
 
-Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
+Branch `feat/harness_dispatch_port`, built on the PR #9 line. The branch is
+published, so `main` is merged into it instead of rebased (`5873573` on
+2026-09-27), and the branch merges into `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
 is one reviewable commit with its own tests.
 
