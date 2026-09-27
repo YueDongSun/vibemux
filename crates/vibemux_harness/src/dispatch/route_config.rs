@@ -371,6 +371,22 @@ pub fn validate_executable(path: &Path, policy: ExecutablePolicy) -> Result<(), 
     }
 }
 
+/// Whether the file stem of `path` is the harness's command name (ADR 029
+/// §4 executable trust). The daemon applies it to the canonical target so a
+/// route cannot point at an interpreter such as `cmd.exe` or `powershell.exe`
+/// under another harness's name. Windows compares ASCII case-insensitively.
+#[must_use]
+pub fn executable_names_harness(path: &Path, harness: AgentKind, policy: ExecutablePolicy) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    let command = harness.command_name();
+    match policy {
+        ExecutablePolicy::WindowsNativeImage => stem.eq_ignore_ascii_case(command),
+        ExecutablePolicy::PosixExecutable => stem == command,
+    }
+}
+
 fn validate_environment_names(names: &[String]) -> Result<(), DispatchError> {
     if names.len() > MAX_ENVIRONMENT_NAMES {
         return Err(DispatchError::ConfigEnvironmentInvalid);

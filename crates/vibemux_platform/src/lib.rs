@@ -18,7 +18,11 @@ mod windows_acl_native;
 mod windows_security;
 
 #[cfg(any(windows, unix))]
-pub use process_tree::{ProcessTree, ProcessTreeOperation};
+pub use process_tree::{
+    LAUNCH_GO_BYTE, ProcessTree, ProcessTreeOperation, TRAMPOLINE_EXIT_NO_CODE,
+    TRAMPOLINE_EXIT_NOT_RELEASED, TRAMPOLINE_EXIT_SPAWN_FAILED, TRAMPOLINE_EXIT_USAGE,
+    run_launch_trampoline,
+};
 #[cfg(windows)]
 pub use windows_security::{
     WindowsAclSummary, secure_user_directory, verify_restricted_path_acl,

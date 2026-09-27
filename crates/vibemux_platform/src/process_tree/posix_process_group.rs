@@ -5,7 +5,7 @@ use std::{os::unix::process::CommandExt, process::Command};
 
 use rustix::{
     io::Errno,
-    process::{Pid, Signal, getpgid, getpgrp, kill_process_group},
+    process::{Pid, Signal, WaitId, WaitIdOptions, getpgid, getpgrp, kill_process_group, waitid},
 };
 
 use super::ProcessTreeOperation;
@@ -62,6 +62,19 @@ impl ProcessGroup {
             }
             Err(errno) => Err(PlatformError::ProcessTree {
                 operation: ProcessTreeOperation::Terminate,
+                os_code: Some(errno.raw_os_error()),
+            }),
+        }
+    }
+
+    pub(super) fn leader_exited(&self) -> Result<bool, PlatformError> {
+        // `NOWAIT` leaves the leader a zombie, so its id, and with it the
+        // group id, stays reserved until the caller reaps it.
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+        match waitid(WaitId::Pid(self.leader), options) {
+            Ok(status) => Ok(status.is_some()),
+            Err(errno) => Err(PlatformError::ProcessTree {
+                operation: ProcessTreeOperation::Query,
                 os_code: Some(errno.raw_os_error()),
             }),
         }

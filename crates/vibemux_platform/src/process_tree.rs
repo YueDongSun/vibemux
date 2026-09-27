@@ -17,19 +17,27 @@
 //! Containment is not an OS sandbox. On Windows, assignment happens after
 //! process creation, so a descendant the child creates on its own before
 //! `contain` returns is not a member; withholding input only covers
-//! descendants started in response to input. A member cannot break away
-//! through `CreateProcess`, because the job never permits it, but processes
-//! started on its behalf by system services (WMI, Task Scheduler, COM
-//! servers) are outside the job. On POSIX, a member can leave the group with
-//! `setsid` or `setpgid`, and a crash of the owning process leaves the group
-//! running; there is no kill-on-close equivalent.
+//! descendants started in response to input. [`run_launch_trampoline`]
+//! closes that window for vendor CLIs: the contained process is the
+//! trampoline, which starts the vendor only after the go byte. A member
+//! cannot break away through `CreateProcess`, because the job never
+//! permits it, but processes started on its behalf by system services (WMI,
+//! Task Scheduler, COM servers) are outside the job. On POSIX, a member can
+//! leave the group with `setsid` or `setpgid`, and a crash of the owning
+//! process leaves the group running; there is no kill-on-close equivalent.
 
+mod launch_trampoline;
 #[cfg(unix)]
 mod posix_process_group;
 #[cfg(windows)]
 mod windows_job_object;
 
 use std::{fmt, process::Command};
+
+pub use launch_trampoline::{
+    LAUNCH_GO_BYTE, TRAMPOLINE_EXIT_NO_CODE, TRAMPOLINE_EXIT_NOT_RELEASED,
+    TRAMPOLINE_EXIT_SPAWN_FAILED, TRAMPOLINE_EXIT_USAGE, run_launch_trampoline,
+};
 
 #[cfg(unix)]
 use posix_process_group::ProcessGroup as PlatformTree;
@@ -128,6 +136,16 @@ impl ProcessTree {
     #[cfg(windows)]
     pub fn active_process_count(&self) -> Result<u32, PlatformError> {
         self.inner.active_process_count()
+    }
+
+    /// POSIX only: whether the contained child has exited, observed without
+    /// reaping it. A caller that must let the child finish on its own polls
+    /// this, then calls [`ProcessTree::terminate`] to remove any member left
+    /// behind, and only then reaps the child, which keeps the ordering rule.
+    /// The caller must not reap the child by any other path in between.
+    #[cfg(unix)]
+    pub fn leader_exited(&self) -> Result<bool, PlatformError> {
+        self.inner.leader_exited()
     }
 }
 

@@ -13,7 +13,7 @@ use vibemux_harness::{
         request::{DISPATCH_REQUEST_SCHEMA_VERSION, MAX_PROMPT_BYTES, request_fingerprint},
         route_config::{
             DispatchCatalogEntry, ExecutablePolicy, MAX_EXECUTABLE_PATH_BYTES,
-            MAX_ROUTE_CONFIG_BYTES, validate_executable,
+            MAX_ROUTE_CONFIG_BYTES, executable_names_harness, validate_executable,
         },
     },
 };
@@ -255,6 +255,33 @@ fn executables_must_be_absolute_native_images_without_shims() {
         .unwrap_err(),
         DispatchError::ConfigExecutableInvalid
     );
+}
+
+#[test]
+fn an_executable_must_carry_its_harness_command_name() {
+    let windows = ExecutablePolicy::WindowsNativeImage;
+    let posix = ExecutablePolicy::PosixExecutable;
+    let names =
+        |path: &str, harness, policy| executable_names_harness(Path::new(path), harness, policy);
+    assert!(names(&absolute("codex.exe"), AgentKind::Codex, windows));
+    assert!(names(&absolute("Codex.EXE"), AgentKind::Codex, windows));
+    assert!(names(
+        &absolute("opencode.exe"),
+        AgentKind::OpenCode,
+        windows
+    ));
+    assert!(names(&absolute("claude"), AgentKind::Claude, posix));
+    assert!(!names(&absolute("Claude"), AgentKind::Claude, posix));
+    for path in [
+        "cmd.exe",
+        "powershell.exe",
+        "claude.exe",
+        "codex_wrapper.exe",
+        "codex.exe.exe",
+    ] {
+        assert!(!names(&absolute(path), AgentKind::Codex, windows), "{path}");
+    }
+    assert!(!names(&absolute("sh"), AgentKind::Codex, posix));
 }
 
 #[test]

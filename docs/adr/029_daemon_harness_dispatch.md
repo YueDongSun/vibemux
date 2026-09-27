@@ -1,12 +1,14 @@
 # ADR 029: Daemon-owned harness request dispatch and output capture
 
 Status: Proposed. Stage 1 (the pure `vibemux_harness::dispatch` logic),
-Stage 2 (the `vibemux_platform::ProcessTree` containment primitive), and
-Stage 3 (store schema 4 and the dispatch transactions) are implemented on
-`feat/harness_dispatch_port`; nothing is wired into the daemon or Control IPC,
-no writer calls the store transactions yet, and nothing in this ADR is
-implemented on `main` until
-`PROGRESS.md` records it. The Stage 2 `unsafe` module needs this ADR accepted
+Stage 2 (the `vibemux_platform::ProcessTree` containment primitive), Stage 3
+(store schema 4 and the dispatch transactions), and Stage 4 (the launch
+trampoline, the `vibemuxd` dispatch service and executor, in-memory
+transcripts, and recovery at writer start) are implemented on
+`feat/harness_dispatch_port`. The daemon starts the dispatch service and
+joins it at shutdown, but no Control IPC operation reaches it until Stage 5,
+and nothing in this ADR is implemented on `main` until `PROGRESS.md` records
+it. The Stage 2 `unsafe` module needs this ADR accepted
 before merge (AGENTS.md §7.2).
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
@@ -153,17 +155,22 @@ UNIQUE INDEX harness_dispatches_active_resource ON harness_dispatches(resource_k
   byte length (AGENTS.md §11.2).
 - Task title is `harness dispatch <harness>`, description is empty,
   `role = "dispatch"`, and `protocol` is the wire protocol label. `base_commit`
-  is the project `HEAD`, which the daemon resolves with the shell-free Git
-  runner at admission. It records an observation, not an attestation of a
-  clean tree.
+  is the project `HEAD`, which the daemon reads from the Git metadata at
+  admission (`HEAD`, loose and packed refs, and a linked worktree's common
+  directory, with bounded reads and a bounded symbolic-ref depth) without
+  running a Git process; unreadable metadata refuses admission with
+  `harness_process_invalid_cwd`. It records an observation, not an
+  attestation of a clean tree.
 - Only `WriterWorker` calls these transactions: `admit_harness_dispatch`,
   `claim_harness_dispatch`, `finish_harness_dispatch`,
   `cancel_harness_dispatch`, `recover_harness_dispatches` (returns the
   attempts it changed and the ones it quarantined), and the read
-  `harness_dispatch`. Planned for Stage 4 and not implemented: the writer
-  runs recovery before it accepts requests, starts even when rows are
-  quarantined, and surfaces the quarantined request UUIDs and codes, never
-  prompts or paths.
+  `harness_dispatch`. The writer runs recovery before it reports ready, so
+  nothing is admitted or claimed first; it starts even when rows are
+  quarantined, and keeps the report (recovered request UUIDs, quarantined
+  request UUIDs with codes, never prompts or paths) for
+  `WriterHandle::harness_dispatch_recovery`. No Control operation exposes that
+  report yet.
 
 ### 3. Attempt phases and canonical mapping
 
@@ -212,6 +219,12 @@ it and rejects any edge not listed here.
   route, executable, or environment). Neither case blocks daemon startup.
   Executables must be absolute paths, canonicalized, and `.exe` on Windows;
   `.cmd`, `.bat`, and PowerShell shims are rejected rather than shimmed. The
+  loader follows a linked executable and checks its canonical target: it must
+  be a regular file outside the canonical project root, and its file stem must
+  be the harness command name (`codex`, `claude`, `opencode`, `copilot`,
+  `grok`; ASCII case-insensitive on Windows), so a cloned repository cannot
+  plant the binary or point a route at an interpreter (open decision 2).
+  Failures return `harness_dispatch_config_executable_invalid`. The
   file's trust boundary is the same logon SID as the rest of `.vibemux/`; no
   extra ACL is promised. Schema 1 carries **no operator argv**: every argument
   comes from the protocol profile. The installed CLIs expose more than 60
@@ -244,23 +257,51 @@ it and rejects any edge not listed here.
   Writable dispatch and concurrency both require owned per-Run worktrees and a
   separate ADR.
 - **Executor.** One owned tokio task per attempt, held in the dispatch
-  service's `JoinSet`, with a `watch` cancellation signal. Order of work:
-  claim, spawn the launch trampoline (Decision 6), attach containment, send
-  the go byte, send the initial message or prompt, then loop. Each stdout chunk goes to the pure framer. Each record is classified
-  and passed to the session state machine; its replies go to stdin. Records
-  flow to the capture over a bounded channel (capacity 16). When the loop ends,
-  the pure `decide_outcome` is applied, then a fenced finish. A finish that
-  hits writer backpressure is retried up to 3 times with bounded backoff. After
-  that, the attempt is left for startup recovery; it is never reported as
-  success.
+  service's `JoinSet`, with a `watch` cancellation signal. An admission
+  starts a task only for an `admitted` record not already running, and the
+  claim is single-use, so a repeated or concurrent submit never launches
+  twice. Order of work: claim; spawn the launch trampoline (Decision 6) with
+  a cleared environment holding only the allowlisted names; contain it; send
+  the go byte; queue the initial message or prompt; then loop.
+  - A separate task owns the vendor's stdin and writes queued lines in order
+    from a bounded queue of 16 lines. A vendor that leaves that many replies
+    unread fails the attempt with `harness_process_pipe_failed`, and one that
+    never drains its stdin cannot stall the stdout read, the cancel, or the
+    deadline.
+  - Each stdout chunk goes to the pure framer. Each record is accounted by
+    the capture budget, appended directly to the attempt's in-memory
+    transcript (Decision 5), then classified and passed to the session state
+    machine, whose replies are queued for stdin.
+  - After a terminal record, stdin closes and the vendor has the shutdown
+    grace to exit; otherwise the tree is killed (open decision 4). The
+    request deadline kills the tree and fails the attempt with
+    `harness_dispatch_deadline_exceeded`.
+  - When the loop ends, the process is ended (Decision 6), the pure
+    `decide_outcome` is applied, then a fenced finish. Every writer call runs
+    in `spawn_blocking`; a call that meets a saturated writer queue or a late
+    response is retried up to 3 times with bounded backoff (50, 200, and
+    800 ms). After that, the attempt is left for startup recovery; it is
+    never reported as success.
+  - The vendor path, its working directory, the protocol's working-directory
+    field, and the reservation key use the canonical path without the Windows
+    verbatim prefix (`\\?\`, with `\\?\UNC\` becoming `\\`), which vendor
+    CLIs do not expect.
 - **Cancellation.** A cancel op commits `cancel_requested`, then signals the
-  executor. The executor sends the protocol cancel (`turn/interrupt`,
-  `session/cancel`, or Claude `interrupt`), drains trailing records within the
-  shutdown grace, then force-kills the contained tree.
-- **Shutdown.** Control shutdown stops admission, cancels every in-flight
-  attempt, waits for the grace period, force-kills, commits the finishes, and
-  joins the executors. Only then do plugin cleanup and writer shutdown run
-  (existing order).
+  executor; a cancel before the claim ends the attempt without launching. The
+  executor sends the protocol cancel (`turn/interrupt`, `session/cancel`, or
+  Claude `interrupt`) and reads trailing records for up to the shutdown grace.
+  If the vendor does not confirm within the grace, or the protocol has no
+  cancel message (`codex exec`), the contained tree is force-killed.
+- **Shutdown.** Control shutdown first stops admission and signals every
+  in-flight attempt and probe, whose tasks cancel as above and commit their
+  own finishes. It waits for the tasks up to the grace period plus 15 s;
+  tasks still running then are aborted, which kills their trees, and startup
+  recovery settles any attempt whose finish was not committed. Only then do
+  plugin cleanup and writer shutdown run (existing order).
+- **Probes** run in their own task, one at a time
+  (`harness_dispatch_busy` otherwise), with the same launch, exchange, and
+  teardown; their records are counted and discarded, and they write no
+  canonical state.
 - **Default limits** (validated ranges live in the config module): native
   frame 128 KiB; capture 16 MiB and 16,384 records per attempt; request
   deadline 600 s (1 s to 3,600 s); shutdown grace 2 s (0.1 s to 10 s);
@@ -271,8 +312,10 @@ it and rejects any edge not listed here.
 
 - The raw vendor JSON records of an attempt are kept byte-exact, including
   unknown fields, in a bounded in-memory transcript owned by the dispatch
-  service. Up to 4 finished transcripts (64 MiB total) are retained; the
-  oldest is evicted first. Transcripts are lost on daemon restart. The output
+  service. A record is appended when the capture budget accepts it, before
+  the session interprets it, so the transcript and the capture summary cover
+  the same records. Up to 4 finished transcripts (64 MiB total) are retained;
+  the oldest is evicted first. Transcripts are lost on daemon restart. The output
   op then returns `harness_dispatch_output_unavailable`, while status and
   aggregates stay durable.
 - Raw content never enters events, logs, `tracing` fields, health, probe, or
@@ -319,8 +362,9 @@ command line, or environment. The daemon maps them to
   - Assignment happens after `CreateProcess`, so it is not atomic. The
     vendor CLI is therefore never the process that `contain` assigns; the
     launch trampoline below is (open decision 5).
-  - A read-only `active_process_count()` exposes the job's accounting for the
-    Stage 4 leak scan.
+  - A read-only `active_process_count()` exposes the job's accounting. The
+    Stage 4 tests use it to show that a descendant the vendor starts before
+    reading input is a member; the executor itself runs no leak scan.
 - **POSIX** (`process_tree/posix_process_group.rs`, safe code): `std`'s
   `process_group(0)` makes the child lead a new group. `contain` verifies,
   through `rustix`'s safe `getpgid` and `getpgrp`, that the child leads its
@@ -354,6 +398,13 @@ starts.
   attempt is then not clean, and so is never `Completed`.
 - Anything other than the go byte, including end of file, makes the
   trampoline exit without spawning.
+- Its own exit codes are fixed: 120 for a missing or relative vendor path,
+  121 when not released, 122 when the vendor cannot be spawned, and 123 when
+  the vendor ended without a code. It never searches `PATH`.
+- The process is ended in one order: unless forced, the trampoline may exit
+  on its own until the grace deadline; then the tree is terminated, and only
+  then is the trampoline reaped (on POSIX its exit is observed without
+  reaping, so the group id stays reserved). Stderr is drained and counted.
 - The trampoline logic is safe code in `vibemux_platform`. The binary is a
   thin entry point, needs no tokio, and is used on every platform, so Linux
   CI exercises the same launch path. On POSIX the group already exists
@@ -480,7 +531,7 @@ versions. Arguments are JSON strings in `argument`, matching the style of
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (proposed; stages 1 to 3 done on the branch)
+## Implementation plan (proposed; stages 1 to 4 done on the branch)
 
 Branch `feat/harness_dispatch_port`, rebased onto `main` after PR #9 lands.
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
@@ -491,15 +542,16 @@ is one reviewable commit with its own tests.
 | 1 | `crates/vibemux_harness/src/dispatch/{mod,error_code,digest,request,route_config,launch_spec,protocol_session,observation,json_line_framer,capture_budget,attempt,outcome,events}.rs`, `tests/dispatch_*.rs`, `tests/fixtures/dispatch/*.jsonl` | Port the pure logic from `a955484`; add the attempt machine and `decide_outcome` | Unit and fixture-replay tests for every protocol; exhaustive transition table; framer split, CRLF, oversize, and UTF-8 cases |
 | 2 | `crates/vibemux_platform/src/process_tree{,/windows_job_object,/posix_process_group}.rs`, `lib.rs` export and error variant, `tests/{process_tree,unsafe_containment}.rs`, `windows-sys` feature and Unix `rustix` dependency | Containment primitive | A descendant is killed on terminate and on handle drop (Windows and POSIX) and, on Windows, when the owner dies; breakaway is refused on Windows; the own id, init, and the own group are refused; deep review of `unsafe` |
 | 3 | `crates/vibemux_store/src/harness_dispatch{,/dispatch_rows}.rs`, `tests/harness_dispatch.rs`, `lib.rs` migration hook, error variants and projection guard, `a2a.rs` binding guard, `uuid` dependency; `request_fingerprint` in `vibemux_harness` | Schema 4 and transactions | Idempotent admit; conflict; prompt bounds; unique reservation; single-use claim; redacted fence; cancel before and after claim; recovery with per-attempt quarantine; a retried finish must repeat its report; failures carry a code; monotonic timestamps; `Succeeded` only with authority; atomic migration and reopen; corrupted rows and changed terminal evidence fail closed |
-| 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs` (+ tests), `crates/vibemuxd/src/bin/vibemux_launch_trampoline.rs`, `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,native_process,executor,transcript_store}.rs`, writer arms in `lib.rs`, `src/bin/vibemux_native_fixture.rs` (`test_helpers`) | Trampoline, service, executor, capture, recovery at writer start | A descendant the vendor starts before reading input is contained; the trampoline consumes exactly the go byte and propagates the exit code; per-protocol integration tests with the fixture binary, ported from `a955484`'s `process_dispatch.rs` (19 scenarios); shutdown during a run; restart to `recovery_pending`; leak scan |
+| 4 | `crates/vibemux_platform/src/process_tree/launch_trampoline.rs`, `leader_exited` in `process_tree{,/posix_process_group}.rs` (+ tests), `executable_names_harness` in `vibemux_harness`, `crates/vibemuxd/src/bin/{vibemux_launch_trampoline,vibemux_native_fixture}.rs` (the fixture only with `test_helpers`), `crates/vibemuxd/src/harness_dispatch/{mod,config_loader,git_head,native_process,executor,transcript_store}.rs`, writer arms and startup recovery in `lib.rs`, service start and join in `control.rs`, `tests/{launch_trampoline,harness_dispatch}.rs` | Trampoline, service, executor, capture, recovery at writer start | Done: the trampoline passes the bytes after the go byte through intact, propagates the exit code, starts nothing unreleased, and contains a descendant the vendor starts before reading input. Fixture-binary integration tests, ported from `a955484`'s `process_dispatch.rs`: each execution protocol completes with a byte-exact transcript; probes for ACP, app-server, and Claude; admission gates and ACP probe-only; duplicate, conflict, and concurrent repeats; busy; confirmed and forced cancel; deadline; protocol violations; stderr counted only; a vendor that never reads its prompt; a vendor-started descendant ends with the attempt; shutdown during a run; restart to `recovery_pending`; the executable trust rules; and no prompt, vendor output, stderr, or path in the canonical database |
 | 5 | `crates/vibemuxd/src/control_harness_dispatch.rs`, `control.rs` op table and version, `crates/vibemux_cli/src/*` | Control v5 and `vibemuxctl dispatch` | Version gating (v5 ops refused at v4; v1–v4 accepted); code round-trip; output page reassembles byte-exact within the frame budget |
 | 6 | `docs/architecture.md`, `docs/protocol_boundaries.md`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `PROGRESS.md`, this ADR → Accepted | Documentation matches the code | Link check; `cargo fmt`, `clippy -D warnings`, `cargo test --workspace --all-features` (serial on Windows, issue #6); Python regression |
 | 7 | `docs/evidence/harness_dispatch_validation.md` | Live native Windows: `dispatch probe` against the installed CLIs (initialize only, no inference). A real `submit` only with explicit authorization of paid inference | Otherwise recorded as unverified |
 
 ### Open decisions before Stage 4
 
-Stage 1 executes nothing, so these do not block it. Each open item needs a
-recorded decision before the executor can launch a vendor process:
+Items 1, 2, and 5 are resolved and implemented. Items 3 and 4 stay open with
+the conservative behavior described; the Stage 7 live evidence revisits them.
+No Control operation can launch a vendor process before Stage 5.
 
 1. **ACP execution posture — resolved: probe-only in this slice.**
    OpenCode's permissive defaults (Decision 4) mean an ACP prompt can edit
@@ -508,12 +560,19 @@ recorded decision before the executor can launch a vendor process:
    amendment). Enabling ACP execution needs a protocol-owned, per-vendor deny
    posture verified live (for OpenCode, an injected permission config) and a
    new recorded decision.
-2. **Executable trust.** `.vibemux/harness_dispatch.json` lives in the project
-   tree, so it can arrive with a cloned repository and name any absolute
-   `.exe`. The loader must bind the executable to something the repository
-   cannot choose. For example, it could require the probe cache's resolved
-   path for that harness, reject executables under the project root, or read
-   routes from a per-user location.
+2. **Executable trust — resolved: outside the root and named for the
+   harness.** `.vibemux/harness_dispatch.json` lives in the project tree, so
+   it can arrive with a cloned repository and name any absolute `.exe`. The
+   config stays in `.vibemux/`, and the loader binds each executable to
+   properties the repository cannot choose: the canonical target must lie
+   outside the canonical project root, and its file stem must be the
+   harness command name (Decision 4). A route can therefore name only a
+   binary installed outside the checkout under that harness's own name, not
+   one the checkout ships and not an interpreter such as `cmd.exe` or
+   `powershell.exe`. Rejected alternatives: requiring the probe cache's
+   resolved path, which ties dispatch to a cache refresh and to `PATH`
+   order; and a per-user route file, which adds a second configuration
+   location and precedence rules.
 3. **Claude flags.** `--strict-mcp-config` and `--restricted` are verified
    only by `--help`; the Stage 7 initialize probe confirms they combine with
    `--bare` stream-json.

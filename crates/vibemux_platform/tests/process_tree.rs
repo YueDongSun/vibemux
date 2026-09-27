@@ -391,6 +391,28 @@ fn the_callers_own_group_is_refused() {
     );
 }
 
+/// The leader's exit is visible without reaping it, so the tree can still be
+/// terminated before the reap that could free its group id.
+#[cfg(unix)]
+#[test]
+fn a_leader_exit_is_observed_without_reaping_it() {
+    let _serial = serial();
+    let mut helper = Helper::spawn("parent", true);
+    let mut tree = ProcessTree::contain(helper.child.id()).expect("contain parent");
+    assert_eq!(tree.leader_exited(), Ok(false));
+    // End of file instead of the go line: the parent exits without spawning.
+    drop(helper.child.stdin.take());
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while !tree.leader_exited().expect("observe the leader") {
+        assert!(Instant::now() < deadline, "the leader did not exit");
+        thread::sleep(Duration::from_millis(10));
+    }
+    tree.terminate().expect("terminate after the exit");
+    // Still reapable, with its own status.
+    let status = helper.child.wait().expect("reap the leader");
+    assert_eq!(status.code(), Some(0));
+}
+
 #[test]
 fn invalid_process_ids_fail_closed_with_a_content_free_error() {
     // On POSIX, 1 is init, and group 1 would be every process the user may

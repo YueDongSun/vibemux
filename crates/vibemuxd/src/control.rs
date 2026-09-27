@@ -23,6 +23,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use tokio::time::{Instant, sleep};
 
+use crate::harness_dispatch::{DispatchServiceSettings, HarnessDispatchService};
 use crate::plugin_configuration::PluginStartup;
 use crate::plugin_registry::{
     PluginRegistry, PluginRegistryError, PluginStatus, PluginStatusReader,
@@ -505,6 +506,9 @@ impl Drop for SocketPathGuard {
 
 struct ServerState {
     terminal: TerminalObserver,
+    /// Harness dispatch (ADR 029); no control operation reaches it before
+    /// Control v5, but its attempts are joined at shutdown.
+    dispatch: HarnessDispatchService,
     writer: Mutex<Option<WriterWorker>>,
     plugins: PluginStatusReader,
     process_id: u32,
@@ -687,6 +691,24 @@ async fn verify_control_phase(
     Ok(())
 }
 
+/// Harness dispatch for one daemon start (ADR 029). Only a start with
+/// project paths has the state directory that holds the operator route
+/// config; the raw constructors get an unconfigured service.
+async fn start_dispatch(
+    writer: &WriterWorker,
+    security: Option<&crate::process::DaemonPaths>,
+) -> Result<HarnessDispatchService, WriterError> {
+    let handle = writer.handle()?;
+    Ok(match security {
+        Some(paths) => {
+            let settings =
+                DispatchServiceSettings::for_project(paths.project_root(), paths.state_dir());
+            HarnessDispatchService::start(handle, settings).await
+        }
+        None => HarnessDispatchService::unconfigured(handle),
+    })
+}
+
 /// Join the writer worker so the lifecycle locks are removed
 /// deterministically before a failed start returns; `WriterWorker::Drop`
 /// would only try_send a signal and detach, leaving stale locks behind.
@@ -829,6 +851,16 @@ impl DaemonControlServer {
                 // writer returns early, so a healthy start still owns it.
                 return Err(ControlError::ServerTerminated);
             };
+            let dispatch = match start_dispatch(&writer, security).await {
+                Ok(dispatch) => dispatch,
+                Err(error) => {
+                    let _ = registry.shutdown().await;
+                    let _ = join_writer(Some(writer)).await;
+                    return Err(ControlError::Writer {
+                        code: error.code().to_string(),
+                    });
+                }
+            };
             let supervisor = match supervisor {
                 Some(config) => {
                     let handle = match writer.handle() {
@@ -861,6 +893,7 @@ impl DaemonControlServer {
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
+                dispatch,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -893,9 +926,8 @@ impl DaemonControlServer {
             use std::os::unix::fs::PermissionsExt;
             use tokio::net::UnixListener;
 
-            // The ACL re-verification is Windows-only (ADR 020); keep the
-            // parameter honest on unix without changing behavior.
-            let _ = security;
+            // The ACL re-verification is Windows-only (ADR 020); on unix
+            // `security` only selects the harness dispatch config.
             let socket_path = PathBuf::from(&endpoint);
             let listener =
                 UnixListener::bind(&socket_path).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -921,6 +953,16 @@ impl DaemonControlServer {
                     return Err(error.into());
                 }
             }
+            let dispatch = match start_dispatch(&writer, security).await {
+                Ok(dispatch) => dispatch,
+                Err(error) => {
+                    let _ = registry.shutdown().await;
+                    let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
+                    return Err(ControlError::Writer {
+                        code: error.code().to_string(),
+                    });
+                }
+            };
             let supervisor = match supervisor {
                 Some(config) => match SupervisorService::start(writer.handle()?, config).await {
                     Ok(service) => Some(service),
@@ -941,6 +983,7 @@ impl DaemonControlServer {
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
+                dispatch,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1030,6 +1073,8 @@ async fn serve_owned(
         _ = stop.changed() => Ok(()),
         result = server => result,
     };
+    // Dispatch attempts end first: their finish goes through the writer.
+    state.dispatch.shutdown().await;
     // Signal all plugins together, join their cleanup, then release the one writer.
     let supervisor_result = match supervisor {
         Some(service) => service

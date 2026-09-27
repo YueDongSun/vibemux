@@ -19,6 +19,12 @@ name = "vibemux_model_fixture"
 path = "src/bin/vibemux_model_fixture.rs"
 required-features = ["test_helpers"]
 
+# Synthetic native vendor CLI for the harness dispatch tests (ADR 029).
+[[bin]]
+name = "vibemux_native_fixture"
+path = "src/bin/vibemux_native_fixture.rs"
+required-features = ["test_helpers"]
+
 [dependencies]
 prost.workspace = true
 async-trait.workspace = true
