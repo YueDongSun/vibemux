@@ -2595,3 +2595,21 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Remaining**
 - Review of the pull request, including reviewer approval of the `windows_job_object` `unsafe` module (AGENTS.md §7.2). The Stage 7 items from entry (4) still apply.
+
+### 2026-09-28 (1) - Harness dispatch merged into `main` (ADR 029, PR #10)
+
+**Status change**
+- ADR 029 harness dispatch (stages 1 to 6, Stage 7 partial) is on `main` through PR #10, merge commit `273a176`. The feature stays `PARTIAL`; its evidence and gates are unchanged from the 2026-09-27 entries (3) to (6).
+- The repository owner approved the Stage 2 `windows_job_object` `unsafe` module when merging PR #10, which meets the reviewer-approval requirement of AGENTS.md §7.2.
+
+**Implemented**
+- ADR 029's status line and implementation plan record the merge. No code changed.
+
+**Evidence**
+- CI on the PR head `123941c`: `python` (Ubuntu, Windows) and `rust (ubuntu-latest)` passed. The first attempts of both `rust (windows-latest)` jobs failed on runner timing, not on dispatch logic. In one, three `vibemuxd` writer tests hit the fixed 5 s writer startup bound during a runner I/O stall. In the other, `terminal_observer`'s `native_surface_observation_never_changes_execution_and_requires_identity` lost its plugin session (`terminal_plugin_unavailable`). A rerun of both jobs passed, and PR #10 merged with all eight checks green.
+- tests: not run for this change; it edits only docs.
+- commit/PR: PR #10 merged as `273a176`; this docs change is its own pull request.
+
+**Remaining**
+- The writer's startup wait shares the 5 s per-request response timeout, and the CLI's `daemon start` wait is also 5 s, so Windows CI can fail when the runner stalls on I/O. Hardening these bounds is a separate follow-up.
+- ADR 029 open decision 4 (forced exit after a terminal record), a live `dispatch submit` (needs explicit authorization of paid inference), and the other Stage 7 items from the 2026-09-27 entry (4).

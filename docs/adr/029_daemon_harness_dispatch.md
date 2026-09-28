@@ -1,9 +1,9 @@
 # ADR 029: Daemon-owned harness request dispatch and output capture
 
 Status: Accepted for pre-alpha implementation. Stages 1 to 6 are implemented
-on `feat/harness_dispatch_port` and reach `main` only when that branch
-merges. Before the merge, the Stage 2 `windows_job_object` `unsafe` module
-still needs reviewer approval on the pull request (AGENTS.md §7.2). Stage 7
+and merged into `main` through PR #10 (merge commit `273a176`,
+2026-09-28). The repository owner approved the Stage 2 `windows_job_object`
+`unsafe` module when merging PR #10 (AGENTS.md §7.2). Stage 7
 recorded live initialize-only probes of the installed Codex, Claude,
 OpenCode, Copilot, and Grok CLIs on native Windows
 ([evidence](../evidence/harness_dispatch_validation.md)). No live submit has
@@ -597,12 +597,12 @@ Control request prints only the argument's byte count.
   the daemon. With no config, every dispatch op returns
   `harness_dispatch_unconfigured` and nothing is spawned.
 
-## Implementation plan (stages 1 to 6 done on the branch, Stage 7 partial)
+## Implementation plan (stages 1 to 6 done, Stage 7 partial)
 
-Branch `feat/harness_dispatch_port`, built on the PR #9 line. The branch is
-published, so `main` is merged into it instead of rebased (`5873573` and
-the PR #9 merge `6e6df7f`, both on 2026-09-27). The branch reaches `main`
-through its own pull request.
+Branch `feat/harness_dispatch_port`, built on the PR #9 line. The branch was
+published, so `main` was merged into it instead of rebased (`5873573` and
+the PR #9 merge `6e6df7f`, both on 2026-09-27). It reached `main` through
+PR #10 (merge commit `273a176`).
 PR #9 carries Control v4 and ADR 028, which this work depends on. Each stage
 is one reviewable commit with its own tests.
 
