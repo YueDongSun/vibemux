@@ -93,13 +93,14 @@ pub fn palette_for(id: ThemeId) -> ThemePalette {
         ThemeId::Nord => nord_palette(),
         ThemeId::Gruvbox => gruvbox_palette(),
         ThemeId::Studio => studio_palette(),
+        ThemeId::ClaudeLight => claude_light_palette(),
     }
 }
 
-/// All five palettes in canonical order. Useful for the cycle helper
+/// All seven palettes in canonical order. Useful for the cycle helper
 /// and for tests.
 #[must_use]
-pub fn all_palettes() -> [ThemePalette; 6] {
+pub fn all_palettes() -> [ThemePalette; 7] {
     [
         claude_palette(),
         github_palette(),
@@ -107,6 +108,7 @@ pub fn all_palettes() -> [ThemePalette; 6] {
         nord_palette(),
         gruvbox_palette(),
         studio_palette(),
+        claude_light_palette(),
     ]
 }
 
@@ -138,19 +140,46 @@ fn studio_palette() -> ThemePalette {
 fn claude_palette() -> ThemePalette {
     ThemePalette {
         name: "claude".to_string(),
-        bg: "#0F0E0C".to_string(),
-        surface: "#171512".to_string(),
-        surface_alt: "#211F1A".to_string(),
-        border: "#2B2822".to_string(),
-        text_primary: "#EAE6DC".to_string(),
-        text_muted: "#9C958A".to_string(),
+        bg: "#262624".to_string(),
+        surface: "#1F1E1D".to_string(),
+        surface_alt: "#30302E".to_string(),
+        border: "#3A3935".to_string(),
+        text_primary: "#F5F4EE".to_string(),
+        text_muted: "#A8A59B".to_string(),
         accent: "#D97757".to_string(),
         accent_alt: "#E7C6B4".to_string(),
         success: "#8AB487".to_string(),
         warning: "#D9A85F".to_string(),
-        danger: "#CB6D63".to_string(),
-        terminal_bg: "#0A0908".to_string(),
-        terminal_fg: "#E8E4D8".to_string(),
+        danger: "#E07A6F".to_string(),
+        terminal_bg: "#1A1918".to_string(),
+        terminal_fg: "#EDEBE4".to_string(),
+        terminal_cursor: "#D97757".to_string(),
+        font_family: "Cascadia Code".to_string(),
+        font_size: 13.0,
+        corner_radius: 8.0,
+        border_width: 1.0,
+        density: Density::Comfortable,
+    }
+}
+
+fn claude_light_palette() -> ThemePalette {
+    ThemePalette {
+        name: "claude_light".to_string(),
+        bg: "#FAF9F5".to_string(),
+        surface: "#F5F4ED".to_string(),
+        surface_alt: "#FFFFFF".to_string(),
+        border: "#E6E3DA".to_string(),
+        text_primary: "#141413".to_string(),
+        text_muted: "#6B6960".to_string(),
+        accent: "#C96442".to_string(),
+        accent_alt: "#F1D8CC".to_string(),
+        success: "#3F7A4A".to_string(),
+        warning: "#8F6414".to_string(),
+        danger: "#B03A2E".to_string(),
+        // Dark terminal, following Studio: the derived ANSI colors of the
+        // terminal generators are tuned for dark backgrounds.
+        terminal_bg: "#1F1E1D".to_string(),
+        terminal_fg: "#F5F4EE".to_string(),
         terminal_cursor: "#D97757".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
@@ -275,6 +304,14 @@ mod tests {
         let _ = (r, g, b);
     }
 
+    /// Minimum luma gap (Rec. 709 weights, 0-255) between canvas and sidebar
+    /// surface in either direction (ADR 030 amends ADR 026's direction rule).
+    const MINIMUM_SURFACE_SEPARATION: f32 = 5.0;
+
+    fn luma(rgb: (u8, u8, u8)) -> f32 {
+        0.2126 * f32::from(rgb.0) + 0.7152 * f32::from(rgb.1) + 0.0722 * f32::from(rgb.2)
+    }
+
     #[test]
     fn themes_share_grayscale_base() {
         for palette in all_palettes() {
@@ -283,36 +320,102 @@ mod tests {
             assert_eq!(palette.text_muted.len(), 7);
             assert_eq!(palette.terminal_bg.len(), 7);
             assert_eq!(palette.terminal_fg.len(), 7);
-            // Surface is strictly lighter than bg; muted text strictly
-            // darker than primary text (per-theme contrast invariant).
-            let (br, bg, bb) = palette.rgb("bg").expect("bg");
+            let bg = palette.rgb("bg").expect("bg");
             let surface = palette.rgb("surface").expect("surface");
-            let primary = palette.rgb("text_primary").expect("primary");
-            let muted = palette.rgb("text_muted").expect("muted");
-            let (sr, sg, sb) = surface;
-            let lum_bg = 0.2126 * br as f32 + 0.7152 * bg as f32 + 0.0722 * bb as f32;
-            let lum_surface = 0.2126 * sr as f32 + 0.7152 * sg as f32 + 0.0722 * sb as f32;
             assert!(
-                if palette.name == "studio" {
-                    lum_surface < lum_bg
-                } else {
-                    lum_surface > lum_bg
-                },
-                "surface must be visibly separated from canvas"
+                (luma(surface) - luma(bg)).abs() >= MINIMUM_SURFACE_SEPARATION,
+                "{}: surface must be visibly separated from canvas",
+                palette.name
             );
-            let (pr, pg, pb) = primary;
-            let (mr, mg, mb) = muted;
-            let lum_primary = 0.2126 * pr as f32 + 0.7152 * pg as f32 + 0.0722 * pb as f32;
-            let lum_muted = 0.2126 * mr as f32 + 0.7152 * mg as f32 + 0.0722 * mb as f32;
+            let primary = luma(palette.rgb("text_primary").expect("primary"));
+            let muted = luma(palette.rgb("text_muted").expect("muted"));
             assert!(
-                if palette.name == "studio" {
-                    lum_primary < lum_muted
+                if palette.is_light() {
+                    primary < muted
                 } else {
-                    lum_primary > lum_muted
+                    primary > muted
                 },
-                "primary text must contrast more strongly than muted text"
+                "{}: primary text must contrast more strongly than muted text",
+                palette.name
             );
         }
+    }
+
+    #[test]
+    fn light_palettes_are_studio_and_claude_light() {
+        let names: Vec<String> = all_palettes()
+            .into_iter()
+            .filter(ThemePalette::is_light)
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["studio", "claude_light"]);
+    }
+
+    #[test]
+    fn claude_pair_text_meets_wcag_aa_on_every_surface() {
+        use crate::theme::contrast::{TEXT_CONTRAST_MINIMUM, contrast_ratio};
+        for id in [ThemeId::Claude, ThemeId::ClaudeLight] {
+            let p = palette_for(id);
+            for text in ["text_primary", "text_muted"] {
+                for surface in ["bg", "surface", "surface_alt"] {
+                    let ratio = contrast_ratio(
+                        p.rgb(text).expect("text"),
+                        p.rgb(surface).expect("surface"),
+                    );
+                    assert!(
+                        ratio >= TEXT_CONTRAST_MINIMUM,
+                        "{} {text} on {surface}: {ratio:.2}",
+                        p.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readable_accent_text_meets_wcag_aa_in_every_palette() {
+        use crate::theme::contrast::{TEXT_CONTRAST_MINIMUM, contrast_ratio, readable_text_color};
+        for p in all_palettes() {
+            let surfaces: Vec<(u8, u8, u8)> = ["bg", "surface", "surface_alt"]
+                .into_iter()
+                .map(|field| p.rgb(field).expect("surface"))
+                .collect();
+            let text = readable_text_color(
+                p.rgb("accent").expect("accent"),
+                &surfaces,
+                p.rgb("text_primary").expect("text"),
+                TEXT_CONTRAST_MINIMUM,
+            );
+            for surface in &surfaces {
+                assert!(
+                    contrast_ratio(text, *surface) >= TEXT_CONTRAST_MINIMUM,
+                    "{}",
+                    p.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claude_pair_uses_the_approved_tokens() {
+        let light = palette_for(ThemeId::ClaudeLight);
+        assert_eq!(
+            (
+                light.bg.as_str(),
+                light.surface.as_str(),
+                light.accent.as_str()
+            ),
+            ("#FAF9F5", "#F5F4ED", "#C96442")
+        );
+        let dark = palette_for(ThemeId::Claude);
+        assert_eq!(
+            (
+                dark.bg.as_str(),
+                dark.surface.as_str(),
+                dark.surface_alt.as_str()
+            ),
+            ("#262624", "#1F1E1D", "#30302E")
+        );
     }
 
     #[test]
@@ -387,5 +490,6 @@ mod tests {
         assert_eq!(palette_for(ThemeId::Claude).name, "claude");
         assert_eq!(palette_for(ThemeId::Github).name, "github");
         assert_eq!(palette_for(ThemeId::Vscode).name, "vscode");
+        assert_eq!(palette_for(ThemeId::ClaudeLight).name, "claude_light");
     }
 }

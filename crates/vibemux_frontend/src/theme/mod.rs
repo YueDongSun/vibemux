@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Theme system: a light Studio palette and five compatible dark palettes.
+//! Theme system: two light palettes (Studio, Claude light) and five dark palettes.
 //! background-to-border ramp and semantic accent set.
 //!
 //! - `ThemeId` selects which palette is active.
@@ -34,20 +34,22 @@ pub enum ThemeId {
     Nord,
     Gruvbox,
     Studio,
+    ClaudeLight,
 }
 
 impl ThemeId {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Claude,
         Self::Github,
         Self::Vscode,
         Self::Nord,
         Self::Gruvbox,
         Self::Studio,
+        Self::ClaudeLight,
     ];
 
     /// Cycle to the next theme in the canonical order:
-    /// `Claude -> GitHub -> VSCode -> Nord -> Gruvbox -> Studio -> Claude`.
+    /// `Claude -> GitHub -> VSCode -> Nord -> Gruvbox -> Studio -> ClaudeLight -> Claude`.
     #[must_use]
     pub const fn cycle(self) -> Self {
         match self {
@@ -56,11 +58,12 @@ impl ThemeId {
             Self::Vscode => Self::Nord,
             Self::Nord => Self::Gruvbox,
             Self::Gruvbox => Self::Studio,
-            Self::Studio => Self::Claude,
+            Self::Studio => Self::ClaudeLight,
+            Self::ClaudeLight => Self::Claude,
         }
     }
 
-    /// Stable lowercase token for serialization and on-disk persistence.
+    /// Stable snake_case token for serialization and on-disk persistence.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -70,14 +73,15 @@ impl ThemeId {
             Self::Nord => "nord",
             Self::Gruvbox => "gruvbox",
             Self::Studio => "studio",
+            Self::ClaudeLight => "claude_light",
         }
     }
 }
 
 impl Default for ThemeId {
     fn default() -> Self {
-        // New profiles use Studio; existing serialized theme IDs are preserved.
-        Self::Studio
+        // New profiles use Claude light (ADR 030); saved theme IDs are preserved.
+        Self::ClaudeLight
     }
 }
 
@@ -107,19 +111,33 @@ mod tests {
         assert_eq!(ThemeId::Vscode.cycle(), ThemeId::Nord);
         assert_eq!(ThemeId::Nord.cycle(), ThemeId::Gruvbox);
         assert_eq!(ThemeId::Gruvbox.cycle(), ThemeId::Studio);
-        assert_eq!(ThemeId::Studio.cycle(), ThemeId::Claude);
+        assert_eq!(ThemeId::Studio.cycle(), ThemeId::ClaudeLight);
+        assert_eq!(ThemeId::ClaudeLight.cycle(), ThemeId::Claude);
     }
 
     #[test]
-    fn theme_id_as_str_is_lowercase() {
+    fn theme_id_as_str_is_snake_case() {
         for id in ThemeId::ALL {
-            assert!(id.as_str().chars().all(|c| c.is_ascii_lowercase()));
+            assert!(
+                id.as_str()
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_')
+            );
+            assert!(!id.as_str().starts_with('_') && !id.as_str().ends_with('_'));
         }
     }
 
     #[test]
-    fn theme_id_default_is_studio() {
-        assert_eq!(ThemeId::default(), ThemeId::Studio);
+    fn theme_id_default_is_claude_light() {
+        assert_eq!(ThemeId::default(), ThemeId::ClaudeLight);
+    }
+
+    #[test]
+    fn claude_light_serializes_as_snake_case_token() {
+        assert_eq!(
+            serde_json::to_string(&ThemeId::ClaudeLight).expect("serialize"),
+            "\"claude_light\""
+        );
     }
 
     #[test]
@@ -140,15 +158,20 @@ mod tests {
     }
 
     #[test]
-    fn all_palettes_returns_six_in_canonical_order() {
-        let palettes = all_palettes();
-        assert_eq!(palettes.len(), 6);
-        assert_eq!(palettes[0].name, "claude");
-        assert_eq!(palettes[1].name, "github");
-        assert_eq!(palettes[2].name, "vscode");
-        assert_eq!(palettes[3].name, "nord");
-        assert_eq!(palettes[4].name, "gruvbox");
-        assert_eq!(palettes[5].name, "studio");
+    fn all_palettes_returns_seven_in_canonical_order() {
+        let names: Vec<String> = all_palettes().into_iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            [
+                "claude",
+                "github",
+                "vscode",
+                "nord",
+                "gruvbox",
+                "studio",
+                "claude_light"
+            ]
+        );
     }
 
     #[test]
