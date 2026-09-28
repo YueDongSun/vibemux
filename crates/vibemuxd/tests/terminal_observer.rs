@@ -142,7 +142,10 @@ fn start(writer: &WriterWorker, root: &Path) -> TerminalQuery {
     query
 }
 
-#[tokio::test]
+// This test makes blocking writer calls while a plugin session is live. On a
+// current_thread runtime a stall longer than the heartbeat receive deadline
+// starves the session monitor, so it runs multi-threaded like the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_surface_observation_never_changes_execution_and_requires_identity() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = registry(temp.path(), "terminal_normal", true).await;

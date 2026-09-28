@@ -2613,3 +2613,31 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Remaining**
 - The writer's startup wait shares the 5 s per-request response timeout, and the CLI's `daemon start` wait is also 5 s, so Windows CI can fail when the runner stalls on I/O. Hardening these bounds is a separate follow-up.
 - ADR 029 open decision 4 (forced exit after a terminal record), a live `dispatch submit` (needs explicit authorization of paid inference), and the other Stage 7 items from the 2026-09-27 entry (4).
+
+### 2026-09-28 (2) - Separate writer startup bound and derived `daemon start` wait (`fix/daemon_startup_deadline`)
+
+**Status change**
+- None. M3 stays `VERIFIED`. This change hardens the two startup bounds and the test runtime behind the Windows CI failures recorded in the 2026-09-28 (1) entry.
+
+**Root cause**
+- `WriterWorker` waited for writer readiness (store open, migrations, harness dispatch recovery) with the 5 s per-request `DEFAULT_RESPONSE_TIMEOUT`. On expiry it still joined the writer thread, so the bound never capped wall time. It only turned a slow but successful start into `writer_response_timeout`. Local reproduction: with a 1 ns request deadline, a fresh start that took 17 ms failed with `ResponseTimeout`, and the store reopened cleanly afterwards.
+- `vibemuxctl daemon start` waited 5 s for health and then terminated the daemon, so it could kill a daemon that was still starting.
+- `terminal_observer`'s `native_surface_observation_never_changes_execution_and_requires_identity` ran on a current_thread tokio runtime and made blocking writer calls while a plugin session was live. A 6 s blocking stall inserted after the registry became active reproduced the CI failure (`terminal_plugin_unavailable` at the first `inspect`). The same stall on a multi-thread runtime passed.
+
+**Implemented**
+- `vibemuxd`: `DEFAULT_WRITER_STARTUP_TIMEOUT` (20 s) bounds readiness, and `response_timeout` is now per-request only. Expiry returns the new `WriterError::StartupTimeout` (`writer_startup_timeout`) and still joins the writer thread, so the lifecycle locks are released before the error returns. Public constructor signatures are unchanged. The harness dispatch executor's retry classification is unchanged, because startup errors never reach it.
+- `vibemux_cli`: `DEFAULT_STARTUP_TIMEOUT` is the writer startup bound plus a 10 s launch margin (30 s). A compile-time assertion keeps it longer than the writer bound. The Windows launcher helper's wait for the daemon PID follows it (`max(startup_timeout, 3 s)`). Early daemon exits are still reported as soon as they are observed. The one-time Windows ACL helper runs in `ensure_runtime_dir` before the spawn, outside this window.
+- `terminal_observer`: that test now uses `multi_thread, worker_threads = 2`, matching the daemon's runtime and every test in `plugin_registry.rs`. No assertion changed.
+- ADR 018 amendment (2026-09-28) records the relation between the two bounds.
+
+**Evidence**
+- New tests in `vibemuxd`: `startup_readiness_does_not_use_the_request_deadline` (a 1 ns request deadline; the start succeeds, shutdown joins, and the lock is released) and `expired_startup_bound_reports_startup_timeout_and_releases_lock` (a 1 ns startup bound; `writer_startup_timeout`, the lock is released, and a restart succeeds). The first reproduces the pre-fix failure mode directly.
+- The two reproductions above used temporary diagnostic code that is not part of this change.
+- commands (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` (parallel, as in CI) exit 0, 491 passed, 0 failed, 2 ignored.
+
+**Observation (not changed)**
+- The plugin registry's session monitor uses a `biased` `tokio::select!` that polls the heartbeat deadline before buffered frames. After any runtime stall longer than the heartbeat receive deadline, it ends the session even when heartbeats are already queued. The daemon's multi-thread runtime makes such a stall unlikely. Changing the select order is out of scope here.
+
+**Remaining**
+- Windows CI evidence for this change comes from its pull request run.
+- ADR 029 open decision 4 and a live `dispatch submit`, unchanged from the 2026-09-28 (1) entry.
