@@ -14,6 +14,10 @@ const SERIF_CANDIDATES: [&str; 2] = ["georgia.ttf", "cambria.ttc"];
 const CJK_CANDIDATES: [&str; 4] = ["msyh.ttc", "simhei.ttf", "meiryo.ttc", "YuGothM.ttc"];
 
 pub const GREETING_SIZE: f32 = 30.0;
+pub const TITLE_SIZE: f32 = 22.0;
+pub const TASK_TITLE_SIZE: f32 = 17.0;
+pub const PROSE_SIZE: f32 = 16.0;
+pub const PROSE_LINE_HEIGHT: f32 = 24.0;
 
 #[must_use]
 pub fn serif_family() -> FontFamily {

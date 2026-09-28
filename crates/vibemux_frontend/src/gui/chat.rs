@@ -4,9 +4,14 @@ use super::{
     C,
     design::{self, Icon},
     supervisor_state::{SupervisorUiState, TaskDetailTab, UiActionQueue},
+    typography,
 };
 use crate::supervisor_model::{SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView};
 use egui::{self, RichText, Ui, ViewportCommand, ViewportId};
+
+pub const CONTENT_WIDTH: f32 = 720.0;
+const FADE_HEIGHT: f32 = 28.0;
+const BOTTOM_PADDING: f32 = 48.0;
 
 pub fn render_conversation(
     ui: &mut Ui,
@@ -16,44 +21,71 @@ pub fn render_conversation(
     state: &mut SupervisorUiState,
     actions: &UiActionQueue,
 ) {
-    egui::ScrollArea::vertical().id_salt("coordinator_conversation").auto_shrink([false,false]).show(ui,|ui| {
-        content_column(ui,|ui| {
-            ui.add_space(28.0);
-            ui.horizontal(|ui| {
-                design::spark(ui, c.accent, 26.0, 0.0);ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Workspace updates").size(15.0).strong().color(c.txt));
-                    ui.label(RichText::new("Task activity · reported by the daemon").size(12.0).color(c.muted));
-                });
-                if snapshot.mode==SnapshotMode::Demo {demo_badge(ui,c);}
-            });
-            ui.add_space(22.0);
-            if snapshot.tasks.is_empty() {
-                ui.label(RichText::new("A clear place to coordinate your work.").size(25.0).color(c.txt));
-                ui.add_space(12.0);
-                wrapped_label(ui,RichText::new("Assigned tasks, worker updates, and results will appear in this conversation. Your draft stays here while the coordinator connection is unavailable.").size(15.0).color(c.muted));
-                ui.add_space(32.0);
-                ui.horizontal(|ui| {design::icon(ui,Icon::Activity,c.muted,18.0);ui.label(RichText::new("No recorded tasks yet").size(13.0).color(c.muted));});
-            } else {
-                ui.label(RichText::new(format!("{} tasks in this workspace",snapshot.tasks.len())).size(22.0).color(c.txt));
-                ui.add_space(7.0);
-                ui.label(RichText::new("Open a task to follow its execution. The conversation stays here.").size(13.0).color(c.muted));
-                ui.add_space(20.0);
-                egui::Frame::new().fill(c.raised).stroke(egui::Stroke::new(1.0,c.border)).corner_radius(12).inner_margin(egui::Margin::symmetric(20,4)).show(ui,|ui| {
-                    ui.set_min_width(ui.available_width());
-                    for (index,task) in snapshot.tasks.iter().enumerate() {
-                        if index>0 {ui.separator();}
-                        task_row(ui,ctx,c,snapshot,task,state,actions);
+    let output = egui::ScrollArea::vertical()
+        .id_salt("coordinator_conversation")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            content_column(ui, |ui| {
+                ui.add_space(28.0);
+                ui.horizontal(|ui| {
+                    design::spark(ui, c.accent, 26.0, 0.0);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Workspace updates")
+                                .size(15.0)
+                                .strong()
+                                .color(c.txt),
+                        );
+                        ui.label(
+                            RichText::new("Task activity · reported by the daemon")
+                                .size(12.0)
+                                .color(c.muted),
+                        );
+                    });
+                    if snapshot.mode == SnapshotMode::Demo {
+                        demo_badge(ui, c);
                     }
                 });
-            }
-            if let Some(cursor)=snapshot.next_cursor.as_ref() {
-                ui.add_space(12.0);
-                if design::quiet_button(ui,c,"Load more tasks").clicked() {actions.enqueue(SupervisorAction::LoadMoreTasks {cursor:cursor.clone()});}
-            }
-            ui.add_space(30.0);
+                ui.add_space(22.0);
+                ui.label(
+                    RichText::new(format!("{} tasks in this workspace", snapshot.tasks.len()))
+                        .font(typography::display_font(ui.ctx(), typography::TITLE_SIZE))
+                        .color(c.txt),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Open a task to follow its execution. The conversation stays here.",
+                    )
+                    .size(13.0)
+                    .color(c.muted),
+                );
+                ui.add_space(14.0);
+                for task in &snapshot.tasks {
+                    task_row(ui, ctx, c, snapshot, task, state, actions);
+                    ui.add_space(4.0);
+                }
+                if let Some(cursor) = snapshot.next_cursor.as_ref() {
+                    ui.add_space(12.0);
+                    if design::quiet_button(ui, c, "Load more tasks").clicked() {
+                        actions.enqueue(SupervisorAction::LoadMoreTasks {
+                            cursor: cursor.clone(),
+                        });
+                    }
+                }
+                ui.add_space(BOTTOM_PADDING);
+            });
         });
-    });
+    let viewport = output.inner_rect;
+    let more_below = output.state.offset.y + viewport.height() < output.content_size.y - 1.0;
+    if more_below {
+        let fade = egui::Rect::from_min_max(
+            egui::pos2(viewport.left(), viewport.bottom() - FADE_HEIGHT),
+            viewport.max,
+        );
+        design::paint_bottom_fade(ui.painter(), fade, c.bg);
+    }
 }
 
 fn task_row(
@@ -65,7 +97,31 @@ fn task_row(
     state: &mut SupervisorUiState,
     actions: &UiActionQueue,
 ) {
-    ui.add_space(14.0);
+    let background = ui.painter().add(egui::Shape::Noop);
+    let inner = egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(16, 12))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            task_row_contents(ui, ctx, c, snapshot, task, state, actions);
+        });
+    let rect = inner.response.rect;
+    if ui.rect_contains_pointer(rect) {
+        ui.painter().set(
+            background,
+            egui::epaint::RectShape::filled(rect, design::CARD_RADIUS, c.raised),
+        );
+    }
+}
+
+fn task_row_contents(
+    ui: &mut Ui,
+    ctx: &egui::Context,
+    c: &C,
+    snapshot: &SupervisorSnapshot,
+    task: &TaskView,
+    state: &mut SupervisorUiState,
+    actions: &UiActionQueue,
+) {
     ui.horizontal_wrapped(|ui| {
         design::status(ui, c, &task.state);
         ui.label(RichText::new("/").size(12.0).color(c.muted));
@@ -87,9 +143,16 @@ fn task_row(
     };
     if ui
         .add(
-            egui::Button::new(RichText::new(title).size(16.0).strong().color(c.txt))
-                .frame(false)
-                .wrap(),
+            egui::Button::new(
+                RichText::new(title)
+                    .font(typography::display_font(
+                        ui.ctx(),
+                        typography::TASK_TITLE_SIZE,
+                    ))
+                    .color(c.txt),
+            )
+            .frame(false)
+            .wrap(),
         )
         .on_hover_text("Open task details")
         .clicked()
@@ -101,7 +164,10 @@ fn task_row(
     }
     wrapped_label(
         ui,
-        RichText::new(&task.latest_update).size(13.0).color(c.muted),
+        RichText::new(&task.latest_update)
+            .font(typography::display_font(ui.ctx(), typography::PROSE_SIZE))
+            .line_height(Some(typography::PROSE_LINE_HEIGHT))
+            .color(c.muted),
     );
     ui.add_space(5.0);
     ui.horizontal_wrapped(|ui| {
@@ -144,7 +210,6 @@ fn task_row(
             }
         }
     });
-    ui.add_space(12.0);
 }
 
 pub(crate) fn task_viewport_id(task_id: &str) -> ViewportId {
@@ -157,7 +222,7 @@ pub fn wrapped_label(ui: &mut Ui, text: RichText) -> egui::Response {
     ui.add(egui::Label::new(text).wrap())
 }
 pub(crate) fn content_column(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
-    let width = ui.available_width().min(790.0);
+    let width = ui.available_width().min(CONTENT_WIDTH);
     let inset = ((ui.available_width() - width) / 2.0).max(0.0);
     ui.horizontal_top(|ui| {
         ui.add_space(inset);

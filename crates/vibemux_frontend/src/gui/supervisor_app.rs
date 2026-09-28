@@ -31,6 +31,7 @@ use super::{
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const REFRESH_BUTTON_ID: &str = "topbar_refresh";
+const TOPBAR_MIN_HEIGHT: f32 = 52.0;
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(500);
 const TASK_WINDOW_SIZE: [f32; 2] = [1080.0, 760.0];
 const TASK_WINDOW_MIN_SIZE: [f32; 2] = [720.0, 520.0];
@@ -244,12 +245,12 @@ impl SupervisorApp {
 
     fn render_topbar(&mut self, ctx: &egui::Context, colors: &C, snapshot: &SupervisorSnapshot) {
         egui::TopBottomPanel::top("supervisor_header")
-            .show_separator_line(false)
-            .exact_height(76.0)
+            .show_separator_line(true)
+            .min_height(TOPBAR_MIN_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(colors.bg)
-                    .inner_margin(egui::Margin::symmetric(20, 10)),
+                    .inner_margin(egui::Margin::symmetric(20, 12)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -260,7 +261,7 @@ impl SupervisorApp {
                         .unwrap_or("Coordinator");
                     ui.label(
                         RichText::new("Main conversation")
-                            .size(16.0)
+                            .size(15.0)
                             .strong()
                             .color(colors.txt),
                     );
@@ -269,8 +270,8 @@ impl SupervisorApp {
                             .size(12.0)
                             .color(colors.muted),
                     );
-                    ui.add_space(10.0);
-                    connection_badge(ui, colors, snapshot.connection.status);
+                    ui.add_space(12.0);
+                    connection_indicator(ui, colors, snapshot.connection.status);
                     if snapshot.mode == SnapshotMode::Demo {
                         ui.add_space(10.0);
                         chat::demo_badge(ui, colors);
@@ -289,7 +290,7 @@ impl SupervisorApp {
                     });
                 });
                 if let Some(detail) = snapshot.connection.detail.as_deref() {
-                    ui.add_space(3.0);
+                    ui.add_space(4.0);
                     chat::wrapped_label(ui, RichText::new(detail).size(12.0).color(colors.muted));
                 }
             });
@@ -572,6 +573,7 @@ impl SupervisorApp {
 
         if page == MainPage::CoordinatorChat && !welcome {
             let composer_panel = egui::TopBottomPanel::bottom("coordinator_composer")
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(colors.bg)
@@ -753,21 +755,16 @@ fn drawer_contents(
     }
 }
 
-fn connection_badge(ui: &mut egui::Ui, colors: &C, status: ConnectionStatus) {
+fn connection_indicator(ui: &mut egui::Ui, colors: &C, status: ConnectionStatus) {
     let (label, color) = match status {
         ConnectionStatus::Connected => ("Connected", colors.ok),
         ConnectionStatus::Connecting => ("Connecting", colors.warn),
         ConnectionStatus::Disconnected => ("Disconnected", colors.muted),
         ConnectionStatus::Unavailable => ("Unavailable", colors.muted),
     };
-    egui::Frame::new()
-        .fill(colors.surf)
-        .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(egui::CornerRadius::same(7))
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(RichText::new(label).size(12.0).color(color));
-        });
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 3.5, color);
+    ui.label(RichText::new(label).size(12.0).color(colors.muted));
 }
 
 fn ime_composition_active(ctx: &egui::Context) -> bool {
@@ -1178,6 +1175,32 @@ mod tests {
                 .iter()
                 .all(|action| matches!(action, SupervisorAction::Refresh))
         );
+    }
+
+    #[test]
+    fn task_titles_use_the_serif_family() {
+        let mut app = test_app();
+        let context = egui::Context::default();
+        context.set_fonts(super::super::typography::build_font_definitions(|_| None));
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw.clone(), |context| app.render_frame(context));
+        let output = context.run(raw, |context| app.render_frame(context));
+        let serif_title = output.shapes.iter().any(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text) => {
+                text.galley.job.text == "Second task"
+                    && text.galley.job.sections.first().is_some_and(|section| {
+                        section.format.font_id.family == super::super::typography::serif_family()
+                    })
+            }
+            _ => false,
+        });
+        assert!(serif_title);
     }
 
     #[test]

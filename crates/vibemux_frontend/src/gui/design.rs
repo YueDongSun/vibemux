@@ -1,6 +1,6 @@
 //! Shared visual primitives for the conversation workspace.
 use super::C;
-use egui::{self, Color32, Painter, Pos2, Response, RichText, Sense, Stroke, Ui, vec2};
+use egui::{self, Color32, Painter, Pos2, Rect, Response, RichText, Sense, Stroke, Ui, vec2};
 
 #[derive(Clone, Copy)]
 pub enum Icon {
@@ -9,7 +9,6 @@ pub enum Icon {
     Terminal,
     Arrow,
     Settings,
-    Activity,
     Refresh,
     Plus,
     SidebarToggle,
@@ -59,13 +58,6 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
             painter.circle_stroke(rect.center(), rect.width() * 0.38, stroke);
             painter.circle_stroke(rect.center(), rect.width() * 0.12, stroke);
         }
-        Icon::Activity => {
-            painter.line_segment([position(0.1, 0.5), position(0.3, 0.5)], stroke);
-            painter.line_segment([position(0.3, 0.5), position(0.45, 0.1)], stroke);
-            painter.line_segment([position(0.45, 0.1), position(0.65, 0.85)], stroke);
-            painter.line_segment([position(0.65, 0.85), position(0.8, 0.5)], stroke);
-            painter.line_segment([position(0.8, 0.5), position(0.95, 0.5)], stroke);
-        }
         Icon::Refresh => {
             painter.circle_stroke(rect.center(), rect.width() * 0.36, stroke);
             painter.line_segment([position(0.72, 0.05), position(0.86, 0.18)], stroke);
@@ -89,6 +81,19 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
 
 pub const COMPOSER_RADIUS: u8 = 20;
 pub const BUTTON_RADIUS: u8 = 8;
+pub const CARD_RADIUS: u8 = 12;
+
+/// Fade `rect` from transparent at the top to `color` at the bottom.
+pub fn paint_bottom_fade(painter: &Painter, rect: Rect, color: Color32) {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), Color32::TRANSPARENT);
+    mesh.colored_vertex(rect.right_top(), Color32::TRANSPARENT);
+    mesh.colored_vertex(rect.left_bottom(), color);
+    mesh.colored_vertex(rect.right_bottom(), color);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    painter.add(egui::Shape::mesh(mesh));
+}
 const ICON_BUTTON_SIZE: f32 = 30.0;
 const SPARK_SHORT_RAY: f32 = 0.62;
 const SPARK_INNER_GAP: f32 = 0.16;
