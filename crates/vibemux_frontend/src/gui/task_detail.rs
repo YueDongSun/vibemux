@@ -14,6 +14,16 @@ use super::{
     supervisor_state::{TaskDetailSelection, TaskDetailTab, UiActionQueue},
 };
 
+/// Whether the detail view draws the task title itself (detached window) or
+/// leaves it to the drawer header.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitleDisplay {
+    Shown,
+    InHeader,
+}
+
+const DETAIL_LABEL_WIDTH: f32 = 76.0;
+
 pub fn render(
     ui: &mut Ui,
     colors: &C,
@@ -21,6 +31,7 @@ pub fn render(
     task: &TaskView,
     selection: &mut TaskDetailSelection,
     actions: &UiActionQueue,
+    title: TitleDisplay,
 ) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -29,14 +40,18 @@ pub fn render(
                 demo_badge(ui, colors);
                 ui.add_space(8.0);
             }
-            wrapped_label(
-                ui,
-                RichText::new(task_title(task))
-                    .size(24.0)
-                    .strong()
-                    .color(colors.txt),
-            );
-            ui.add_space(3.0);
+            if title == TitleDisplay::Shown {
+                wrapped_label(
+                    ui,
+                    RichText::new(task_title(task))
+                        .font(super::typography::display_font(
+                            ui.ctx(),
+                            super::typography::TITLE_SIZE,
+                        ))
+                        .color(colors.txt),
+                );
+                ui.add_space(3.0);
+            }
             ui.horizontal_wrapped(|ui| {
                 design::status(ui, colors, task_state(task));
                 ui.label(
@@ -55,25 +70,23 @@ pub fn render(
                     (TaskDetailTab::Artifacts, "Artifacts"),
                     (TaskDetailTab::Terminal, "Terminal"),
                 ] {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(label).size(13.0).color(
-                                if selection.tab == tab {
-                                    colors.accent
-                                } else {
-                                    colors.muted
-                                },
-                            ))
-                            .fill(if selection.tab == tab {
-                                colors.accent_bg
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            })
-                            .stroke(egui::Stroke::NONE)
-                            .corner_radius(7),
-                        )
-                        .clicked()
-                    {
+                    let selected = selection.tab == tab;
+                    let response = ui.add(
+                        egui::Button::new(RichText::new(label).size(13.0).color(if selected {
+                            colors.accent_text
+                        } else {
+                            colors.muted
+                        }))
+                        .frame(false),
+                    );
+                    if selected {
+                        ui.painter().hline(
+                            response.rect.x_range(),
+                            response.rect.bottom() + 3.0,
+                            egui::Stroke::new(2.0, colors.accent),
+                        );
+                    }
+                    if response.clicked() {
                         selection.tab = tab;
                     }
                 }
@@ -152,15 +165,20 @@ fn render_overview(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
     ui.add_space(16.0);
     section_label(ui, colors, "RUN DETAILS");
     if let Some(run) = run {
-        detail_row(ui, colors, "Harness", nonempty(&run.harness, "Unknown"));
-        detail_row(ui, colors, "Role", nonempty(&run.role, "Not recorded"));
-        detail_row(ui, colors, "Run state", &design::state_text(&run.state));
-        detail_row(ui, colors, "Branch", nonempty(&run.branch, "Not recorded"));
-        detail_row(
+        detail_grid(
             ui,
             colors,
-            "Worktree",
-            nonempty(&run.worktree, "Not recorded"),
+            "run_details_grid",
+            &[
+                ("Harness", nonempty(&run.harness, "Unknown").to_string()),
+                ("Role", nonempty(&run.role, "Not recorded").to_string()),
+                ("Run state", design::state_text(&run.state)),
+                ("Branch", nonempty(&run.branch, "Not recorded").to_string()),
+                (
+                    "Worktree",
+                    nonempty(&run.worktree, "Not recorded").to_string(),
+                ),
+            ],
         );
     } else {
         wrapped_label(
@@ -172,10 +190,11 @@ fn render_overview(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
     }
     ui.add_space(16.0);
     egui::CollapsingHeader::new("Identity & references").show(ui, |ui| {
-        detail_row(ui, colors, "Task", &task.task_id);
+        let mut rows = vec![("Task", task.task_id.clone())];
         if let Some(run) = run {
-            detail_row(ui, colors, "Run", &run.run_id);
+            rows.push(("Run", run.run_id.clone()));
         }
+        detail_grid(ui, colors, "identity_grid", &rows);
     });
     ui.add_space(24.0);
     render_activity(ui, colors, task, run);
@@ -417,6 +436,28 @@ fn terminal_candidate(
             }
         });
     ui.add_space(7.0);
+}
+
+fn detail_grid(ui: &mut Ui, colors: &C, id: &str, rows: &[(&str, String)]) {
+    let value_width = (ui.available_width() - DETAIL_LABEL_WIDTH - 16.0).max(80.0);
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([16.0, 7.0])
+        .min_col_width(DETAIL_LABEL_WIDTH)
+        .max_col_width(value_width)
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                ui.label(RichText::new(*label).size(12.0).color(colors.muted));
+                wrapped_label(
+                    ui,
+                    RichText::new(value.as_str())
+                        .size(12.0)
+                        .color(colors.txt)
+                        .monospace(),
+                );
+                ui.end_row();
+            }
+        });
 }
 
 fn detail_row(ui: &mut Ui, colors: &C, label: &str, value: &str) {

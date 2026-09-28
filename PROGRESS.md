@@ -2642,10 +2642,34 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - Windows CI evidence for this change comes from its pull request run.
 - ADR 029 open decision 4 and a live `dispatch submit`, unchanged from the 2026-09-28 (1) entry.
 
+### 2026-09-28 (3) - Claude-style GUI phase 1 (ADR 030, `feat/claude_style_gui`)
+
+**Status change**
+- M5.0 frontend stays `PARTIAL`. ADR 030 phase 1 is implemented; phase 2 (shortcuts, quick switcher, appearance modes, motion, copy buttons) is not.
+
+**Implemented**
+- `claude_light` palette as the default for new profiles and a retuned warm charcoal `claude` palette; `config/theme_palettes.json` and the Python fallback updated under the parity test; ADR 026's surface invariant amended to a 5.0 luma gap in either direction.
+- WCAG contrast math, luminance-based light detection, and readable accent text in every palette.
+- Serif display family from Georgia or Cambria, with sans, serif, and CJK faces loaded independently (a missing CJK font no longer skips Segoe UI).
+- Collapsible sidebar with New task, Recents, and a workspace menu; welcome state with a local-time greeting; rounded composer with a target chip, a muted placeholder, and Enter/Shift+Enter handling that never sends; borderless serif task rows with a scroll fade; a quiet top bar; an always-docked task drawer with one header and an aligned details grid; deletion of four uncompiled shell files.
+- Final whole-branch review (fresh reviewer): no Critical findings; two Important findings fixed with RED-to-GREEN tests. Long drafts now scroll inside a composer area capped at 35% of the window height (48 to 240 px), so they can no longer push the send row and the "not connected" caption off screen or collapse the conversation. Custom controls (icon buttons, New task, Recents rows, the workspace button, navigation rows) draw a 2 px accent focus ring when keyboard-focused.
+- The frontend enables `time`'s `local-offset` feature for the greeting, which adds `num_threads` 0.1.7 (MIT or Apache-2.0, used on Unix only) to `Cargo.lock`.
+
+**Evidence**
+- commands on the final head (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features --no-fail-fast`: 529 passed, 1 failed, 2 ignored. The failure was `vibemux_cli` `startup_timeout_terminates_only_the_spawned_fixture`, a timing flake that also fails on `main` at `21447ac` (1 of 8 runs there, 1 of 5 on this branch). An earlier run on this branch instead failed the `vibemux_cli` recovery tests `live_daemon_is_never_recoverable` and `descriptor_only_recovery_and_pid_mismatch_fail_closed` (`ControlRuntimeSecurityInvalid`), which fail the same way on `main` on this machine. None of these tests or their crates change in this branch. Python: pytest 64 passed; ruff check and ruff format clean; mypy reports 20 errors in `tools/a2a_python_interop.py`, `tools/a2a_tck_auth.py`, and `tests/test_harness.py`, the same 20 as on `main`. `git diff --check` over the branch is clean.
+- Screenshots: `claude_light` and `claude` at 1280x800, 960x600, and 1.5x scale for the chat, drawer, welcome, and collapsed scenes were reviewed; the committed previews in `docs/frontend_previews/` were regenerated with `claude_light` at 1440x900.
+
+**Remaining**
+- ADR 030 phase 2.
+- At the 960x600 minimum with the drawer open, the conversation column is narrow and its header badge is clipped.
+- Deferred review minors: the workspace badge letter reaches about 4.2:1 instead of 4.5:1; Esc closes an open popup and the drawer in one press; Recents keeps highlighting a task after its drawer closes; every disabled composer target says "Not detected" even when the version check failed; the Agents page title is still sans; the collapsed rail lacks Diagnostics and a current-page indicator; ADR 030's 3:1 control-boundary goal conflicts with its own border tokens and needs an ADR decision.
+- The flaky `vibemux_cli` startup-timeout test and the recovery-test failures on this machine are pre-existing and tracked separately.
+- No live check yet on a real display at scales other than 1.0 and 1.5, with other system fonts, or with IME input on a real keyboard.
+
 ### 2026-09-29 - Deterministic startup-timeout bootstrap test (`fix/startup_timeout_fixture_race`)
 
 **Status change**
-- None. Test-only change: no production code changed. It removes the known load-sensitive flake in `bootstrap_process::startup_timeout_terminates_only_the_spawned_fixture` recorded in the 2026-09-15 (5) and (9) entries.
+- None. Test-only change: no production code changed. It removes the known load-sensitive flake in `bootstrap_process::startup_timeout_terminates_only_the_spawned_fixture` recorded in the 2026-09-15 (5) and (9) entries, and again in the 2026-09-28 (3) entry.
 
 **Root cause**
 - The test gave `start_daemon` a real-time 150 ms startup deadline and then required the hang fixture's started marker. The deadline starts once the fixture's PID is known (on Windows, after the PowerShell launcher helper reports it), so it raced only the fixture's own launch. Temporary instrumentation on a loaded Windows host (not committed) showed the marker 50-590 ms after the PID was known. In every failing run, the deadline fired 150-161 ms after the PID with no marker, and the fixture was killed before it ran. Unmodified, the test failed 15 of 20 runs on that host at `started.is_file()`.
