@@ -37,6 +37,9 @@ pub struct UserConfig {
     pub schema_version: u16,
     pub theme: ThemeId,
     pub window_size: WindowSize,
+    /// Sidebar collapsed to its icon rail (ADR 030 §7).
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 impl Default for UserConfig {
@@ -48,6 +51,7 @@ impl Default for UserConfig {
                 width: 1280,
                 height: 800,
             },
+            sidebar_collapsed: false,
         }
     }
 }
@@ -225,6 +229,7 @@ mod tests {
                 width: 1024,
                 height: 768,
             },
+            ..UserConfig::default()
         };
         save_user_config_at(&cfg, &path).expect("save");
         let back = load_user_config_at(&path);
@@ -247,7 +252,34 @@ mod tests {
                 width: 1280,
                 height: 800,
             },
+            ..UserConfig::default()
         };
         assert_eq!(palette_for_config(&cfg).name, "vscode");
+    }
+
+    #[test]
+    fn config_without_new_fields_keeps_theme() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"theme":"claude","window_size":{"width":1280,"height":800}}"#,
+        )
+        .expect("write");
+        let config = load_user_config_at(&path);
+        assert_eq!(config.theme, ThemeId::Claude);
+        assert!(!config.sidebar_collapsed);
+    }
+
+    #[test]
+    fn sidebar_collapsed_round_trips() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        let config = UserConfig {
+            sidebar_collapsed: true,
+            ..UserConfig::default()
+        };
+        save_user_config_at(&config, &path).expect("save");
+        assert!(load_user_config_at(&path).sidebar_collapsed);
     }
 }

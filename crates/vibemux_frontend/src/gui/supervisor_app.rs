@@ -135,6 +135,14 @@ impl SupervisorApp {
         )
     }
 
+    /// Collapse or expand the sidebar and persist the choice.
+    pub fn set_sidebar_collapsed(&mut self, collapsed: bool) {
+        if self.user_config.sidebar_collapsed != collapsed {
+            self.user_config.sidebar_collapsed = collapsed;
+            self.pending_write = Some(Instant::now());
+        }
+    }
+
     /// Start a new task (sidebar button, `Ctrl+N`, quick switcher, preview).
     pub fn request_new_task(&mut self) {
         if let Ok(mut state) = self.ui_state.lock() {
@@ -489,21 +497,28 @@ impl SupervisorApp {
             .ui_state
             .lock()
             .map_or(MainPage::CoordinatorChat, |state| state.page());
+        let (welcome_active, selected_task_id) =
+            self.ui_state.lock().map_or((false, None), |state| {
+                (
+                    state.welcome_active(),
+                    state.selected_task_id().map(str::to_owned),
+                )
+            });
+        let collapsed = self.user_config.sidebar_collapsed;
         let mut sidebar_actions = None;
-        egui::SidePanel::left("supervisor_sidebar")
-            .exact_width(sidebar::SIDEBAR_WIDTH)
+        egui::SidePanel::left(sidebar::SIDEBAR_PANEL_ID)
+            .exact_width(sidebar::width_for(collapsed))
             .resizable(false)
             .frame(egui::Frame::new().fill(colors.surf))
             .show(ctx, |ui| {
-                sidebar_actions = Some(sidebar::render(
-                    ui,
-                    &colors,
-                    &snapshot,
-                    active_page,
-                    self.user_config.theme,
-                    self.settings_open,
-                    self.diagnostics_open,
-                ));
+                let view = sidebar::SidebarView {
+                    snapshot: &snapshot,
+                    page: active_page,
+                    welcome_active,
+                    collapsed,
+                    selected_task_id: selected_task_id.as_deref(),
+                };
+                sidebar_actions = Some(sidebar::render(ui, &colors, &view));
             });
         if let Some(actions) = sidebar_actions {
             if let Some(page) = actions.page {
@@ -516,6 +531,12 @@ impl SupervisorApp {
             }
             if let Some(task_id) = actions.task_id {
                 self.select_task(&task_id);
+            }
+            if actions.new_task {
+                self.request_new_task();
+            }
+            if actions.toggle_collapsed {
+                self.set_sidebar_collapsed(!collapsed);
             }
             if actions.open_settings {
                 self.settings_open = true;
@@ -869,6 +890,7 @@ mod tests {
                 width: 1280,
                 height: 800,
             },
+            ..UserConfig::default()
         }
     }
 
@@ -996,6 +1018,65 @@ mod tests {
             app.ui_state.lock().unwrap().page(),
             MainPage::CoordinatorChat
         );
+    }
+
+    fn render_at(
+        app: &mut SupervisorApp,
+        width: f32,
+        height: f32,
+    ) -> (egui::Context, egui::FullOutput) {
+        let context = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, height),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw.clone(), |context| app.render_frame(context));
+        let output = context.run(raw, |context| app.render_frame(context));
+        (context, output)
+    }
+
+    #[test]
+    fn sidebar_width_follows_the_collapsed_setting() {
+        for (collapsed, expected) in [
+            (false, sidebar::SIDEBAR_WIDTH),
+            (true, sidebar::SIDEBAR_RAIL_WIDTH),
+        ] {
+            let mut app = test_app();
+            app.user_config.sidebar_collapsed = collapsed;
+            let (context, _) = render_at(&mut app, 1280.0, 800.0);
+            let panel = egui::containers::panel::PanelState::load(
+                &context,
+                egui::Id::new(sidebar::SIDEBAR_PANEL_ID),
+            )
+            .expect("sidebar panel");
+            assert!((panel.rect.width() - expected).abs() < 1.0, "{collapsed}");
+        }
+    }
+
+    #[test]
+    fn recents_truncate_long_cjk_titles_inside_the_sidebar() {
+        let long_title = "很长的任务标题需要截断".repeat(8);
+        let mut app = test_app();
+        app.snapshot.write().unwrap().tasks[0].title = long_title.clone();
+        let (_, output) = render_at(&mut app, 1280.0, 800.0);
+        let sidebar_titles: Vec<egui::Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text)
+                    if text.galley.job.text == long_title
+                        && text.pos.x < sidebar::SIDEBAR_WIDTH =>
+                {
+                    Some(text.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sidebar_titles.len(), 1);
+        assert!(sidebar_titles[0].right() <= sidebar::SIDEBAR_WIDTH + 0.5);
     }
 
     #[test]

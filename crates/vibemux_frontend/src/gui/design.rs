@@ -11,6 +11,8 @@ pub enum Icon {
     Settings,
     Activity,
     Refresh,
+    Plus,
+    SidebarToggle,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -67,6 +69,14 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
             painter.circle_stroke(rect.center(), rect.width() * 0.36, stroke);
             painter.line_segment([position(0.72, 0.05), position(0.86, 0.18)], stroke);
             painter.line_segment([position(0.86, 0.18), position(0.66, 0.26)], stroke);
+        }
+        Icon::Plus => {
+            painter.line_segment([position(0.5, 0.15), position(0.5, 0.85)], stroke);
+            painter.line_segment([position(0.15, 0.5), position(0.85, 0.5)], stroke);
+        }
+        Icon::SidebarToggle => {
+            painter.rect_stroke(rect, 3, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([position(0.38, 0.0), position(0.38, 1.0)], stroke);
         }
     }
 }
