@@ -135,6 +135,13 @@ impl SupervisorApp {
         )
     }
 
+    /// Start a new task (sidebar button, `Ctrl+N`, quick switcher, preview).
+    pub fn request_new_task(&mut self) {
+        if let Ok(mut state) = self.ui_state.lock() {
+            let _ = state.request_new_task();
+        }
+    }
+
     fn enqueue_refresh(&self) {
         self.actions.enqueue(SupervisorAction::Refresh);
     }
@@ -174,6 +181,12 @@ impl SupervisorApp {
             return;
         }
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            if let Ok(mut state) = self.ui_state.lock() {
+                if state.discard_prompt_open() {
+                    state.keep_draft();
+                    return;
+                }
+            }
             if self.diagnostics_open {
                 self.diagnostics_open = false;
                 return;
@@ -525,8 +538,14 @@ impl SupervisorApp {
             .ok()
             .and_then(|state| state.selected_agent());
         let mut selected_agent_change = None;
+        let welcome = page == MainPage::CoordinatorChat
+            && (self
+                .ui_state
+                .lock()
+                .is_ok_and(|state| state.welcome_active())
+                || snapshot.tasks.is_empty());
 
-        if page == MainPage::CoordinatorChat {
+        if page == MainPage::CoordinatorChat && !welcome {
             egui::TopBottomPanel::bottom("coordinator_composer")
                 .exact_height(204.0)
                 .frame(
@@ -548,6 +567,20 @@ impl SupervisorApp {
                     .inner_margin(egui::Margin::symmetric(18, 12)),
             )
             .show(ctx, |ui| match page {
+                MainPage::CoordinatorChat if welcome => {
+                    let top_space = (ui.available_height() * 0.22).max(24.0);
+                    ui.add_space(top_space);
+                    chat::content_column(ui, |ui| {
+                        super::welcome::render_heading(
+                            ui,
+                            &colors,
+                            super::welcome::greeting_for_hour(super::welcome::current_local_hour()),
+                        );
+                    });
+                    if let Ok(mut state) = self.ui_state.lock() {
+                        chat::render_composer(ui, &colors, &mut state);
+                    }
+                }
                 MainPage::CoordinatorChat => {
                     if let Ok(mut state) = self.ui_state.lock() {
                         chat::render_conversation(
@@ -606,6 +639,42 @@ impl SupervisorApp {
                 &snapshot,
                 &self.view_model,
             );
+        }
+
+        if self
+            .ui_state
+            .lock()
+            .is_ok_and(|state| state.discard_prompt_open())
+        {
+            let modal = egui::Modal::new(egui::Id::new("discard_draft_prompt")).show(ctx, |ui| {
+                ui.set_width(320.0);
+                ui.label(
+                    RichText::new("Discard current draft?")
+                        .size(16.0)
+                        .color(colors.txt),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("The draft has not been sent and will be removed.")
+                        .size(13.0)
+                        .color(colors.muted),
+                );
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    let discard = ui.button("Discard").clicked();
+                    let keep = ui.button("Keep editing").clicked();
+                    (discard, keep)
+                })
+                .inner
+            });
+            let (discard, keep) = modal.inner;
+            if let Ok(mut state) = self.ui_state.lock() {
+                if discard {
+                    state.confirm_discard_draft();
+                } else if keep || modal.should_close() {
+                    state.keep_draft();
+                }
+            }
         }
 
         self.render_task_viewports(ctx, &snapshot, self.user_config.theme);
@@ -926,6 +995,35 @@ mod tests {
         assert_eq!(
             app.ui_state.lock().unwrap().page(),
             MainPage::CoordinatorChat
+        );
+    }
+
+    #[test]
+    fn empty_workspace_renders_the_welcome_composer() {
+        let mut app = test_app();
+        app.snapshot.write().unwrap().tasks.clear();
+        let context = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw.clone(), |context| app.render_frame(context));
+        let output = context.run(raw, |context| app.render_frame(context));
+        let texts: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.starts_with("Good ") || text == "Hello")
         );
     }
 

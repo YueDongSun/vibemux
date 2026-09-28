@@ -160,6 +160,9 @@ pub fn render_composer(ui: &mut Ui, c: &C, state: &mut SupervisorUiState) {
                     .frame(false)
                     .font(egui::TextStyle::Body),
             );
+            if state.take_composer_focus_request() {
+                response.request_focus();
+            }
             if response.changed() {
                 state.set_composer_draft(draft);
             }
@@ -202,7 +205,7 @@ pub(crate) fn demo_badge(ui: &mut Ui, c: &C) {
 pub fn wrapped_label(ui: &mut Ui, text: RichText) -> egui::Response {
     ui.add(egui::Label::new(text).wrap())
 }
-fn content_column(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
+pub(crate) fn content_column(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
     let width = ui.available_width().min(790.0);
     let inset = ((ui.available_width() - width) / 2.0).max(0.0);
     ui.horizontal_top(|ui| {

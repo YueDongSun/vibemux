@@ -14,10 +14,13 @@ mod supervisor_state;
 mod task_detail;
 mod theme;
 mod typography;
+mod welcome;
 
 pub use chat::wrapped_label as render_wrapped_label;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;
-pub use supervisor_state::{MainPage, SupervisorUiState, TaskDetailSelection, TaskDetailTab};
+pub use supervisor_state::{
+    MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailSelection, TaskDetailTab,
+};
 pub use theme::apply_theme;
 
 use eframe::egui::{Color32, ViewportBuilder};

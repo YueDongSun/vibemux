@@ -2,7 +2,7 @@
 
 use vibemux_frontend::{
     ConnectionState, ConnectionStatus, RunView, SupervisorSnapshot, TaskView,
-    gui::{MainPage, SupervisorUiState, TaskDetailTab},
+    gui::{MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailTab},
 };
 
 fn task(task_id: &str, title: &str) -> TaskView {
@@ -151,4 +151,65 @@ fn long_unicode_and_path_labels_wrap_in_headless_egui() {
         measured.1 > 20.0,
         "long path text should wrap: {measured:?}"
     );
+}
+
+#[test]
+fn new_task_on_an_empty_draft_starts_the_welcome_state() {
+    let mut state = SupervisorUiState::default();
+    assert_eq!(state.request_new_task(), NewTaskOutcome::Started);
+    assert!(state.welcome_active());
+    assert!(state.take_composer_focus_request());
+    assert!(!state.take_composer_focus_request());
+}
+
+#[test]
+fn whitespace_draft_starts_a_new_task_without_prompting() {
+    let mut state = SupervisorUiState::default();
+    state.set_composer_draft(
+        "  
+	"
+        .to_string(),
+    );
+    assert_eq!(state.request_new_task(), NewTaskOutcome::Started);
+    assert!(!state.discard_prompt_open());
+    assert_eq!(state.composer_draft(), "");
+}
+
+#[test]
+fn nonempty_draft_needs_confirmation_and_keep_preserves_it() {
+    let mut state = SupervisorUiState::default();
+    state.set_composer_draft("请检查 draft".to_string());
+    assert_eq!(state.request_new_task(), NewTaskOutcome::NeedsConfirmation);
+    assert!(state.discard_prompt_open());
+    assert!(!state.welcome_active());
+    state.keep_draft();
+    assert!(!state.discard_prompt_open());
+    assert_eq!(state.composer_draft(), "请检查 draft");
+    assert!(!state.try_send());
+}
+
+#[test]
+fn confirming_discard_clears_the_draft_and_starts_the_welcome_state() {
+    let mut state = SupervisorUiState::default();
+    state.set_composer_draft("draft".to_string());
+    let _ = state.request_new_task();
+    state.confirm_discard_draft();
+    assert_eq!(state.composer_draft(), "");
+    assert!(state.welcome_active());
+    assert!(!state.discard_prompt_open());
+}
+
+#[test]
+fn navigation_leaves_the_welcome_state() {
+    let snapshot = snapshot(vec![task("task_1", "First")]);
+    let mut state = SupervisorUiState::default();
+    let _ = state.request_new_task();
+    state.show_agents();
+    assert!(!state.welcome_active());
+    let _ = state.request_new_task();
+    state.show_coordinator_chat();
+    assert!(!state.welcome_active());
+    let _ = state.request_new_task();
+    assert!(state.select_task(&snapshot, "task_1"));
+    assert!(!state.welcome_active());
 }

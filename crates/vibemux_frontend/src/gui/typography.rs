@@ -13,6 +13,8 @@ const SANS_CANDIDATES: [&str; 1] = ["segoeui.ttf"];
 const SERIF_CANDIDATES: [&str; 2] = ["georgia.ttf", "cambria.ttc"];
 const CJK_CANDIDATES: [&str; 4] = ["msyh.ttc", "simhei.ttf", "meiryo.ttc", "YuGothM.ttc"];
 
+pub const GREETING_SIZE: f32 = 30.0;
+
 #[must_use]
 pub fn serif_family() -> FontFamily {
     FontFamily::Name(SERIF_FAMILY_NAME.into())

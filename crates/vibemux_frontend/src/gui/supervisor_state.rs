@@ -68,6 +68,13 @@ impl TaskDetailSelection {
     }
 }
 
+/// Result of asking for a new task (ADR 030 §5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NewTaskOutcome {
+    Started,
+    NeedsConfirmation,
+}
+
 /// Local UI state. Closing a native task window only removes its window
 /// selection; it never changes the immutable supervisor snapshot.
 #[derive(Clone, Debug, Default)]
@@ -80,6 +87,9 @@ pub struct SupervisorUiState {
     task_windows: BTreeSet<String>,
     task_window_selections: Arc<Mutex<HashMap<String, TaskDetailSelection>>>,
     composer_draft: String,
+    welcome_active: bool,
+    discard_prompt_open: bool,
+    composer_focus_requested: bool,
 }
 
 impl SupervisorUiState {
@@ -89,11 +99,13 @@ impl SupervisorUiState {
     }
 
     pub fn show_coordinator_chat(&mut self) {
+        self.welcome_active = false;
         self.page = MainPage::CoordinatorChat;
         self.selected_agent = None;
     }
 
     pub fn show_agents(&mut self) {
+        self.welcome_active = false;
         self.page = MainPage::Agents;
     }
 
@@ -106,12 +118,14 @@ impl SupervisorUiState {
         if agent_index >= agent_count {
             return false;
         }
+        self.welcome_active = false;
         self.page = MainPage::Agents;
         self.selected_agent = Some(agent_index);
         true
     }
 
     pub fn return_to_agents_list(&mut self) {
+        self.welcome_active = false;
         self.page = MainPage::Agents;
         self.selected_agent = None;
     }
@@ -126,6 +140,7 @@ impl SupervisorUiState {
             self.details = TaskDetailSelection::for_task(task);
         }
         self.details_open = true;
+        self.welcome_active = false;
         true
     }
 
@@ -214,6 +229,50 @@ impl SupervisorUiState {
             .entry(task_id.to_string())
             .or_insert_with(|| TaskDetailSelection::for_task(task));
         Some(update(selection))
+    }
+
+    #[must_use]
+    pub fn welcome_active(&self) -> bool {
+        self.welcome_active
+    }
+
+    /// Start a new task, or ask first when the draft holds visible text.
+    pub fn request_new_task(&mut self) -> NewTaskOutcome {
+        if self.composer_draft.trim().is_empty() {
+            self.start_new_task();
+            NewTaskOutcome::Started
+        } else {
+            self.discard_prompt_open = true;
+            NewTaskOutcome::NeedsConfirmation
+        }
+    }
+
+    #[must_use]
+    pub fn discard_prompt_open(&self) -> bool {
+        self.discard_prompt_open
+    }
+
+    pub fn confirm_discard_draft(&mut self) {
+        self.discard_prompt_open = false;
+        self.start_new_task();
+    }
+
+    pub fn keep_draft(&mut self) {
+        self.discard_prompt_open = false;
+    }
+
+    /// True once after a new task starts, so the composer takes focus once.
+    pub fn take_composer_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.composer_focus_requested)
+    }
+
+    fn start_new_task(&mut self) {
+        self.composer_draft.clear();
+        self.page = MainPage::CoordinatorChat;
+        self.selected_agent = None;
+        self.close_details();
+        self.welcome_active = true;
+        self.composer_focus_requested = true;
     }
 
     pub fn set_composer_draft(&mut self, draft: String) {
