@@ -72,6 +72,15 @@ impl ThemePalette {
         };
         parse_hex_rgb(hex)
     }
+
+    /// Light when the canvas's relative luminance exceeds 0.5 (ADR 030 §2).
+    #[must_use]
+    pub fn is_light(&self) -> bool {
+        self.rgb("bg").is_some_and(|bg| {
+            crate::theme::contrast::relative_luminance(bg)
+                > crate::theme::contrast::LIGHT_BACKGROUND_LUMINANCE
+        })
+    }
 }
 
 /// Return the canonical palette for a theme id.
@@ -304,6 +313,13 @@ mod tests {
                 "primary text must contrast more strongly than muted text"
             );
         }
+    }
+
+    #[test]
+    fn light_detection_uses_canvas_luminance() {
+        assert!(palette_for(ThemeId::Studio).is_light());
+        assert!(!palette_for(ThemeId::Github).is_light());
+        assert!(!palette_for(ThemeId::Claude).is_light());
     }
 
     #[test]

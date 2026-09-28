@@ -38,7 +38,7 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
 }
 
 fn build_visuals(p: &ThemePalette) -> Visuals {
-    let light = p.name == "studio";
+    let light = p.is_light();
     let mut visuals = if light {
         Visuals::light()
     } else {

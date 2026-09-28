@@ -13,6 +13,7 @@
 //! `palette_parity` integration test) so the Python CLI and the
 //! WezTerm/tmux theme generators consume the same colors.
 
+pub mod contrast;
 mod palette;
 pub mod serialize;
 
