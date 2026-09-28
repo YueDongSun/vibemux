@@ -45,7 +45,7 @@ serde_json.workspace = true
 vibemux_probe = { path = "../vibemux_probe" }
 vibemuxd = { path = "../vibemuxd" }
 vibemux_types = { path = "../vibemux_types" }
-time.workspace = true
+time = { workspace = true, features = ["local-offset"] }
 image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
 
 [dev-dependencies]

@@ -62,6 +62,11 @@ fn main() -> eframe::Result<()> {
                 )));
             let mut app = gui::VibeMuxApp::new(cc, preview::probe_view(), config);
             app.set_supervisor_snapshot(snapshot);
+            match scenario {
+                "welcome" => app.request_new_task(),
+                "collapsed" => app.set_sidebar_collapsed(true),
+                _ => {}
+            }
             if drawer {
                 app.select_task("task_ui");
             }

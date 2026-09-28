@@ -192,11 +192,15 @@ The frontend crate builds three binaries:
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
 
-The redesigned GUI defaults to **Studio**: an off-white canvas, quiet sidebar,
-dark-green accent, native Windows typography, and a continuous task activity
-list. Six themes are available in **Settings → Appearance**: `studio`, `github`,
-`claude`, `vscode`, `nord`, and `gruvbox`. Existing saved appearance preferences
-are preserved; select Studio in Settings to adopt the new light style.
+The GUI defaults to **Claude light**: a cream canvas, terracotta accent, serif
+display type from the system's Georgia or Cambria, and a Claude Desktop style
+sidebar with **New task**, Conversation, Agents, a Recents list, and a
+workspace menu. The sidebar collapses to an icon rail. Seven themes are
+available in **Settings → Appearance**: `claude_light`, `claude` (warm
+charcoal), `studio`, `github`, `vscode`, `nord`, and `gruvbox`. Existing saved
+appearance preferences are preserved. Sending from the composer is not
+available yet: Enter keeps the draft and says it was not sent, and Shift+Enter
+inserts a newline.
 
 Task windows have Overview, Activity, Artifacts and Terminal tabs. Closing a
 window does not stop its task. `Ctrl+1..0` accesses the ten harness diagnostics;
@@ -216,9 +220,10 @@ coding-agent chat service.
 The screenshot-only `vibemux_frontend_preview` binary is built with
 `--features gui_screenshot`; its scenes are visibly marked **DEMO DATA** and
 never contact a daemon or model. Example:
-`cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat studio 1440 900 1`.
+`cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
-Scenes are `chat`, `drawer`, `task`, `task_terminal`, and `disconnected`.
+Scenes are `chat`, `drawer`, `task`, `task_terminal`, `disconnected`, `welcome`,
+and `collapsed`.
 The `task` scenes capture the actual independent native viewport.
 
 The TUI ships six themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), `light` (dark variants tuned for white or very light terminal backgrounds), and the brand themes `nord` and `gruvbox` (xterm-256 indices resolved from the brand palettes, so they render the same hues on WezTerm and tmux without a truecolor dependency). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
