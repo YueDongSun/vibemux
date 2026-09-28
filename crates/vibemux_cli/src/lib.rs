@@ -25,7 +25,20 @@ use vibemuxd::{
     process::{DaemonPathError, DaemonPaths},
 };
 
-pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Time a start allows beyond the daemon's writer startup bound for process
+/// launch, the Windows launcher helper, control runtime ACL verification, and
+/// descriptor publication.
+const DAEMON_START_MARGIN: Duration = Duration::from_secs(10);
+/// `daemon start` health wait (30 s). It is derived from the daemon's writer
+/// startup bound, so the CLI never terminates a daemon that is still inside
+/// that bound; a daemon that exits early is still reported as soon as the
+/// exit is observed.
+pub const DEFAULT_STARTUP_TIMEOUT: Duration =
+    vibemuxd::DEFAULT_WRITER_STARTUP_TIMEOUT.saturating_add(DAEMON_START_MARGIN);
+const _: () = assert!(
+    DEFAULT_STARTUP_TIMEOUT.as_nanos() > vibemuxd::DEFAULT_WRITER_STARTUP_TIMEOUT.as_nanos(),
+    "the CLI start wait must outlast the daemon's writer startup bound"
+);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub const DEFAULT_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);

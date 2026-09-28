@@ -37,8 +37,18 @@ pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 64;
 /// Per-request response deadline: comfortably above worst-case local SQLite
 /// commit latency (WAL, single-digit ms) so only a genuinely stuck writer
 /// surfaces as `ResponseTimeout`. Callers retry idempotent reads; commits
-/// surface the error instead of blind retry.
+/// surface the error instead of blind retry. Startup readiness has its own
+/// bound, `DEFAULT_WRITER_STARTUP_TIMEOUT`.
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Writer startup readiness deadline. The writer opens the store, runs its
+/// migrations, and recovers harness dispatches before it reports ready. That
+/// takes milliseconds on a local disk, but shared CI runners have stalled it
+/// past the 5 s request deadline, so startup gets its own, longer bound and
+/// surfaces `StartupTimeout` when exceeded. On expiry the start still joins
+/// the writer thread, so the lifecycle locks are released before the error
+/// returns; the hard wall-clock cap on a stuck daemon start is the CLI start
+/// deadline, which terminates the daemon process.
+pub const DEFAULT_WRITER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
 pub mod control;
@@ -148,6 +158,8 @@ pub enum WriterError {
     WorkerStopped,
     #[error("writer response exceeded its deadline")]
     ResponseTimeout,
+    #[error("writer startup exceeded its deadline")]
+    StartupTimeout,
     #[error("writer store operation failed: {code}")]
     Store { code: String },
     #[error("writer thread terminated unexpectedly")]
@@ -164,6 +176,7 @@ impl WriterError {
             Self::QueueFull => "writer_queue_full",
             Self::WorkerStopped => "writer_stopped",
             Self::ResponseTimeout => "writer_response_timeout",
+            Self::StartupTimeout => "writer_startup_timeout",
             Self::Store { code } => code.as_str(),
             Self::ThreadTerminated => "writer_thread_terminated",
         }
@@ -548,6 +561,7 @@ impl WriterWorker {
             database_path,
             queue_capacity,
             response_timeout,
+            DEFAULT_WRITER_STARTUP_TIMEOUT,
             vec![lifecycle_lock],
         )
     }
@@ -578,6 +592,7 @@ impl WriterWorker {
             database_path,
             queue_capacity,
             response_timeout,
+            DEFAULT_WRITER_STARTUP_TIMEOUT,
             vec![lifecycle_lock],
         )
     }
@@ -596,6 +611,7 @@ impl WriterWorker {
             database_path,
             DEFAULT_WRITER_QUEUE_CAPACITY,
             DEFAULT_RESPONSE_TIMEOUT,
+            DEFAULT_WRITER_STARTUP_TIMEOUT,
             lifecycle_locks,
         )
     }
@@ -604,6 +620,7 @@ impl WriterWorker {
         database_path: &Path,
         queue_capacity: usize,
         response_timeout: Duration,
+        startup_timeout: Duration,
         lifecycle_locks: Vec<LifecycleLock>,
     ) -> Result<Self, WriterError> {
         let lock_path = lifecycle_locks
@@ -629,7 +646,7 @@ impl WriterWorker {
                 );
             })
             .map_err(|_| WriterError::ThreadTerminated)?;
-        match ready_receiver.recv_timeout(response_timeout) {
+        match ready_receiver.recv_timeout(startup_timeout) {
             Ok(Ok(())) => Ok(Self {
                 sender: Some(Arc::new(sender)),
                 shared,
@@ -644,9 +661,12 @@ impl WriterWorker {
                 Err(error)
             }
             Err(_) => {
+                // Dropping the request sender makes the writer exit once it
+                // reaches its request loop; joining releases the lifecycle
+                // locks before the error returns.
                 drop(sender);
                 let _ = thread.join();
-                Err(WriterError::ResponseTimeout)
+                Err(WriterError::StartupTimeout)
             }
         }
     }
@@ -1365,6 +1385,46 @@ mod tests {
             drained.queue_high_watermark
         );
         worker.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn startup_readiness_does_not_use_the_request_deadline() {
+        // No store opens within 1 ns, so this start succeeds only because
+        // readiness waits on its own startup bound.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = directory.path().join("state.sqlite3");
+        let worker = WriterWorker::start_with_config(&database, 1, Duration::from_nanos(1))
+            .expect("startup is bounded separately from requests");
+        let lock_path = worker.lock_path().to_path_buf();
+        assert!(lock_path.exists());
+        // The shutdown reply uses the 1 ns request deadline and may time out,
+        // but shutdown always joins the writer thread before returning.
+        assert!(matches!(
+            worker.shutdown(),
+            Ok(()) | Err(WriterError::ResponseTimeout)
+        ));
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn expired_startup_bound_reports_startup_timeout_and_releases_lock() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = directory.path().join("state.sqlite3");
+        let lifecycle_lock = LifecycleLock::acquire(&database).expect("lock");
+        let result = WriterWorker::start_with_lifecycle_locks(
+            &database,
+            1,
+            DEFAULT_RESPONSE_TIMEOUT,
+            Duration::from_nanos(1),
+            vec![lifecycle_lock],
+        );
+        assert!(matches!(result, Err(WriterError::StartupTimeout)));
+        assert_eq!(WriterError::StartupTimeout.code(), "writer_startup_timeout");
+        assert!(!writer_lock_path_for_database(&database).exists());
+        WriterWorker::start(&database)
+            .expect("restart after the expired start")
+            .shutdown()
+            .expect("shutdown");
     }
 
     #[test]
