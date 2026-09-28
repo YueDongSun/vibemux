@@ -2665,3 +2665,32 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - Deferred review minors: the workspace badge letter reaches about 4.2:1 instead of 4.5:1; Esc closes an open popup and the drawer in one press; Recents keeps highlighting a task after its drawer closes; every disabled composer target says "Not detected" even when the version check failed; the Agents page title is still sans; the collapsed rail lacks Diagnostics and a current-page indicator; ADR 030's 3:1 control-boundary goal conflicts with its own border tokens and needs an ADR decision.
 - The flaky `vibemux_cli` startup-timeout test and the recovery-test failures on this machine are pre-existing and tracked separately.
 - No live check yet on a real display at scales other than 1.0 and 1.5, with other system fonts, or with IME input on a real keyboard.
+
+### 2026-09-29 - Deterministic startup-timeout bootstrap test (`fix/startup_timeout_fixture_race`)
+
+**Status change**
+- None. Test-only change: no production code changed. It removes the known load-sensitive flake in `bootstrap_process::startup_timeout_terminates_only_the_spawned_fixture` recorded in the 2026-09-15 (5) and (9) entries, and again in the 2026-09-28 (3) entry.
+
+**Root cause**
+- The test gave `start_daemon` a real-time 150 ms startup deadline and then required the hang fixture's started marker. The deadline starts once the fixture's PID is known (on Windows, after the PowerShell launcher helper reports it), so it raced only the fixture's own launch. Temporary instrumentation on a loaded Windows host (not committed) showed the marker 50-590 ms after the PID was known. In every failing run, the deadline fired 150-161 ms after the PID with no marker, and the fixture was killed before it ran. Unmodified, the test failed 15 of 20 runs on that host at `started.is_file()`.
+- A second mode appeared with the CPU saturated (24 busy loops on 24 logical CPUs). The 150 ms timeout also cut the Windows helper's PID wait to its `max(startup_timeout, 3 s)` floor. With three helpers starting at once, that wait sometimes expired (`SpawnFailed`, 3 of 12 full-binary runs).
+- The termination check was a third real-time assumption. It slept 700 ms and required `completed` to be absent, against a 600 ms hang, so the kill had to land within 600 ms of the marker.
+
+**Implemented**
+- The test runs on a paused tokio clock (`start_paused`) with the production `DaemonBootstrapConfig` timing. A `spawn_blocking` task waits on real time for the marker. While it runs, the paused current_thread clock cannot auto-advance (tokio test-util, tokio-rs/tokio#5115), so the startup deadline cannot expire before the fixture has written its marker. After that, the clock jumps to the deadline without real waiting. The production timing gives the Windows helper its 30 s PID wait. The marker wait is bounded by the default start timeout plus 30 s.
+- The test proves termination by process exit. It reads the fixture's PID from the marker and waits on real time (5 s) for that process to exit, under `FixtureProcessGuard`. It then requires `completed`, the descriptor, and the writer lock to be absent. The hang fixture now hangs for 30 s instead of 600 ms, so only a kill ends it within the bound.
+- `vibemux_cli` dev-dependency: `tokio` with `test-util`. This adds no crates and leaves `Cargo.lock` unchanged; non-test builds are unaffected.
+
+**Evidence**
+- Under 24 CPU busy loops, full `bootstrap_process` binary: the original test failed 15 of 15 and 12 of 12 runs (the marker race plus `SpawnFailed`). The fixed test passed 20 of 20. The marker gate with the old 150 ms timeout passed 12 of 15, and its 3 failures were the `SpawnFailed` mode, which led to the production timing.
+- Mutations (temporary, not committed): with the fixture delayed 2 s before its marker, the original test failed 3 of 3 and the fixed test passed 3 of 3. With a launcher helper that never kills the fixture, the fixed test failed with `fixture process did not exit`, and the guard removed the leaked fixture.
+- The test alone now takes about 0.7 s; the fixed 700 ms sleep is gone.
+- commands (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features --no-fail-fast` 490 passed, 1 failed, 2 ignored, and all three `bootstrap_process` tests passed.
+- The one failure, `vibemux_cli` `recovery::tests::live_daemon_is_never_recoverable` (`ControlRuntimeSecurityInvalid`), is the pre-existing shared-marker race addressed by PR #14 and is unrelated to this change. `classify_daemon_exit_distinguishes_security_failures` loosens the per-user `.acl_v1` marker while sibling tests start control servers. Over eight `cargo test -p vibemux_cli --all-features --lib` runs, two failed; with that test skipped, none of eight failed.
+
+**Known risks**
+- The gate depends on tokio test-util not auto-advancing a paused clock while a `spawn_blocking` task runs (`tokio` is pinned at `=1.47.1`). If an upgrade dropped that, the deadline would expire before the marker. The test would then fail loudly at "fixture never wrote its started marker"; it would not pass silently.
+
+**Remaining**
+- Windows and Linux CI evidence comes from the pull request run.
+- `abrupt_process_recovery_preserves_database_and_allows_restart` also failed once under doubled load (2026-09-15 (9)). It did not fail in any run here and is not changed.

@@ -4,7 +4,11 @@ const PROJECT_ROOT_ENV: &str = "VIBEMUX_DAEMON_PROJECT_ROOT";
 const RUNTIME_DIR_NAME: &str = ".vibemux";
 const STARTED_FILE_NAME: &str = "hang_fixture_started";
 const COMPLETED_FILE_NAME: &str = "hang_fixture_completed";
-const HANG_DURATION: Duration = Duration::from_millis(600);
+/// Far longer than any termination latency, so only a kill stops the fixture
+/// early. `startup_timeout_terminates_only_the_spawned_fixture` proves the
+/// kill by waiting for this process to exit, not by outlasting this duration.
+/// The bound only limits how long a fixture leaked by a crashed test lives.
+const HANG_DURATION: Duration = Duration::from_secs(30);
 
 fn main() {
     let project_root = project_root(std::env::args_os().skip(1).collect())
