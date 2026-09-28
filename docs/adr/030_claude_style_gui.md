@@ -174,8 +174,8 @@ These components are shared by all themes; only the colors differ.
   state with an empty, focused composer. If the current draft is not empty, it
   first asks "Discard current draft?" with Discard and Keep editing. The draft
   exists only in memory.
-- **Composer target chip** lists Coordinator plus every harness whose probe
-  state is available. Undetected harnesses are listed disabled with their
+- **Composer target chip** lists Coordinator plus every harness whose launcher
+  probe state is verified. Undetected harnesses are listed disabled with their
   reason. The choice only changes the caption, for example "Draft for Codex ·
   not sent", and is not persisted. It never enables Send.
 - **Sidebar collapse** (button, and `Ctrl+B` in phase 2) toggles between the
