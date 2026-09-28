@@ -2641,3 +2641,36 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Remaining**
 - Windows CI evidence for this change comes from its pull request run.
 - ADR 029 open decision 4 and a live `dispatch submit`, unchanged from the 2026-09-28 (1) entry.
+
+### 2026-09-29 - Shared ACL-marker test isolation (`fix/acl_marker_test_isolation`)
+
+**Status change**
+- None. M3 stays `VERIFIED`. This is a test isolation fix plus a `DaemonPaths` constructor refactor that keeps production behavior the same. No ACL check, wire contract, schema, or CLI output changed.
+
+**Symptom**
+- On `main` at `21447ac`, `cargo test -p vibemux_cli --lib` failed in 12 of 15 back-to-back runs of the built test binary on the development machine. `recovery::tests::live_daemon_is_never_recoverable` and `recovery::tests::descriptor_only_recovery_and_pid_mismatch_fail_closed` panicked at `DaemonControlServer::start_for_paths` with `ControlRuntimeSecurityInvalid`. Each test passed when run alone. The "2 load-flake failures in `vibemux_cli` recovery tests" in the 2026-09-26 entry, attributed there to issue #6, match this signature.
+
+**Root cause**
+- `tests::classify_daemon_exit_distinguishes_security_failures` came from the issue #8 review round (V2). It granted Everyone on the real, shared `%LOCALAPPDATA%\VibeMux\runtime\.acl_v1` marker and restored the ACL afterwards. Its comment assumed no sibling test verifies the marker's ACL. That has been false since issue #7: every trusted start verifies the marker in phase 1 (`verify_control_pre_publish` covers root, leaf, marker, and writer lock). The two recovery tests start daemons in parallel with it, so a start that landed inside the loosen/restore window failed closed, as designed.
+- Temporary diagnostics on the failing call reported `AccessControlInvalidAt { stage: 7, index: 3 }` for the four-path phase-1 batch. Index 3 is the marker and stage 7 means the effective ACE count was not 3. The checks behaved as specified. The failure was test isolation against shared user state.
+- Skipping only the classify test gave 0 failures in 15 runs.
+- The same design had a second hazard. A panic between the loosen and the restore left the user's shared marker loosened, which fails every later trusted start on the machine, including a real `vibemuxctl daemon start`. This happened during validation (below) and was repaired by hand.
+- Two `vibemuxd` tests had the same problem across processes. `ensure_runtime_dir_heals_a_stale_acl_marker` emptied the shared marker and `concurrent_first_touch_serializes_marker_publication` deleted it. `marker_test_lock` serialized them inside the `vibemuxd` test binary, but not against other processes reading the marker at the same time, such as another worktree's test run or a live daemon start.
+
+**Implemented**
+- `crates/vibemuxd/src/process.rs`: `DaemonPaths::from_project_root` is split into `canonical_project_root`, `windows_control_runtime_root` (the `<LOCALAPPDATA>\VibeMux\runtime` derivation), and a shared `assemble`. Production paths, error codes, and error order are unchanged. The new test-only `DaemonPaths::from_project_root_with_local_app_data` is compiled under `cfg(all(windows, any(test, feature = "test_helpers")))`, the same gating pattern as `start_with_dispatch`. It roots the control runtime under a private base with the production layout, so the ensure path secures it with the same helper and the tampering tests still exercise the real code.
+- The three tests that loosen, empty, or remove the marker now use private roots. `marker_test_lock` is removed because no test in the workspace mutates the shared marker any more.
+- `crates/vibemux_cli/Cargo.toml`: adds a dev-dependency on `vibemuxd` with `test_helpers`.
+
+**Evidence**
+- Regression pin in the classify test: while its private marker is loosened, a sibling project's surviving surface under the real shared root must still verify. With the test pointed back at the shared root, it failed deterministically at that assertion even when run alone (`sibling control surface is unaffected by this test: ControlRuntimeSecurityInvalid`). With the fix it passes.
+- New `isolated_local_app_data_relocates_the_whole_control_surface`: every control artifact (root, leaf, marker, descriptor, writer lock) is under the private base and none is under the shared root. Project-local state paths match production.
+- After the fix, the `vibemux_cli` lib test binary failed 0 of 20 runs (before: 12 of 15). A full workspace run left the shared marker's modification time unchanged. Before the fix, the first-touch test deleted and republished the marker on every run.
+- Commands (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` (parallel, as in CI) exit 0, 492 passed, 0 failed, 2 ignored. The one extra test is the new contract test.
+
+**Observations (not changed)**
+- With `control_acl_init_lock` temporarily removed, `concurrent_first_touch_serializes_marker_publication` passed 10 of 10 runs. It therefore no longer pins the lock, although its comment says it does; the issue #6 review round measured 8 of 10 failing. The likely cause is issue #7 Stage 1's `helper_slot`, which serializes each thread's `secure_user_directory` helper and so staggers the publications. This predates this change and does not depend on which root the test uses. It is left for a separate change.
+- Validation side effect: the deliberate pre-fix run above panicked before its restore and left the real marker with an extra Everyone ACE, the hazard described above. `icacls <marker> /remove *S-1-1-0` removed it, and the marker again has its three inherited ACEs. Those runs also left five empty per-project leaves under the shared root. The root already held many empty leaves from earlier test runs. None are removed here.
+
+**Remaining**
+- The `rust-ubuntu` compile of the refactored unix path comes from the pull request CI run. A local Linux cross-check stopped at the bundled SQLite C build.
