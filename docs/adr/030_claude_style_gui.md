@@ -20,7 +20,8 @@ every theme:
 - The task drawer is a floating window with two headers ("Task details" with a
   close icon, then "Task details" with a Close button), and it covers the top
   bar's Refresh button.
-- The task list scrolls underneath the composer and its last card is clipped.
+- The bordered task list is cut off sharply at the edge of its scroll region,
+  above the composer, with no cue that more tasks follow.
 - The run details in the drawer are not aligned in columns.
 - The divider under the top bar is heavy.
 
@@ -39,8 +40,9 @@ Goals:
   and Claude Desktop shell elements.
 - Every new control performs a real local function.
 - Fix the drawer, clipping, and alignment defects in every theme.
-- WCAG AA contrast: at least 4.5:1 for text and 3:1 for icons and control
-  boundaries.
+- WCAG AA contrast: at least 4.5:1 for text in the two Claude palettes and for
+  accent-colored text in every palette, and 3:1 for icons and control
+  boundaries. Other text colors in the five older palettes are unchanged.
 
 Non-goals:
 
@@ -83,6 +85,12 @@ backgrounds.
 pinned by `palette_parity`. The Python fallback copy of the `claude` palette in
 `src/vibemux/theme.py` is updated to the retuned values. The Python CLI's
 default theme stays `claude`.
+
+This ADR amends ADR 026's palette invariant "surface lighter than background":
+the surface must instead differ from the background by at least 5.0 luma units
+(Rec. 709 weights on 0 to 255 channels) in either direction, because Claude's
+dark sidebar is darker than its canvas. The invariant "muted text darker than
+primary text" is evaluated per light or dark palette using §2's luminance rule.
 
 ### 2. Light detection and readable accent text
 
@@ -135,7 +143,11 @@ redistributed. Off Windows, the serif family falls back to the sans family.
   the placeholder "How can I help today?", a target chip on the left, and a
   circular send button on the right. The send button stays disabled with the
   existing reason tooltip, and the caption "Draft only · coordinator chat is
-  not connected" remains visible whenever sending is unavailable.
+  not connected" remains visible whenever sending is unavailable. Enter
+  attempts to send and Shift+Enter inserts a newline. While sending is
+  unavailable, Enter leaves the draft unchanged and shows "Not sent:
+  coordinator chat is not connected" for 2 s. Enter during IME composition
+  does nothing.
 - **Welcome state**: shown when the user starts a new task or the workspace has
   no tasks. The spark and a serif greeting sit above a centered composer. The
   greeting is "Good morning" (05:00 to 11:59), "Good afternoon" (12:00 to
@@ -146,9 +158,11 @@ redistributed. Off Windows, the serif family falls back to the sans family.
   360 px, maximum half the window width) below the top bar, with one title row
   and a close icon, underline tabs, and run details in an aligned grid of
   muted labels and monospace values. The detached task window from ADR 028 is
-  unchanged.
-- **Layout fixes**: the composer owns a bottom region, so the task list scrolls
-  above it and is never clipped underneath.
+  unchanged. The floating overlay previously used below 1400 px is removed;
+  the drawer is always docked.
+- **Layout fixes**: task rows are borderless, the conversation's scroll region
+  fades out over its last 28 px while more content follows, and 48 px of bottom
+  padding lets the last task scroll fully into view.
 - **Radii and elevation**: cards 12 px, composer 20 px, buttons 8 px, pills
   fully rounded. Shadows appear only on the composer and popups.
 
@@ -201,9 +215,9 @@ These components are shared by all themes; only the colors differ.
 - **Reduce motion**: a Settings toggle, off by default.
 - **Spark animation**: running tasks show a slowly rotating spark (one turn per
   2.4 s). The GUI requests a repaint about every 50 ms only while a running
-  task is visible and the window has focus, and about every 500 ms while
-  unfocused. With Reduce motion on, the spark is static and no extra repaints
-  are requested.
+  task is visible and the window has focus. Otherwise the GUI keeps its
+  existing 100 ms refresh and requests nothing extra. With Reduce motion on,
+  the spark is static.
 - **Copy buttons** on task titles, task and run IDs, branches, and worktree
   paths copy that text to the local clipboard and show "Copied" for 1.5 s.
   Nothing is sent anywhere.
@@ -224,6 +238,11 @@ These components are shared by all themes; only the colors differ.
 - `gui/sidebar.rs` and `gui/task_detail.rs` are extended in place;
   `gui/supervisor_app.rs` keeps orchestration and loses the font code.
 - The four uncompiled legacy files are deleted in a separate commit.
+- `theme/contrast.rs`: WCAG relative luminance, contrast ratio, and the
+  readable text color derivation.
+- `gui/shortcuts.rs` also renders the `Ctrl+/` overlay from the same table.
+- `quick_search.rs` also builds the search entries from the snapshot and the
+  probe view model.
 
 ### 7. Persisted settings
 
