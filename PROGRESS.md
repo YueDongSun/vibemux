@@ -2641,3 +2641,24 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Remaining**
 - Windows CI evidence for this change comes from its pull request run.
 - ADR 029 open decision 4 and a live `dispatch submit`, unchanged from the 2026-09-28 (1) entry.
+
+### 2026-09-28 (3) - Claude-style GUI phase 1 (ADR 030, `feat/claude_style_gui`)
+
+**Status change**
+- M5.0 frontend stays `PARTIAL`. ADR 030 phase 1 is implemented; phase 2 (shortcuts, quick switcher, appearance modes, motion, copy buttons) is not.
+
+**Implemented**
+- `claude_light` palette as the default for new profiles and a retuned warm charcoal `claude` palette; `config/theme_palettes.json` and the Python fallback updated under the parity test; ADR 026's surface invariant amended to a 5.0 luma gap in either direction.
+- WCAG contrast math, luminance-based light detection, and readable accent text in every palette.
+- Serif display family from Georgia or Cambria, with sans, serif, and CJK faces loaded independently (a missing CJK font no longer skips Segoe UI).
+- Collapsible sidebar with New task, Recents, and a workspace menu; welcome state with a local-time greeting; rounded composer with a target chip, a muted placeholder, and Enter/Shift+Enter handling that never sends; borderless serif task rows with a scroll fade; a quiet top bar; an always-docked task drawer with one header and an aligned details grid; deletion of four uncompiled shell files.
+- The frontend enables `time`'s `local-offset` feature for the greeting, which adds `num_threads` 0.1.7 (MIT or Apache-2.0, used on Unix only) to `Cargo.lock`.
+
+**Evidence**
+- commands (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features --no-fail-fast`: 526 passed, 2 failed, 2 ignored. The two failures are `vibemux_cli` `recovery::tests::live_daemon_is_never_recoverable` and `descriptor_only_recovery_and_pid_mismatch_fail_closed` (`ControlRuntimeSecurityInvalid`); both fail the same way on `main` at `21447ac` on this machine and pass when run alone, so they are pre-existing environment failures outside this change. Python: pytest 64 passed; ruff check and ruff format clean; mypy reports 20 errors in `tools/a2a_python_interop.py`, `tools/a2a_tck_auth.py`, and `tests/test_harness.py`, the same 20 as on `main`.
+- Screenshots: `claude_light` and `claude` at 1280x800, 960x600, and 1.5x scale for the chat, drawer, welcome, and collapsed scenes were reviewed; the committed previews in `docs/frontend_previews/` were regenerated with `claude_light` at 1440x900.
+
+**Remaining**
+- ADR 030 phase 2.
+- At the 960x600 minimum with the drawer open, the conversation column is narrow and its header badge is clipped.
+- No live check yet on a real display at scales other than 1.0 and 1.5, with other system fonts, or with IME input on a real keyboard.

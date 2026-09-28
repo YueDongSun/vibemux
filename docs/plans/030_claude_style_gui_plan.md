@@ -769,20 +769,20 @@ Expected: FAIL in `test_fallback_palette_matches_the_exported_default`.
 In `src/vibemux/theme.py` `_fallback_palette`, replace the color arguments with:
 
 ```python
-        bg="#262624",
-        surface="#1F1E1D",
-        surface_alt="#30302E",
-        border="#3A3935",
-        text_primary="#F5F4EE",
-        text_muted="#A8A59B",
-        accent="#D97757",
-        accent_alt="#E7C6B4",
-        success="#8AB487",
-        warning="#D9A85F",
-        danger="#E07A6F",
-        terminal_bg="#1A1918",
-        terminal_fg="#EDEBE4",
-        terminal_cursor="#D97757",
+bg = ("#262624",)
+surface = ("#1F1E1D",)
+surface_alt = ("#30302E",)
+border = ("#3A3935",)
+text_primary = ("#F5F4EE",)
+text_muted = ("#A8A59B",)
+accent = ("#D97757",)
+accent_alt = ("#E7C6B4",)
+success = ("#8AB487",)
+warning = ("#D9A85F",)
+danger = ("#E07A6F",)
+terminal_bg = ("#1A1918",)
+terminal_fg = ("#EDEBE4",)
+terminal_cursor = ("#D97757",)
 ```
 
 Run: `PYTHONPATH="$PWD/src" ../../../.venv/Scripts/python.exe -m pytest tests/test_theme.py -q`

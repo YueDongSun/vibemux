@@ -1,8 +1,9 @@
 # ADR 030: Claude-style GUI with a light and dark Claude theme pair
 
-Status: Proposed. This ADR is the approved design specification; none of it is
-implemented yet. It becomes Accepted when phase 1 merges, and PROGRESS.md
-records the status of each phase.
+Status: Accepted. Phase 1 (palettes, typography, sidebar, welcome state,
+composer, conversation rows, and the docked drawer) is implemented. Phase 2
+(shortcuts, quick switcher, appearance modes, motion, and copy buttons) is not
+implemented yet. PROGRESS.md records the status of each phase.
 
 Amends ADR 028: the default theme for new profiles becomes `claude_light`
 instead of `studio`, and the task drawer, composer, and sidebar change
