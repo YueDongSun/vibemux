@@ -1230,6 +1230,27 @@ mod tests {
     }
 
     #[test]
+    fn composer_placeholder_uses_the_muted_text_color() {
+        let mut app = test_app();
+        app.user_config.theme = ThemeId::ClaudeLight;
+        let muted = super::super::pal(&palette_for(ThemeId::ClaudeLight)).muted;
+        let (_, output) = render_at(&mut app, 1280.0, 800.0);
+        let placeholder = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text)
+                if text.galley.job.text == composer::COMPOSER_PLACEHOLDER =>
+            {
+                text.galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|section| section.format.color)
+            }
+            _ => None,
+        });
+        assert_eq!(placeholder, Some(muted));
+    }
+
+    #[test]
     fn empty_workspace_renders_the_welcome_composer() {
         let mut app = test_app();
         app.snapshot.write().unwrap().tasks.clear();

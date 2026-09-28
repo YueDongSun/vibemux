@@ -66,7 +66,7 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
                 .id(egui::Id::new(COMPOSER_TEXT_ID))
                 .desired_width(f32::INFINITY)
                 .desired_rows(2)
-                .hint_text(COMPOSER_PLACEHOLDER)
+                .hint_text(RichText::new(COMPOSER_PLACEHOLDER).color(c.muted))
                 .frame(false)
                 .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
                 .font(egui::TextStyle::Body),
