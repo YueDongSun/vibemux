@@ -59,7 +59,7 @@ pub fn render(
                         .add(
                             egui::Button::new(RichText::new(label).size(13.0).color(
                                 if selection.tab == tab {
-                                    colors.accent
+                                    colors.accent_text
                                 } else {
                                     colors.muted
                                 },

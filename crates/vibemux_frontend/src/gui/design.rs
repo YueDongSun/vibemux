@@ -107,7 +107,11 @@ pub fn status(ui: &mut Ui, c: &C, state: &str) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 3.0, color);
-        ui.label(RichText::new(state_text(state)).size(12.0).color(color));
+        ui.label(
+            RichText::new(state_text(state))
+                .size(12.0)
+                .color(state_text_color(c, state)),
+        );
     });
 }
 pub fn state_color(c: &C, state: &str) -> Color32 {
@@ -117,6 +121,13 @@ pub fn state_color(c: &C, state: &str) -> Color32 {
         "failed" => c.danger,
         "in_progress" | "running" => c.accent,
         _ => c.muted,
+    }
+}
+/// Text color for a state label; accent states use the readable accent.
+pub fn state_text_color(c: &C, state: &str) -> Color32 {
+    match state {
+        "in_progress" | "running" => c.accent_text,
+        _ => state_color(c, state),
     }
 }
 pub fn state_text(state: &str) -> String {

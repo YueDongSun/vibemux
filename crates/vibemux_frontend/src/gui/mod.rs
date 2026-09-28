@@ -13,6 +13,7 @@ mod supervisor_app;
 mod supervisor_state;
 mod task_detail;
 mod theme;
+mod typography;
 
 pub use chat::wrapped_label as render_wrapped_label;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;
@@ -34,6 +35,9 @@ pub(crate) struct C {
     pub muted: Color32,
     pub faint: Color32,
     pub accent: Color32,
+    /// Accent for text: `accent` blended toward `txt` until it reaches 4.5:1
+    /// on `bg`, `surf`, and `raised` (ADR 030 §2).
+    pub accent_text: Color32,
     pub accent_bg: Color32,
     pub ok: Color32,
     pub warn: Color32,
@@ -43,6 +47,13 @@ pub(crate) struct C {
 pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
     let bg = hex(&p.bg);
     let accent = hex(&p.accent);
+    let channel = |field: &str| p.rgb(field).unwrap_or((0, 0, 0));
+    let accent_text = crate::theme::contrast::readable_text_color(
+        channel("accent"),
+        &[channel("bg"), channel("surface"), channel("surface_alt")],
+        channel("text_primary"),
+        crate::theme::contrast::TEXT_CONTRAST_MINIMUM,
+    );
     C {
         bg,
         surf: hex(&p.surface),
@@ -52,6 +63,7 @@ pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
         muted: hex(&p.text_muted),
         faint: hex(&p.text_muted),
         accent,
+        accent_text: Color32::from_rgb(accent_text.0, accent_text.1, accent_text.2),
         accent_bg: mix(&bg, &accent, 0.17),
         ok: hex(&p.success),
         warn: hex(&p.warning),
@@ -101,4 +113,30 @@ pub fn run_gui(
             )))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::theme::{
+        all_palettes,
+        contrast::{TEXT_CONTRAST_MINIMUM, contrast_ratio},
+    };
+
+    fn rgb(color: eframe::egui::Color32) -> (u8, u8, u8) {
+        (color.r(), color.g(), color.b())
+    }
+
+    #[test]
+    fn accent_text_is_readable_on_every_surface_of_every_palette() {
+        for palette in all_palettes() {
+            let colors = super::pal(&palette);
+            for surface in [colors.bg, colors.surf, colors.raised] {
+                assert!(
+                    contrast_ratio(rgb(colors.accent_text), rgb(surface)) >= TEXT_CONTRAST_MINIMUM,
+                    "{}",
+                    palette.name
+                );
+            }
+        }
+    }
 }

@@ -4,6 +4,7 @@ use super::{
     C,
     design::{self, Icon},
     supervisor_state::MainPage,
+    typography,
 };
 use crate::{supervisor_model::SupervisorSnapshot, theme::ThemeId};
 use egui::{self, RichText, Ui};
@@ -44,7 +45,11 @@ pub fn render(
             ui.horizontal(|ui| {
                 design::avatar(ui, c, "v", 28.0);
                 ui.add_space(4.0);
-                ui.label(RichText::new("VibeMux").size(18.0).strong().color(c.txt));
+                ui.label(
+                    RichText::new("VibeMux")
+                        .font(typography::display_font(ui.ctx(), 19.0))
+                        .color(c.txt),
+                );
             });
             ui.add_space(28.0);
             egui::Frame::new()

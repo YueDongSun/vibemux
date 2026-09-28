@@ -53,7 +53,7 @@ impl SupervisorApp {
         view_model: ViewModel,
         user_config: UserConfig,
     ) -> Self {
-        install_system_cjk_fallback(&cc.egui_ctx);
+        super::typography::install_fonts(&cc.egui_ctx);
         let actions = UiActionQueue::default();
         actions.enqueue(SupervisorAction::Refresh);
         Self {
@@ -690,50 +690,6 @@ fn window_task_title(task: &TaskView) -> &str {
         &task.title
     }
 }
-
-#[cfg(windows)]
-fn install_system_cjk_fallback(ctx: &egui::Context) {
-    use std::{env, fs, path::PathBuf};
-
-    let system_root = env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let fonts_dir = system_root.join("Fonts");
-    let candidates = ["msyh.ttc", "simhei.ttf", "meiryo.ttc", "YuGothM.ttc"];
-    let Some(bytes) = candidates
-        .iter()
-        .find_map(|font_name| fs::read(fonts_dir.join(font_name)).ok())
-    else {
-        return;
-    };
-    let mut definitions = egui::FontDefinitions::default();
-    if let Ok(latin) = fs::read(fonts_dir.join("segoeui.ttf")) {
-        definitions.font_data.insert(
-            "vibemux_ui".into(),
-            egui::FontData::from_owned(latin).into(),
-        );
-        definitions
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "vibemux_ui".into());
-    }
-    let font_name = "vibemux_system_cjk".to_string();
-    definitions
-        .font_data
-        .insert(font_name.clone(), egui::FontData::from_owned(bytes).into());
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        definitions
-            .families
-            .entry(family)
-            .or_default()
-            .insert(1, font_name.clone());
-    }
-    ctx.set_fonts(definitions);
-}
-
-#[cfg(not(windows))]
-fn install_system_cjk_fallback(_ctx: &egui::Context) {}
 
 /// Build a minimal view model for GUI unit tests without invoking probes.
 #[cfg(test)]
