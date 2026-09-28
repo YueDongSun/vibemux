@@ -165,11 +165,7 @@ fn new_task_on_an_empty_draft_starts_the_welcome_state() {
 #[test]
 fn whitespace_draft_starts_a_new_task_without_prompting() {
     let mut state = SupervisorUiState::default();
-    state.set_composer_draft(
-        "  
-	"
-        .to_string(),
-    );
+    state.set_composer_draft("  \n\t".to_string());
     assert_eq!(state.request_new_task(), NewTaskOutcome::Started);
     assert!(!state.discard_prompt_open());
     assert_eq!(state.composer_draft(), "");

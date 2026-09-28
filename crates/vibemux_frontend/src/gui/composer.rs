@@ -17,6 +17,10 @@ pub const COMPOSER_TEXT_ID: &str = "coordinator_composer_text";
 pub const SEND_BUTTON_ID: &str = "coordinator_send_button";
 pub const COMPOSER_PLACEHOLDER: &str = "How can I help today?";
 const SEND_BUTTON_SIZE: f32 = 32.0;
+/// The draft area never takes more than this share of the window height.
+const COMPOSER_TEXT_MAX_SHARE: f32 = 0.35;
+const COMPOSER_TEXT_MIN_HEIGHT: f32 = 48.0;
+const COMPOSER_TEXT_MAX_HEIGHT: f32 = 240.0;
 const NOT_SENT_TEXT: &str = "Not sent: coordinator chat is not connected";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,16 +65,27 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
     design::composer_frame(c).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         let mut draft = state.composer_draft().to_string();
-        let response = ui.add(
-            egui::TextEdit::multiline(&mut draft)
-                .id(egui::Id::new(COMPOSER_TEXT_ID))
-                .desired_width(f32::INFINITY)
-                .desired_rows(2)
-                .hint_text(RichText::new(COMPOSER_PLACEHOLDER).color(c.muted))
-                .frame(false)
-                .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
-                .font(egui::TextStyle::Body),
-        );
+        // Long drafts scroll inside the composer instead of growing it past
+        // the window, which would hide the send row, the caption, and the
+        // conversation.
+        let max_text_height = (ui.ctx().screen_rect().height() * COMPOSER_TEXT_MAX_SHARE)
+            .clamp(COMPOSER_TEXT_MIN_HEIGHT, COMPOSER_TEXT_MAX_HEIGHT);
+        let response = egui::ScrollArea::vertical()
+            .id_salt("composer_text_scroll")
+            .max_height(max_text_height)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut draft)
+                        .id(egui::Id::new(COMPOSER_TEXT_ID))
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(2)
+                        .hint_text(RichText::new(COMPOSER_PLACEHOLDER).color(c.muted))
+                        .frame(false)
+                        .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
+                        .font(egui::TextStyle::Body),
+                )
+            })
+            .inner;
         if state.take_composer_focus_request() {
             response.request_focus();
         }

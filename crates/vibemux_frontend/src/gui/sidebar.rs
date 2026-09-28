@@ -176,6 +176,7 @@ fn new_task_row(ui: &mut Ui, c: &C) -> bool {
         egui::FontId::proportional(14.0),
         c.txt,
     );
+    design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New task"));
     response.clicked()
 }
@@ -224,6 +225,7 @@ fn recent_row(ui: &mut Ui, c: &C, title: &str, state: &str, selected: bool) -> e
         galley,
         c.muted,
     );
+    design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     response.on_hover_text(title)
 }
@@ -273,6 +275,7 @@ fn workspace_button(
         egui::FontId::proportional(11.0),
         c.muted,
     );
+    design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Workspace menu")
     });

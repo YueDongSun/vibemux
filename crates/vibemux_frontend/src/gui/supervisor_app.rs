@@ -1251,6 +1251,79 @@ mod tests {
     }
 
     #[test]
+    fn long_draft_keeps_the_send_button_caption_and_conversation_visible() {
+        let mut app = test_app();
+        let long_draft = (0..60)
+            .map(|line| format!("line {line} of a pasted specification"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.ui_state.lock().unwrap().set_composer_draft(long_draft);
+        assert!(app.select_task("task_1"));
+        let (width, height) = (960.0, 600.0);
+        let (context, _) = render_at(&mut app, width, height);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+        // The draft's scroll area sizes itself from the previous frame, so a
+        // freshly pasted long draft settles within two more frames.
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let _ = context.run(raw.clone(), |context| app.render_frame(context));
+        let output = context.run(raw, |context| app.render_frame(context));
+        let send = context
+            .read_response(egui::Id::new(composer::SEND_BUTTON_ID))
+            .expect("send button");
+        assert!(screen.contains_rect(send.rect), "send button off screen");
+        let caption_visible = output.shapes.iter().any(|shape| match &shape.shape {
+            egui::epaint::Shape::Text(text) => {
+                text.galley.job.text.starts_with("Draft only") && screen.contains(text.pos)
+            }
+            _ => false,
+        });
+        assert!(caption_visible, "caption missing");
+        let composer_panel = egui::containers::panel::PanelState::load(
+            &context,
+            egui::Id::new("coordinator_composer"),
+        )
+        .expect("composer panel");
+        assert!(
+            composer_panel.rect.height() <= height * 0.6,
+            "composer panel took {} of {height}",
+            composer_panel.rect.height()
+        );
+    }
+
+    #[test]
+    fn focused_icon_button_draws_an_accent_focus_ring() {
+        let mut app = test_app();
+        app.user_config.theme = ThemeId::ClaudeLight;
+        let accent = super::super::pal(&palette_for(ThemeId::ClaudeLight)).accent;
+        let context = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let _ = context.run(raw.clone(), |context| app.render_frame(context));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(REFRESH_BUTTON_ID)));
+        let output = context.run(raw, |context| app.render_frame(context));
+        let refresh = context
+            .read_response(egui::Id::new(REFRESH_BUTTON_ID))
+            .expect("refresh button");
+        let ring = output.shapes.iter().any(|shape| match &shape.shape {
+            egui::epaint::Shape::Rect(rect) => {
+                rect.stroke.color == accent
+                    && rect.stroke.width >= 2.0
+                    && rect.rect.intersects(refresh.rect)
+            }
+            _ => false,
+        });
+        assert!(ring, "no accent focus ring on the focused Refresh button");
+    }
+
+    #[test]
     fn empty_workspace_renders_the_welcome_composer() {
         let mut app = test_app();
         app.snapshot.write().unwrap().tasks.clear();

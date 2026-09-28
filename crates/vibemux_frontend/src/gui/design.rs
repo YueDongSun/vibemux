@@ -137,6 +137,19 @@ pub fn spark(ui: &mut Ui, color: Color32, size: f32, angle: f32) -> Response {
     response
 }
 
+/// Accent ring for a keyboard-focused custom control (ADR 030 §2: focus rings
+/// use the brand accent, which reaches 3:1 on every surface).
+pub fn paint_focus_ring(ui: &Ui, response: &Response, radius: u8, c: &C) {
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect,
+            radius,
+            Stroke::new(2.0, c.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 /// A square icon button with a tooltip and an explicit, stable `id`.
 pub fn icon_button(ui: &mut Ui, c: &C, kind: Icon, tooltip: &str, id: egui::Id) -> Response {
     let (_, rect) = ui.allocate_space(vec2(ICON_BUTTON_SIZE, ICON_BUTTON_SIZE));
@@ -151,6 +164,7 @@ pub fn icon_button(ui: &mut Ui, c: &C, kind: Icon, tooltip: &str, id: egui::Id) 
         if response.hovered() { c.txt } else { c.muted },
         18.0,
     );
+    paint_focus_ring(ui, &response, BUTTON_RADIUS, c);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
     response.on_hover_text(tooltip)
 }
@@ -200,6 +214,7 @@ pub fn nav_row(ui: &mut Ui, c: &C, label: &str, kind: Icon, selected: bool) -> b
             .size(14.0)
             .color(if selected { c.txt } else { c.muted }),
     );
+    paint_focus_ring(ui, &response, BUTTON_RADIUS, c);
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
     });
