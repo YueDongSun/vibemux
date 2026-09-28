@@ -13,6 +13,7 @@ pub enum Icon {
     Refresh,
     Plus,
     SidebarToggle,
+    Send,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -77,6 +78,11 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
         Icon::SidebarToggle => {
             painter.rect_stroke(rect, 3, stroke, egui::StrokeKind::Inside);
             painter.line_segment([position(0.38, 0.0), position(0.38, 1.0)], stroke);
+        }
+        Icon::Send => {
+            painter.line_segment([position(0.5, 0.85), position(0.5, 0.18)], stroke);
+            painter.line_segment([position(0.22, 0.45), position(0.5, 0.18)], stroke);
+            painter.line_segment([position(0.5, 0.18), position(0.78, 0.45)], stroke);
         }
     }
 }

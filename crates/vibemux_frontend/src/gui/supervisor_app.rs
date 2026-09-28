@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    C, agents, chat, design, diagnostics, settings, sidebar,
+    C, agents, chat, composer, design, diagnostics, settings, sidebar,
     supervisor_state::{
         CHAT_DRAWER_DOCK_THRESHOLD, CHAT_DRAWER_WIDTH, MainPage, SupervisorUiState, UiActionQueue,
     },
@@ -46,6 +46,8 @@ pub struct SupervisorApp {
     last_size: [f32; 2],
     pending_write: Option<Instant>,
     pending_resize: Option<Instant>,
+    /// Last laid-out height of the auto-sized composer panel.
+    composer_panel_height: f32,
 }
 
 impl SupervisorApp {
@@ -68,6 +70,7 @@ impl SupervisorApp {
             last_size: [0.0, 0.0],
             pending_write: None,
             pending_resize: None,
+            composer_panel_height: 0.0,
         }
     }
 
@@ -487,6 +490,7 @@ impl SupervisorApp {
                 .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
         });
         let colors = super::pal(&palette);
+        let target_options = composer::target_options(&self.view_model);
         self.persist_if_due();
         self.handle_keyboard(ctx);
 
@@ -567,8 +571,7 @@ impl SupervisorApp {
                 || snapshot.tasks.is_empty());
 
         if page == MainPage::CoordinatorChat && !welcome {
-            egui::TopBottomPanel::bottom("coordinator_composer")
-                .exact_height(204.0)
+            let composer_panel = egui::TopBottomPanel::bottom("coordinator_composer")
                 .frame(
                     egui::Frame::new()
                         .fill(colors.bg)
@@ -576,9 +579,18 @@ impl SupervisorApp {
                 )
                 .show(ctx, |ui| {
                     if let Ok(mut state) = self.ui_state.lock() {
-                        chat::render_composer(ui, &colors, &mut state);
+                        chat::content_column(ui, |ui| {
+                            composer::render(ui, &colors, &mut state, &target_options);
+                        });
                     }
                 });
+            // The panel sizes to its content one pass late; redo the pass
+            // when its height changes so no frame shows an overflowing composer.
+            let height = composer_panel.response.rect.height();
+            if (height - self.composer_panel_height).abs() > 0.5 {
+                self.composer_panel_height = height;
+                ctx.request_discard("composer panel height changed");
+            }
         }
 
         egui::CentralPanel::default()
@@ -599,7 +611,9 @@ impl SupervisorApp {
                         );
                     });
                     if let Ok(mut state) = self.ui_state.lock() {
-                        chat::render_composer(ui, &colors, &mut state);
+                        chat::content_column(ui, |ui| {
+                            composer::render(ui, &colors, &mut state, &target_options);
+                        });
                     }
                 }
                 MainPage::CoordinatorChat => {
@@ -937,6 +951,7 @@ mod tests {
             last_size: [0.0, 0.0],
             pending_write: None,
             pending_resize: None,
+            composer_panel_height: 0.0,
         }
     }
 
@@ -1079,6 +1094,92 @@ mod tests {
         assert!(sidebar_titles[0].right() <= sidebar::SIDEBAR_WIDTH + 0.5);
     }
 
+    fn composer_key(
+        context: &egui::Context,
+        app: &mut SupervisorApp,
+        modifiers: egui::Modifiers,
+        with_ime: bool,
+        time: f64,
+    ) {
+        let mut events = Vec::new();
+        if with_ime {
+            events.push(egui::Event::Ime(egui::ImeEvent::Preedit("输入".into())));
+        }
+        events.push(egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        });
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            modifiers,
+            time: Some(time),
+            ..Default::default()
+        };
+        let _ = context.run(raw, |context| app.render_frame(context));
+    }
+
+    fn focused_composer_app() -> (egui::Context, SupervisorApp) {
+        let mut app = test_app();
+        app.ui_state
+            .lock()
+            .unwrap()
+            .set_composer_draft("draft".to_string());
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| {
+            app.render_frame(context)
+        });
+        context
+            .memory_mut(|memory| memory.request_focus(egui::Id::new(composer::COMPOSER_TEXT_ID)));
+        (context, app)
+    }
+
+    #[test]
+    fn enter_keeps_the_draft_and_shows_not_sent() {
+        let (context, mut app) = focused_composer_app();
+        composer_key(&context, &mut app, egui::Modifiers::NONE, false, 1.0);
+        let state = app.ui_state.lock().unwrap();
+        assert_eq!(state.composer_draft(), "draft");
+        assert!(state.not_sent_hint_visible(1.5));
+        drop(state);
+        assert!(
+            app.take_supervisor_actions()
+                .iter()
+                .all(|action| matches!(action, SupervisorAction::Refresh))
+        );
+    }
+
+    #[test]
+    fn shift_enter_inserts_a_newline() {
+        let (context, mut app) = focused_composer_app();
+        composer_key(&context, &mut app, egui::Modifiers::SHIFT, false, 1.0);
+        assert!(app.ui_state.lock().unwrap().composer_draft().contains('\n'));
+    }
+
+    #[test]
+    fn enter_during_ime_composition_is_ignored() {
+        let (context, mut app) = focused_composer_app();
+        composer_key(&context, &mut app, egui::Modifiers::NONE, true, 1.0);
+        let state = app.ui_state.lock().unwrap();
+        // egui shows the uncommitted preedit text inline; Enter itself must
+        // neither attempt a send nor insert a newline.
+        assert!(state.composer_draft().starts_with("draft"));
+        assert!(!state.composer_draft().contains('\n'));
+        assert!(!state.not_sent_hint_visible(1.5));
+        drop(state);
+        assert!(
+            app.take_supervisor_actions()
+                .iter()
+                .all(|action| matches!(action, SupervisorAction::Refresh))
+        );
+    }
+
     #[test]
     fn empty_workspace_renders_the_welcome_composer() {
         let mut app = test_app();
@@ -1128,16 +1229,13 @@ mod tests {
                         .or_default()
                         .native_pixels_per_point = Some(scale);
                     let _ = context.run(raw.clone(), |context| app.render_frame(context));
-                    let output = context.run(raw, |context| app.render_frame(context));
-                    let has_send = output.shapes.iter().any(|shape| match &shape.shape {
-                        egui::epaint::Shape::Text(text) => {
-                            text.galley.job.text == "Send" && rect.contains(text.pos)
-                        }
-                        _ => false,
-                    });
+                    let _ = context.run(raw, |context| app.render_frame(context));
+                    let send = context
+                        .read_response(egui::Id::new(composer::SEND_BUTTON_ID))
+                        .expect("send button rendered");
                     assert!(
-                        has_send,
-                        "composer missing: {theme:?} {width}x{height} scale {scale}"
+                        rect.contains_rect(send.rect),
+                        "send button off screen: {theme:?} {width}x{height} scale {scale}"
                     );
                 }
             }

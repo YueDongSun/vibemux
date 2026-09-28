@@ -68,6 +68,17 @@ impl TaskDetailSelection {
     }
 }
 
+/// How long "Not sent" stays visible after an Enter or click attempt.
+pub const NOT_SENT_HINT_SECONDS: f64 = 2.0;
+
+/// Who a draft is addressed to. Only changes the caption; never enables Send.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ComposerTarget {
+    #[default]
+    Coordinator,
+    Harness(String),
+}
+
 /// Result of asking for a new task (ADR 030 §5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NewTaskOutcome {
@@ -90,6 +101,8 @@ pub struct SupervisorUiState {
     welcome_active: bool,
     discard_prompt_open: bool,
     composer_focus_requested: bool,
+    composer_target: ComposerTarget,
+    not_sent_hint_started: Option<f64>,
 }
 
 impl SupervisorUiState {
@@ -273,6 +286,26 @@ impl SupervisorUiState {
         self.close_details();
         self.welcome_active = true;
         self.composer_focus_requested = true;
+    }
+
+    #[must_use]
+    pub fn composer_target(&self) -> &ComposerTarget {
+        &self.composer_target
+    }
+
+    pub fn set_composer_target(&mut self, target: ComposerTarget) {
+        self.composer_target = target;
+    }
+
+    pub fn show_not_sent_hint(&mut self, now_seconds: f64) {
+        self.not_sent_hint_started = Some(now_seconds);
+    }
+
+    #[must_use]
+    pub fn not_sent_hint_visible(&self, now_seconds: f64) -> bool {
+        self.not_sent_hint_started.is_some_and(|started| {
+            now_seconds >= started && now_seconds - started < NOT_SENT_HINT_SECONDS
+        })
     }
 
     pub fn set_composer_draft(&mut self, draft: String) {

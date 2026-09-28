@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Conversation-first task activity and a capability-aware composer.
+//! Conversation-first task activity.
 use super::{
     C,
     design::{self, Icon},
@@ -147,55 +147,6 @@ fn task_row(
     ui.add_space(12.0);
 }
 
-pub fn render_composer(ui: &mut Ui, c: &C, state: &mut SupervisorUiState) {
-    content_column(ui, |ui| {
-        design::composer_frame(c).show(ui, |ui| {
-            let mut draft = state.composer_draft().to_string();
-            let response = ui.add(
-                egui::TextEdit::multiline(&mut draft)
-                    .id_salt("coordinator_composer")
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(3)
-                    .hint_text("Describe what you want to get done…")
-                    .frame(false)
-                    .font(egui::TextStyle::Body),
-            );
-            if state.take_composer_focus_request() {
-                response.request_focus();
-            }
-            if response.changed() {
-                state.set_composer_draft(draft);
-            }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                design::icon(ui, Icon::Chat, c.muted, 17.0);
-                ui.label(RichText::new("To coordinator").size(12.0).color(c.muted));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let response = ui
-                        .add_enabled(
-                            state.send_enabled(),
-                            egui::Button::new(RichText::new("Send").size(13.0))
-                                .min_size(egui::vec2(64.0, 30.0))
-                                .corner_radius(8),
-                        )
-                        .on_hover_text(state.send_disabled_reason());
-                    if response.clicked() {
-                        state.try_send();
-                    }
-                });
-            });
-        });
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Draft only").size(11.5).color(c.warn));
-            ui.label(
-                RichText::new("Coordinator chat is not connected. Nothing has been sent.")
-                    .size(11.5)
-                    .color(c.muted),
-            );
-        });
-    });
-}
 pub(crate) fn task_viewport_id(task_id: &str) -> ViewportId {
     ViewportId::from_hash_of(("vibemux_task", task_id))
 }
