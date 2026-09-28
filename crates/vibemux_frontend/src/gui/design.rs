@@ -13,6 +13,7 @@ pub enum Icon {
     Plus,
     SidebarToggle,
     Send,
+    Close,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -75,6 +76,10 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
             painter.line_segment([position(0.5, 0.85), position(0.5, 0.18)], stroke);
             painter.line_segment([position(0.22, 0.45), position(0.5, 0.18)], stroke);
             painter.line_segment([position(0.5, 0.18), position(0.78, 0.45)], stroke);
+        }
+        Icon::Close => {
+            painter.line_segment([position(0.2, 0.2), position(0.8, 0.8)], stroke);
+            painter.line_segment([position(0.8, 0.2), position(0.2, 0.8)], stroke);
         }
     }
 }

@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{self, Align2, Key, Modifiers, RichText, ViewportBuilder};
+use eframe::egui::{self, Key, Modifiers, RichText, ViewportBuilder};
 #[cfg(test)]
 use vibemux_probe::AgentKind;
 
@@ -23,15 +23,17 @@ use crate::{
 
 use super::{
     C, agents, chat, composer, design, diagnostics, settings, sidebar,
-    supervisor_state::{
-        CHAT_DRAWER_DOCK_THRESHOLD, CHAT_DRAWER_WIDTH, MainPage, SupervisorUiState, UiActionQueue,
-    },
+    supervisor_state::{MainPage, SupervisorUiState, UiActionQueue},
     task_detail,
 };
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const REFRESH_BUTTON_ID: &str = "topbar_refresh";
 const TOPBAR_MIN_HEIGHT: f32 = 52.0;
+pub(crate) const DRAWER_PANEL_ID: &str = "task_details_drawer";
+const DRAWER_CLOSE_ID: &str = "task_details_close";
+const DRAWER_DEFAULT_WIDTH: f32 = 420.0;
+const DRAWER_MIN_WIDTH: f32 = 360.0;
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(500);
 const TASK_WINDOW_SIZE: [f32; 2] = [1080.0, 760.0];
 const TASK_WINDOW_MIN_SIZE: [f32; 2] = [720.0, 520.0];
@@ -314,60 +316,31 @@ impl SupervisorApp {
         let Some(task) = selected_task else {
             return;
         };
-
-        if viewport_width >= CHAT_DRAWER_DOCK_THRESHOLD {
-            let mut close_clicked = false;
-            egui::SidePanel::right("task_details_drawer")
-                .exact_width(CHAT_DRAWER_WIDTH)
-                .resizable(false)
-                .frame(
-                    egui::Frame::new()
-                        .fill(colors.bg)
-                        .inner_margin(egui::Margin::same(12)),
-                )
-                .show(ctx, |ui| {
-                    drawer_contents(
-                        ui,
-                        colors,
-                        snapshot,
-                        &task,
-                        &self.ui_state,
-                        &self.actions,
-                        &mut close_clicked,
-                    );
-                });
-            if close_clicked {
-                if let Ok(mut state) = self.ui_state.lock() {
-                    state.close_details();
-                }
-            }
-        } else {
-            let mut keep_open = true;
-            let mut close_clicked = false;
-            egui::Window::new("Task details")
-                .id(egui::Id::new("task_details_overlay"))
-                .open(&mut keep_open)
-                .anchor(Align2::RIGHT_CENTER, egui::vec2(-12.0, 0.0))
-                .default_width(CHAT_DRAWER_WIDTH)
-                .default_height((ctx.available_rect().height() - 20.0).max(340.0))
-                .min_width(280.0)
-                .resizable(false)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    drawer_contents(
-                        ui,
-                        colors,
-                        snapshot,
-                        &task,
-                        &self.ui_state,
-                        &self.actions,
-                        &mut close_clicked,
-                    );
-                });
-            if !keep_open || close_clicked {
-                if let Ok(mut state) = self.ui_state.lock() {
-                    state.close_details();
-                }
+        let max_width = (viewport_width * 0.5).max(DRAWER_MIN_WIDTH);
+        let mut close_clicked = false;
+        egui::SidePanel::right(DRAWER_PANEL_ID)
+            .resizable(true)
+            .default_width(DRAWER_DEFAULT_WIDTH.min(max_width))
+            .width_range(DRAWER_MIN_WIDTH..=max_width)
+            .frame(
+                egui::Frame::new()
+                    .fill(colors.bg)
+                    .inner_margin(egui::Margin::symmetric(18, 14)),
+            )
+            .show(ctx, |ui| {
+                drawer_contents(
+                    ui,
+                    colors,
+                    snapshot,
+                    &task,
+                    &self.ui_state,
+                    &self.actions,
+                    &mut close_clicked,
+                );
+            });
+        if close_clicked {
+            if let Ok(mut state) = self.ui_state.lock() {
+                state.close_details();
             }
         }
     }
@@ -441,6 +414,7 @@ impl SupervisorApp {
                                 task,
                                 selection,
                                 &actions,
+                                task_detail::TitleDisplay::Shown,
                             );
                         });
                     });
@@ -730,19 +704,33 @@ fn drawer_contents(
     close_clicked: &mut bool,
 ) {
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("Task details")
-                .size(16.0)
-                .strong()
-                .color(colors.txt),
-        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Close").clicked() {
+            let close = design::icon_button(
+                ui,
+                colors,
+                design::Icon::Close,
+                "Close task details",
+                egui::Id::new(DRAWER_CLOSE_ID),
+            );
+            if close.clicked() {
                 *close_clicked = true;
             }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(window_task_title(task))
+                            .font(super::typography::display_font(
+                                ui.ctx(),
+                                super::typography::TITLE_SIZE,
+                            ))
+                            .color(colors.txt),
+                    )
+                    .truncate(),
+                );
+            });
         });
     });
-    ui.separator();
+    ui.add_space(6.0);
     if let Ok(mut state) = state.lock() {
         task_detail::render(
             ui,
@@ -751,6 +739,7 @@ fn drawer_contents(
             task,
             state.details_selection_mut(),
             actions,
+            task_detail::TitleDisplay::InHeader,
         );
     }
 }
@@ -794,7 +783,7 @@ fn consume_due_persistence(
 
 fn window_task_title(task: &TaskView) -> &str {
     if task.title.trim().is_empty() {
-        "Task details"
+        "Untitled task"
     } else {
         &task.title
     }
@@ -1201,6 +1190,43 @@ mod tests {
             _ => false,
         });
         assert!(serif_title);
+    }
+
+    #[test]
+    fn task_drawer_docks_below_the_header_without_duplicate_chrome() {
+        for (width, height) in [(960.0, 600.0), (1280.0, 800.0), (1920.0, 1080.0)] {
+            let mut app = test_app();
+            assert!(app.select_task("task_1"));
+            let (context, output) = render_at(&mut app, width, height);
+            let drawer =
+                egui::containers::panel::PanelState::load(&context, egui::Id::new(DRAWER_PANEL_ID))
+                    .expect("docked drawer");
+            let header = egui::containers::panel::PanelState::load(
+                &context,
+                egui::Id::new("supervisor_header"),
+            )
+            .expect("header");
+            assert!((drawer.rect.right() - width).abs() < 1.0, "{width}");
+            assert!(drawer.rect.top() >= header.rect.bottom() - 0.5, "{width}");
+            let texts: Vec<String> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !texts
+                    .iter()
+                    .any(|text| text == "Task details" || text == "Close")
+            );
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+            let send = context
+                .read_response(egui::Id::new(composer::SEND_BUTTON_ID))
+                .expect("send button");
+            assert!(screen.contains_rect(send.rect), "{width}");
+        }
     }
 
     #[test]

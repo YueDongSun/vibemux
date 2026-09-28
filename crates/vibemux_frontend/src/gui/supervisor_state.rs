@@ -13,8 +13,6 @@ use crate::supervisor_model::{RunView, SupervisorAction, SupervisorSnapshot, Tas
 
 pub const ACTION_QUEUE_CAPACITY: usize = 64;
 pub const MAX_OPEN_TASK_WINDOWS: usize = 24;
-pub const CHAT_DRAWER_WIDTH: f32 = 320.0;
-pub const CHAT_DRAWER_DOCK_THRESHOLD: f32 = 1400.0;
 pub const CHAT_UNAVAILABLE_REASON: &str =
     "Sending is unavailable because no continuous chat service is connected.";
 
