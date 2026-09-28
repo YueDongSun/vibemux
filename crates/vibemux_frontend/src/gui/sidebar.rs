@@ -43,7 +43,7 @@ pub fn render(
                     ui.label(RichText::new("Local workspace").size(11.0).color(c.muted));
                 });
             ui.horizontal(|ui| {
-                design::avatar(ui, c, "v", 28.0);
+                design::spark(ui, c.accent, 22.0, 0.0);
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new("VibeMux")

@@ -42,6 +42,8 @@ pub(crate) struct C {
     pub ok: Color32,
     pub warn: Color32,
     pub danger: Color32,
+    /// True for light palettes (canvas luminance above 0.5).
+    pub light: bool,
 }
 
 pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
@@ -68,6 +70,7 @@ pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
         ok: hex(&p.success),
         warn: hex(&p.warning),
         danger: hex(&p.danger),
+        light: p.is_light(),
     }
 }
 
@@ -137,6 +140,7 @@ mod tests {
                     palette.name
                 );
             }
+            assert_eq!(colors.light, palette.is_light());
         }
     }
 }

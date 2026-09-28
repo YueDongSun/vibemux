@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    C, agents, chat, diagnostics, settings, sidebar,
+    C, agents, chat, design, diagnostics, settings, sidebar,
     supervisor_state::{
         CHAT_DRAWER_DOCK_THRESHOLD, CHAT_DRAWER_WIDTH, MainPage, SupervisorUiState, UiActionQueue,
     },
@@ -30,6 +30,7 @@ use super::{
 };
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
+pub(crate) const REFRESH_BUTTON_ID: &str = "topbar_refresh";
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(500);
 const TASK_WINDOW_SIZE: [f32; 2] = [1080.0, 760.0];
 const TASK_WINDOW_MIN_SIZE: [f32; 2] = [720.0, 520.0];
@@ -251,7 +252,14 @@ impl SupervisorApp {
                         chat::demo_badge(ui, colors);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Refresh").clicked() {
+                        let refresh = design::icon_button(
+                            ui,
+                            colors,
+                            design::Icon::Refresh,
+                            "Refresh",
+                            egui::Id::new(REFRESH_BUTTON_ID),
+                        );
+                        if refresh.clicked() {
                             self.enqueue_refresh();
                         }
                     });

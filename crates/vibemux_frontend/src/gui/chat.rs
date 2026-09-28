@@ -20,7 +20,7 @@ pub fn render_conversation(
         content_column(ui,|ui| {
             ui.add_space(28.0);
             ui.horizontal(|ui| {
-                design::avatar(ui,c,"v",34.0);ui.add_space(8.0);
+                design::spark(ui, c.accent, 26.0, 0.0);ui.add_space(8.0);
                 ui.vertical(|ui| {
                     ui.label(RichText::new("Workspace updates").size(15.0).strong().color(c.txt));
                     ui.label(RichText::new("Task activity · reported by the daemon").size(12.0).color(c.muted));
@@ -149,44 +149,39 @@ fn task_row(
 
 pub fn render_composer(ui: &mut Ui, c: &C, state: &mut SupervisorUiState) {
     content_column(ui, |ui| {
-        egui::Frame::new()
-            .fill(c.raised)
-            .stroke(egui::Stroke::new(1.0, c.border))
-            .corner_radius(14)
-            .inner_margin(egui::Margin::same(16))
-            .show(ui, |ui| {
-                let mut draft = state.composer_draft().to_string();
-                let response = ui.add(
-                    egui::TextEdit::multiline(&mut draft)
-                        .id_salt("coordinator_composer")
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(3)
-                        .hint_text("Describe what you want to get done…")
-                        .frame(false)
-                        .font(egui::TextStyle::Body),
-                );
-                if response.changed() {
-                    state.set_composer_draft(draft);
-                }
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    design::icon(ui, Icon::Chat, c.muted, 17.0);
-                    ui.label(RichText::new("To coordinator").size(12.0).color(c.muted));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let response = ui
-                            .add_enabled(
-                                state.send_enabled(),
-                                egui::Button::new(RichText::new("Send").size(13.0))
-                                    .min_size(egui::vec2(64.0, 30.0))
-                                    .corner_radius(8),
-                            )
-                            .on_hover_text(state.send_disabled_reason());
-                        if response.clicked() {
-                            state.try_send();
-                        }
-                    });
+        design::composer_frame(c).show(ui, |ui| {
+            let mut draft = state.composer_draft().to_string();
+            let response = ui.add(
+                egui::TextEdit::multiline(&mut draft)
+                    .id_salt("coordinator_composer")
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(3)
+                    .hint_text("Describe what you want to get done…")
+                    .frame(false)
+                    .font(egui::TextStyle::Body),
+            );
+            if response.changed() {
+                state.set_composer_draft(draft);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                design::icon(ui, Icon::Chat, c.muted, 17.0);
+                ui.label(RichText::new("To coordinator").size(12.0).color(c.muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let response = ui
+                        .add_enabled(
+                            state.send_enabled(),
+                            egui::Button::new(RichText::new("Send").size(13.0))
+                                .min_size(egui::vec2(64.0, 30.0))
+                                .corner_radius(8),
+                        )
+                        .on_hover_text(state.send_disabled_reason());
+                    if response.clicked() {
+                        state.try_send();
+                    }
                 });
             });
+        });
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Draft only").size(11.5).color(c.warn));
