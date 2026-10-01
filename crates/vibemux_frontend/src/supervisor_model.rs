@@ -92,6 +92,12 @@ pub struct TaskView {
     pub executor: String,
     pub latest_update: String,
     pub latest_sequence: u64,
+    /// Revision covering everything the detail view renders for this task.
+    /// Equal values mean the cached detail is still current.
+    pub detail_revision: u64,
+    /// Set when a summary has been seen whose detail has not been read yet, so
+    /// the next refresh fetches it without comparing revisions.
+    pub needs_detail_refresh: bool,
     pub has_more_runs: bool,
     pub has_more_artifacts: bool,
     pub has_more_events: bool,

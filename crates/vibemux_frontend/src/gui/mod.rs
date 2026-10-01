@@ -20,7 +20,8 @@ mod welcome;
 pub use chat::wrapped_label as render_wrapped_label;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;
 pub use supervisor_state::{
-    ComposerTarget, MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailSelection, TaskDetailTab,
+    ComposerTarget, MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailSelection,
+    TaskDetailTab, TaskFilter,
 };
 pub use theme::apply_theme;
 

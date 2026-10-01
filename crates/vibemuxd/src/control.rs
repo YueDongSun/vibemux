@@ -1168,11 +1168,34 @@ pub struct ControlClient {
     descriptor: ControlDescriptor,
 }
 
+/// Non-secret identity of one daemon runtime generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlGeneration {
+    pub version: u32,
+    pub process_id: u32,
+    pub endpoint: String,
+}
+
 impl ControlClient {
     /// Compare runtime generations without exposing endpoint or bearer material.
     #[must_use]
     pub fn same_generation(&self, other: &Self) -> bool {
         self.descriptor == other.descriptor
+    }
+
+    /// Non-secret runtime identity (protocol version, daemon pid, endpoint).
+    ///
+    /// Lets a long-lived client notice that the daemon behind the descriptor
+    /// was replaced — and therefore that its cached security verification no
+    /// longer applies — without re-reading or comparing the bearer token. The
+    /// endpoint is a local IPC name, never a credential.
+    #[must_use]
+    pub fn generation(&self) -> ControlGeneration {
+        ControlGeneration {
+            version: self.descriptor.version,
+            process_id: self.descriptor.process_id,
+            endpoint: self.descriptor.endpoint.clone(),
+        }
     }
 
     pub fn from_descriptor(path: &Path) -> Result<Self, ControlError> {

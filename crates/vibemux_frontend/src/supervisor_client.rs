@@ -4,28 +4,39 @@
 
 use crate::{supervisor_mapping, supervisor_model::*};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::Arc,
     thread::JoinHandle,
     time::Duration,
 };
-use tokio::sync::{mpsc, watch};
-use vibemux_types::{ProjectId, RunId, TaskId, frontend::FrontendTasksQuery};
+use tokio::sync::{Semaphore, mpsc, watch};
+use vibemux_types::{
+    ProjectId, RunId, TaskId,
+    frontend::{FrontendTaskDetail, FrontendTasksQuery},
+};
 use vibemuxd::{
-    control::{ControlClient, ControlError},
+    control::{ControlClient, ControlError, ControlGeneration},
     process::DaemonPaths,
     terminal_observer::{TerminalLinkRequest, TerminalQuery},
 };
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Harness/plugin metadata changes far less often than task state, so it is
+/// re-read on this cadence instead of on every poll.
+const METADATA_INTERVAL_TICKS: u32 = 12;
 const ACTION_CAPACITY: usize = 16;
 const MAX_LOADED_TASKS: usize = 256;
 const MAX_OBSERVED_TERMINALS: usize = 16;
 const TERMINAL_PLUGIN_ID: &str = "wezterm_observer";
+/// Upper bound on in-flight detail reads. The daemon serializes every read
+/// behind its single writer, so a small window keeps the pipe busy without
+/// queueing work that would only add latency.
+const MAX_CONCURRENT_DETAIL_READS: usize = 8;
 
 pub struct FrontendClient {
     actions: mpsc::Sender<SupervisorAction>,
-    snapshots: watch::Receiver<SupervisorSnapshot>,
+    snapshots: watch::Receiver<Arc<SupervisorSnapshot>>,
     stop: watch::Sender<bool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -40,7 +51,7 @@ impl FrontendClient {
             .unwrap_or_else(|| "Workspace".into());
         initial.coordinator = None;
         initial.connection.status = ConnectionStatus::Connecting;
-        let (updates, snapshots) = watch::channel(initial.clone());
+        let (updates, snapshots) = watch::channel(Arc::new(initial.clone()));
         let (stop, stopped) = watch::channel(false);
         let worker = std::thread::Builder::new()
             .name("frontend_control_reader".into())
@@ -58,8 +69,9 @@ impl FrontendClient {
                         context,
                     )),
                     Err(_) => {
-                        initial.connection = connection_failure("frontend_runtime_unavailable");
-                        updates.send_replace(initial);
+                        let mut failed = initial;
+                        failed.connection = connection_failure("frontend_runtime_unavailable");
+                        updates.send_replace(Arc::new(failed));
                         context.request_repaint();
                     }
                 }
@@ -72,12 +84,14 @@ impl FrontendClient {
         })
     }
 
-    pub fn take_snapshot(&mut self) -> Option<SupervisorSnapshot> {
+    /// Hand the caller a shared handle to the newest observation. The snapshot
+    /// is only copied when the caller still holds a stale one.
+    pub fn take_snapshot(&mut self) -> Option<Arc<SupervisorSnapshot>> {
         self.snapshots
             .has_changed()
             .ok()
             .filter(|changed| *changed)
-            .map(|_| self.snapshots.borrow_and_update().clone())
+            .map(|_| Arc::clone(&self.snapshots.borrow_and_update()))
     }
 
     pub fn submit(&self, action: SupervisorAction) -> Result<(), &'static str> {
@@ -98,8 +112,8 @@ impl Drop for FrontendClient {
 
 async fn read_loop(
     root: PathBuf,
-    mut snapshot: SupervisorSnapshot,
-    updates: watch::Sender<SupervisorSnapshot>,
+    snapshot: SupervisorSnapshot,
+    updates: watch::Sender<Arc<SupervisorSnapshot>>,
     mut requests: mpsc::Receiver<SupervisorAction>,
     mut stopped: watch::Receiver<bool>,
     context: egui::Context,
@@ -107,7 +121,15 @@ async fn read_loop(
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut observed = BTreeSet::new();
-    let mut last_client = None;
+    // The verified client is reused across polls. Re-verifying the runtime ACLs
+    // and re-reading the descriptor on every 5s tick was pure overhead: the
+    // descriptor only changes when the daemon restarts, which the generation
+    // check below already detects.
+    let mut session = ClientSession::default();
+    let mut ticks_since_metadata: u32 = METADATA_INTERVAL_TICKS;
+    // Held across iterations so a poll that changes nothing republishes the same
+    // allocation instead of rebuilding the task tree.
+    let mut published = Arc::new(snapshot);
     loop {
         let action = tokio::select! {
             biased;
@@ -115,39 +137,74 @@ async fn read_loop(
             request = requests.recv() => match request {Some(action) => action,None => break},
             _ = tick.tick() => SupervisorAction::Refresh,
         };
-        let mut next = snapshot.clone();
-        let result = tokio::select! {
-            biased;
-            _ = stopped.changed() => break,
-            result = apply_action(&root, &mut next, action, &mut observed, &mut last_client) => result,
+        let refresh_metadata = ticks_since_metadata >= METADATA_INTERVAL_TICKS;
+        // Copy-on-write: `make_mut` clones only while a reader still holds the
+        // previous observation, so an idle poll allocates nothing.
+        let result = {
+            let next = Arc::make_mut(&mut published);
+            tokio::select! {
+                biased;
+                _ = stopped.changed() => break,
+                result = apply_action(&root, next, action, &mut observed, &mut session, refresh_metadata) => result,
+            }
         };
-        if let Err(code) = result {
-            if code.starts_with("frontend_") || code.starts_with("terminal_") {
-                next.connection.detail = Some(format!(
-                    "Action unavailable ({code}). Task observations are unchanged."
-                ));
-            } else {
-                next.connection = connection_failure(&code);
-                clear_terminal_associations(
-                    &mut next,
-                    "Disconnected — revalidate the native terminal",
-                );
+        let next = Arc::make_mut(&mut published);
+        match result {
+            Ok(()) => ticks_since_metadata = ticks_since_metadata.saturating_add(1),
+            Err(code) => {
+                // A failed call may have left a stale connection cached.
+                session.invalidate();
+                ticks_since_metadata = METADATA_INTERVAL_TICKS;
+                if code.starts_with("frontend_") || code.starts_with("terminal_") {
+                    next.connection.detail = Some(format!(
+                        "Action unavailable ({code}). Task observations are unchanged."
+                    ));
+                } else {
+                    next.connection = connection_failure(&code);
+                    clear_terminal_associations(
+                        next,
+                        "Disconnected — revalidate the native terminal",
+                    );
+                }
             }
         }
-        next.observed_at = time::OffsetDateTime::now_utc()
+        Arc::make_mut(&mut published).observed_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .ok();
-        snapshot = next;
-        updates.send_replace(snapshot.clone());
+        updates.send_replace(Arc::clone(&published));
         context.request_repaint();
     }
 }
 
-fn connect(root: &Path) -> Result<ControlClient, String> {
+/// Connection state carried between polls so a healthy daemon is verified once
+/// instead of once per tick.
+#[derive(Default)]
+struct ClientSession {
+    client: Option<ControlClient>,
+    generation: Option<ControlGeneration>,
+}
+
+impl ClientSession {
+    fn invalidate(&mut self) {
+        self.client = None;
+        self.generation = None;
+    }
+}
+
+/// Read the published descriptor and resolve a client from it, without
+/// re-verifying the runtime ACLs.
+fn read_published(root: &Path) -> Result<(DaemonPaths, ControlClient), String> {
     let paths = DaemonPaths::from_project_root(root).map_err(|error| error.code().to_string())?;
     if !paths.descriptor_path().exists() {
         return Err("daemon_not_running".into());
     }
+    let client = ControlClient::from_descriptor(paths.descriptor_path())
+        .map_err(|error| error.code().to_string())?;
+    Ok((paths, client))
+}
+
+/// Verify that the runtime this descriptor belongs to is still restricted.
+fn verify_runtime(paths: &DaemonPaths) -> Result<(), String> {
     paths
         .validate_runtime_dir()
         .map_err(|error| error.code().to_string())?;
@@ -155,8 +212,33 @@ fn connect(root: &Path) -> Result<ControlClient, String> {
     paths
         .verify_control_security()
         .map_err(|error| error.code().to_string())?;
-    ControlClient::from_descriptor(paths.descriptor_path())
-        .map_err(|error| error.code().to_string())
+    Ok(())
+}
+
+/// Return a usable client plus whether the runtime generation changed.
+///
+/// The runtime ACL walk is the expensive part of connecting on Windows, and it
+/// was previously repeated on every 5s poll and every user click. It is now
+/// performed once per generation: the descriptor is re-read every time (cheap,
+/// and the only way to notice a daemon that stopped), but the verification is
+/// redone only when the published descriptor is not the one already verified.
+/// Any call failure invalidates the cache, so a dropped connection forces a
+/// fresh verification before it is trusted again.
+fn client_for(root: &Path, session: &mut ClientSession) -> Result<(ControlClient, bool), String> {
+    let (paths, published) = read_published(root)?;
+    let generation = published.generation();
+    if session.client.is_some() && session.generation.as_ref() == Some(&generation) {
+        return Ok((published, false));
+    }
+    // Fail closed: nothing is used before the runtime behind it is verified.
+    verify_runtime(&paths)?;
+    let changed = session
+        .generation
+        .as_ref()
+        .is_some_and(|previous| *previous != generation);
+    session.client = Some(published.clone());
+    session.generation = Some(generation);
+    Ok((published, changed))
 }
 
 async fn apply_action(
@@ -164,20 +246,17 @@ async fn apply_action(
     snapshot: &mut SupervisorSnapshot,
     action: SupervisorAction,
     observed: &mut BTreeSet<(String, String)>,
-    last_client: &mut Option<ControlClient>,
+    session: &mut ClientSession,
+    refresh_metadata: bool,
 ) -> Result<(), String> {
-    let client = connect(root)?;
-    if last_client
-        .as_ref()
-        .is_some_and(|previous| !previous.same_generation(&client))
-    {
+    let (client, restarted) = client_for(root, session)?;
+    if restarted {
         clear_terminal_associations(
             snapshot,
             "Daemon restarted — inspect the native terminal again",
         );
         observed.clear();
     }
-    *last_client = Some(client.clone());
     match action {
         SupervisorAction::Refresh => {
             let mut query = FrontendTasksQuery::default();
@@ -202,6 +281,8 @@ async fn apply_action(
                 }
                 query.after = page.next_cursor;
             }
+            // Carry forward the previous view for every task whose detail
+            // revision is unchanged, so an idle poll performs no detail reads.
             let previous = snapshot.tasks.clone();
             snapshot.tasks = summaries
                 .into_iter()
@@ -211,49 +292,56 @@ async fn apply_action(
                         .find(|old| {
                             old.task_id == summary.task_id.to_string()
                                 && old.latest_sequence == summary.latest_sequence
+                                && old.detail_revision == summary.detail_revision
                         })
                         .cloned()
                         .unwrap_or_else(|| supervisor_mapping::task_summary(summary))
                 })
                 .collect();
-            let tasks: Vec<String> = snapshot
+            let stale: Vec<String> = snapshot
                 .tasks
                 .iter()
+                .filter(|task| task.detail_revision == 0 || task.needs_detail_refresh)
                 .map(|task| task.task_id.clone())
                 .collect();
-            for task_id in tasks {
-                load_task(&client, snapshot, &task_id).await?;
+            load_details(&client, snapshot, &stale).await?;
+            for task in &mut snapshot.tasks {
+                task.needs_detail_refresh = false;
             }
             observed.retain(|(task_id, run_id)| {
                 snapshot.tasks.iter().any(|task| {
                     &task.task_id == task_id && task.runs.iter().any(|run| &run.run_id == run_id)
                 })
             });
-            let harnesses = client.harness_snapshot().await.map_err(code)?;
-            snapshot.coordinator = harnesses
-                .into_iter()
-                .find(|row| row.default)
-                .map(|row| row.name);
-            let plugin = client
-                .plugin_status()
-                .await
-                .map_err(code)?
-                .into_iter()
-                .find(|plugin| plugin.plugin_id == TERMINAL_PLUGIN_ID);
-            let terminal_status = match plugin {
-                Some(plugin) if plugin.state == vibemuxd::plugin_registry::PluginState::Active => {
-                    None
+            if refresh_metadata || snapshot.coordinator.is_none() {
+                let harnesses = client.harness_snapshot().await.map_err(code)?;
+                snapshot.coordinator = harnesses
+                    .into_iter()
+                    .find(|row| row.default)
+                    .map(|row| row.name);
+                let plugin = client
+                    .plugin_status()
+                    .await
+                    .map_err(code)?
+                    .into_iter()
+                    .find(|plugin| plugin.plugin_id == TERMINAL_PLUGIN_ID);
+                let terminal_status = match plugin {
+                    Some(plugin)
+                        if plugin.state == vibemuxd::plugin_registry::PluginState::Active =>
+                    {
+                        None
+                    }
+                    Some(plugin) => Some(format!(
+                        "Terminal plugin is {:?}; native observation unavailable",
+                        plugin.state
+                    )),
+                    None => Some(
+                        "Native terminal observer is not configured for this daemon".to_owned(),
+                    ),
+                };
+                if let Some(status) = terminal_status {
+                    clear_terminal_associations(snapshot, &status);
                 }
-                Some(plugin) => Some(format!(
-                    "Terminal plugin is {:?}; native observation unavailable",
-                    plugin.state
-                )),
-                None => {
-                    Some("Native terminal observer is not configured for this daemon".to_owned())
-                }
-            };
-            if let Some(status) = terminal_status {
-                clear_terminal_associations(snapshot, &status);
             }
             snapshot.connection = ConnectionState {status:ConnectionStatus::Connected,detail:Some("Task status connected. Continuous coordinator chat is not available in this build.".into())};
             for (task_id, run_id) in observed.iter() {
@@ -294,11 +382,13 @@ async fn apply_action(
                 }
             }
             snapshot.next_cursor = page.next_cursor.map(|id| id.to_string());
-            for id in ids {
-                load_task(&client, snapshot, &id).await?;
-            }
+            load_details(&client, snapshot, &ids).await?;
         }
-        SupervisorAction::LoadTask { task_id } => load_task(&client, snapshot, &task_id).await?,
+        SupervisorAction::LoadTask { task_id } => {
+            // An explicit open always reads the detail, even when the revision
+            // is unchanged: the operator asked for this task specifically.
+            load_task(&client, snapshot, &task_id).await?;
+        }
         SupervisorAction::InspectTerminal { task_id, run_id } => {
             if observed.len() >= MAX_OBSERVED_TERMINALS
                 && !observed.contains(&(task_id.clone(), run_id.clone()))
@@ -360,6 +450,60 @@ async fn apply_action(
     Ok(())
 }
 
+/// Read the listed task details with bounded concurrency.
+///
+/// The daemon funnels every read through one writer, so this trades a little
+/// overlap for a large reduction in wall-clock when a page's worth of tasks
+/// really did change. Ordering is preserved so the resulting view does not
+/// depend on completion order.
+async fn load_details(
+    client: &ControlClient,
+    snapshot: &mut SupervisorSnapshot,
+    task_ids: &[String],
+) -> Result<(), String> {
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DETAIL_READS));
+    let mut in_flight = Vec::with_capacity(task_ids.len());
+    for task_id in task_ids {
+        let permit = Arc::clone(&permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| "frontend_closed")?;
+        let client = client.clone();
+        let task_id = task_id.clone();
+        in_flight.push(tokio::spawn(async move {
+            let _permit = permit;
+            let detail = client
+                .frontend_task(parse_id::<TaskId>(&task_id)?)
+                .await
+                .map_err(code)?;
+            Ok::<_, String>((task_id, detail))
+        }));
+    }
+    let mut results = Vec::with_capacity(in_flight.len());
+    for handle in in_flight {
+        match handle.await {
+            Ok(result) => results.push(result?),
+            Err(_) => return Err("frontend_detail_read_failed".into()),
+        }
+    }
+    // `load_task` re-checks the project and revision, so applying results in
+    // task order cannot resurrect a stale row.
+    let mut by_id: BTreeMap<String, Option<FrontendTaskDetail>> = BTreeMap::new();
+    for (task_id, detail) in results {
+        by_id.insert(task_id, detail);
+    }
+    for task_id in task_ids {
+        let Some(detail) = by_id.remove(task_id) else {
+            continue;
+        };
+        apply_task_detail(snapshot, task_id, detail)?;
+    }
+    Ok(())
+}
+
 async fn load_task(
     client: &ControlClient,
     snapshot: &mut SupervisorSnapshot,
@@ -369,6 +513,16 @@ async fn load_task(
         .frontend_task(parse_id::<TaskId>(task_id)?)
         .await
         .map_err(code)?;
+    apply_task_detail(snapshot, task_id, detail)
+}
+
+/// Merge one task detail into the snapshot, preserving locally observed
+/// terminal state and refusing to move a task backwards.
+fn apply_task_detail(
+    snapshot: &mut SupervisorSnapshot,
+    task_id: &str,
+    detail: Option<FrontendTaskDetail>,
+) -> Result<(), String> {
     if let Some(detail) = detail {
         if detail.task.project_id.to_string() != snapshot.project_id {
             return Err("frontend_project_changed".into());
@@ -510,18 +664,18 @@ mod tests {
     use super::*;
     use vibemux_types::{
         Run, RunSpec, Task, TaskSpec,
-        a2a::{A2aRunStart, RunWorkspace},
+        a2a::{A2aRunAction, A2aRunStart, A2aRunUpdate, RunWorkspace},
     };
     use vibemuxd::{WriterWorker, control::DaemonControlServer};
 
     async fn wait_snapshot(
         client: &mut FrontendClient,
         predicate: impl Fn(&SupervisorSnapshot) -> bool,
-    ) -> SupervisorSnapshot {
+    ) -> Arc<SupervisorSnapshot> {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 if let Some(snapshot) = client.take_snapshot() {
-                    if predicate(&snapshot) {
+                    if predicate(snapshot.as_ref()) {
                         return snapshot;
                     }
                 }
@@ -586,7 +740,7 @@ mod tests {
         .await;
         assert_eq!(snapshot.tasks[0].title, "Observe real task");
         assert_eq!(snapshot.tasks[0].runs[0].run_id, run_id.to_string());
-        let serialized = serde_json::to_string(&snapshot).unwrap();
+        let serialized = serde_json::to_string(snapshot.as_ref()).unwrap();
         assert!(!serialized.contains("PRIVATE_"));
         client
             .submit(SupervisorAction::InspectTerminal {
@@ -617,10 +771,166 @@ mod tests {
         writer.shutdown().unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unchanged_tasks_keep_their_detail_and_changed_ones_are_refetched() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DaemonPaths::from_project_root(temp.path()).unwrap();
+        paths.ensure_runtime_dir().unwrap();
+        let writer = WriterWorker::start(paths.database_path()).unwrap();
+        let project_id = writer.handle().unwrap().project_id().unwrap().unwrap();
+        let task = Task::new(TaskSpec {
+            project_id,
+            title: "Revision task".into(),
+            description: String::new(),
+        })
+        .unwrap();
+        let run = Run::new(RunSpec {
+            project_id,
+            task_id: task.task_id(),
+            harness: "fixture".into(),
+            role: "worker".into(),
+            protocol: "a2a".into(),
+            base_commit: "a".repeat(40),
+        })
+        .unwrap();
+        let run_id = run.run_id();
+        let started = writer
+            .handle()
+            .unwrap()
+            .start_a2a_run(A2aRunStart {
+                task,
+                run,
+                peer_id: "fixture_peer".into(),
+                external_task_id: "external_revision".into(),
+                transport: "http_json".into(),
+                protocol_version: "1.0".into(),
+                workspace: RunWorkspace {
+                    path: temp.path().to_string_lossy().into_owned(),
+                    branch: "codex/revision".into(),
+                    base_commit: "a".repeat(40),
+                    ownership_token: "PRIVATE_OWNER".into(),
+                },
+                timestamp: time::OffsetDateTime::now_utc(),
+                idempotency_key: "frontend_revision_start".into(),
+            })
+            .unwrap()
+            .record;
+        writer.shutdown().unwrap();
+        let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
+        let mut client =
+            FrontendClient::start(temp.path().into(), egui::Context::default()).unwrap();
+        let first = wait_snapshot(&mut client, |snapshot| {
+            snapshot.connection.status == ConnectionStatus::Connected
+                && snapshot.tasks.len() == 1
+                && snapshot.tasks[0].runs.len() == 1
+        })
+        .await;
+        assert!(first.tasks[0].detail_revision > 0);
+        assert!(
+            !first.tasks[0].needs_detail_refresh,
+            "a detail read must clear the pending flag"
+        );
+
+        // A refresh over unchanged state must reuse the carried-forward view
+        // instead of refetching, which is what keeps an idle poll cheap.
+        client.submit(SupervisorAction::Refresh).unwrap();
+        let second = wait_snapshot(&mut client, |snapshot| {
+            snapshot.connection.status == ConnectionStatus::Connected
+                && snapshot.observed_at != first.observed_at
+        })
+        .await;
+        assert_eq!(
+            second.tasks[0].detail_revision, first.tasks[0].detail_revision,
+            "an idle poll must not invent revision movement"
+        );
+        assert!(!second.tasks[0].needs_detail_refresh);
+
+        // Once the daemon records a transition the revision moves, and the
+        // client must refetch so the new state reaches the view. The server is
+        // stopped first because it owns the single writer, so this also
+        // exercises the client's reconnect-and-reverify path.
+        server.shutdown().await.unwrap();
+        let writer = WriterWorker::start(paths.database_path()).unwrap();
+        writer
+            .handle()
+            .unwrap()
+            .update_a2a_run(A2aRunUpdate {
+                run_id,
+                expected_version: started.version,
+                timestamp: time::OffsetDateTime::now_utc(),
+                idempotency_key: "frontend_revision_claim".into(),
+                action: A2aRunAction::Start,
+            })
+            .unwrap();
+        writer.shutdown().unwrap();
+        let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
+        client.submit(SupervisorAction::Refresh).unwrap();
+        let third = wait_snapshot(&mut client, |snapshot| {
+            snapshot
+                .tasks
+                .first()
+                .is_some_and(|task| task.runs.first().is_some_and(|run| run.state == "running"))
+        })
+        .await;
+        assert!(
+            third.tasks[0].detail_revision > first.tasks[0].detail_revision,
+            "a recorded transition must move the revision"
+        );
+        assert_eq!(third.tasks[0].runs[0].state, "running");
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn client_session_reuses_one_verified_generation_and_reverifies_after_a_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DaemonPaths::from_project_root(temp.path()).unwrap();
+        paths.ensure_runtime_dir().unwrap();
+        let writer = WriterWorker::start(paths.database_path()).unwrap();
+        writer.shutdown().unwrap();
+        let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
+
+        let mut session = ClientSession::default();
+        let first = client_for(temp.path(), &mut session)
+            .expect("first client")
+            .0;
+        assert!(session.client.is_some());
+        let generation = session.generation.clone();
+        // A second call against the same daemon must not re-verify: the session
+        // keeps its client and its recorded generation.
+        let (second, restarted) = client_for(temp.path(), &mut session).expect("second client");
+        assert!(!restarted, "an unchanged descriptor is not a restart");
+        assert_eq!(session.generation, generation, "generation is retained");
+        assert!(
+            first.same_generation(&second),
+            "both calls observe the same daemon"
+        );
+
+        // Restarting the daemon republishes the descriptor, which the client
+        // must notice instead of trusting its cached verification.
+        server.shutdown().await.unwrap();
+        let restarted_server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
+        let (third, restarted) = client_for(temp.path(), &mut session).expect("third client");
+        assert!(
+            restarted,
+            "a republished descriptor must be reported as a new generation"
+        );
+        assert_ne!(
+            session.generation, generation,
+            "a republished descriptor must produce a new generation"
+        );
+        assert!(!first.same_generation(&third));
+        restarted_server.shutdown().await.unwrap();
+
+        // A failed call clears the cache so the next attempt re-verifies.
+        session.invalidate();
+        assert!(session.client.is_none());
+        assert!(session.generation.is_none());
+    }
+
     #[test]
     fn action_queue_is_bounded_and_does_not_invoke_the_runtime() {
         let (actions, _receiver) = mpsc::channel(1);
-        let (_, snapshots) = watch::channel(SupervisorSnapshot::unavailable());
+        let (_, snapshots) = watch::channel(Arc::new(SupervisorSnapshot::unavailable()));
         let (stop, _) = watch::channel(false);
         let client = FrontendClient {
             actions,

@@ -3,7 +3,7 @@
 use super::{
     C,
     design::{self, Icon},
-    supervisor_state::{SupervisorUiState, TaskDetailTab, UiActionQueue},
+    supervisor_state::{SupervisorUiState, TaskDetailTab, TaskFilter, UiActionQueue},
     typography,
 };
 use crate::supervisor_model::{SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView};
@@ -12,6 +12,44 @@ use egui::{self, RichText, Ui, ViewportCommand, ViewportId};
 pub const CONTENT_WIDTH: f32 = 720.0;
 const FADE_HEIGHT: f32 = 28.0;
 const BOTTOM_PADDING: f32 = 48.0;
+
+/// Filter chips for the task list, each showing how many tasks it holds.
+///
+/// The counts are what make the filter safe to offer: a task can never be
+/// hidden without the reader being able to see exactly where it went.
+fn filter_chips(ui: &mut Ui, c: &C, snapshot: &SupervisorSnapshot, state: &mut SupervisorUiState) {
+    let current = state.task_filter();
+    let count = |filter: TaskFilter| {
+        snapshot
+            .tasks
+            .iter()
+            .filter(|task| filter.matches(&task.state))
+            .count()
+    };
+    ui.horizontal_wrapped(|ui| {
+        for filter in TaskFilter::ALL {
+            let selected = current == filter;
+            let total = count(filter);
+            let text = RichText::new(format!("{} {total}", filter.label()))
+                .size(12.0)
+                .color(if selected { c.accent_text } else { c.muted });
+            let response = ui.add(
+                egui::Button::new(text)
+                    .fill(if selected { c.accent_bg } else { c.surf })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if selected { c.accent } else { c.border },
+                    ))
+                    .corner_radius(design::BUTTON_RADIUS)
+                    .min_size(egui::vec2(0.0, 26.0)),
+            );
+            design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
+            if response.clicked() {
+                state.set_task_filter(filter);
+            }
+        }
+    });
+}
 
 pub fn render_conversation(
     ui: &mut Ui,
@@ -62,7 +100,27 @@ pub fn render_conversation(
                     .color(c.muted),
                 );
                 ui.add_space(14.0);
-                for task in &snapshot.tasks {
+                if !snapshot.tasks.is_empty() {
+                    filter_chips(ui, c, snapshot, state);
+                    ui.add_space(12.0);
+                }
+                let filter = state.task_filter();
+                let visible: Vec<&TaskView> = snapshot
+                    .tasks
+                    .iter()
+                    .filter(|task| filter.matches(&task.state))
+                    .collect();
+                if visible.is_empty() {
+                    ui.label(
+                        RichText::new(format!(
+                            "No tasks match “{}”. Choose another filter to see the rest.",
+                            filter.label()
+                        ))
+                        .size(13.0)
+                        .color(c.muted),
+                    );
+                }
+                for task in visible {
                     task_row(ui, ctx, c, snapshot, task, state, actions);
                     ui.add_space(4.0);
                 }

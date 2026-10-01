@@ -82,6 +82,16 @@ their no-grant behavior; grants require v2.
 - `terminal_focus` / `terminal_unlink`: argument is a JSON string containing
   that binding ID. Unknown, expired or mismatched bindings cannot be focused.
 
+Each summary row also carries `detail_revision`, a monotonic revision covering
+everything `frontend_task` renders for that task: the Task projection, every Run
+projection that belongs to it, and every event carrying its `task_id`. It exists
+because a Run-only transition does not move the Task projection, so
+`latest_sequence` alone cannot detect it. A client that sees an unchanged
+revision may skip the per-task detail read; `0` means "unknown" and forces the
+read, so a client talking to a daemon that omits the field degrades to the
+unconditional behavior instead of trusting it. The list and detail paths publish
+the same value for the same task.
+
 Before: v3 accepts `harness_snapshot` but rejects `frontend_tasks`.
 After: v4 accepts both, with unchanged v3 harness semantics and response version
 echoing. All requests still require the existing authenticated local transport.

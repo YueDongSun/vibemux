@@ -29,6 +29,9 @@ use super::{
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const REFRESH_BUTTON_ID: &str = "topbar_refresh";
+const SETTINGS_BUTTON_ID: &str = "topbar_settings";
+const DIAGNOSTICS_BUTTON_ID: &str = "topbar_diagnostics";
+const AGENTS_BUTTON_ID: &str = "topbar_agents";
 const TOPBAR_MIN_HEIGHT: f32 = 52.0;
 pub(crate) const DRAWER_PANEL_ID: &str = "task_details_drawer";
 const DRAWER_CLOSE_ID: &str = "task_details_close";
@@ -40,7 +43,10 @@ const TASK_WINDOW_MIN_SIZE: [f32; 2] = [720.0, 520.0];
 
 pub struct SupervisorApp {
     view_model: ViewModel,
-    snapshot: Arc<RwLock<SupervisorSnapshot>>,
+    /// Shared so a frame reads the snapshot without deep-cloning every task,
+    /// run, and event it holds. The GUI repaints continuously, so a per-frame
+    /// clone of the whole snapshot was pure allocation churn.
+    snapshot: Arc<RwLock<Arc<SupervisorSnapshot>>>,
     user_config: UserConfig,
     ui_state: Arc<Mutex<SupervisorUiState>>,
     actions: UiActionQueue,
@@ -64,7 +70,7 @@ impl SupervisorApp {
         actions.enqueue(SupervisorAction::Refresh);
         Self {
             view_model,
-            snapshot: Arc::new(RwLock::new(SupervisorSnapshot::unavailable())),
+            snapshot: Arc::new(RwLock::new(Arc::new(SupervisorSnapshot::unavailable()))),
             user_config,
             ui_state: Arc::new(Mutex::new(SupervisorUiState::default())),
             actions,
@@ -79,11 +85,26 @@ impl SupervisorApp {
 
     /// Replace the displayed immutable supervisor snapshot.
     pub fn set_supervisor_snapshot(&mut self, snapshot: SupervisorSnapshot) {
+        self.replace_snapshot(Arc::new(snapshot));
+    }
+
+    /// Publish an already-shared snapshot without copying it again.
+    pub(crate) fn replace_snapshot(&mut self, snapshot: Arc<SupervisorSnapshot>) {
         if let Ok(mut current) = self.snapshot.write() {
+            let published = Arc::clone(&snapshot);
             *current = snapshot;
             if let Ok(mut state) = self.ui_state.lock() {
-                state.reconcile_snapshot(&current);
+                state.reconcile_snapshot(&published);
             }
+        }
+    }
+
+    /// Borrow the current snapshot without cloning its contents.
+    fn with_snapshot<R>(&self, body: impl FnOnce(&SupervisorSnapshot) -> R) -> R {
+        let guard = self.snapshot.read();
+        match guard {
+            Ok(snapshot) => body(snapshot.as_ref()),
+            Err(_) => body(&SupervisorSnapshot::unavailable()),
         }
     }
 
@@ -95,11 +116,12 @@ impl SupervisorApp {
 
     /// Select a task and open its in-app detail drawer.
     pub fn select_task(&mut self, task_id: &str) -> bool {
-        let snapshot = self.snapshot();
-        let selected = self
-            .ui_state
-            .lock()
-            .is_ok_and(|mut state| state.select_task(&snapshot, task_id));
+        let mut selected = false;
+        self.with_snapshot(|snapshot| {
+            if let Ok(mut state) = self.ui_state.lock() {
+                selected = state.select_task(snapshot, task_id);
+            }
+        });
         if selected {
             self.actions.enqueue(SupervisorAction::LoadTask {
                 task_id: task_id.to_string(),
@@ -110,11 +132,12 @@ impl SupervisorApp {
 
     /// Open one native task viewport, reusing the stable task viewport ID.
     pub fn open_task_window(&mut self, task_id: &str) -> bool {
-        let snapshot = self.snapshot();
-        let opened = self
-            .ui_state
-            .lock()
-            .is_ok_and(|mut state| state.open_task_window(&snapshot, task_id));
+        let mut opened = false;
+        self.with_snapshot(|snapshot| {
+            if let Ok(mut state) = self.ui_state.lock() {
+                opened = state.open_task_window(snapshot, task_id);
+            }
+        });
         if opened {
             self.actions.enqueue(SupervisorAction::LoadTask {
                 task_id: task_id.to_string(),
@@ -125,20 +148,15 @@ impl SupervisorApp {
 
     /// Select the content tab of an existing native task view.
     pub fn set_task_window_tab(&mut self, task_id: &str, tab: super::TaskDetailTab) {
-        let snapshot = self.snapshot();
-        if let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) {
-            if let Ok(state) = self.ui_state.lock() {
-                state
-                    .with_task_window_selection_mut(task_id, task, |selection| selection.tab = tab);
+        self.with_snapshot(|snapshot| {
+            if let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) {
+                if let Ok(state) = self.ui_state.lock() {
+                    state.with_task_window_selection_mut(task_id, task, |selection| {
+                        selection.tab = tab
+                    });
+                }
             }
-        }
-    }
-
-    fn snapshot(&self) -> SupervisorSnapshot {
-        self.snapshot.read().map_or_else(
-            |_| SupervisorSnapshot::unavailable(),
-            |snapshot| snapshot.clone(),
-        )
+        });
     }
 
     /// Collapse or expand the sidebar and persist the choice.
@@ -161,7 +179,7 @@ impl SupervisorApp {
     }
 
     fn persist_if_due(&mut self) {
-        if self.snapshot().mode == SnapshotMode::Demo {
+        if self.with_snapshot(|snapshot| snapshot.mode) == SnapshotMode::Demo {
             return;
         }
         let (pending_write, pending_resize, should_save) =
@@ -245,7 +263,13 @@ impl SupervisorApp {
         }
     }
 
-    fn render_topbar(&mut self, ctx: &egui::Context, colors: &C, snapshot: &SupervisorSnapshot) {
+    fn render_topbar(
+        &self,
+        ctx: &egui::Context,
+        colors: &C,
+        snapshot: &SupervisorSnapshot,
+    ) -> Option<HeaderAction> {
+        let mut requested = None;
         egui::TopBottomPanel::top("supervisor_header")
             .show_separator_line(true)
             .min_height(TOPBAR_MIN_HEIGHT)
@@ -279,90 +303,138 @@ impl SupervisorApp {
                         chat::demo_badge(ui, colors);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let refresh = design::icon_button(
+                        // Added right-to-left, so this order reads
+                        // Refresh · Agents · Diagnostics · Settings on screen.
+                        if design::icon_button(
                             ui,
                             colors,
                             design::Icon::Refresh,
-                            "Refresh",
+                            "Refresh now",
                             egui::Id::new(REFRESH_BUTTON_ID),
-                        );
-                        if refresh.clicked() {
+                        )
+                        .clicked()
+                        {
                             self.enqueue_refresh();
+                        }
+                        for (kind, tooltip, id, action) in [
+                            (
+                                design::Icon::Settings,
+                                "Settings",
+                                SETTINGS_BUTTON_ID,
+                                HeaderAction::Settings,
+                            ),
+                            (
+                                design::Icon::Pulse,
+                                "Diagnostics",
+                                DIAGNOSTICS_BUTTON_ID,
+                                HeaderAction::Diagnostics,
+                            ),
+                            (
+                                design::Icon::Grid,
+                                "Agents",
+                                AGENTS_BUTTON_ID,
+                                HeaderAction::Agents,
+                            ),
+                        ] {
+                            if design::icon_button(ui, colors, kind, tooltip, egui::Id::new(id))
+                                .clicked()
+                            {
+                                requested = Some(action);
+                            }
                         }
                     });
                 });
-                if let Some(detail) = snapshot.connection.detail.as_deref() {
-                    ui.add_space(4.0);
-                    chat::wrapped_label(ui, RichText::new(detail).size(12.0).color(colors.muted));
-                }
+                ui.horizontal_top(|ui| {
+                    if let Some(detail) = snapshot.connection.detail.as_deref() {
+                        chat::wrapped_label(
+                            ui,
+                            RichText::new(detail).size(12.0).color(colors.muted),
+                        );
+                    }
+                    // Data age is the one thing a polling reader cannot infer,
+                    // so it belongs beside the control that refreshes it.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(observed) = freshness_label(snapshot.observed_at.as_deref()) {
+                            ui.label(RichText::new(observed).size(12.0).color(colors.faint));
+                        }
+                    });
+                });
             });
+        requested
     }
 
-    fn render_drawer(
-        &mut self,
-        ctx: &egui::Context,
-        colors: &C,
-        snapshot: &SupervisorSnapshot,
-        viewport_width: f32,
-    ) {
-        let selected_task = self
-            .ui_state
-            .lock()
-            .ok()
-            .and_then(|state| state.selected_task(snapshot).cloned());
-        if !self.ui_state.lock().is_ok_and(|state| state.details_open()) {
-            return;
-        }
-        let Some(task) = selected_task else {
-            return;
-        };
-        let max_width = (viewport_width * 0.5).max(DRAWER_MIN_WIDTH);
-        let mut close_clicked = false;
-        egui::SidePanel::right(DRAWER_PANEL_ID)
-            .resizable(true)
-            .default_width(DRAWER_DEFAULT_WIDTH.min(max_width))
-            .width_range(DRAWER_MIN_WIDTH..=max_width)
-            .frame(
-                egui::Frame::new()
-                    .fill(colors.bg)
-                    .inner_margin(egui::Margin::symmetric(18, 14)),
-            )
-            .show(ctx, |ui| {
-                drawer_contents(
-                    ui,
-                    colors,
-                    snapshot,
-                    &task,
-                    &self.ui_state,
-                    &self.actions,
-                    &mut close_clicked,
-                );
+    fn render_drawer(&mut self, ctx: &egui::Context, colors: &C, viewport_width: f32) {
+        let rendered = {
+            let snapshot = match self.snapshot.read() {
+                Ok(guard) => Arc::clone(&guard),
+                Err(_) => return,
+            };
+            // Resolve the selection before opening the panel so a selection that
+            // no longer resolves does not leave an empty drawer docked.
+            let open = self.ui_state.lock().is_ok_and(|state| {
+                state.details_open() && state.selected_task(snapshot.as_ref()).is_some()
             });
-        if close_clicked {
+            if !open {
+                return;
+            }
+            let mut close_clicked = false;
+            let max_width = (viewport_width * 0.5).max(DRAWER_MIN_WIDTH);
+            egui::SidePanel::right(DRAWER_PANEL_ID)
+                .resizable(true)
+                .default_width(DRAWER_DEFAULT_WIDTH.min(max_width))
+                .width_range(DRAWER_MIN_WIDTH..=max_width)
+                .frame(
+                    egui::Frame::new()
+                        .fill(colors.bg)
+                        .inner_margin(egui::Margin::symmetric(18, 14)),
+                )
+                .show(ctx, |ui| {
+                    let Some(task) = self
+                        .ui_state
+                        .lock()
+                        .ok()
+                        .and_then(|state| state.selected_task(snapshot.as_ref()))
+                    else {
+                        return;
+                    };
+                    drawer_contents(
+                        ui,
+                        colors,
+                        snapshot.as_ref(),
+                        task,
+                        &self.ui_state,
+                        &self.actions,
+                        &mut close_clicked,
+                    );
+                });
+            close_clicked
+        };
+        if rendered {
             if let Ok(mut state) = self.ui_state.lock() {
                 state.close_details();
             }
         }
     }
 
-    fn render_task_viewports(
-        &self,
-        ctx: &egui::Context,
-        snapshot: &SupervisorSnapshot,
-        theme: ThemeId,
-    ) {
+    fn render_task_viewports(&self, ctx: &egui::Context, theme: ThemeId) {
         let open_tasks = self
             .ui_state
             .lock()
             .map_or_else(|_| Vec::new(), |state| state.open_task_windows());
         let colors = super::pal(&palette_for(theme));
         for task_id in open_tasks {
-            let task = snapshot.tasks.iter().find(|task| task.task_id == task_id);
+            let title = self.with_snapshot(|snapshot| {
+                snapshot
+                    .tasks
+                    .iter()
+                    .find(|task| task.task_id == task_id)
+                    .map_or_else(
+                        || "Task observation".to_owned(),
+                        |task| window_task_title(task).to_owned(),
+                    )
+            });
             let viewport_id = chat::task_viewport_id(&task_id);
-            let title = format!(
-                "{} · VibeMux",
-                task.map_or("Task observation", window_task_title)
-            );
+            let title = format!("{title} · VibeMux");
             let viewport = ViewportBuilder::default()
                 .with_title(title)
                 .with_inner_size(TASK_WINDOW_SIZE)
@@ -379,10 +451,12 @@ impl SupervisorApp {
                     root_ctx.request_repaint();
                     return;
                 }
-                let snapshot = snapshot_arc.read().map_or_else(
-                    |_| SupervisorSnapshot::unavailable(),
-                    |snapshot| snapshot.clone(),
-                );
+                // Clone the shared handle, never the snapshot body: this runs
+                // on every frame of every open task window.
+                let snapshot = match snapshot_arc.read() {
+                    Ok(snapshot) => Arc::clone(&snapshot),
+                    Err(_) => Arc::new(SupervisorSnapshot::unavailable()),
+                };
                 let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) else {
                     egui::CentralPanel::default().show(child_ctx,|ui| {
                         ui.heading("Task observation unavailable");
@@ -407,15 +481,19 @@ impl SupervisorApp {
                             return;
                         };
                         state.with_task_window_selection_mut(&task_id, task, |selection| {
-                            task_detail::render(
-                                ui,
-                                &task_colors,
-                                &snapshot,
-                                task,
-                                selection,
-                                &actions,
-                                task_detail::TitleDisplay::Shown,
-                            );
+                            // Same reading measure as the conversation surface,
+                            // so a detached window is not a wider, looser page.
+                            chat::content_column(ui, |ui| {
+                                task_detail::render(
+                                    ui,
+                                    &task_colors,
+                                    snapshot.as_ref(),
+                                    task,
+                                    selection,
+                                    &actions,
+                                    task_detail::TitleDisplay::Shown,
+                                );
+                            });
                         });
                     });
             });
@@ -451,12 +529,11 @@ impl SupervisorApp {
     fn render_frame(&mut self, ctx: &egui::Context) {
         if self.actions.take_overflowed() {
             if let Ok(mut snapshot) = self.snapshot.write() {
-                snapshot.connection.detail = Some(
+                Arc::make_mut(&mut snapshot).connection.detail = Some(
                     "Action queue is full. The last action was not sent; please try again.".into(),
                 );
             }
         }
-        let snapshot = self.snapshot();
         let palette = palette_for(self.user_config.theme);
         super::apply_theme(ctx, &palette);
         ctx.style_mut(|style| {
@@ -485,137 +562,198 @@ impl SupervisorApp {
             });
         let collapsed = self.user_config.sidebar_collapsed;
         let mut sidebar_actions = None;
-        egui::SidePanel::left(sidebar::SIDEBAR_PANEL_ID)
-            .exact_width(sidebar::width_for(collapsed))
-            .resizable(false)
-            .frame(egui::Frame::new().fill(colors.surf))
-            .show(ctx, |ui| {
-                let view = sidebar::SidebarView {
-                    snapshot: &snapshot,
-                    page: active_page,
-                    welcome_active,
-                    collapsed,
-                    selected_task_id: selected_task_id.as_deref(),
-                };
-                sidebar_actions = Some(sidebar::render(ui, &colors, &view));
-            });
-        if let Some(actions) = sidebar_actions {
-            if let Some(page) = actions.page {
-                if let Ok(mut state) = self.ui_state.lock() {
-                    match page {
-                        MainPage::CoordinatorChat => state.show_coordinator_chat(),
-                        MainPage::Agents => state.show_agents(),
+        let mut selected_agent_change = None;
+        // A poisoned lock means no readable snapshot; drop the frame rather than
+        // drawing from a fabricated one.
+        let snapshot_arc = match self.snapshot.read() {
+            Ok(guard) => Arc::clone(&guard),
+            Err(_) => return,
+        };
+        let header_action;
+        {
+            // One shared borrow for the whole frame: the panels below read the
+            // same snapshot instead of each cloning it.
+            let snapshot = snapshot_arc.as_ref();
+            egui::SidePanel::left(sidebar::SIDEBAR_PANEL_ID)
+                .exact_width(sidebar::width_for(collapsed))
+                .resizable(false)
+                .frame(egui::Frame::new().fill(colors.surf))
+                .show(ctx, |ui| {
+                    let view = sidebar::SidebarView {
+                        snapshot,
+                        page: active_page,
+                        welcome_active,
+                        collapsed,
+                        selected_task_id: selected_task_id.as_deref(),
+                    };
+                    sidebar_actions = Some(sidebar::render(ui, &colors, &view));
+                });
+
+            // Applied here, before the panels that read `page`, so a sidebar
+            // navigation lands in the frame it was clicked rather than the next.
+            if let Some(actions) = sidebar_actions.take() {
+                if let Some(page) = actions.page {
+                    if let Ok(mut state) = self.ui_state.lock() {
+                        match page {
+                            MainPage::CoordinatorChat => state.show_coordinator_chat(),
+                            MainPage::Agents => state.show_agents(),
+                        }
+                    }
+                }
+                if let Some(task_id) = actions.task_id {
+                    self.select_task(&task_id);
+                }
+                if actions.new_task {
+                    self.request_new_task();
+                }
+                if actions.toggle_collapsed {
+                    self.set_sidebar_collapsed(!collapsed);
+                }
+                if actions.open_settings {
+                    self.settings_open = true;
+                }
+                if actions.open_diagnostics {
+                    self.diagnostics_open = true;
+                }
+            }
+
+            header_action = self.render_topbar(ctx, &colors, snapshot);
+            if let Some(action) = header_action {
+                match action {
+                    HeaderAction::Settings => self.settings_open = true,
+                    HeaderAction::Diagnostics => self.diagnostics_open = true,
+                    HeaderAction::Agents => {
+                        if let Ok(mut state) = self.ui_state.lock() {
+                            state.show_agents();
+                        }
                     }
                 }
             }
-            if let Some(task_id) = actions.task_id {
-                self.select_task(&task_id);
-            }
-            if actions.new_task {
-                self.request_new_task();
-            }
-            if actions.toggle_collapsed {
-                self.set_sidebar_collapsed(!collapsed);
-            }
-            if actions.open_settings {
-                self.settings_open = true;
-            }
-            if actions.open_diagnostics {
-                self.diagnostics_open = true;
-            }
-        }
+            self.render_drawer(ctx, &colors, viewport_width);
 
-        self.render_topbar(ctx, &colors, &snapshot);
-        self.render_drawer(ctx, &colors, &snapshot, viewport_width);
-
-        let page = self
-            .ui_state
-            .lock()
-            .map_or(MainPage::CoordinatorChat, |state| state.page());
-        let mut selected_agent = self
-            .ui_state
-            .lock()
-            .ok()
-            .and_then(|state| state.selected_agent());
-        let mut selected_agent_change = None;
-        let welcome = page == MainPage::CoordinatorChat
-            && (self
+            let page = self
                 .ui_state
                 .lock()
-                .is_ok_and(|state| state.welcome_active())
-                || snapshot.tasks.is_empty());
+                .map_or(MainPage::CoordinatorChat, |state| state.page());
+            let mut selected_agent = self
+                .ui_state
+                .lock()
+                .ok()
+                .and_then(|state| state.selected_agent());
+            let welcome = page == MainPage::CoordinatorChat
+                && (self
+                    .ui_state
+                    .lock()
+                    .is_ok_and(|state| state.welcome_active())
+                    || snapshot.tasks.is_empty());
 
-        if page == MainPage::CoordinatorChat && !welcome {
-            let composer_panel = egui::TopBottomPanel::bottom("coordinator_composer")
-                .show_separator_line(false)
+            if page == MainPage::CoordinatorChat && !welcome {
+                let composer_panel = egui::TopBottomPanel::bottom("coordinator_composer")
+                    .show_separator_line(false)
+                    .frame(
+                        egui::Frame::new()
+                            .fill(colors.bg)
+                            .inner_margin(egui::Margin::symmetric(18, 10)),
+                    )
+                    .show(ctx, |ui| {
+                        if let Ok(mut state) = self.ui_state.lock() {
+                            chat::content_column(ui, |ui| {
+                                composer::render(ui, &colors, &mut state, &target_options);
+                            });
+                        }
+                    });
+                // The panel sizes to its content one pass late; redo the pass
+                // when its height changes so no frame shows an overflowing composer.
+                let height = composer_panel.response.rect.height();
+                if (height - self.composer_panel_height).abs() > 0.5 {
+                    self.composer_panel_height = height;
+                    ctx.request_discard("composer panel height changed");
+                }
+            }
+
+            egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
                         .fill(colors.bg)
-                        .inner_margin(egui::Margin::symmetric(18, 10)),
+                        .inner_margin(egui::Margin::symmetric(18, 12)),
                 )
-                .show(ctx, |ui| {
-                    if let Ok(mut state) = self.ui_state.lock() {
+                .show(ctx, |ui| match page {
+                    MainPage::CoordinatorChat if welcome => {
+                        // Centre the greeting/composer block against the
+                        // composer height measured on the previous pass, so the
+                        // empty space above and below stays balanced at any
+                        // window size instead of being a fixed fraction.
+                        let top_space =
+                            welcome_top_space(ui.available_height(), self.composer_panel_height);
+                        ui.add_space(top_space);
+                        let hint = super::welcome::workspace_hint(snapshot.tasks.len());
                         chat::content_column(ui, |ui| {
-                            composer::render(ui, &colors, &mut state, &target_options);
+                            super::welcome::render_heading(
+                                ui,
+                                &colors,
+                                super::welcome::greeting_for_hour(
+                                    super::welcome::current_local_hour(),
+                                ),
+                                Some(&hint),
+                            );
                         });
+                        if let Ok(mut state) = self.ui_state.lock() {
+                            chat::content_column(ui, |ui| {
+                                composer::render(ui, &colors, &mut state, &target_options);
+                            });
+                        }
+                    }
+                    MainPage::CoordinatorChat => {
+                        if let Ok(mut state) = self.ui_state.lock() {
+                            chat::render_conversation(
+                                ui,
+                                ctx,
+                                &colors,
+                                snapshot,
+                                &mut state,
+                                &self.actions,
+                            );
+                        }
+                    }
+                    MainPage::Agents => {
+                        if let Ok(state) = self.ui_state.lock() {
+                            selected_agent = state.selected_agent();
+                        }
+                        let actions = agents::render(ui, &colors, &self.view_model, selected_agent);
+                        if actions.back_to_list {
+                            selected_agent_change = Some(None);
+                        } else if let Some(agent) = actions.selected_agent {
+                            selected_agent_change = Some(Some(agent));
+                        }
                     }
                 });
-            // The panel sizes to its content one pass late; redo the pass
-            // when its height changes so no frame shows an overflowing composer.
-            let height = composer_panel.response.rect.height();
-            if (height - self.composer_panel_height).abs() > 0.5 {
-                self.composer_panel_height = height;
-                ctx.request_discard("composer panel height changed");
+
+            if self.settings_open {
+                let changes = settings::render(
+                    ctx,
+                    &colors,
+                    &mut self.settings_open,
+                    self.user_config.theme,
+                    self.user_config.window_size,
+                    snapshot.mode == SnapshotMode::Demo,
+                );
+                if let Some(theme) = changes.theme {
+                    self.set_theme(theme);
+                }
+                if let Some(size) = changes.window_size {
+                    self.set_window_size(size);
+                }
+            }
+            if self.diagnostics_open {
+                diagnostics::render(
+                    ctx,
+                    &colors,
+                    &mut self.diagnostics_open,
+                    snapshot,
+                    &self.view_model,
+                );
             }
         }
-
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(colors.bg)
-                    .inner_margin(egui::Margin::symmetric(18, 12)),
-            )
-            .show(ctx, |ui| match page {
-                MainPage::CoordinatorChat if welcome => {
-                    let top_space = (ui.available_height() * 0.22).max(24.0);
-                    ui.add_space(top_space);
-                    chat::content_column(ui, |ui| {
-                        super::welcome::render_heading(
-                            ui,
-                            &colors,
-                            super::welcome::greeting_for_hour(super::welcome::current_local_hour()),
-                        );
-                    });
-                    if let Ok(mut state) = self.ui_state.lock() {
-                        chat::content_column(ui, |ui| {
-                            composer::render(ui, &colors, &mut state, &target_options);
-                        });
-                    }
-                }
-                MainPage::CoordinatorChat => {
-                    if let Ok(mut state) = self.ui_state.lock() {
-                        chat::render_conversation(
-                            ui,
-                            ctx,
-                            &colors,
-                            &snapshot,
-                            &mut state,
-                            &self.actions,
-                        );
-                    }
-                }
-                MainPage::Agents => {
-                    if let Ok(state) = self.ui_state.lock() {
-                        selected_agent = state.selected_agent();
-                    }
-                    let actions = agents::render(ui, &colors, &self.view_model, selected_agent);
-                    if actions.back_to_list {
-                        selected_agent_change = Some(None);
-                    } else if let Some(agent) = actions.selected_agent {
-                        selected_agent_change = Some(Some(agent));
-                    }
-                }
-            });
         if let Some(selected) = selected_agent_change {
             if let Ok(mut state) = self.ui_state.lock() {
                 if let Some(index) = selected {
@@ -624,32 +762,6 @@ impl SupervisorApp {
                     state.return_to_agents_list();
                 }
             }
-        }
-
-        if self.settings_open {
-            let changes = settings::render(
-                ctx,
-                &colors,
-                &mut self.settings_open,
-                self.user_config.theme,
-                self.user_config.window_size,
-                snapshot.mode == SnapshotMode::Demo,
-            );
-            if let Some(theme) = changes.theme {
-                self.set_theme(theme);
-            }
-            if let Some(size) = changes.window_size {
-                self.set_window_size(size);
-            }
-        }
-        if self.diagnostics_open {
-            diagnostics::render(
-                ctx,
-                &colors,
-                &mut self.diagnostics_open,
-                &snapshot,
-                &self.view_model,
-            );
         }
 
         if self
@@ -688,7 +800,7 @@ impl SupervisorApp {
             }
         }
 
-        self.render_task_viewports(ctx, &snapshot, self.user_config.theme);
+        self.render_task_viewports(ctx, self.user_config.theme);
         self.track_window_size(ctx);
         ctx.request_repaint_after(Duration::from_millis(100));
     }
@@ -781,12 +893,61 @@ fn consume_due_persistence(
     )
 }
 
+/// A control the main-page header asked for. These are existing capabilities
+/// that were previously reachable only from the sidebar footer popup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeaderAction {
+    Settings,
+    Diagnostics,
+    Agents,
+}
+
+/// Human clock time from the snapshot's RFC 3339 observation stamp.
+///
+/// Formats the clock explicitly instead of slicing a formatted string, so no
+/// date or numeric offset can leak into the label. Returns `None` when the
+/// stamp is absent, unparseable, or the local offset is unknown rather than
+/// guessing: a freshness indicator that invents a time is worse than none.
+#[must_use]
+fn freshness_label(observed_at: Option<&str>) -> Option<String> {
+    let stamp = observed_at?;
+    let parsed =
+        time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339).ok()?;
+    let local = parsed.to_offset(time::UtcOffset::current_local_offset().ok()?);
+    Some(format!(
+        "Updated {:02}:{:02}:{:02}",
+        local.hour(),
+        local.minute(),
+        local.second()
+    ))
+}
+
 fn window_task_title(task: &TaskView) -> &str {
     if task.title.trim().is_empty() {
         "Untitled task"
     } else {
         &task.title
     }
+}
+
+/// Height of everything in the welcome block that is not the composer: the
+/// spark, its gaps, the greeting line, the workspace hint, and the draft note.
+const WELCOME_HEADING_HEIGHT: f32 = 34.0 + 10.0 + 42.0 + 8.0 + 18.0 + 22.0 + 20.0;
+
+/// Top padding that centres the welcome block in the available height.
+///
+/// The composer is measured one pass late (see the height-tracking above), so a
+/// zero/unmeasured height falls back to a conservative fixed block instead of
+/// jumping to the top edge on the first frame.
+#[must_use]
+fn welcome_top_space(available_height: f32, composer_height: f32) -> f32 {
+    let composer = if composer_height > 0.0 {
+        composer_height
+    } else {
+        120.0
+    };
+    let block = WELCOME_HEADING_HEIGHT + composer;
+    ((available_height - block) / 2.0).clamp(16.0, available_height * 0.34)
 }
 
 /// Build a minimal view model for GUI unit tests without invoking probes.
@@ -912,6 +1073,46 @@ mod tests {
     }
 
     #[test]
+    fn freshness_label_shows_only_a_clock_time_or_nothing() {
+        // No stamp, or an unparseable one, yields no label rather than a guess.
+        assert_eq!(freshness_label(None), None);
+        assert_eq!(freshness_label(Some("not a timestamp")), None);
+        let label = freshness_label(Some("2026-09-27T10:24:00Z")).expect("label");
+        // Exactly "Updated HH:MM:SS" and nothing else. The snapshot carries no
+        // date contract, so a date or offset must never appear here — this also
+        // catches a formatter whose output happens to contain two colons.
+        let clock = label.strip_prefix("Updated ").expect("prefixed");
+        assert!(!clock.contains(' '), "leaked a date or offset: {label}");
+        let parts: Vec<&str> = clock.split(':').collect();
+        assert_eq!(parts.len(), 3, "{label}");
+        assert!(
+            parts
+                .iter()
+                .all(|part| part.len() == 2 && part.bytes().all(|b| b.is_ascii_digit())),
+            "{label} should be zero-padded HH:MM:SS"
+        );
+    }
+
+    #[test]
+    fn welcome_block_centers_against_the_measured_composer() {
+        // A tall window leaves matching space above and below the block.
+        let top = welcome_top_space(715.0, 120.0);
+        let block = WELCOME_HEADING_HEIGHT + 120.0;
+        assert!(
+            (top - (715.0 - block) / 2.0).abs() < 0.01,
+            "top padding {top} should centre a {block}px block"
+        );
+        // An unmeasured composer still yields a sane, non-negative offset
+        // rather than pinning the block to the top edge.
+        let unmeasured = welcome_top_space(715.0, 0.0);
+        assert!(unmeasured > 0.0 && unmeasured < 715.0, "{unmeasured}");
+        // A short window clamps instead of pushing the block off-screen.
+        let short = welcome_top_space(120.0, 120.0);
+        assert!(short >= 16.0, "{short}");
+        assert!(short <= 120.0, "{short}");
+    }
+
+    #[test]
     fn debounce_retains_pending_write_until_elapsed() {
         let now = Instant::now();
         let pending = Some(now - Duration::from_millis(100));
@@ -928,7 +1129,7 @@ mod tests {
     fn test_app() -> SupervisorApp {
         SupervisorApp {
             view_model: test_view_model(),
-            snapshot: Arc::new(RwLock::new(fixture_snapshot())),
+            snapshot: Arc::new(RwLock::new(Arc::new(fixture_snapshot()))),
             user_config: config(),
             ui_state: Arc::new(Mutex::new(SupervisorUiState::default())),
             actions: UiActionQueue::default(),
@@ -939,6 +1140,14 @@ mod tests {
             pending_resize: None,
             composer_panel_height: 0.0,
         }
+    }
+
+    /// Mutate the shared snapshot in place for a test, copying on write only
+    /// when another holder still references it.
+    fn edit_snapshot(app: &mut SupervisorApp, body: impl FnOnce(&mut SupervisorSnapshot)) {
+        let mut guard = app.snapshot.write().expect("snapshot lock");
+        let snapshot = Arc::make_mut(&mut guard);
+        body(snapshot);
     }
 
     fn key_event(
@@ -1061,7 +1270,9 @@ mod tests {
     fn recents_truncate_long_cjk_titles_inside_the_sidebar() {
         let long_title = "很长的任务标题需要截断".repeat(8);
         let mut app = test_app();
-        app.snapshot.write().unwrap().tasks[0].title = long_title.clone();
+        edit_snapshot(&mut app, |snapshot| {
+            snapshot.tasks[0].title = long_title.clone()
+        });
         let (_, output) = render_at(&mut app, 1280.0, 800.0);
         let sidebar_titles: Vec<egui::Rect> = output
             .shapes
@@ -1326,7 +1537,7 @@ mod tests {
     #[test]
     fn empty_workspace_renders_the_welcome_composer() {
         let mut app = test_app();
-        app.snapshot.write().unwrap().tasks.clear();
+        edit_snapshot(&mut app, |snapshot| snapshot.tasks.clear());
         let context = egui::Context::default();
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1359,7 +1570,7 @@ mod tests {
                 for scale in [1.0, 1.5, 2.0] {
                     let mut app = test_app();
                     app.user_config.theme = theme;
-                    app.snapshot.write().unwrap().mode = SnapshotMode::Demo;
+                    edit_snapshot(&mut app, |snapshot| snapshot.mode = SnapshotMode::Demo);
                     let context = egui::Context::default();
                     let rect =
                         egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
