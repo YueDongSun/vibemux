@@ -23,6 +23,7 @@ pub mod capture_budget;
 pub mod digest;
 pub mod error_code;
 pub mod events;
+pub mod final_text;
 pub mod json_line_framer;
 pub mod launch_spec;
 pub mod observation;
@@ -30,6 +31,7 @@ pub mod outcome;
 pub mod protocol_session;
 pub mod request;
 pub mod route_config;
+pub mod writable_profile;
 
 pub use attempt::{DispatchPhase, DispatchTrigger, PhaseTransition, TransitionResult};
 pub use digest::Sha256Digest;

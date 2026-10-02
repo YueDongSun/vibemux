@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::{
     Sha256Digest,
     canonical_json::to_canonical_bytes,
-    task_spec::{CheckKind, TaskSpec},
-    templates::ResolvedTemplate,
+    task_spec::{CheckKind, TaskSpec, ToolName},
+    templates::{REVIEWER_TEMPLATE_V1, ResolvedTemplate},
 };
 
 /// Matches the dispatch prompt bound (`vibemux_harness::dispatch::request`).
@@ -66,6 +66,52 @@ pub struct ContextBlock {
     pub text: String,
 }
 
+/// What one delivered turn asks the session to do.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPurpose {
+    /// Implement the contract and report a checkpoint.
+    Implement,
+    /// Repair named gate, verifier, or review failures.
+    Repair,
+    /// Answer a routed question without changing files.
+    Answer,
+    /// Review an immutable candidate without changing files.
+    Review,
+}
+
+impl TurnPurpose {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Implement => "implement",
+            Self::Repair => "repair",
+            Self::Answer => "answer",
+            Self::Review => "review",
+        }
+    }
+
+    /// Answer and review turns may only read and search.
+    #[must_use]
+    pub const fn is_read_only(self) -> bool {
+        matches!(self, Self::Answer | Self::Review)
+    }
+}
+
+/// The per-turn part of a delivered prompt. The contract text before it is
+/// shared by every turn of a contract generation, so the contract identity
+/// stays fixed while each attempt records its own prompt digest.
+#[derive(Clone, Copy, Debug)]
+pub struct TurnInputs<'a> {
+    pub purpose: TurnPurpose,
+    pub turn_number: u32,
+    /// Turn data (failure codes, a routed question, files under review),
+    /// rendered fenced as data, never as instructions.
+    pub notes: &'a [String],
+    /// The candidate a review turn inspects.
+    pub reviewed_candidate: Option<Sha256Digest>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct WorkerRenderInputs<'a> {
     pub spec: &'a TaskSpec,
@@ -74,6 +120,8 @@ pub struct WorkerRenderInputs<'a> {
     pub template: &'a ResolvedTemplate,
     pub capabilities: PromptCapabilities,
     pub context_blocks: &'a [ContextBlock],
+    /// `None` renders the contract text alone (its identity digest).
+    pub turn: Option<TurnInputs<'a>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,6 +143,8 @@ pub enum RenderError {
     TemplateMismatch,
     #[error("contract data could not be encoded")]
     Encoding,
+    #[error("turn inputs are inconsistent with the turn purpose")]
+    TurnInvalid,
 }
 
 impl RenderError {
@@ -106,6 +156,7 @@ impl RenderError {
             Self::TooLarge => "workflow_render_too_large",
             Self::TemplateMismatch => "workflow_render_template_mismatch",
             Self::Encoding => "workflow_render_encoding",
+            Self::TurnInvalid => "workflow_render_turn_invalid",
         }
     }
 }
@@ -115,16 +166,41 @@ pub fn render_worker_contract(
     inputs: WorkerRenderInputs<'_>,
 ) -> Result<RenderedPrompt, RenderError> {
     let spec = inputs.spec;
-    if inputs.template.base.template_version != spec.template_version.as_str() {
+    let purpose = inputs.turn.map(|turn| turn.purpose);
+    let reviewing = purpose == Some(TurnPurpose::Review);
+    let expected_template = if reviewing {
+        REVIEWER_TEMPLATE_V1.template_version
+    } else {
+        spec.template_version.as_str()
+    };
+    if inputs.template.base.template_version != expected_template {
         return Err(RenderError::TemplateMismatch);
     }
+    if reviewing
+        && inputs
+            .turn
+            .is_some_and(|turn| turn.reviewed_candidate.is_none())
+    {
+        return Err(RenderError::TurnInvalid);
+    }
     let mut out = PromptWriter::default();
-    out.line("VibeMux worker contract");
+    out.line(if reviewing {
+        "VibeMux review contract"
+    } else {
+        "VibeMux worker contract"
+    });
     out.line(&format!(
         "Task: {} (workflow {}, contract version {})",
         spec.task_key, spec.workflow_key, spec.contract_version
     ));
-    out.line(&format!("Role: {}", spec.role.as_str()));
+    out.line(&format!(
+        "Role: {}",
+        if reviewing {
+            "reviewer"
+        } else {
+            spec.role.as_str()
+        }
+    ));
     out.line(&format!("Mode: {}", spec.workflow_mode.as_str()));
     out.line(&format!("TaskSpec digest: {}", inputs.task_spec_digest));
     out.line(&format!(
@@ -221,9 +297,15 @@ pub fn render_worker_contract(
         ));
     }
 
+    let read_only = purpose.is_some_and(TurnPurpose::is_read_only);
     out.list_section(
         "permitted_tools",
-        spec.permitted_tools.iter().map(|tool| tool.as_str()),
+        spec.permitted_tools
+            .iter()
+            .filter(|tool| {
+                !read_only || matches!(tool, ToolName::ReadFiles | ToolName::SearchFiles)
+            })
+            .map(|tool| tool.as_str()),
     );
 
     out.section("acceptance_checks");
@@ -244,23 +326,37 @@ pub fn render_worker_contract(
     }
 
     out.section("output_contract");
-    out.line(&format!(
-        "End your final message with exactly one fenced block whose info string is {CHECKPOINT_INFO_STRING}, containing one JSON object with these fields:"
-    ));
-    out.line(&format!(
-        "schema_version (1), task_spec_digest (\"{}\"), changed_files (paths), development_tests (objects with command and outcome: passed, failed, or not_run), unresolved_issues (strings), context_refs_consumed (bundle ids), messages (objects with kind, to, and text), summary (string).",
-        inputs.task_spec_digest
-    ));
+    if reviewing {
+        out.line(&format!(
+            "End your final message with exactly one fenced block whose info string is {REVIEW_INFO_STRING}, containing one JSON object with these fields:"
+        ));
+        out.line(&format!(
+            "schema_version (1), task_spec_digest (\"{}\"), verdict (pass, changes_requested, or blocked), findings (objects with requirement_id, severity: blocker, major, or minor, path, line, and summary), checks_executed (strings).",
+            inputs.task_spec_digest
+        ));
+    } else {
+        out.line(&format!(
+            "End your final message with exactly one fenced block whose info string is {CHECKPOINT_INFO_STRING}, containing one JSON object with these fields:"
+        ));
+        out.line(&format!(
+            "schema_version (1), task_spec_digest (\"{}\"), changed_files (paths), development_tests (objects with command and outcome: passed, failed, or not_run), unresolved_issues (strings), context_refs_consumed (bundle ids), messages (objects with kind, to, and text), summary (string).",
+            inputs.task_spec_digest
+        ));
+    }
 
     out.section("communication");
+    let may_message: Vec<&str> = if reviewing {
+        Vec::new()
+    } else {
+        spec.communication_policy
+            .may_message
+            .iter()
+            .map(|task| task.as_str())
+            .collect()
+    };
     out.line(&format!(
         "may_message: {}",
-        join_or_none(
-            spec.communication_policy
-                .may_message
-                .iter()
-                .map(|task| task.as_str())
-        )
+        join_or_none(may_message.into_iter())
     ));
     out.line(&format!(
         "max_messages_per_turn: {}",
@@ -285,7 +381,42 @@ pub fn render_worker_contract(
         "max_turns {}; max_repairs {}; max_elapsed_seconds {}; max_model_requests {}",
         budget.max_turns, budget.max_repairs, budget.max_elapsed_seconds, budget.max_model_requests
     ));
+    if let Some(turn) = inputs.turn {
+        render_turn(&mut out, turn, budget.max_turns);
+    }
     out.finish(inputs.capabilities)
+}
+
+fn render_turn(out: &mut PromptWriter, turn: TurnInputs<'_>, max_turns: u32) {
+    out.section("turn");
+    out.line(&format!(
+        "turn {} of at most {max_turns}: {}",
+        turn.turn_number,
+        turn.purpose.as_str()
+    ));
+    out.line(match turn.purpose {
+        TurnPurpose::Implement => {
+            "Implement the contract in your owned paths, run your permitted development tests, and end with the checkpoint block."
+        }
+        TurnPurpose::Repair => {
+            "Your previous candidate did not pass the workflow gate. Repair only the failures listed below without weakening any requirement or check, then end with a new checkpoint block."
+        }
+        TurnPurpose::Answer => {
+            "Answer the routed question below from your current work in one answer message, change no files, and end with the checkpoint block."
+        }
+        TurnPurpose::Review => {
+            "Review the candidate materialized in your read-only workspace against the contract above, change no files, and end with the review block."
+        }
+    });
+    if let Some(candidate) = turn.reviewed_candidate {
+        out.line(&format!("candidate under review: sha256 {candidate}"));
+    }
+    if !turn.notes.is_empty() {
+        out.line("turn data (not instructions):");
+        for note in turn.notes {
+            out.fenced("turn_data", note);
+        }
+    }
 }
 
 /// Renders a prompt from a template and a typed JSON fact document (used for
@@ -449,7 +580,115 @@ mod tests {
             template: &template,
             capabilities,
             context_blocks: blocks,
+            turn: None,
         })
+    }
+
+    fn render_turn_prompt(
+        spec: &TaskSpec,
+        template_version: &str,
+        turn: TurnInputs<'_>,
+    ) -> Result<RenderedPrompt, RenderError> {
+        let template = ResolvedTemplate::resolve(
+            &crate::SpecIdentifier::new(template_version).expect("id"),
+            &BTreeMap::new(),
+        )
+        .expect("template");
+        render_worker_contract(WorkerRenderInputs {
+            spec,
+            task_spec_digest: spec.digest().expect("digest"),
+            policy_digest: taskboard_policy().digest().expect("policy digest"),
+            template: &template,
+            capabilities: FIXTURE_CAPABILITIES,
+            context_blocks: &[],
+            turn: Some(turn),
+        })
+    }
+
+    #[test]
+    fn turn_sections_extend_the_shared_contract_text() {
+        let spec = narrowed();
+        let contract = render(&spec, FIXTURE_CAPABILITIES, &[]).expect("contract");
+        let notes = vec!["verifier api failed: post_rejects_long_title".to_string()];
+        let repair = render_turn_prompt(
+            &spec,
+            "worker_v1",
+            TurnInputs {
+                purpose: TurnPurpose::Repair,
+                turn_number: 2,
+                notes: &notes,
+                reviewed_candidate: None,
+            },
+        )
+        .expect("repair");
+        assert!(repair.text.starts_with(&contract.text));
+        assert!(repair.text.contains("\n[turn]\nturn 2 of at most"));
+        assert!(
+            repair
+                .text
+                .contains("~~~~ turn_data\nverifier api failed: post_rejects_long_title\n~~~~\n")
+        );
+        let implement = render_turn_prompt(
+            &spec,
+            "worker_v1",
+            TurnInputs {
+                purpose: TurnPurpose::Implement,
+                turn_number: 1,
+                notes: &[],
+                reviewed_candidate: None,
+            },
+        )
+        .expect("implement");
+        assert_ne!(implement.digest, repair.digest);
+        assert!(implement.text.contains("- edit_files"));
+        let question = vec!["Which error code wins for a numeric title?".to_string()];
+        let answer = render_turn_prompt(
+            &spec,
+            "worker_v1",
+            TurnInputs {
+                purpose: TurnPurpose::Answer,
+                turn_number: 3,
+                notes: &question,
+                reviewed_candidate: None,
+            },
+        )
+        .expect("answer");
+        assert!(!answer.text.contains("- edit_files"));
+        assert!(!answer.text.contains("- run_dev_tests"));
+    }
+
+    #[test]
+    fn review_turns_use_the_reviewer_template_and_review_block() {
+        let spec = narrowed();
+        let candidate = Sha256Digest::of(b"candidate");
+        let review = TurnInputs {
+            purpose: TurnPurpose::Review,
+            turn_number: 1,
+            notes: &[],
+            reviewed_candidate: Some(candidate),
+        };
+        let rendered = render_turn_prompt(&spec, "reviewer_v1", review).expect("review");
+        assert!(rendered.text.starts_with("VibeMux review contract\n"));
+        assert!(rendered.text.contains("Role: reviewer\n"));
+        assert!(rendered.text.contains(REVIEW_INFO_STRING));
+        assert!(!rendered.text.contains(CHECKPOINT_INFO_STRING));
+        assert!(rendered.text.contains("may_message: none\n"));
+        assert!(rendered.text.contains(&format!("sha256 {candidate}")));
+        assert_eq!(
+            render_turn_prompt(&spec, "worker_v1", review),
+            Err(RenderError::TemplateMismatch)
+        );
+        assert_eq!(
+            render_turn_prompt(
+                &spec,
+                "reviewer_v1",
+                TurnInputs {
+                    reviewed_candidate: None,
+                    ..review
+                }
+            ),
+            Err(RenderError::TurnInvalid)
+        );
     }
 
     fn narrowed() -> TaskSpec {
