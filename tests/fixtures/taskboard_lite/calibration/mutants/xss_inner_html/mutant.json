@@ -1,0 +1,5 @@
+{
+  "mutant_id": "xss_inner_html",
+  "defect": "frontend renders task titles with innerHTML",
+  "expected_failing_suite": "browser"
+}

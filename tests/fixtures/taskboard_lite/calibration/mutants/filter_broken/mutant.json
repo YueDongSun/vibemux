@@ -1,0 +1,5 @@
+{
+  "mutant_id": "filter_broken",
+  "defect": "frontend Completed filter shows every task",
+  "expected_failing_suite": "browser"
+}

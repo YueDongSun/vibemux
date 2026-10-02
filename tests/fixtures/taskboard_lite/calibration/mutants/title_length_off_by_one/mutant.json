@@ -1,0 +1,5 @@
+{
+  "mutant_id": "title_length_off_by_one",
+  "defect": "store accepts a title of 121 code points (upper bound off by one)",
+  "expected_failing_suite": "api"
+}

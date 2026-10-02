@@ -1,0 +1,91 @@
+/* TaskBoard Lite styles: calibration reference implementation. */
+:root {
+  color-scheme: light;
+  --accent: #2f5bd3;
+  --muted: #5d6475;
+  --danger: #b3261e;
+  --border: #d7dbe3;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, "Segoe UI", sans-serif;
+  background: #f5f6f8;
+  color: #1c1f26;
+}
+
+.board {
+  max-width: 40rem;
+  margin: 2rem auto;
+  padding: 1.5rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.new_task_form {
+  display: flex;
+  gap: 0.5rem;
+}
+
+#new_task_title {
+  flex: 1;
+  padding: 0.5rem;
+  font-size: 1rem;
+}
+
+button {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#error_message {
+  min-height: 1.25rem;
+  color: var(--danger);
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.filters button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.counts {
+  color: var(--muted);
+}
+
+#task_list {
+  list-style: none;
+  padding: 0;
+}
+
+.task_item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.task_title {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.task_done .task_title {
+  color: var(--muted);
+  text-decoration: line-through;
+}

@@ -1,0 +1,5 @@
+{
+  "mutant_id": "wrong_delete_status",
+  "defect": "DELETE /api/tasks/:id answers 200 instead of 204",
+  "expected_failing_suite": "api"
+}

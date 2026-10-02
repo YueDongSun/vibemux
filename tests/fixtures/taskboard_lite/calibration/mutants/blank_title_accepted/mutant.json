@@ -1,0 +1,5 @@
+{
+  "mutant_id": "blank_title_accepted",
+  "defect": "store accepts a title that is empty after trimming",
+  "expected_failing_suite": "store"
+}

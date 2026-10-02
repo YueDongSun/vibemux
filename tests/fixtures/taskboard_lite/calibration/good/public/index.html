@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TaskBoard Lite</title>
+    <link rel="stylesheet" href="styles.css">
+    <script type="module" src="app.mjs"></script>
+  </head>
+  <body>
+    <main class="board">
+      <h1>TaskBoard Lite</h1>
+      <form id="new_task_form" class="new_task_form" autocomplete="off">
+        <input id="new_task_title" name="title" aria-label="New task title" placeholder="What needs doing?">
+        <button type="submit" id="add_task_button">Add</button>
+      </form>
+      <p id="error_message" role="alert"></p>
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="Filter tasks">
+          <button type="button" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" data-filter="active" aria-pressed="false">Active</button>
+          <button type="button" data-filter="completed" aria-pressed="false">Completed</button>
+        </div>
+        <p class="counts">
+          Total <span id="total_count">0</span>
+          &middot; Completed <span id="completed_count">0</span>
+        </p>
+      </div>
+      <ul id="task_list" aria-label="Tasks"></ul>
+    </main>
+  </body>
+</html>

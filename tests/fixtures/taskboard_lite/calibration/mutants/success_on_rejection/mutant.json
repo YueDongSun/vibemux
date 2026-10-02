@@ -1,0 +1,5 @@
+{
+  "mutant_id": "success_on_rejection",
+  "defect": "frontend shows a task locally even when the server rejected the add",
+  "expected_failing_suite": "browser"
+}
