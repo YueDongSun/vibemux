@@ -24,6 +24,7 @@ pub mod leases;
 pub mod messages;
 pub mod optimizer;
 pub mod policy;
+pub mod receipts;
 pub mod renderer;
 pub mod selection;
 pub mod slots;
@@ -32,6 +33,7 @@ pub mod source_request;
 pub mod supervisor;
 pub mod task_spec;
 pub mod templates;
+pub mod workflow_record;
 
 pub use identifiers::{IdentifierError, PathPattern, SpecIdentifier};
 pub use vibemux_harness::dispatch::Sha256Digest;

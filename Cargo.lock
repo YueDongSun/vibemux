@@ -4594,6 +4594,7 @@ dependencies = [
  "vibemux_events",
  "vibemux_harness",
  "vibemux_types",
+ "vibemux_workflow",
 ]
 
 [[package]]

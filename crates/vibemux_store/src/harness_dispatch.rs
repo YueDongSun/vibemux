@@ -192,91 +192,12 @@ impl SqliteStore {
         &mut self,
         admission: &HarnessDispatchAdmission,
     ) -> Result<HarnessDispatchCommit, StoreError> {
-        if admission.request_id.is_nil() || !admission.protocol.accepts(admission.harness) {
-            return Err(StoreError::HarnessDispatch(DispatchError::InvalidRequest));
-        }
-        if admission.prompt.byte_count == 0 || admission.prompt.byte_count > MAX_PROMPT_BYTES as u64
-        {
-            return Err(StoreError::HarnessDispatch(DispatchError::InvalidPrompt));
-        }
-        if !admission.protocol.supports_execution() {
-            return Err(StoreError::HarnessDispatch(
-                DispatchError::ExecutionDisabled,
-            ));
-        }
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let project_id = resolve_or_mint_project_id(&transaction)?;
-        let fingerprint = request_fingerprint(
-            project_id,
-            admission.request_id,
-            admission.harness,
-            admission.protocol,
-            admission.prompt.sha256,
-            admission.config_sha256,
-        );
-        if let Some(stored) = dispatch_rows::load(&transaction, admission.request_id)? {
-            if stored.record.fingerprint != fingerprint {
-                return Err(StoreError::HarnessDispatch(DispatchError::Conflict));
-            }
-            return Ok(stored.unchanged());
-        }
-        let command_name = admission.harness.command_name();
-        let detected = Self::read_registry_in_tx(&transaction)?
-            .state(command_name)
-            .is_some_and(|state| state.detected);
-        if !detected {
-            return Err(StoreError::HarnessDispatch(DispatchError::NotDetected));
-        }
-        if dispatch_rows::is_reserved(&transaction, admission.resource_key)? {
-            return Err(StoreError::HarnessDispatch(DispatchError::Busy));
-        }
-        let (task, run) = admitted_entities(project_id, admission)?;
-        let record = HarnessDispatchRecord {
-            schema_version: HARNESS_DISPATCH_RECORD_SCHEMA_VERSION,
-            request_id: admission.request_id,
-            project_id,
-            task_id: task.task_id(),
-            run_id: run.run_id(),
-            harness: admission.harness,
-            protocol: admission.protocol,
-            fingerprint,
-            resource_key: admission.resource_key,
-            prompt: admission.prompt,
-            config_sha256: admission.config_sha256,
-            base_commit: admission.base_commit.clone(),
-            phase: DispatchPhase::Admitted,
-            version: 1,
-            outcome: None,
-            error_code: None,
-            process: None,
-            capture: None,
-            created_at: admission.timestamp,
-            updated_at: admission.timestamp,
-        };
-        let draft = events::admitted(
-            &event_context(&record, admission.timestamp),
-            &AdmittedPayload::new(
-                record.request_id,
-                record.harness,
-                record.protocol,
-                record.prompt,
-                record.config_sha256,
-                record.base_commit.clone(),
-            ),
-        )
-        .map_err(StoreError::HarnessDispatch)?;
-        let (event, raw_sequence) = Self::insert_event(&transaction, draft)?;
-        dispatch_rows::insert(&transaction, &record, raw_sequence)?;
-        dispatch_rows::save_task(&transaction, &task, raw_sequence)?;
-        dispatch_rows::save_run(&transaction, &run, raw_sequence)?;
+        let commit = admit_dispatch_in(&transaction, admission)?;
         transaction.commit()?;
-        Ok(HarnessDispatchCommit {
-            record,
-            sequence: event.sequence().get(),
-            event: Some(event),
-        })
+        Ok(commit)
     }
 
     /// Single-use claim, committed before the process is spawned: `admitted
@@ -417,6 +338,95 @@ impl SqliteStore {
     ) -> Result<Option<HarnessDispatchRecord>, StoreError> {
         Ok(dispatch_rows::load(&self.connection, request_id)?.map(|stored| stored.record))
     }
+}
+
+/// The admission transaction body, shared by plain dispatch admission and
+/// workflow attempt admission so both apply the same gates and write the
+/// same record, projections, and event. The caller commits.
+pub(crate) fn admit_dispatch_in(
+    transaction: &Transaction<'_>,
+    admission: &HarnessDispatchAdmission,
+) -> Result<HarnessDispatchCommit, StoreError> {
+    if admission.request_id.is_nil() || !admission.protocol.accepts(admission.harness) {
+        return Err(StoreError::HarnessDispatch(DispatchError::InvalidRequest));
+    }
+    if admission.prompt.byte_count == 0 || admission.prompt.byte_count > MAX_PROMPT_BYTES as u64 {
+        return Err(StoreError::HarnessDispatch(DispatchError::InvalidPrompt));
+    }
+    if !admission.protocol.supports_execution() {
+        return Err(StoreError::HarnessDispatch(
+            DispatchError::ExecutionDisabled,
+        ));
+    }
+    let project_id = resolve_or_mint_project_id(transaction)?;
+    let fingerprint = request_fingerprint(
+        project_id,
+        admission.request_id,
+        admission.harness,
+        admission.protocol,
+        admission.prompt.sha256,
+        admission.config_sha256,
+    );
+    if let Some(stored) = dispatch_rows::load(transaction, admission.request_id)? {
+        if stored.record.fingerprint != fingerprint {
+            return Err(StoreError::HarnessDispatch(DispatchError::Conflict));
+        }
+        return Ok(stored.unchanged());
+    }
+    let command_name = admission.harness.command_name();
+    let detected = SqliteStore::read_registry_in_tx(transaction)?
+        .state(command_name)
+        .is_some_and(|state| state.detected);
+    if !detected {
+        return Err(StoreError::HarnessDispatch(DispatchError::NotDetected));
+    }
+    if dispatch_rows::is_reserved(transaction, admission.resource_key)? {
+        return Err(StoreError::HarnessDispatch(DispatchError::Busy));
+    }
+    let (task, run) = admitted_entities(project_id, admission)?;
+    let record = HarnessDispatchRecord {
+        schema_version: HARNESS_DISPATCH_RECORD_SCHEMA_VERSION,
+        request_id: admission.request_id,
+        project_id,
+        task_id: task.task_id(),
+        run_id: run.run_id(),
+        harness: admission.harness,
+        protocol: admission.protocol,
+        fingerprint,
+        resource_key: admission.resource_key,
+        prompt: admission.prompt,
+        config_sha256: admission.config_sha256,
+        base_commit: admission.base_commit.clone(),
+        phase: DispatchPhase::Admitted,
+        version: 1,
+        outcome: None,
+        error_code: None,
+        process: None,
+        capture: None,
+        created_at: admission.timestamp,
+        updated_at: admission.timestamp,
+    };
+    let draft = events::admitted(
+        &event_context(&record, admission.timestamp),
+        &AdmittedPayload::new(
+            record.request_id,
+            record.harness,
+            record.protocol,
+            record.prompt,
+            record.config_sha256,
+            record.base_commit.clone(),
+        ),
+    )
+    .map_err(StoreError::HarnessDispatch)?;
+    let (event, raw_sequence) = SqliteStore::insert_event(transaction, draft)?;
+    dispatch_rows::insert(transaction, &record, raw_sequence)?;
+    dispatch_rows::save_task(transaction, &task, raw_sequence)?;
+    dispatch_rows::save_run(transaction, &run, raw_sequence)?;
+    Ok(HarnessDispatchCommit {
+        record,
+        sequence: event.sequence().get(),
+        event: Some(event),
+    })
 }
 
 /// Applies `trigger` through the pure machine and commits the change: the

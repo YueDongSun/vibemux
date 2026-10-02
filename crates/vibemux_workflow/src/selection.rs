@@ -64,7 +64,7 @@ impl SelectionPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "by", content = "metric")]
 pub enum DecidedBy {
     OnlyValidCandidate,
@@ -73,13 +73,15 @@ pub enum DecidedBy {
     NoValidCandidate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExcludedCandidate {
     pub candidate_digest: Sha256Digest,
-    pub reasons: Vec<&'static str>,
+    pub reasons: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectionOutcome {
     pub winner: Option<Sha256Digest>,
     pub decided_by: DecidedBy,
@@ -117,7 +119,7 @@ pub fn select(
             reasons.dedup();
             excluded.push(ExcludedCandidate {
                 candidate_digest: entry.candidate.candidate_digest,
-                reasons,
+                reasons: reasons.into_iter().map(str::to_string).collect(),
             });
         }
     }
@@ -244,7 +246,10 @@ mod tests {
         );
         assert_eq!(outcome.winner, Some(good.candidate.candidate_digest));
         assert_eq!(outcome.decided_by, DecidedBy::OnlyValidCandidate);
-        assert_eq!(outcome.excluded[0].reasons, vec!["gate_suite_failed"]);
+        assert_eq!(
+            outcome.excluded[0].reasons,
+            vec!["gate_suite_failed".to_string()]
+        );
     }
 
     #[test]
@@ -334,12 +339,12 @@ mod tests {
             contract(),
         );
         assert_eq!(outcome.winner, None);
-        let reasons: Vec<&str> = outcome
+        let reasons: Vec<String> = outcome
             .excluded
             .iter()
             .flat_map(|excluded| excluded.reasons.clone())
             .collect();
-        assert!(reasons.contains(&"selection_mutation_artifact"));
-        assert!(reasons.contains(&"selection_different_contract"));
+        assert!(reasons.contains(&"selection_mutation_artifact".to_string()));
+        assert!(reasons.contains(&"selection_different_contract".to_string()));
     }
 }
