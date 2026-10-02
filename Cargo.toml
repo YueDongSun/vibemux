@@ -13,6 +13,7 @@ members = [
     "crates/vibemux_store",
     "crates/vibemux_types",
     "crates/vibemux_workspace",
+    "crates/vibemux_workflow",
     "crates/vibemux_terminal_observer",
     "crates/vibemuxd",
 ]
