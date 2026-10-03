@@ -2,7 +2,7 @@
 
 VibeMux is a Windows-first, local-first, terminal-native collaboration environment for multiple coding harnesses. The official target is Windows 10/11 + PowerShell; WSL2/Linux is for development and the optional tmux backend. Windows Terminal is only the entry point; WezTerm is the first programmable terminal backend.
 
-> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, a local stateful A2A gateway and bounded supervisor workflow, and opt-in one-shot harness dispatch whose live vendor validation so far covers only initialize-only probes. VibeMux is not yet a functional multi-harness alpha.
+> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, a local stateful A2A gateway and bounded supervisor workflow, opt-in one-shot harness dispatch whose live vendor validation so far covers only initialize-only probes, and a dual-track coding workflow verified offline with fixture workers only. VibeMux is not yet a functional multi-harness alpha.
 
 ## Current status
 
@@ -13,6 +13,7 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Plugin protocol / supervisor | `PARTIAL` overall M4 | Wire foundation, shell-free supervision, daemon registry, bounded restart/quarantine and read-only status | Writable plugin control, operator recovery, real vendor CLI plugins and SDKs |
 | A2A / supervisor | `PARTIAL — LOCAL STATEFUL` | Authenticated HTTP+JSON/JSONRPC/gRPC; canonical bindings, artifacts, cancellation, subscriptions, independent review/verifier gates and local model-peer workflow | Remote/TLS deployment, full official ITK, message history, automatic restart recovery and unrestricted coding-harness integration |
 | Harness dispatch (ADR 029) | `PARTIAL` | Opt-in daemon-owned one-shot Codex and Claude turns, ACP initialize-only probes, contained vendor process trees, schema-4 dispatch records, Control v5, and `vibemuxctl dispatch`; verified with fixture binaries on Windows and Linux and by live initialize-only probes of five vendor CLIs on native Windows | Live execution turns, ACP execution, writable or concurrent dispatch, durable transcripts, and frontend Send |
+| Dual-track workflow (ADR 031) | `PARTIAL — OFFLINE ONLY` | Daemon-owned `cooperate`/`compare` workflows over two owned worktrees, TaskSpec source validation, fenced leases, context broker and shares, independent review, trusted verifier and integration gates, bounded prompt-policy optimizer, schema-5 records, Control v6, `vibemuxctl workflow`, and an offline acceptance runner; verified with fixture workers on native Windows | AAG gateway client, live supervisor/compiler/workers, native TUI sessions and handoff, paused-prompt editing, and any live acceptance |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
 
 Authoritative milestones, evidence, and release plan: [PROGRESS.md](PROGRESS.md).
@@ -149,6 +150,53 @@ cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemu
 - `probe` runs the initialize handshake only and sends no prompt. `submit` sends a real prompt to the vendor CLI, which may use paid model inference. It reads the prompt from the file, or from stdin for `-`, never from the command line; refuses a blank, non-UTF-8, or over-32-KiB prompt; and returns a receipt as soon as the attempt is durably admitted. Pass `--request-id <uuid>` to make a retry idempotent.
 - `status` is content-free. `output` is the only command that prints vendor content: whole raw JSON records, plus `next_after_sequence` for a later `--after-sequence`. Every command prints one JSON object; errors print `ok: false` with an `error_code`.
 - Limits: Codex and Claude execution only; at most one active dispatch per project; vendor processes run in the project root with read-only protocol profiles, which are **not** an OS sandbox; transcripts live in daemon memory and are lost on restart. If the daemon stops during a run, the attempt becomes `recovery_pending` and blocks new dispatches until you `dispatch cancel` it. Live validation covers initialize-only probes on native Windows, and no live `submit` has run; see [ADR 029](docs/adr/029_daemon_harness_dispatch.md) and the [Stage 7 evidence](docs/evidence/harness_dispatch_validation.md).
+
+## Dual-track workflows (pre-alpha, ADR 031, offline only)
+
+The daemon can run a supervised two-worker workflow on one repository.
+
+- **`cooperate`:** each worker owns disjoint paths of one task.
+- **`compare`:** two competitors implement the same task, and at most one gated result is selected.
+
+Workers run in separate owned worktrees. Each candidate is collected by the daemon, reviewed by an independent session, verified by a trusted verifier outside the repository, and integrated into a fresh worktree. Nothing is written to your checkout, committed, merged, or pushed.
+
+**Evidence so far is offline only.** Workers are fixture processes. No model, AAG gateway, or vendor CLI has been contacted, and a `live` config cannot make a slot eligible to code yet. See [ADR 031](docs/adr/031_dual_track_workflow.md) for the design and its limitations.
+
+The workflow service needs `.vibemux/workflow_config.json` (schema 1; read once at daemon start) and harness dispatch routes for the slots' harnesses. Without the config, every workflow command answers `workflow_unconfigured`. The config requires:
+
+- `evidence_class`: `fixture` or `live`;
+- `git_executable` and `verifier.directory`/`verifier.executable`: absolute paths outside the project;
+- `slots`: up to 8 of `{slot_id, harness, route_role}` with `route_role` `worker_a`, `worker_b`, or `reviewer`;
+- `verifier.suites`: argv templates that must contain `{candidate}` and `{out}` and may use `{verifier_dir}`;
+- `verifier.timeout_ms`, `heartbeat_ms`, and `candidate_limits` (`max_files`, `max_file_bytes`, `max_total_bytes`).
+
+Optional fields are `gateway` (required for `live`, with a binding for every slot's role) and `content_retention_days` (without it no prompt or bundle text is kept). `crates/vibemuxd/tests/workflow_support/mod.rs` writes a complete fixture config, request, and policy.
+
+```powershell
+.\target\debug\vibemuxctl.exe workflow prepare --request-file request.json --policy-file policy.json --project-root .
+.\target\debug\vibemuxctl.exe workflow start --contract <sha256> --request-id <uuid> --project-root .
+.\target\debug\vibemuxctl.exe workflow status <workflow_id> --project-root .
+.\target\debug\vibemuxctl.exe workflow pause <workflow_id> --project-root .
+.\target\debug\vibemuxctl.exe workflow export <workflow_id> --out <new_dir> --project-root .
+.\target\debug\vibemuxctl.exe slots list --project-root .
+.\target\debug\vibemuxctl.exe context share --bundle <bundle_id> --to <session_id> --project-root .
+.\target\debug\vibemuxctl.exe session inspect <session_id> --prompts --project-root .
+.\target\debug\vibemuxctl.exe prompt evaluate --candidate <candidate_id> --suite <suite_id> --project-root .
+.\target\debug\vibemuxctl.exe prompt versions --project-root .
+.\target\debug\vibemuxctl.exe prompt rollback --project-root .
+```
+
+- **Request file.** It holds `request_text`, the compiled `task_specs`, the slot `assignments`, the `reviewer_slot`, and `integration_suites`. Prepare validates every TaskSpec against the exact request text and the operator policy. A rejected contract answers with content-free violation codes.
+- **Policy file.** The trusted operator policy: `writable_roots`, `protected_paths`, `allowed_tools`, `verifier_suites`, budget caps, and loop limits.
+- **Other commands:**
+  - `workflow cancel` and `workflow purge` (delete retained content) take a workflow ID.
+  - `session attach` is refused with `workflow_native_tui_unavailable`.
+  - Only `session inspect --prompts` prints prompt text.
+  - `prompt evaluate` reads `.vibemux/prompt_suites/<suite_id>.json` and `.vibemux/prompt_candidates/<candidate_id>.json`.
+- **Acceptance runner.** `python scripts/verify_dual_track.py --mode offline --output <new_dir_outside_the_repo>` runs the Rust suite, pytest, and the TaskBoard Lite calibration. It then re-derives the 37 benchmark scenarios from logs and evidence digests and writes `dual_track_report.json`.
+  - An offline run is at best `OFFLINE_PASS`. Live classes are `BLOCKED`.
+  - `--validate <report>` re-checks a written report against its artifacts.
+  - Results: [offline evidence](docs/evidence/dual_track_offline_acceptance.md).
 
 ## Mock workflow
 

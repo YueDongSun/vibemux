@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), and harness dispatch (control protocol v5) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -791,6 +791,8 @@ Scope:
 - [x] Rejected verification creates new repair Runs without rewriting prior evidence.
 - [ ] Manual merge gate.
 
+ADR 031 adds an offline-verified dual-track slice to this milestone: TaskSpec-owned paths per worker, daemon-collected candidates, independent review and trusted verifier receipts per candidate, bounded repair, comparison selection, and integration into a fresh worktree without commit or merge. Live workers, DAG dependencies, and the manual merge gate remain open.
+
 Exit criteria:
 
 - A multi-agent task can be replayed from task specification, base commit, events, artifacts, and verifier result.
@@ -854,6 +856,8 @@ The next implementation work should follow this order:
 The M4.2 registry/status slice is integrated and locally tested with mock children. The user-requested M7.1/M8.0 path now proves a local structured-data supervisor loop using real providers, with the necessary owned-worktree subset. Neither establishes full workspace/terminal parity, vendor CLI readiness, remote readiness, or overall M7/M8 completion.
 
 The user-requested ADR 029 harness dispatch slice (one daemon-owned dispatch per project, read-only protocol profiles, Codex/Claude execution, ACP probes) was implemented ahead of item 5 and has only fixture evidence and live initialize-only probes. It does not establish vendor plugin readiness, concurrent multi-harness execution, or the M6 exit criteria.
+
+The user-requested ADR 031 dual-track workflow slice (two workers in owned worktrees, independent review, trusted verification, integration into a fresh worktree) was also implemented ahead of item 5. Its evidence is offline fixture evidence only: there is no AAG gateway client, live worker, or native TUI session, so it establishes neither vendor readiness nor any live acceptance.
 
 ---
 

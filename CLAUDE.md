@@ -9,7 +9,7 @@ VibeMux is a **Windows-first, local-first, terminal-native collaboration environ
 Two implementations coexist:
 
 - A **Python 3.12 prototype** (`src/vibemux/`, installable as the `vibemux` CLI) is the current full entry point and the behavior reference for Rust parity.
-- A **Rust 2024 workspace** (`crates/`) is the target authoritative core. M3 (persistence + single-writer daemon + authenticated local IPC) is `VERIFIED`; M4 plugin protocol/supervisor is `PARTIAL`; M5.0 read-only probe and unified frontend shell is `PARTIAL`; A2A is `PARTIAL — LOCAL STATEFUL`, with authenticated HTTP+JSON, JSON-RPC, and gRPC plus canonical bindings and local supervisor verification. Daemon-owned harness dispatch (ADR 029) is `PARTIAL`: fixture-verified, with live evidence only for initialize-only probes on native Windows (no live execution turn yet). See [PROGRESS.md](PROGRESS.md) for the authoritative status table and remaining gates.
+- A **Rust 2024 workspace** (`crates/`) is the target authoritative core. M3 (persistence + single-writer daemon + authenticated local IPC) is `VERIFIED`; M4 plugin protocol/supervisor is `PARTIAL`; M5.0 read-only probe and unified frontend shell is `PARTIAL`; A2A is `PARTIAL — LOCAL STATEFUL`, with authenticated HTTP+JSON, JSON-RPC, and gRPC plus canonical bindings and local supervisor verification. Daemon-owned harness dispatch (ADR 029) is `PARTIAL`: fixture-verified, with live evidence only for initialize-only probes on native Windows (no live execution turn yet). Dual-track coding workflows (ADR 031) are `PARTIAL — OFFLINE ONLY`: verified with fixture workers; there is no AAG gateway client, native TUI session, or live run. See [PROGRESS.md](PROGRESS.md) for the authoritative status table and remaining gates.
 
 `AGENTS.md` is the engineering-rules source of truth; `PROGRESS.md` is the implementation-status source of truth. Read both before any non-trivial change.
 
@@ -30,7 +30,7 @@ Key invariants from `AGENTS.md` §2: user messages are data (never interpolated 
 Rust crate dependency direction (from `AGENTS.md` §4.2):
 
 ```text
-types → events → harness → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli
+types → events → harness → workflow → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli
 ```
 
 Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary (`AgentKind`/`LauncherKind`/`ProbeState`) lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it — the harness crate pulls no probe I/O. Full crate responsibilities and data flow are in [docs/architecture.md](docs/architecture.md).
@@ -43,7 +43,8 @@ config/theme_palettes.json         # exported GUI palettes (pinned by the palett
 crates/vibemux_types/              # IDs, state machines, frontend query types
 crates/vibemux_events/             # canonical event envelopes, idempotency
 crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness registry/profiles/rows + canonical event drafts + dispatch protocol state machines (pure logic, no I/O)
-crates/vibemux_store/              # SQLite migrations (schema 4: + harness projections, harness dispatch records) + repositories (bundled)
+crates/vibemux_workflow/           # dual-track workflow contracts: TaskSpec validation, renderer, gates, broker rules, leases, optimizer (pure logic, no I/O; ADR 031)
+crates/vibemux_store/              # SQLite migrations (schema 5: + harness projections, harness dispatch records, workflow records) + repositories (bundled)
 crates/vibemux_platform/           # Windows/POSIX process, IPC, and process-tree containment primitives + launch trampoline logic
 crates/vibemux_a2a/                # official A2A Rust SDK adapter (loopback only)
 crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest (+ optional terminal observation payload)
@@ -51,10 +52,11 @@ crates/vibemux_plugin_supervisor/  # M4.1 child process supervision
 crates/vibemux_terminal_observer/  # out-of-process WezTerm observation plugin (list/focus native panes)
 crates/vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache (depends on vibemux_harness)
 crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + ASCII dump
-crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v5: health/plugin/harness/frontend/terminal/dispatch ops + harness dispatch service)
-crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch client
+crates/vibemux_workspace/          # Git worktree lifecycle, owner receipts, and cleanup
+crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v6: health/plugin/harness/frontend/terminal/dispatch/workflow ops + harness dispatch and workflow services)
+crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch/workflow client
 tests/                              # Python pytest suite
-scripts/                            # smoke + benchmark scripts
+scripts/                            # smoke + benchmark scripts + dual-track acceptance runner (verify_dual_track.py)
 docs/adr/                           # architecture decision records
 ```
 
@@ -103,14 +105,14 @@ MSRV is **Rust 1.85.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 .\target\debug\vibemuxctl.exe daemon inspect --project-root .
 .\target\debug\vibemuxctl.exe daemon stop   --project-root .
 
-# Harness orchestration (needs control protocol v3+; the daemon speaks v5 and accepts v1-v4 for older ops; daemon must be running):
+# Harness orchestration (needs control protocol v3+; the daemon speaks v6 and accepts v1-v5 for older ops; daemon must be running):
 .\target\debug\vibemux_probe.exe --write-cache --project-root .  # atomically writes the trusted detection cache to .vibemux\probe_cache.json (stdout report unchanged)
 .\target\debug\vibemuxctl.exe harnesses --project-root .          # live refresh from the probe cache
 .\target\debug\vibemuxctl.exe harnesses --cached --project-root . # persisted snapshot (no re-probe)
 .\target\debug\vibemuxctl.exe switch grok --project-root .        # set project default (detection-gated)
 ```
 
-`harnesses`/`switch` emit machine-readable JSON rows (`name/command/protocol/provider/available/path/roles/default`, plus `launcher`/`version`). `path` is the **resolved executable path** the probe's PATH scan actually found and used; cached (`--cached`) rows include the persisted `launcher`/`version` exactly like live rows. Only the probe's verified `--version` state counts as available; `switch` rejects undetected (`harness_not_detected`) or unknown (`store_unknown_harness`) harnesses before any state change, and a missing cache surfaces `harness_probe_cache_missing` with actionable remediation that names `vibemux_probe --write-cache --project-root <root>` and the real cache path. All harness state is written solely by `vibemuxd`'s single `WriterWorker` (schema 4).
+`harnesses`/`switch` emit machine-readable JSON rows (`name/command/protocol/provider/available/path/roles/default`, plus `launcher`/`version`). `path` is the **resolved executable path** the probe's PATH scan actually found and used; cached (`--cached`) rows include the persisted `launcher`/`version` exactly like live rows. Only the probe's verified `--version` state counts as available; `switch` rejects undetected (`harness_not_detected`) or unknown (`store_unknown_harness`) harnesses before any state change, and a missing cache surfaces `harness_probe_cache_missing` with actionable remediation that names `vibemux_probe --write-cache --project-root <root>` and the real cache path. All harness state is written solely by `vibemuxd`'s single `WriterWorker` (schema 5).
 
 Harness dispatch (ADR 029, pre-alpha, needs control protocol v5) is off until the operator creates `.vibemux\harness_dispatch.json` (schema 1; example and rules in README "Harness dispatch") and restarts the daemon:
 
@@ -124,6 +126,29 @@ Harness dispatch (ADR 029, pre-alpha, needs control protocol v5) is off until th
 ```
 
 Codex and Claude routes execute; ACP routes (OpenCode/Copilot/Grok) are probe-only. At most one dispatch is active per project, the read-only protocol profiles are not an OS sandbox, and transcripts live in daemon memory only. Do not run `probe` or `submit` against real vendor CLIs without the user's explicit authorization (`submit` sends a real prompt); tests use the `vibemux_native_fixture` binary.
+
+Dual-track workflows (ADR 031, pre-alpha, needs control protocol v6) are off until the operator creates `.vibemux\workflow_config.json` (schema 1; fields in README "Dual-track workflows") plus dispatch routes for the slots' harnesses, and restarts the daemon:
+
+```powershell
+.\target\debug\vibemuxctl.exe workflow prepare --request-file request.json --policy-file policy.json --project-root .
+.\target\debug\vibemuxctl.exe workflow start --contract <sha256> --request-id <uuid> --project-root .
+.\target\debug\vibemuxctl.exe workflow status|pause|cancel|purge <workflow_id> --project-root .
+.\target\debug\vibemuxctl.exe workflow export <workflow_id> --out <new_dir> --project-root .
+.\target\debug\vibemuxctl.exe slots list --project-root .
+.\target\debug\vibemuxctl.exe context share --bundle <bundle_id> --to <session_id> --project-root .
+.\target\debug\vibemuxctl.exe session inspect <session_id> [--prompts] --project-root .   # only --prompts prints prompt text
+.\target\debug\vibemuxctl.exe prompt evaluate --candidate <id> --suite <id> --project-root .
+.\target\debug\vibemuxctl.exe prompt versions|rollback --project-root .
+```
+
+The offline acceptance runner drives the real daemon through the integration tests and re-derives the 37 benchmark scenarios from logs and evidence digests. Python is only the test driver, and an offline run is at best `OFFLINE_PASS`:
+
+```powershell
+python scripts/verify_dual_track.py --mode offline --output <new_dir_outside_the_repo>
+python scripts/verify_dual_track.py --validate <dir>\dual_track_report.json
+```
+
+Live mode (`--mode live --config <private_policy.json> --live_opt_in`) needs an explicit budget and configuration authorization from the user. It is not implemented beyond its gate.
 
 If `inspect` reports `recoverable`, the output contains a 64-character hexadecimal SHA-256 confirmation that must be passed to a separate `daemon recover` invocation. Recovery never kills a PID and never opens or modifies the database — it only removes unchanged stale descriptor/socket/writer lock artifacts.
 
@@ -163,6 +188,7 @@ Unless explicitly authorized for a known safe resource, do not run: `git reset -
 - `99d1f8e` is only the **original Python audit baseline**; the current Python package remains the behavior reference while new orchestration or A2A work targets Rust. Do not let the Python prototype grow a second authoritative state writer after cutover.
 - During migration, Rust only writes `.vibemux/vibemux_rust.sqlite3`; it never opens `.vibemux/vibemux.sqlite3`. Path code refuses symlinks/hardlinks that alias the Python database.
 - The GUI is the Supervisor Chat workspace (ADR 028): it reads real task/run/event/artifact summaries over Control v4 and never fabricates a transcript or reply; Send stays unavailable until a continuous coordinator-chat adapter exists. The ten harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) appear as diagnostics and TUI dashboard rows. Nothing attaches to PTYs/ConPTYs or renders a native TUI; the optional WezTerm observer only lists and focuses an explicitly linked native pane. Treat any reference to live native-TUI attach, embedded terminals, or harness launch/input forwarding as premature.
-- `vibemuxctl dispatch` (ADR 029) runs one-shot structured turns through the daemon; it is not a continuous chat adapter, does not enable the GUI Send action, and has live vendor evidence only for initialize-only probes ([docs/evidence/harness_dispatch_validation.md](docs/evidence/harness_dispatch_validation.md)). Do not describe ACP execution, concurrent dispatch, or writable dispatch as implemented.
+- `vibemuxctl dispatch` (ADR 029) runs one-shot structured turns through the daemon; it is not a continuous chat adapter, does not enable the GUI Send action, and has live vendor evidence only for initialize-only probes ([docs/evidence/harness_dispatch_validation.md](docs/evidence/harness_dispatch_validation.md)). Do not describe ACP execution, or concurrent or writable `vibemuxctl dispatch`, as implemented; writable worker turns in separate worktrees exist only inside ADR 031 workflows.
+- Dual-track workflows (ADR 031) have offline fixture evidence only. No AAG client, supervisor or compiler model, native TUI session, or live run exists, and a `live` workflow config cannot make a slot eligible to code. Never present fixture runs, initialize-only probes, or log panels as dual-TUI or live acceptance. Live acceptance needs the user's explicit budget and configuration authorization.
 - The current A2A gateway remains **loopback-only and local-only** even though HTTP+JSON, JSON-RPC, gRPC, authentication, bounded streaming, cancellation, and artifacts are implemented within that local contract. Do not infer remote/TLS deployment, complete official ITK coverage, message history, automatic restart recovery, or unrestricted coding-harness integration.
 - `vibemuxctl` is pre-alpha; it does not replace the installed Python `vibemux` command and it does not override a public database path.
