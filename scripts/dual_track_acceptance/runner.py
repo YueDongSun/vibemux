@@ -76,6 +76,7 @@ from .runtime_roots import (
     owned_process_snapshot,
     prepare_output,
     private_environment,
+    private_tmp_problems,
     remove_if_empty,
     retained_entries,
 )
@@ -272,7 +273,7 @@ def run(request: RunRequest) -> int:
         )
     try:
         layout = prepare_output(request.output, repo_root)
-    except OutputError as error:
+    except (OutputError, OSError) as error:
         print(f"verify_dual_track: {error}", file=sys.stderr)
         return EXIT_USAGE
 
@@ -291,7 +292,7 @@ def run(request: RunRequest) -> int:
         extra_limitations.append("the source tree had uncommitted changes when the run started")
 
     blocked_reason: str | None = None
-    problems = prerequisite_problems(versions)
+    problems = prerequisite_problems(versions) + private_tmp_problems(layout)
     if problems:
         blocked_reason = f"prerequisites missing: {problems}"
     elif live_gate is not None and not live_gate.open:
@@ -375,7 +376,9 @@ def run(request: RunRequest) -> int:
         output_root=layout.root,
         rules=RULES,
         live_gate=live_gate,
-        cleanup=CleanupInfo(joined, unjoined, leftovers, private_tmp_removed),
+        cleanup=CleanupInfo(
+            joined, unjoined, leftovers, private_tmp_removed, str(layout.private_tmp)
+        ),
         extra_limitations=extra_limitations,
         started_at=started_at,
         finished_at=_now(),
@@ -407,7 +410,12 @@ def validate(report_path: Path) -> int:
     if not isinstance(report, dict):
         print("verify_dual_track: the report is not a JSON object", file=sys.stderr)
         return EXIT_USAGE
-    problems = validate_report(report, report_path.parent, benchmark, RULES)
+    try:
+        problems = validate_report(report, report_path.parent, benchmark, RULES)
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        # A report whose fields have the wrong JSON types is invalid, not
+        # a reason to stop validating.
+        problems = [f"the report does not have the expected shape: {type(error).__name__}"]
     recorded = (report.get("validation") or {}).get("problems")
     if recorded != problems:
         problems.append("the recorded validation result differs from this validation")

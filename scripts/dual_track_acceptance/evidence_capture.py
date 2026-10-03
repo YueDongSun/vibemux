@@ -133,14 +133,28 @@ def _status(store: EvidenceStore, name: str) -> Mapping[str, Any]:
     return status
 
 
+def json_object(container: Any, key: str) -> Mapping[str, Any]:
+    """`container[key]` if it is a JSON object; empty when absent or null."""
+    value = container.get(key) if isinstance(container, Mapping) else None
+    return value if isinstance(value, Mapping) else {}
+
+
+def json_objects(container: Any, key: str) -> list[Mapping[str, Any]]:
+    """The JSON objects of the list `container[key]`; empty when absent or null."""
+    value = container.get(key) if isinstance(container, Mapping) else None
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
 def receipt_bodies(document: Mapping[str, Any], kind: str) -> list[Mapping[str, Any]]:
     """The exported receipt bodies of one kind, in export order."""
     bodies: list[Mapping[str, Any]] = []
-    for item in document.get("export", []):
+    for item in json_objects(document, "export"):
         if item.get("kind") != "receipt":
             continue
-        receipt = item.get("body", {})
-        if receipt.get("kind") == kind and isinstance(receipt.get("body"), dict):
+        receipt = json_object(item, "body")
+        if receipt.get("kind") == kind and isinstance(receipt.get("body"), Mapping):
             bodies.append(receipt["body"])
     return bodies
 
@@ -216,7 +230,7 @@ def check_flagship_two_sessions(store: EvidenceStore) -> str:
         candidates = [
             body["candidate"]
             for body in receipt_bodies(document, "candidate")
-            if body.get("candidate", {}).get("candidate_digest") == task["accepted_candidate"]
+            if json_object(body, "candidate").get("candidate_digest") == task["accepted_candidate"]
         ]
         _require(bool(candidates), f"no candidate receipt for {task['task_key']}")
         _require(
@@ -243,7 +257,7 @@ def check_flagship_bundle_delivered(store: EvidenceStore) -> str:
     _require(len(bundles) >= 1, "no context bundle")
     bundle = bundles[0]
     _require(bundle.get("source_task") == "track_a", f"bundle source {bundle.get('source_task')}")
-    _require(bundle.get("source", {}).get("kind") == "worker", "bundle source is not a worker")
+    _require(json_object(bundle, "source").get("kind") == "worker", "bundle source is not a worker")
     _require(
         bundle.get("snapshot_digest") == candidates.get("track_a"),
         "bundle does not cite track A's accepted snapshot",
@@ -299,7 +313,7 @@ def check_share_grant_acknowledged(store: EvidenceStore) -> str:
         grant.get("recipient") == "worker:track_b", f"grant recipient {grant.get('recipient')}"
     )
     _require(grant.get("state") == "acknowledged", f"grant state {grant.get('state')}")
-    bundles = status.get("receipts", {}).get("bundles", [])
+    bundles = json_objects(json_object(status, "receipts"), "bundles")
     _require(
         any(bundle.get("source_task") == "track_a" for bundle in bundles), "no bundle from track A"
     )
@@ -442,7 +456,7 @@ def check_flagship_trusted_browser(store: EvidenceStore) -> str:
 
 def check_flagship_cleanup_retains_unsafe(store: EvidenceStore) -> str:
     status = _status(store, FLAGSHIP)
-    cleanup = status.get("last_run", {}).get("cleanup")
+    cleanup = json_object(status, "last_run").get("cleanup")
     _require(isinstance(cleanup, list) and bool(cleanup), "no cleanup record")
     assert isinstance(cleanup, list)
     for entry in cleanup:
@@ -460,7 +474,7 @@ def check_compare_selection_refuses_defect(store: EvidenceStore) -> str:
     document = _document(store, COMPARE_SELECTION)
     _require(status.get("mode") == "compare", f"mode {status.get('mode')}")
     _require(status.get("phase") == "accepted", f"phase {status.get('phase')}")
-    selection = status.get("receipts", {}).get("selection") or {}
+    selection = json_object(json_object(status, "receipts"), "selection")
     winner = selection.get("winner")
     excluded = selection.get("excluded", [])
     _require(isinstance(winner, str), "no winner")
@@ -491,7 +505,7 @@ def check_compare_both_fail_no_winner(store: EvidenceStore) -> str:
     status = _status(store, COMPARE_BOTH_FAIL)
     document = _document(store, COMPARE_BOTH_FAIL)
     _require(status.get("phase") == "failed", f"phase {status.get('phase')}")
-    selection = status.get("receipts", {}).get("selection") or {}
+    selection = json_object(json_object(status, "receipts"), "selection")
     _require(selection.get("winner") is None, "a winner was selected")
     _require(bool(selection.get("excluded")), "no candidate was excluded")
     _require(not receipt_bodies(document, "integration"), "an integration was produced")
@@ -548,7 +562,7 @@ def check_bounded_repair_closed(store: EvidenceStore) -> str:
 
 def check_optimizer_cycle_bounded(store: EvidenceStore) -> str:
     value = _document(store, OPTIMIZER_CYCLE)["value"]
-    report = value.get("report", {})
+    report = json_object(value, "report")
     rejections = [outcome.get("rejection") for outcome in report.get("outcomes", [])]
     _require("hard_gate_failure" in rejections, "no harmful candidate was rejected")
     _require("no_improvement" in rejections, "no no-gain candidate was rejected")
@@ -563,8 +577,8 @@ def check_optimizer_cycle_bounded(store: EvidenceStore) -> str:
         isinstance(spent, int) and isinstance(limit, int) and 0 < spent <= limit,
         f"spent {spent} of {limit} model requests",
     )
-    _require(value.get("replay", {}).get("duplicate") is True, "a replayed cycle ran again")
-    restored = value.get("restored", {})
+    _require(json_object(value, "replay").get("duplicate") is True, "a replayed cycle ran again")
+    restored = json_object(value, "restored")
     _require(
         restored.get("version") == 1 and restored.get("state") == "active",
         "rollback did not restore version 1",
@@ -631,8 +645,9 @@ def session_records(store: EvidenceStore) -> list[dict[str, Any]]:
         item = store.files.get(name)
         if item is None:
             continue
-        for inspect in item.document.get("sessions", []):
-            session = inspect.get("session", {})
+        for inspect in json_objects(item.document, "sessions"):
+            session = json_object(inspect, "session")
+            attempts = json_objects(inspect, "attempts")
             records.append(
                 {
                     "source_evidence": name,
@@ -645,10 +660,9 @@ def session_records(store: EvidenceStore) -> list[dict[str, Any]]:
                     "route": session.get("route"),
                     "interface_mode": inspect.get("interface_mode"),
                     "native_tui_attachable": inspect.get("native_tui_attachable"),
-                    "attempts": len(inspect.get("attempts", [])),
+                    "attempts": len(attempts),
                     "rendered_prompt_sha256": [
-                        attempt.get("rendered_prompt_sha256")
-                        for attempt in inspect.get("attempts", [])
+                        attempt.get("rendered_prompt_sha256") for attempt in attempts
                     ],
                 }
             )
@@ -656,21 +670,24 @@ def session_records(store: EvidenceStore) -> list[dict[str, Any]]:
 
 
 def candidate_records(store: EvidenceStore) -> list[dict[str, Any]]:
-    return [
-        {
-            "source_evidence": name,
-            "evidence_class": FIXTURE_EVIDENCE_CLASS,
-            "receipt_id": body.get("receipt_id"),
-            "candidate_digest": body.get("candidate", {}).get("candidate_digest"),
-            "task_key": body.get("candidate", {}).get("task_key"),
-            "contract_id": body.get("candidate", {}).get("contract_id"),
-            "origin": body.get("candidate", {}).get("origin", {}).get("kind"),
-            "worker_route": body.get("candidate", {}).get("worker_route"),
-            "admitted": body.get("admitted"),
-            "violation_codes": body.get("violation_codes"),
-        }
-        for name, body in _receipt_entries(store, "candidate")
-    ]
+    records: list[dict[str, Any]] = []
+    for name, body in _receipt_entries(store, "candidate"):
+        candidate = json_object(body, "candidate")
+        records.append(
+            {
+                "source_evidence": name,
+                "evidence_class": FIXTURE_EVIDENCE_CLASS,
+                "receipt_id": body.get("receipt_id"),
+                "candidate_digest": candidate.get("candidate_digest"),
+                "task_key": candidate.get("task_key"),
+                "contract_id": candidate.get("contract_id"),
+                "origin": json_object(candidate, "origin").get("kind"),
+                "worker_route": candidate.get("worker_route"),
+                "admitted": body.get("admitted"),
+                "violation_codes": body.get("violation_codes"),
+            }
+        )
+    return records
 
 
 def review_records(store: EvidenceStore) -> list[dict[str, Any]]:
@@ -710,7 +727,7 @@ def verifier_records(store: EvidenceStore) -> list[dict[str, Any]]:
                     "command": suite.get("command"),
                     "output_sha256": suite.get("output_sha256"),
                 }
-                for suite in body.get("suites", [])
+                for suite in json_objects(body, "suites")
             ],
         }
         for name, body in _receipt_entries(store, "verification")
@@ -750,7 +767,7 @@ def workflow_summaries(store: EvidenceStore) -> list[dict[str, Any]]:
         item = store.files.get(name)
         if item is None:
             continue
-        status = item.document.get("status", {})
+        status = json_object(item.document, "status")
         summaries.append(
             {
                 "source_evidence": name,
@@ -763,13 +780,14 @@ def workflow_summaries(store: EvidenceStore) -> list[dict[str, Any]]:
                 "verifier_digest": status.get("verifier_digest"),
                 "base_commit": status.get("base_commit"),
                 "contract_ids": [
-                    entry.get("body", {}).get("contract_id")
-                    for entry in item.document.get("export", [])
+                    json_object(entry, "body").get("contract_id")
+                    for entry in json_objects(item.document, "export")
                     if entry.get("kind") == "contract"
                 ],
+                # A workflow that never finished a run has a null last_run.
                 "retained_workspaces": [
                     entry.get("key")
-                    for entry in status.get("last_run", {}).get("cleanup", [])
+                    for entry in json_objects(json_object(status, "last_run"), "cleanup")
                     if entry.get("removed") is not True
                 ],
             }
@@ -780,7 +798,7 @@ def workflow_summaries(store: EvidenceStore) -> list[dict[str, Any]]:
 def evidence_classes(store: EvidenceStore) -> list[str]:
     """Every distinct evidence class the exported statuses declare."""
     classes = {
-        str(item.document.get("status", {}).get("evidence_class"))
+        str(json_object(item.document, "status").get("evidence_class"))
         for name, item in store.files.items()
         if name in WORKFLOW_EVIDENCE
     }

@@ -21,7 +21,14 @@ PYTHON_TEST_DIR: Final = Path("tests")
 # Output layout below the owned output directory.
 LOG_DIR_NAME: Final = "logs"
 EVIDENCE_DIR_NAME: Final = "evidence"
-PRIVATE_TMP_DIR_NAME: Final = "private_tmp"
+
+# The suites' temporary root is a run-owned directory created under the
+# system temporary directory rather than below the output directory: the
+# tests nest Git repositories and worktrees inside it, and Git for Windows
+# (core.longpaths off) fails `git worktree add` once those paths approach
+# MAX_PATH. A longer root blocks the run instead of failing tests obscurely.
+PRIVATE_TMP_PREFIX: Final = "vibemux_dt_"
+MAX_PRIVATE_TMP_PATH_CHARS: Final = 64
 
 CARGO_TEST_ARGS: Final = (
     "test",

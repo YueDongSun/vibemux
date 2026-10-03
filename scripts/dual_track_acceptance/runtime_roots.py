@@ -7,6 +7,7 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +15,8 @@ from pathlib import Path
 from .runner_config import (
     EVIDENCE_DIR_NAME,
     LOG_DIR_NAME,
-    PRIVATE_TMP_DIR_NAME,
+    MAX_PRIVATE_TMP_PATH_CHARS,
+    PRIVATE_TMP_PREFIX,
     REPORT_FILE_NAME,
     VERSION_PROBE_TIMEOUT_SECONDS,
 )
@@ -41,12 +43,14 @@ def _is_within(path: Path, parent: Path) -> bool:
     return True
 
 
-def prepare_output(output: Path, repo_root: Path) -> OutputLayout:
-    """Creates the run's own output tree.
+def prepare_output(output: Path, repo_root: Path, tmp_parent: Path | None = None) -> OutputLayout:
+    """Creates the run's own output tree and private temporary root.
 
     The directory must be outside the repository (the suites must see a
     clean checkout) and must be new or empty, so nothing in it predates the
-    run.
+    run. The private temporary root is a new, uniquely named directory under
+    `tmp_parent` (default: the system temporary directory), created
+    exclusively so no other process owns it.
     """
     root = output.resolve()
     if _is_within(root, repo_root.resolve()):
@@ -56,16 +60,29 @@ def prepare_output(output: Path, repo_root: Path) -> OutputLayout:
             raise OutputError("the output path exists and is not a directory")
         if any(root.iterdir()):
             raise OutputError("the output directory is not empty")
-    layout = OutputLayout(
+    logs = root / LOG_DIR_NAME
+    evidence = root / EVIDENCE_DIR_NAME
+    for directory in (logs, evidence):
+        directory.mkdir(parents=True, exist_ok=False)
+    private_tmp = Path(tempfile.mkdtemp(prefix=PRIVATE_TMP_PREFIX, dir=tmp_parent))
+    return OutputLayout(
         root=root,
-        logs=root / LOG_DIR_NAME,
-        evidence=root / EVIDENCE_DIR_NAME,
-        private_tmp=root / PRIVATE_TMP_DIR_NAME,
+        logs=logs,
+        evidence=evidence,
+        private_tmp=private_tmp,
         report=root / REPORT_FILE_NAME,
     )
-    for directory in (layout.logs, layout.evidence, layout.private_tmp):
-        directory.mkdir(parents=True, exist_ok=False)
-    return layout
+
+
+def private_tmp_problems(layout: OutputLayout) -> list[str]:
+    """Why the private temporary root cannot host the suites, if it cannot."""
+    length = len(str(layout.private_tmp))
+    if length > MAX_PRIVATE_TMP_PATH_CHARS:
+        return [
+            f"the private temporary root is {length} characters long, more than "
+            f"{MAX_PRIVATE_TMP_PATH_CHARS}; nested test worktrees would exceed Windows path limits"
+        ]
+    return []
 
 
 def private_environment(layout: OutputLayout, base: dict[str, str]) -> dict[str, str]:

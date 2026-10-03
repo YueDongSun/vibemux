@@ -37,10 +37,30 @@ from dual_track_acceptance.check_execution import (  # noqa: E402
     parse_cargo_test_output,
     parse_pytest_summary,
 )
-from dual_track_acceptance.evidence_capture import EvidenceStore  # noqa: E402
+from dual_track_acceptance.evidence_capture import (  # noqa: E402
+    FLAGSHIP,
+    EvidenceFile,
+    EvidenceStore,
+    candidate_records,
+    run_evidence_check,
+    session_records,
+    verifier_records,
+    workflow_summaries,
+)
 from dual_track_acceptance.live_policy import evaluate_live_gate, policy_problems  # noqa: E402
-from dual_track_acceptance.runner_config import BENCHMARK_PATH  # noqa: E402
-from dual_track_acceptance.runtime_roots import OutputError, prepare_output  # noqa: E402
+from dual_track_acceptance.runner import validate  # noqa: E402
+from dual_track_acceptance.runner_config import (  # noqa: E402
+    BENCHMARK_PATH,
+    EXIT_FAIL,
+    MAX_PRIVATE_TMP_PATH_CHARS,
+    PRIVATE_TMP_PREFIX,
+)
+from dual_track_acceptance.runtime_roots import (  # noqa: E402
+    OutputError,
+    OutputLayout,
+    prepare_output,
+    private_tmp_problems,
+)
 from dual_track_acceptance.scenario_catalog import (  # noqa: E402
     LIVE_CLASSES,
     RULES,
@@ -324,5 +344,56 @@ def test_the_output_directory_must_be_new_and_outside_the_repository(tmp_path: P
     (occupied / "stale.json").write_text("{}", encoding="utf-8")
     with pytest.raises(OutputError):
         prepare_output(occupied, REPO_ROOT)
-    layout = prepare_output(tmp_path / "fresh", REPO_ROOT)
+    tmp_parent = tmp_path / "system_tmp"
+    tmp_parent.mkdir()
+    layout = prepare_output(tmp_path / "fresh", REPO_ROOT, tmp_parent)
     assert layout.logs.is_dir() and layout.evidence.is_dir() and layout.private_tmp.is_dir()
+    # The suites' temporary root is a fresh run-owned directory outside the
+    # (possibly deep) output directory.
+    assert layout.private_tmp.parent == tmp_parent
+    assert layout.private_tmp.name.startswith(PRIVATE_TMP_PREFIX)
+    assert not layout.private_tmp.is_relative_to(layout.root)
+
+
+def layout_with_private_tmp(private_tmp: Path) -> OutputLayout:
+    root = Path("output")
+    return OutputLayout(root, root / "logs", root / "evidence", private_tmp, root / "report.json")
+
+
+def test_a_private_temporary_root_too_long_for_nested_worktrees_blocks_the_run() -> None:
+    fitting = Path("t") / ("x" * (MAX_PRIVATE_TMP_PATH_CHARS - 2))
+    assert len(str(fitting)) == MAX_PRIVATE_TMP_PATH_CHARS
+    assert private_tmp_problems(layout_with_private_tmp(fitting)) == []
+    problems = private_tmp_problems(layout_with_private_tmp(fitting / "y"))
+    assert len(problems) == 1 and "Windows path limits" in problems[0]
+
+
+def evidence_store(name: str, document: dict[str, Any]) -> EvidenceStore:
+    path = Path(f"{name}.json")
+    return EvidenceStore({name: EvidenceFile(name, path, "0" * 64, document)}, {}, ())
+
+
+def test_null_valued_evidence_fields_fail_checks_and_never_crash_report_views() -> None:
+    # A workflow that never finished a run exports `last_run: null`, and an
+    # export may carry null bodies; views must not raise on either.
+    document: dict[str, Any] = {
+        "schema_version": 1,
+        "name": FLAGSHIP,
+        "workflow_id": "workflow",
+        "status": {"evidence_class": "fixture", "last_run": None, "receipts": None},
+        "export": [{"kind": "receipt", "body": None}, {"kind": "contract", "body": None}],
+        "sessions": [{"session": None, "attempts": None}],
+    }
+    store = evidence_store(FLAGSHIP, document)
+    summary = workflow_summaries(store)[0]
+    assert summary["retained_workspaces"] == [] and summary["contract_ids"] == [None]
+    assert session_records(store)[0]["attempts"] == 0
+    assert candidate_records(store) == [] and verifier_records(store) == []
+    outcome = run_evidence_check(store, "flagship_cleanup_retains_unsafe")
+    assert outcome.status == CHECK_FAIL
+
+
+def test_validating_a_report_with_wrong_json_types_reports_it_invalid(tmp_path: Path) -> None:
+    report = tmp_path / "dual_track_report.json"
+    report.write_text(json.dumps({"scenarios": "not a list", "commands": 7}), encoding="utf-8")
+    assert validate(report) == EXIT_FAIL

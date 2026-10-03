@@ -16,6 +16,7 @@ from .evidence_capture import (
     candidate_records,
     evidence_classes,
     integration_record,
+    json_object,
     review_records,
     session_records,
     verifier_records,
@@ -69,6 +70,9 @@ class CleanupInfo:
     unjoined_processes: Sequence[str]
     retained_entries: Sequence[str]
     private_tmp_removed: bool
+    # Where retained entries can be found; the root is outside the output
+    # directory (see runner_config.PRIVATE_TMP_PREFIX).
+    private_tmp_root: str
 
 
 def test_results(
@@ -111,7 +115,8 @@ def _optimization_improved(store: EvidenceStore) -> bool | None:
     item = store.files.get(OPTIMIZER_CYCLE)
     if item is None:
         return None
-    value = item.document.get("value", {}).get("report", {}).get("optimization_improved")
+    report = json_object(json_object(item.document, "value"), "report")
+    value = report.get("optimization_improved")
     return value if isinstance(value, bool) else None
 
 
@@ -139,7 +144,7 @@ def build_report(
     finished_at: str,
 ) -> dict[str, Any]:
     flagship = evidence.files.get(FLAGSHIP)
-    flagship_status = flagship.document.get("status", {}) if flagship is not None else {}
+    flagship_status = json_object(flagship.document, "status") if flagship is not None else {}
     limitations = list(STANDING_LIMITATIONS)
     limitations.extend(extra_limitations)
     for name, error in sorted(evidence.errors.items()):
@@ -181,6 +186,7 @@ def build_report(
             "unjoined_processes": list(cleanup.unjoined_processes),
             "retained_worktrees": list(cleanup.retained_entries),
             "private_tmp_removed": cleanup.private_tmp_removed,
+            "private_tmp_root": cleanup.private_tmp_root,
         },
         "limitations": limitations,
         "mode": mode,
