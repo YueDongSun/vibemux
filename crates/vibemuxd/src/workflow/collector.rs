@@ -332,11 +332,12 @@ impl BlobStore {
 #[must_use]
 pub(crate) fn overlapping_paths(manifests: &[&SnapshotManifest]) -> Vec<String> {
     // Separate worktrees can each admit a differently cased spelling of the
-    // same path. They collide when materialized on Windows.
+    // same path. Unicode folding conservatively rejects aliases before
+    // materialization on Windows, including non-ASCII case pairs.
     let mut seen: BTreeMap<String, (String, usize)> = BTreeMap::new();
     for manifest in manifests {
         for entry in &manifest.entries {
-            let alias = entry.path.to_ascii_lowercase();
+            let alias = entry.path.to_uppercase();
             let (_, count) = seen.entry(alias).or_insert_with(|| (entry.path.clone(), 0));
             *count += 1;
         }
@@ -456,5 +457,11 @@ mod tests {
         let first = manifest("src/Foo.mjs");
         let second = manifest("src/foo.mjs");
         assert_eq!(overlapping_paths(&[&first, &second]), vec!["src/Foo.mjs"]);
+        let first = manifest("src/\u{00c4}pfel.mjs");
+        let second = manifest("src/\u{00e4}pfel.mjs");
+        assert_eq!(
+            overlapping_paths(&[&first, &second]),
+            vec!["src/\u{00c4}pfel.mjs"]
+        );
     }
 }

@@ -176,6 +176,11 @@ refused at prepare.
   correlation depth. Delivery happens at the recipient's turn boundary,
   at least once, with deduplication by message ID and a per-recipient
   sequence.
+  Worker delivery is an atomic batch after the recipient attempt is
+  admitted and before its process launches. Delivery binds the workflow,
+  task, session, and contract; acknowledgement binds the same completed
+  attempt. A failed batch changes no message or audit event. The supervisor
+  uses a separate deterministic inbox identity.
 - **A context bundle** carries selected line ranges of the answering task's
   collected snapshot, never its live worktree. It also carries attributed
   claims, so a proposal is never relabeled as a confirmed decision.
@@ -198,6 +203,13 @@ refused at prepare.
 - **Review and verification** run on collected bytes materialized into
   fresh owned worktrees, re-collected before and after. Every receipt names
   the exact candidate digest and contract.
+  The store binds a passing review to a completed reviewer dispatch for the
+  same task, contract, run, session, and harness. Attempts, candidate
+  manifests, and integration receipts must name the admitted base commit;
+  integration receipts must cover the accepted contracts exactly.
+  `changes_requested` also requires a completed structured review;
+  `blocked` diagnostics require a terminal dispatch. An active attempt
+  cannot publish a review verdict.
 - **The trusted verifier** runs with a cleared environment and the pinned
   argv template, behind the launch trampoline with a deadline. Its directory
   and executable must be absolute and outside the project root; the
@@ -218,6 +230,8 @@ refused at prepare.
   fresh owned worktree at the base commit, re-collects and verifies it, and
   only then offers it to the writer's acceptance gate. The operator's
   checkout is never written, and nothing is committed, merged, or pushed.
+  Case aliases across candidate paths are conflicts before materialization,
+  preserving Windows filesystem behavior.
   Cleanup removes only provably clean worktrees. Dirty or unknown ones are
   retained and reported (`workspace_unsafe_cleanup`).
 
@@ -253,6 +267,9 @@ refused at prepare.
   with the control runtime's protected three-rule ACL, on POSIX with mode
   `0700`. A directory that cannot be restricted fails closed. Same-user
   processes are not isolated.
+  Opt-in content has per-workflow ownership and retention. Purge releases
+  only the selected workflow's references; bytes and the store tombstone
+  change only after the final owner releases them.
 
 ### 8. Control v6, CLI, and evidence
 
@@ -288,8 +305,13 @@ test driver.
    TaskBoard Lite calibration (good solution, nine mutants, browser suite).
 3. The workflow integration tests drive the real daemon over Control v6
    and export evidence files.
-4. It re-derives every class status from logs and evidence digests.
-5. It validates the report (scenario E01) and joins owned processes.
+4. It re-derives every class status and artifact summary from logs and
+   evidence. Empty verifier suites, skipped-only repository checks, and a
+   missing or relabeled calibration mutant cannot pass. Calibration checks
+   source contents and paths, rather than modification times alone.
+5. It validates the report (scenario E01). Timed-out commands terminate their
+   owned process trees; unknown process completion retains the private root
+   for diagnosis. Malformed validation metadata reports `INVALID`.
 
 An offline run can at most be `OFFLINE_PASS`, never full acceptance. Live
 classes are `BLOCKED` offline. `--validate <report>` re-derives a written
@@ -321,6 +343,9 @@ report from its artifacts.
   requirements.
 - The crash-restart test simulates the crash through the writer, not with a
   killed process.
+- Reviewer route labels are assembled by the daemon and checked by the
+  independence gate; the store does not independently bind them to a
+  persisted dispatch route because that field is not persisted.
 - Writable profiles and candidate scope checks are cooperative admission,
   not an OS sandbox. A same-user vendor process can write outside its
   worktree; the daemon rejects such a candidate when it collects it.
@@ -333,3 +358,25 @@ migration; schema 5 is not downgraded. Workflow state under
 by earlier builds. Without `<state dir>/workflow_config.json` (the
 project's `.vibemux` directory), every workflow operation answers
 `workflow_unconfigured`.
+
+The private `workflow_state/content_index.json` format is version 2 after
+the review repairs. New entries add `retain_until_ms` to the existing
+`sha256`, `workflow_id`, and optional `bundle_id` fields. Version 1 entries
+remain readable and retain their bytes until explicit purge when their
+per-owner expiry is unknown. Subsequent index writes use version 2; no
+SQLite or Control protocol version changes. An older binary cannot read
+the version 2 index, so rollback also requires the matching pre-upgrade
+private state. Do not recreate or discard a user's state to bypass that
+restriction.
+
+Version 1 example (digest and UUID values are placeholders):
+
+```json
+{"schema_version":1,"entries":[{"sha256":"<digest>","workflow_id":"<workflow_uuid>","bundle_id":null}]}
+```
+
+Version 2 example:
+
+```json
+{"schema_version":2,"entries":[{"sha256":"<digest>","workflow_id":"<workflow_uuid>","bundle_id":null,"retain_until_ms":4102444800000}]}
+```

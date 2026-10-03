@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Harden the offline dual-track workflow after source review: bind message
+  delivery, completed reviews, candidates, and integration receipts to their
+  admitted execution identities; deliver pending messages atomically; preserve
+  independent retained-content owners; reject case-alias integration paths;
+  serialize workflow start/pause/cancel; recover and locate workflows through
+  bounded pagination; and include train cases in optimizer eligibility. The
+  acceptance runner rejects altered summaries, empty or skipped-only checks,
+  incomplete mutant inventories, and malformed validation metadata, and ends
+  owned process trees on timeout. **Private-state upgrade:** the content index
+  writes version 2 and reads legacy version 1 conservatively; rollback needs
+  matching private state. Store schema 5 and Control v6 are unchanged.
 - Add daemon-owned dual-track coding workflows (ADR 031, pre-alpha, offline only). The new pure `vibemux_workflow` crate holds:
   - TaskSpec and its source-coverage validation against the exact request text;
   - operator-policy narrowing, the deterministic English contract renderer, and contract identity;
