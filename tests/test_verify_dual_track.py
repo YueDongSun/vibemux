@@ -52,7 +52,12 @@ from dual_track_acceptance.evidence_capture import (  # noqa: E402
     workflow_summaries,
 )
 from dual_track_acceptance.live_policy import evaluate_live_gate, policy_problems  # noqa: E402
-from dual_track_acceptance.report_validation import validate_report  # noqa: E402
+from dual_track_acceptance.report_projection import artifact_report_fields  # noqa: E402
+from dual_track_acceptance.report_validation import (  # noqa: E402
+    CARGO_COMMAND,
+    load_run_artifacts,
+    validate_report,
+)
 from dual_track_acceptance.runner import private_tmp_retention_reason, validate  # noqa: E402
 from dual_track_acceptance.runner_config import (  # noqa: E402
     BENCHMARK_PATH,
@@ -397,12 +402,14 @@ def command_record(command_id: str, exit_code: int | None) -> CommandRecord:
 
 def test_the_private_temporary_root_is_kept_only_after_a_failure_or_a_live_process() -> None:
     succeeded = [command_record("cargo_test", 0), command_record("pytest", 0)]
-    assert private_tmp_retention_reason(succeeded, []) is None
-    assert private_tmp_retention_reason([], []) is None
+    assert private_tmp_retention_reason(succeeded, [], joined_owned_processes=True) is None
+    assert private_tmp_retention_reason([], [], joined_owned_processes=None) is None
     failed = [command_record("cargo_test", 101), command_record("pytest", None)]
-    reason = private_tmp_retention_reason(failed, [])
+    reason = private_tmp_retention_reason(failed, [], joined_owned_processes=True)
     assert reason is not None and "'cargo_test', 'pytest'" in reason
-    outlived = private_tmp_retention_reason(succeeded, ["vibemuxd.exe (pid 7)"])
+    outlived = private_tmp_retention_reason(
+        succeeded, ["vibemuxd.exe (pid 7)"], joined_owned_processes=False
+    )
     assert outlived is not None and "outlived" in outlived
 
 
@@ -435,6 +442,73 @@ def test_validating_a_report_with_wrong_json_types_reports_it_invalid(tmp_path: 
     report = tmp_path / "dual_track_report.json"
     report.write_text(json.dumps({"scenarios": "not a list", "commands": 7}), encoding="utf-8")
     assert validate(report) == EXIT_FAIL
+
+
+@pytest.mark.parametrize("validation", [["invalid"], "invalid", 1, True])
+def test_invalid_validation_metadata_never_crashes_the_validator(
+    tmp_path: Path, validation: Any
+) -> None:
+    report = tmp_path / "dual_track_report.json"
+    report.write_text(json.dumps({"validation": validation}), encoding="utf-8")
+    assert validate(report) == EXIT_FAIL
+
+
+@pytest.mark.parametrize("joined_owned_processes", [None, False])
+def test_cleanup_retains_the_root_when_process_completion_is_unknown(
+    joined_owned_processes: bool | None,
+) -> None:
+    reason = private_tmp_retention_reason(
+        [command_record("cargo_test", 0)], [], joined_owned_processes=joined_owned_processes
+    )
+    assert reason is not None
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "workflow_mode",
+        "contract_digest",
+        "policy_digest",
+        "sessions",
+        "candidate_artifacts",
+        "review_receipts",
+        "verifier_receipts",
+        "integration_receipt",
+        "optimization_improved",
+        "evidence_classes",
+        "workflows",
+        "test_summary",
+        "test_results",
+        "calibration",
+    ],
+)
+def test_report_summaries_must_match_their_log_and_evidence_artifacts(
+    tmp_path: Path, field: str
+) -> None:
+    log = tmp_path / "cargo.log"
+    log.write_text("\n".join(cargo_output()), encoding="utf-8")
+    evidence = EvidenceStore({}, {}, ())
+    report = {
+        "mode": MODE_OFFLINE,
+        "commands": [
+            {
+                "command_id": CARGO_COMMAND,
+                "log_path": log.name,
+                "log_sha256": file_sha256(log),
+                "exit_code": 101,
+            }
+        ],
+        **artifact_report_fields(
+            evidence, tmp_path, RULES, parse_cargo_test_output(cargo_output()), None, None
+        ),
+    }
+    problems: list[str] = []
+    load_run_artifacts(report, tmp_path, RULES, problems)
+    assert problems == []
+    # The command log stays byte-identical while the report is altered.
+    report[field] = "forged"
+    load_run_artifacts(report, tmp_path, RULES, problems)
+    assert f"{field} differs from the run artifacts" in problems
 
 
 def test_a_report_validates_its_evidence_through_a_relative_directory(

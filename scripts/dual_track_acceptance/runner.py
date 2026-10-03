@@ -228,7 +228,10 @@ def _run_suites(
 
 
 def private_tmp_retention_reason(
-    commands: Sequence[CommandRecord], unjoined: Sequence[str]
+    commands: Sequence[CommandRecord],
+    unjoined: Sequence[str],
+    *,
+    joined_owned_processes: bool | None,
 ) -> str | None:
     """Why the run's private temporary root must outlive the run, if it must.
 
@@ -238,6 +241,8 @@ def private_tmp_retention_reason(
     """
     if unjoined:
         return f"owned processes outlived the suites: {list(unjoined)}"
+    if commands and joined_owned_processes is not True:
+        return "owned process completion could not be confirmed"
     failed = [record.command_id for record in commands if record.exit_code != 0]
     if failed:
         return f"kept for diagnosis because {failed} did not succeed"
@@ -364,7 +369,9 @@ def run(request: RunRequest) -> int:
         scenarios = assess_scenarios(benchmark, RULES, artifacts)
 
     suite_leftovers = retained_entries(layout.private_tmp)
-    retained_reason = private_tmp_retention_reason(commands, unjoined)
+    retained_reason = private_tmp_retention_reason(
+        commands, unjoined, joined_owned_processes=joined
+    )
     private_tmp_removed = retained_reason is None and remove_private_tmp(layout.private_tmp)
     if retained_reason is None and not private_tmp_removed:
         retained_reason = "the runner could not remove it"
@@ -439,7 +446,10 @@ def validate(report_path: Path) -> int:
         # A report whose fields have the wrong JSON types is invalid, not
         # a reason to stop validating.
         problems = [f"the report does not have the expected shape: {type(error).__name__}"]
-    recorded = (report.get("validation") or {}).get("problems")
+    validation_metadata = report.get("validation")
+    recorded = (
+        validation_metadata.get("problems") if isinstance(validation_metadata, dict) else None
+    )
     if recorded != problems:
         problems.append("the recorded validation result differs from this validation")
     for problem in problems:

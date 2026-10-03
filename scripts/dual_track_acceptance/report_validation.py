@@ -37,6 +37,7 @@ from .check_execution import (
     read_log_lines,
 )
 from .evidence_capture import EVIDENCE_CHECKS, FIXTURE_EVIDENCE_CLASS, load_evidence
+from .report_projection import artifact_report_fields
 from .runner_config import EVIDENCE_DIR_NAME, EXCLUDED_CLAIMS
 from .scenario_catalog import LIVE_CLASSES, Benchmark, EvidenceRule
 
@@ -91,7 +92,10 @@ def _verified_file(
 
 
 def load_run_artifacts(
-    report: Mapping[str, Any], report_dir: Path, problems: list[str]
+    report: Mapping[str, Any],
+    report_dir: Path,
+    rules: Mapping[tuple[str, str], EvidenceRule],
+    problems: list[str],
 ) -> RunArtifacts:
     """Rebuilds what the run executed from the files the report cites."""
     commands = {command.get("command_id"): command for command in report.get("commands", [])}
@@ -109,6 +113,7 @@ def load_run_artifacts(
     pytest_log = logs.get(PYTEST_COMMAND)
     pytest_summary = parse_pytest_summary(read_log_lines(pytest_log)) if pytest_log else None
     calibration: CalibrationResult | None = None
+    calibration_stdout: Mapping[str, str] | None = None
     view = report.get("calibration")
     if isinstance(view, dict) and isinstance(view.get("stdout"), dict):
         stdout = _verified_file(
@@ -120,6 +125,7 @@ def load_run_artifacts(
         )
         if stdout is not None:
             calibration = parse_calibration_output(stdout.read_text(encoding="utf-8"))
+            calibration_stdout = view["stdout"]
     evidence = load_evidence(report_dir / EVIDENCE_DIR_NAME)
     recorded = {item.get("name"): item for item in report.get("evidence_artifacts", [])}
     actual = {item["name"]: item for item in evidence.artifacts(report_dir)}
@@ -127,6 +133,11 @@ def load_run_artifacts(
         problems.append("evidence_artifacts do not match the evidence files on disk")
     if evidence.unexpected:
         problems.append(f"unexpected evidence files {list(evidence.unexpected)}")
+    for field, expected in artifact_report_fields(
+        evidence, report_dir, rules, cargo, calibration, calibration_stdout
+    ).items():
+        if report.get(field) != expected:
+            problems.append(f"{field} differs from the run artifacts")
     live_gate = report.get("live_gate") or {}
     return RunArtifacts(
         mode=str(report.get("mode")),
@@ -244,7 +255,7 @@ def reconciliation_problems(
 ) -> list[str]:
     """Re-derives every non-E01 class from the artifacts and compares."""
     problems: list[str] = []
-    artifacts = load_run_artifacts(report, report_dir, problems)
+    artifacts = load_run_artifacts(report, report_dir, rules, problems)
     derived = {
         (scenario.scenario_id, result.execution_class): result
         for scenario in assess_scenarios(benchmark, rules, artifacts)
