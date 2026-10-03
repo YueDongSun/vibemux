@@ -28,8 +28,8 @@ use crate::{
 pub const DAEMON_RESTART_CODE: &str = "daemon_restart";
 /// Lease end reason of a cancellation finished at startup.
 const CANCEL_FINISHED_CODE: &str = "workflow_cancelled";
-/// Bound on workflows reconciled at one start.
-const RECONCILE_LIMIT: usize = 256;
+/// Bounded page size; every page is reconciled before the next is read.
+const RECONCILE_PAGE_SIZE: usize = 256;
 
 /// Reads and pins the config next to the daemon state. Blocking.
 pub(crate) fn load_setup(
@@ -85,36 +85,44 @@ pub(crate) async fn reconcile(
     writer: &WriterHandle,
     heartbeat_ms: u64,
 ) -> Result<(), WorkflowError> {
-    let reader = writer.clone();
-    let workflows = call_writer(move || reader.workflows(RECONCILE_LIMIT)).await?;
-    for record in workflows {
-        let workflow_id = record.workflow_id;
-        match record.phase {
-            WorkflowPhase::Running => {
-                transition(
-                    writer,
-                    workflow_id,
-                    WorkflowPhase::Blocked,
-                    Some(DAEMON_RESTART_CODE),
-                )
-                .await?;
+    let mut after = None;
+    loop {
+        let reader = writer.clone();
+        let workflows =
+            call_writer(move || reader.workflows_after(after, RECONCILE_PAGE_SIZE)).await?;
+        let Some(last) = workflows.last() else {
+            break;
+        };
+        after = Some(last.workflow_id);
+        for record in workflows {
+            let workflow_id = record.workflow_id;
+            match record.phase {
+                WorkflowPhase::Running => {
+                    transition(
+                        writer,
+                        workflow_id,
+                        WorkflowPhase::Blocked,
+                        Some(DAEMON_RESTART_CODE),
+                    )
+                    .await?;
+                }
+                WorkflowPhase::Integrating => {
+                    // Integration restarts from the accepted candidates; the
+                    // edge to `blocked` passes through `running`.
+                    transition(writer, workflow_id, WorkflowPhase::Running, None).await?;
+                    transition(
+                        writer,
+                        workflow_id,
+                        WorkflowPhase::Blocked,
+                        Some(DAEMON_RESTART_CODE),
+                    )
+                    .await?;
+                }
+                WorkflowPhase::CancelRequested => {
+                    finish_cancel(writer, workflow_id, heartbeat_ms).await?;
+                }
+                _ => {}
             }
-            WorkflowPhase::Integrating => {
-                // Integration restarts from the accepted candidates; the
-                // edge to `blocked` passes through `running`.
-                transition(writer, workflow_id, WorkflowPhase::Running, None).await?;
-                transition(
-                    writer,
-                    workflow_id,
-                    WorkflowPhase::Blocked,
-                    Some(DAEMON_RESTART_CODE),
-                )
-                .await?;
-            }
-            WorkflowPhase::CancelRequested => {
-                finish_cancel(writer, workflow_id, heartbeat_ms).await?;
-            }
-            _ => {}
         }
     }
     Ok(())

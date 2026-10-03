@@ -54,8 +54,8 @@ use crate::{
     harness_dispatch::{HarnessDispatchService, call_writer, git_head::read_head_commit},
 };
 
-/// Bound on workflows searched by contract binding, bundle, or session.
-const SEARCH_LIMIT: usize = 256;
+/// Page size for contract, bundle, and session lookup.
+const WORKFLOW_PAGE_SIZE: usize = 256;
 /// How long shutdown waits for coordinators to reach a turn boundary.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// Heartbeat used for lease changes when the config is missing.
@@ -217,6 +217,9 @@ struct ServiceInner {
     dispatch: HarnessDispatchService,
     setup: Result<Arc<WorkflowSetup>, WorkflowError>,
     runs: Mutex<RunRegistry>,
+    /// Serializes start with operator phase controls until the coordinator
+    /// has an addressable control channel.
+    lifecycle_gate: tokio::sync::Semaphore,
     /// At most one prompt-policy evaluation runs at a time.
     evaluation: tokio::sync::Mutex<()>,
 }
@@ -305,6 +308,7 @@ impl WorkflowService {
                     reports: HashMap::new(),
                     tasks: JoinSet::new(),
                 }),
+                lifecycle_gate: tokio::sync::Semaphore::new(1),
                 evaluation: tokio::sync::Mutex::new(()),
             }),
         }
@@ -427,6 +431,12 @@ impl WorkflowService {
         contract: Sha256Digest,
         request_id: Uuid,
     ) -> Result<StartResponse, WorkflowError> {
+        let _lifecycle_permit = self
+            .inner
+            .lifecycle_gate
+            .acquire()
+            .await
+            .map_err(|_| WorkflowError::Internal)?;
         self.accepting()?;
         let setup = self.inner.setup()?;
         let (record, plan) = self.find_by_binding(&setup, contract).await?;
@@ -496,6 +506,7 @@ impl WorkflowService {
             manager,
             control: receiver,
             ledger: Mutex::new(ledger),
+            workspace_gate: tokio::sync::Semaphore::new(1),
             reviewer_turns: tokio::sync::Mutex::new(()),
         };
         let weak = Arc::downgrade(&self.inner);
@@ -535,22 +546,28 @@ impl WorkflowService {
         ),
         WorkflowError,
     > {
-        let writer = self.inner.writer.clone();
-        let records = call_writer(move || writer.workflows(SEARCH_LIMIT)).await?;
-        let state = setup.state.clone();
-        tokio::task::spawn_blocking(move || {
-            for record in records {
-                let Ok(plan) = state.read_plan(record.workflow_id) else {
-                    continue;
-                };
-                if start_binding(&record, &plan).is_ok_and(|binding| binding == contract) {
-                    return Ok((record, plan));
-                }
+        let mut after = None;
+        loop {
+            let writer = self.inner.writer.clone();
+            let records =
+                call_writer(move || writer.workflows_after(after, WORKFLOW_PAGE_SIZE)).await?;
+            let Some(last) = records.last() else {
+                return Err(WorkflowError::ContractMismatch);
+            };
+            after = Some(last.workflow_id);
+            let state = setup.state.clone();
+            if let Some(found) = tokio::task::spawn_blocking(move || {
+                records.into_iter().find_map(|record| {
+                    let plan = state.read_plan(record.workflow_id).ok()?;
+                    (start_binding(&record, &plan).ok()? == contract).then_some((record, plan))
+                })
+            })
+            .await
+            .map_err(|_| WorkflowError::Internal)?
+            {
+                return Ok(found);
             }
-            Err(WorkflowError::ContractMismatch)
-        })
-        .await
-        .map_err(|_| WorkflowError::Internal)?
+        }
     }
 
     /// Ends this workflow's quarantined leases whose attempts have settled
@@ -675,6 +692,12 @@ impl WorkflowService {
     /// Asks the running coordinator to stop at its next turn boundary, or
     /// pauses a workflow no coordinator drives.
     pub async fn pause(&self, workflow_id: Uuid) -> Result<PhaseControl, WorkflowError> {
+        let _lifecycle_permit = self
+            .inner
+            .lifecycle_gate
+            .acquire()
+            .await
+            .map_err(|_| WorkflowError::Internal)?;
         let signalled = self.signal(workflow_id, Control::Pause);
         let record = self.record(workflow_id).await?;
         if signalled {
@@ -705,6 +728,12 @@ impl WorkflowService {
     /// after the request can no longer be accepted: the writer refuses
     /// acceptance outside `running` and `integrating`.
     pub async fn cancel(&self, workflow_id: Uuid) -> Result<PhaseControl, WorkflowError> {
+        let _lifecycle_permit = self
+            .inner
+            .lifecycle_gate
+            .acquire()
+            .await
+            .map_err(|_| WorkflowError::Internal)?;
         let record = self.record(workflow_id).await?;
         let writer = &self.inner.writer;
         match record.phase {
@@ -968,6 +997,7 @@ impl WorkflowService {
     pub async fn purge_content(&self, workflow_id: Uuid) -> Result<PurgeResponse, WorkflowError> {
         let setup = self.inner.setup()?;
         self.record(workflow_id).await?;
+        let _content_permit = setup.state.content_permit().await?;
         let state = setup.state.clone();
         let entries = tokio::task::spawn_blocking(move || state.content_index())
             .await
@@ -983,7 +1013,7 @@ impl WorkflowService {
         digests.dedup();
         for digest in digests {
             if self
-                .delete_content(&setup.state, digest, "operator_purge")
+                .delete_content(&setup.state, workflow_id, digest, None, "operator_purge")
                 .await?
             {
                 deleted += 1;
@@ -1001,20 +1031,32 @@ impl WorkflowService {
     /// Deletes retained content whose retention ended.
     pub async fn sweep_expired_content(&self) -> Result<u32, WorkflowError> {
         let setup = self.inner.setup()?;
+        let _content_permit = setup.state.content_permit().await?;
         let state = setup.state.clone();
         let entries = tokio::task::spawn_blocking(move || state.content_index())
             .await
             .map_err(|_| WorkflowError::Internal)??;
         let now = now_ms();
         let mut deleted = 0;
-        for entry in entries {
-            let writer = self.inner.writer.clone();
-            let sha256 = entry.sha256;
-            let stored = call_writer(move || writer.workflow_content(sha256)).await?;
-            if stored.is_some_and(|stored| stored.retain_until_ms <= now)
-                && self
-                    .delete_content(&setup.state, sha256, "retention_expired")
-                    .await?
+        let expired: BTreeSet<(Uuid, Sha256Digest)> = entries
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .retain_until_ms
+                    .is_some_and(|deadline| deadline <= now)
+            })
+            .map(|entry| (entry.workflow_id, entry.sha256))
+            .collect();
+        for (workflow_id, digest) in expired {
+            if self
+                .delete_content(
+                    &setup.state,
+                    workflow_id,
+                    digest,
+                    Some(now),
+                    "retention_expired",
+                )
+                .await?
             {
                 deleted += 1;
             }
@@ -1025,24 +1067,26 @@ impl WorkflowService {
     async fn delete_content(
         &self,
         state: &StateFiles,
+        workflow_id: Uuid,
         digest: Sha256Digest,
+        expired_before: Option<u64>,
         reason: &str,
     ) -> Result<bool, WorkflowError> {
         let files = state.clone();
-        let removed = tokio::task::spawn_blocking(move || {
-            let removed = files.delete_content(digest)?;
-            files.remove_content_index(digest)?;
-            Ok::<_, WorkflowError>(removed)
+        let (released, last_owner) = tokio::task::spawn_blocking(move || {
+            files.release_content_owner(workflow_id, digest, expired_before)
         })
         .await
         .map_err(|_| WorkflowError::Internal)??;
-        let writer = self.inner.writer.clone();
-        let reason = reason.to_string();
-        call_writer(move || {
-            writer.delete_workflow_content(digest, reason.clone(), OffsetDateTime::now_utc())
-        })
-        .await?;
-        Ok(removed)
+        if last_owner {
+            let writer = self.inner.writer.clone();
+            let reason = reason.to_string();
+            call_writer(move || {
+                writer.delete_workflow_content(digest, reason.clone(), OffsetDateTime::now_utc())
+            })
+            .await?;
+        }
+        Ok(released)
     }
 
     /// Stops admission and asks every coordinator to stop at its next turn
@@ -1150,15 +1194,22 @@ impl WorkflowService {
         &self,
         predicate: impl Fn(&Located) -> bool,
     ) -> Result<Option<Located>, WorkflowError> {
-        let writer = self.inner.writer.clone();
-        let records = call_writer(move || writer.workflows(SEARCH_LIMIT)).await?;
-        for record in records {
-            let located = self.locate(record.workflow_id).await?;
-            if predicate(&located) {
-                return Ok(Some(located));
+        let mut after = None;
+        loop {
+            let writer = self.inner.writer.clone();
+            let records =
+                call_writer(move || writer.workflows_after(after, WORKFLOW_PAGE_SIZE)).await?;
+            let Some(last) = records.last() else {
+                return Ok(None);
+            };
+            after = Some(last.workflow_id);
+            for record in records {
+                let located = self.locate(record.workflow_id).await?;
+                if predicate(&located) {
+                    return Ok(Some(located));
+                }
             }
         }
-        Ok(None)
     }
 }
 

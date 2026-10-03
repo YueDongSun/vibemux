@@ -56,6 +56,14 @@ impl WriterHandle {
         self.with_store(move |store| store.workflows(limit))
     }
 
+    pub fn workflows_after(
+        &self,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<WorkflowRecord>, WriterError> {
+        self.with_store(move |store| store.list_workflows_after(after, limit))
+    }
+
     pub fn workflow_contract(
         &self,
         contract_id: Sha256Digest,
@@ -233,6 +241,18 @@ impl WriterHandle {
 
     pub fn workflow_message(&self, message_id: Uuid) -> Result<Option<MessageRecord>, WriterError> {
         self.with_store(move |store| store.workflow_message(message_id))
+    }
+
+    pub fn deliver_workflow_messages(
+        &self,
+        workflow_id: Uuid,
+        message_ids: Vec<Uuid>,
+        attempt: Uuid,
+        timestamp: OffsetDateTime,
+    ) -> Result<Vec<MessageCommit>, WriterError> {
+        self.with_store(move |store| {
+            store.deliver_workflow_messages(workflow_id, &message_ids, attempt, timestamp)
+        })
     }
 
     pub fn record_workflow_content(

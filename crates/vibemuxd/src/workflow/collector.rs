@@ -331,15 +331,19 @@ impl BlobStore {
 /// Paths written or deleted by more than one manifest.
 #[must_use]
 pub(crate) fn overlapping_paths(manifests: &[&SnapshotManifest]) -> Vec<String> {
-    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    // Separate worktrees can each admit a differently cased spelling of the
+    // same path. They collide when materialized on Windows.
+    let mut seen: BTreeMap<String, (String, usize)> = BTreeMap::new();
     for manifest in manifests {
         for entry in &manifest.entries {
-            *seen.entry(entry.path.as_str()).or_default() += 1;
+            let alias = entry.path.to_ascii_lowercase();
+            let (_, count) = seen.entry(alias).or_insert_with(|| (entry.path.clone(), 0));
+            *count += 1;
         }
     }
     seen.into_iter()
-        .filter(|(_, count)| *count > 1)
-        .map(|(path, _)| path.to_string())
+        .filter(|(_, (_, count))| *count > 1)
+        .map(|(_, (path, _))| path)
         .collect()
 }
 
@@ -395,6 +399,7 @@ fn reject_linked_ancestors(root: &Path, path: &str) -> Result<(), WorkflowError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vibemux_workflow::snapshot::SnapshotEntry;
 
     #[test]
     fn status_entries_map_untracked_ignored_and_deleted_paths() {
@@ -436,5 +441,20 @@ mod tests {
         .expect("tamper");
         assert!(blobs.get(digest).is_err());
         assert_eq!(blobs.put(b"export const x = 1;\n").expect("heal"), digest);
+    }
+
+    #[test]
+    fn integration_conflicts_include_windows_case_aliases() {
+        let manifest = |path: &str| SnapshotManifest {
+            schema_version: vibemux_workflow::snapshot::SNAPSHOT_SCHEMA_VERSION,
+            base_commit: "a".repeat(40),
+            entries: vec![SnapshotEntry {
+                path: path.to_string(),
+                change: SnapshotChange::Delete,
+            }],
+        };
+        let first = manifest("src/Foo.mjs");
+        let second = manifest("src/foo.mjs");
+        assert_eq!(overlapping_paths(&[&first, &second]), vec!["src/Foo.mjs"]);
     }
 }

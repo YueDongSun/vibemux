@@ -30,7 +30,7 @@ use vibemux_workflow::{
 };
 
 use super::{
-    broker::{Delivery, acknowledge, deliver, store_content},
+    broker::{Delivery, acknowledge, store_content},
     collector::{Collection, CollectionScope, apply_manifests, collect},
     error::WorkflowError,
     runtime::{RunContext, TurnPlan, TurnResult, TurnSpec, Unit},
@@ -182,20 +182,22 @@ async fn step_under_lease(
         reviewed_candidate: None,
     };
     let identity = context.turn_identity(&spec).await?;
-    // Deliver at this turn boundary; a message that cannot be delivered
-    // (expired, or already delivered to an earlier attempt) is left out of
-    // the prompt.
-    let mut delivered = Vec::new();
-    for delivery in input.deliveries {
-        if deliver(context, delivery.message_id(), identity.request_id).await? {
-            spec.notes.extend(delivery.note.clone());
-            spec.context_blocks.extend(delivery.block.clone());
-            delivered.push(delivery);
-        }
+    // The prompt is fixed before admission. The writer binds this whole
+    // batch to the admitted attempt before dispatch launches; an expired or
+    // mismatched message cancels the attempt without a partial delivery.
+    let planned_deliveries = input.deliveries;
+    for delivery in &planned_deliveries {
+        spec.notes.extend(delivery.note.clone());
+        spec.context_blocks.extend(delivery.block.clone());
     }
     let plan = context.render_plan(spec, &identity)?;
     retain_prompt(context, &plan).await?;
-    let turn = context.run_turn(&plan).await?;
+    let turn = context.run_turn(&plan, &planned_deliveries).await?;
+    let delivered = if turn.delivery_applied {
+        planned_deliveries
+    } else {
+        Vec::new()
+    };
     if turn.completed() {
         acknowledge(context, &unit.participant(), &delivered, turn.request_id).await?;
     }
@@ -404,7 +406,7 @@ pub(crate) async fn review_candidate(
             })
             .await?;
         retain_prompt(context, &plan).await?;
-        context.run_turn(&plan).await
+        context.run_turn(&plan, &[]).await
     }
     .await;
     drop(heartbeat);

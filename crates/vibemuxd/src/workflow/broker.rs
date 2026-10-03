@@ -503,27 +503,30 @@ pub(crate) async fn store_content(
     retention_days: u32,
 ) -> Result<Sha256Digest, WorkflowError> {
     let state = context.setup.state.clone();
+    let _content_permit = state.content_permit().await?;
     let workflow_id = context.workflow_id;
     let byte_count = bytes.len() as u64;
+    let now = now_ms();
+    let retain_until_ms = now.saturating_add(u64::from(retention_days).saturating_mul(DAY_MS));
     let digest = tokio::task::spawn_blocking(move || {
         let digest = state.put_content(&bytes)?;
         state.add_content_index(ContentIndexEntry {
             sha256: digest,
             workflow_id,
             bundle_id,
+            retain_until_ms: Some(retain_until_ms),
         })?;
         Ok::<_, WorkflowError>(digest)
     })
     .await
     .map_err(|_| WorkflowError::Internal)??;
-    let now = now_ms();
     let entry = ContentEntry {
         content_sha256: digest,
         workflow_id: Some(workflow_id),
         kind,
         byte_count,
         state: ContentState::Present,
-        retain_until_ms: now.saturating_add(u64::from(retention_days).saturating_mul(DAY_MS)),
+        retain_until_ms,
         updated_at_ms: now,
     };
     let writer = context.writer.clone();

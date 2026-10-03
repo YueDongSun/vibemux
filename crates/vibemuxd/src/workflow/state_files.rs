@@ -31,6 +31,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 use vibemux_types::a2a::RunWorkspace;
 use vibemux_workflow::{Sha256Digest, SpecIdentifier};
@@ -61,6 +62,10 @@ pub(crate) struct ContentIndexEntry {
     pub sha256: Sha256Digest,
     pub workflow_id: Uuid,
     pub bundle_id: Option<Uuid>,
+    /// Per-owner expiry. Legacy entries have no reliable per-owner expiry
+    /// and are retained until explicitly purged.
+    #[serde(default)]
+    pub retain_until_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -77,6 +82,8 @@ pub(crate) struct StateFiles {
     root: PathBuf,
     /// Serializes read-modify-write of the shared content index.
     index_lock: Arc<Mutex<()>>,
+    /// Serializes content file/index changes with their writer receipts.
+    content_gate: Arc<Semaphore>,
 }
 
 impl StateFiles {
@@ -85,7 +92,15 @@ impl StateFiles {
             state_dir: state_dir.to_path_buf(),
             root: state_dir.join(WORKFLOW_STATE_DIR_NAME),
             index_lock: Arc::new(Mutex::new(())),
+            content_gate: Arc::new(Semaphore::new(1)),
         }
+    }
+
+    pub async fn content_permit(&self) -> Result<OwnedSemaphorePermit, WorkflowError> {
+        Arc::clone(&self.content_gate)
+            .acquire_owned()
+            .await
+            .map_err(|_| WorkflowError::Internal)
     }
 
     pub fn blobs(&self) -> BlobStore {
@@ -204,6 +219,9 @@ impl StateFiles {
     /// Opt-in private content: stored by digest, never emitted.
     pub fn put_content(&self, bytes: &[u8]) -> Result<Sha256Digest, WorkflowError> {
         let digest = Sha256Digest::of(bytes);
+        if self.read_content(digest)?.is_some() {
+            return Ok(digest);
+        }
         write_bytes(&self.content_dir().join(digest.to_hex()), bytes)?;
         Ok(digest)
     }
@@ -242,20 +260,54 @@ impl StateFiles {
             .lock()
             .map_err(|_| WorkflowError::Internal)?;
         let mut entries = self.read_index()?;
-        if !entries.contains(&entry) {
+        if let Some(existing) = entries.iter_mut().find(|existing| {
+            existing.sha256 == entry.sha256
+                && existing.workflow_id == entry.workflow_id
+                && existing.bundle_id == entry.bundle_id
+        }) {
+            existing.retain_until_ms = match (existing.retain_until_ms, entry.retain_until_ms) {
+                (Some(old), Some(new)) => Some(old.max(new)),
+                (None, _) | (Some(_), None) => None,
+            };
+        } else {
             entries.push(entry);
         }
         self.write_index(entries)
     }
 
-    pub fn remove_content_index(&self, digest: Sha256Digest) -> Result<(), WorkflowError> {
+    /// Releases only one workflow's references. `expired_before` limits the
+    /// release to known expired references; `None` purges all of its refs.
+    /// The blob is removed only after its last owner has been released.
+    pub fn release_content_owner(
+        &self,
+        workflow_id: Uuid,
+        digest: Sha256Digest,
+        expired_before: Option<u64>,
+    ) -> Result<(bool, bool), WorkflowError> {
         let _guard = self
             .index_lock
             .lock()
             .map_err(|_| WorkflowError::Internal)?;
         let mut entries = self.read_index()?;
-        entries.retain(|entry| entry.sha256 != digest);
-        self.write_index(entries)
+        let before = entries.len();
+        entries.retain(|entry| {
+            !(entry.sha256 == digest
+                && entry.workflow_id == workflow_id
+                && expired_before.is_none_or(|now| {
+                    entry
+                        .retain_until_ms
+                        .is_some_and(|deadline| deadline <= now)
+                }))
+        });
+        if entries.len() == before {
+            return Ok((false, false));
+        }
+        let last_owner = !entries.iter().any(|entry| entry.sha256 == digest);
+        if last_owner {
+            self.delete_content(digest)?;
+        }
+        self.write_index(entries)?;
+        Ok((true, last_owner))
     }
 
     fn read_index(&self) -> Result<Vec<ContentIndexEntry>, WorkflowError> {
@@ -400,5 +452,74 @@ mod tests {
             None
         );
         files.delete_outbox(workflow, message).expect("idempotent");
+    }
+
+    #[test]
+    fn content_release_preserves_other_workflow_and_later_expiry() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let files = StateFiles::new(directory.path());
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let digest = files.put_content(b"same prompt").expect("content");
+        for (workflow_id, deadline) in [(first, 100), (second, 200)] {
+            files
+                .add_content_index(ContentIndexEntry {
+                    sha256: digest,
+                    workflow_id,
+                    bundle_id: None,
+                    retain_until_ms: Some(deadline),
+                })
+                .expect("index");
+        }
+        assert_eq!(
+            files
+                .release_content_owner(first, digest, None)
+                .expect("purge first"),
+            (true, false)
+        );
+        assert_eq!(
+            files.read_content(digest).expect("read"),
+            Some(b"same prompt".to_vec())
+        );
+        assert_eq!(files.content_index().expect("index").len(), 1);
+        assert_eq!(
+            files
+                .release_content_owner(second, digest, Some(150))
+                .expect("not expired"),
+            (false, false)
+        );
+        assert_eq!(
+            files
+                .release_content_owner(second, digest, Some(200))
+                .expect("expired"),
+            (true, true)
+        );
+        assert_eq!(files.read_content(digest).expect("read"), None);
+    }
+
+    #[test]
+    fn legacy_content_index_does_not_expire_without_owner_deadline() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let files = StateFiles::new(directory.path());
+        let workflow_id = Uuid::new_v4();
+        let digest = files.put_content(b"legacy").expect("content");
+        files
+            .add_content_index(ContentIndexEntry {
+                sha256: digest,
+                workflow_id,
+                bundle_id: None,
+                retain_until_ms: None,
+            })
+            .expect("index");
+        assert_eq!(
+            files
+                .release_content_owner(workflow_id, digest, Some(u64::MAX))
+                .expect("sweep"),
+            (false, false)
+        );
+        assert_eq!(
+            files.read_content(digest).expect("read"),
+            Some(b"legacy".to_vec())
+        );
     }
 }

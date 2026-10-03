@@ -125,8 +125,8 @@ fn cases_of<'a>(report: &'a Value, split: &str) -> Vec<&'a Value> {
         .collect()
 }
 
-/// O02 and O03: the cycle evaluates candidates on the fixed dev split
-/// only, consults the protected holdout once for the best one, rejects a
+/// O02 and O03: the cycle gates candidates on train, ranks them on dev,
+/// consults the protected holdout once for the best one, rejects a
 /// forbidden field, a hard-gate failure, and a no-gain change, promotes
 /// the improving wording for future admissions only, and rolls back to
 /// the baseline, after which the same cycle replays without paying again.
@@ -191,15 +191,19 @@ async fn only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back() {
     assert!(report["promotion_withheld"].is_null());
     let spent = report["model_requests_spent"].as_u64().expect("spent");
     assert!(spent > 0 && spent <= 64, "{report:#}");
-    // Train cases are never run; the holdout ran for the baseline and the
-    // promoted candidate only; every case result is a recorded workflow.
-    assert!(cases_of(&report, "train").is_empty());
+    // Train cases gate each candidate before dev; the holdout ran for the
+    // baseline and promoted candidate only.
+    let train = cases_of(&report, "train");
+    assert!(
+        train.len() >= 2,
+        "baseline and candidate train evidence: {report:#}"
+    );
     let holdout = cases_of(&report, "holdout");
     assert_eq!(holdout.len(), 2);
     assert_eq!(holdout[0]["verified_success"], false);
     assert_eq!(holdout[1]["verified_success"], true);
     assert_eq!(&holdout[1]["policy_digest"], promoted_digest);
-    let harmful = cases_of(&report, "dev")
+    let harmful = cases_of(&report, "train")
         .into_iter()
         .find(|case| !case["hard_gates_passed"].as_bool().expect("gate"))
         .expect("the harmful candidate's case");

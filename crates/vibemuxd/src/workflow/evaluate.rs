@@ -144,7 +144,8 @@ impl PromptSuite {
         let limits = self.limits;
         let candidates_bounded = usize::try_from(limits.max_candidates)
             .is_ok_and(|count| (1..=MAX_CANDIDATE_DIFFS).contains(&count));
-        if self.dev.case_ids.is_empty()
+        if self.train.case_ids.is_empty()
+            || self.dev.case_ids.is_empty()
             || self.holdout.case_ids.is_empty()
             || listed.len() != self.cases.len()
             || self.cases.len() > MAX_SUITE_CASES
@@ -348,6 +349,28 @@ fn finished(phase: WorkflowPhase) -> bool {
     )
 }
 
+/// A candidate must not regress on the fixed train cases before its dev
+/// score can enter selection. Dev still decides whether it improves on the
+/// baseline; holdout is reserved for the final eligible candidate.
+fn train_gate(
+    baseline: &EvaluationSummary,
+    candidate: &EvaluationSummary,
+) -> Result<(), OptimizerRejection> {
+    if candidate.hard_gate_failures > 0 {
+        return Err(OptimizerRejection::HardGateFailure);
+    }
+    if candidate.verified_successes < baseline.verified_successes
+        || (candidate.verified_successes == baseline.verified_successes
+            && matches!(
+                (candidate.model_requests, baseline.model_requests),
+                (Some(candidate_cost), Some(baseline_cost)) if candidate_cost > baseline_cost
+            ))
+    {
+        return Err(OptimizerRejection::NoImprovement);
+    }
+    Ok(())
+}
+
 impl WorkflowService {
     /// Runs one bounded optimizer cycle of `candidate_id` on `suite_id`
     /// and promotes the selected candidate, if any.
@@ -440,6 +463,9 @@ impl WorkflowService {
             cases: Vec::new(),
             failure: None,
         };
+        let baseline_train = self
+            .baseline_summary(&inputs, &inputs.suite.train, &base, &mut spending)
+            .await?;
         let baseline = CycleBaseline {
             dev: self
                 .baseline_summary(&inputs, &inputs.suite.dev, &base, &mut spending)
@@ -483,7 +509,11 @@ impl WorkflowService {
                 &diffs,
                 limits,
                 &mut holdout,
-                |policy| evaluate(&inputs.suite.dev, policy),
+                |policy| {
+                    let train = evaluate(&inputs.suite.train, policy)?;
+                    train_gate(&baseline_train, &train)?;
+                    evaluate(&inputs.suite.dev, policy)
+                },
                 |policy| {
                     // Recorded before the first holdout case runs: a crash
                     // after this point never lets the cycle run again.
@@ -724,6 +754,37 @@ mod tests {
         json!({"dataset_id": format!("{split}_set"), "split": split, "case_ids": cases})
     }
 
+    #[test]
+    fn train_regression_blocks_dev_selection() {
+        let baseline = EvaluationSummary {
+            cases: 2,
+            hard_gate_failures: 0,
+            verified_successes: 2,
+            model_requests: Some(4),
+            elapsed_ms: 100,
+        };
+        let mut candidate = baseline;
+        candidate.verified_successes = 1;
+        assert_eq!(
+            train_gate(&baseline, &candidate),
+            Err(OptimizerRejection::NoImprovement)
+        );
+        candidate = baseline;
+        candidate.hard_gate_failures = 1;
+        assert_eq!(
+            train_gate(&baseline, &candidate),
+            Err(OptimizerRejection::HardGateFailure)
+        );
+        candidate = baseline;
+        candidate.model_requests = Some(5);
+        assert_eq!(
+            train_gate(&baseline, &candidate),
+            Err(OptimizerRejection::NoImprovement)
+        );
+        candidate.model_requests = None;
+        assert_eq!(train_gate(&baseline, &candidate), Ok(()));
+    }
+
     fn suite(train: &[&str], dev: &[&str], holdout: &[&str], cases: &[&str]) -> Value {
         let cases: serde_json::Map<String, Value> = cases
             .iter()
@@ -764,6 +825,11 @@ mod tests {
         // A holdout case reused on dev.
         let shared = suite(&[], &["case_d"], &["case_d"], &["case_d"]);
         assert_eq!(parse(&shared).err(), Some(WorkflowError::EvaluationInvalid));
+        let no_train = suite(&[], &["case_d"], &["case_h"], &["case_d", "case_h"]);
+        assert_eq!(
+            parse(&no_train).err(),
+            Some(WorkflowError::EvaluationInvalid)
+        );
         // An undefined case, an unlisted case, an empty holdout.
         for broken in [
             suite(&[], &["case_d"], &["case_x"], &["case_d"]),

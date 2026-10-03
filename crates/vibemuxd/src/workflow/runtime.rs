@@ -36,6 +36,7 @@ use vibemux_workflow::{
 use vibemux_workspace::WorkspaceManager;
 
 use super::{
+    broker::Delivery,
     error::WorkflowError,
     prepare::WorkflowPlan,
     settings::{LoadedWorkflowConfig, SlotConfig},
@@ -165,6 +166,7 @@ pub(crate) struct TurnResult {
     pub run_id: Uuid,
     pub phase: DispatchPhase,
     pub final_text: Option<String>,
+    pub delivery_applied: bool,
 }
 
 impl TurnResult {
@@ -192,6 +194,8 @@ pub(crate) struct RunContext {
     pub manager: WorkspaceManager,
     pub control: watch::Receiver<Control>,
     pub ledger: Mutex<WorkspaceLedger>,
+    /// Serializes creation and durable ledger publication for all units.
+    pub workspace_gate: tokio::sync::Semaphore,
     /// Review turns share the reviewer slot, so they run one at a time.
     pub reviewer_turns: tokio::sync::Mutex<()>,
 }
@@ -250,6 +254,11 @@ impl RunContext {
     /// An owned worktree for `key`: the recorded one, re-inspected, or a
     /// new one recorded in the ledger before any turn uses it.
     pub async fn workspace(&self, key: &str) -> Result<RunWorkspace, WorkflowError> {
+        let _workspace_permit = self
+            .workspace_gate
+            .acquire()
+            .await
+            .map_err(|_| WorkflowError::Internal)?;
         let existing = self
             .ledger
             .lock()
@@ -276,9 +285,24 @@ impl RunContext {
         };
         let state = self.setup.state.clone();
         let workflow_id = self.workflow_id;
-        tokio::task::spawn_blocking(move || state.write_ledger(workflow_id, &ledger))
-            .await
-            .map_err(|_| WorkflowError::Internal)??;
+        let published =
+            tokio::task::spawn_blocking(move || state.write_ledger(workflow_id, &ledger))
+                .await
+                .map_err(|_| WorkflowError::Internal)
+                .and_then(|result| result);
+        if let Err(error) = published {
+            // Nothing has used the new worktree yet. Remove it through the
+            // manager's ownership checks, so a failed ledger write cannot
+            // leave an unrecorded worktree behind.
+            if self.manager.cleanup(&workspace).await.is_ok() {
+                self.ledger
+                    .lock()
+                    .map_err(|_| WorkflowError::Internal)?
+                    .workspaces
+                    .remove(key);
+            }
+            return Err(error);
+        }
         Ok(workspace)
     }
 
@@ -447,7 +471,11 @@ impl RunContext {
 
     /// Admits and runs one planned turn to its fenced finish. A cancel
     /// signal reaches the dispatch while the turn runs.
-    pub async fn run_turn(&self, plan: &TurnPlan) -> Result<TurnResult, WorkflowError> {
+    pub async fn run_turn(
+        &self,
+        plan: &TurnPlan,
+        deliveries: &[Delivery],
+    ) -> Result<TurnResult, WorkflowError> {
         let spec = &plan.spec;
         let grant = if spec.purpose.is_read_only() {
             WritableGrant::READ_ONLY
@@ -478,8 +506,28 @@ impl RunContext {
                     session_id: spec.session_id,
                 },
             };
+            let writer = self.writer.clone();
+            let workflow_id = self.workflow_id;
+            let message_ids: Vec<Uuid> = deliveries.iter().map(Delivery::message_id).collect();
             let outcome = self
-                .cancellable(plan.request_id, self.dispatch.run_workflow_turn(turn))
+                .cancellable(
+                    plan.request_id,
+                    self.dispatch
+                        .run_workflow_turn(turn, move |attempt| async move {
+                            if !message_ids.is_empty() {
+                                call_writer(move || {
+                                    writer.deliver_workflow_messages(
+                                        workflow_id,
+                                        message_ids.clone(),
+                                        attempt,
+                                        OffsetDateTime::now_utc(),
+                                    )
+                                })
+                                .await?;
+                            }
+                            Ok::<(), crate::harness_dispatch::DispatchServiceError>(())
+                        }),
+                )
                 .await;
             match outcome {
                 Err(error)
@@ -494,6 +542,7 @@ impl RunContext {
                         run_id: *outcome.record.run_id.as_uuid(),
                         phase: outcome.record.phase,
                         final_text: outcome.final_text,
+                        delivery_applied: outcome.delivery_applied,
                     });
                 }
             }

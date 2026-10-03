@@ -21,6 +21,7 @@ mod transcript_store;
 
 use std::{
     collections::HashMap,
+    future::Future,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
     time::Duration,
@@ -205,6 +206,8 @@ pub(crate) struct WorkflowTurnOutcome {
     pub record: HarnessDispatchRecord,
     /// The final assistant message, if the protocol reported one.
     pub final_text: Option<String>,
+    /// The caller's atomic message delivery ran after admission.
+    pub delivery_applied: bool,
 }
 
 /// Cloneable handle; clones share one service.
@@ -344,10 +347,15 @@ impl HarnessDispatchService {
     /// fenced finish in the owned working directory. Admission reserves
     /// that directory (not the project root), so turns in distinct
     /// worktrees may overlap. Cancel it with [`Self::cancel`].
-    pub(crate) async fn run_workflow_turn(
+    pub(crate) async fn run_workflow_turn<BeforeLaunch, BeforeLaunchFuture>(
         &self,
         turn: WorkflowTurn,
-    ) -> Result<WorkflowTurnOutcome, DispatchServiceError> {
+        before_launch: BeforeLaunch,
+    ) -> Result<WorkflowTurnOutcome, DispatchServiceError>
+    where
+        BeforeLaunch: FnOnce(Uuid) -> BeforeLaunchFuture,
+        BeforeLaunchFuture: Future<Output = Result<(), DispatchServiceError>>,
+    {
         let setup = self.inner.setup()?;
         self.inner.ensure_accepting()?;
         let request = DispatchRequest {
@@ -411,7 +419,17 @@ impl HarnessDispatchService {
         let protocol = route.protocol;
         let request_id = request.request_id;
         let mut final_text = None;
+        let mut delivery_applied = false;
         if commit.dispatch.record.phase == DispatchPhase::Admitted {
+            if let Err(error) = before_launch(request_id).await {
+                let writer = self.inner.writer.clone();
+                call_writer(move || {
+                    writer.cancel_harness_dispatch(request_id, OffsetDateTime::now_utc())
+                })
+                .await?;
+                return Err(error);
+            }
+            delivery_applied = true;
             let plan = ExecutionPlan {
                 launch,
                 session,
@@ -430,7 +448,11 @@ impl HarnessDispatchService {
             }
         }
         let record = self.status(request_id).await?;
-        Ok(WorkflowTurnOutcome { record, final_text })
+        Ok(WorkflowTurnOutcome {
+            record,
+            final_text,
+            delivery_applied,
+        })
     }
 
     /// Starts a workflow turn task; `false` if the service stopped
