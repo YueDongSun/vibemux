@@ -181,6 +181,9 @@ refused at prepare.
   task, session, and contract; acknowledgement binds the same completed
   attempt. A failed batch changes no message or audit event. The supervisor
   uses a separate deterministic inbox identity.
+  A message already bound to a failed or cancelled attempt remains
+  unacknowledged and is omitted from later turn prompts and batches. A
+  retry does not silently rebind it or claim that it was consumed.
 - **A context bundle** carries selected line ranges of the answering task's
   collected snapshot, never its live worktree. It also carries attributed
   claims, so a proposal is never relabeled as a confirmed decision.
