@@ -25,7 +25,7 @@ use vibemux_workflow::{
     contract::ContractArtifact,
     gates::{
         AcceptanceLevel, CandidateAcceptance, GateRequirements, IntegrationReceipt, ReviewReceipt,
-        VerifierReceipt, WorkflowPhase, candidate_gate, cooperative_acceptance,
+        ReviewVerdict, VerifierReceipt, WorkflowPhase, candidate_gate, cooperative_acceptance,
     },
     leases::{LeaseEvent, LeaseState, LeaseView, apply as apply_lease},
     messages::{
@@ -2088,9 +2088,13 @@ fn check_review(
             if dispatch.phase.as_str() != phase {
                 return Err(workflow_error("store_workflow_projection_mismatch"));
             }
-            if review.verdict == vibemux_workflow::gates::ReviewVerdict::Pass
-                && phase != DispatchPhase::Completed.as_str()
-            {
+            let admissible = match review.verdict {
+                ReviewVerdict::Pass | ReviewVerdict::ChangesRequested => {
+                    phase == DispatchPhase::Completed.as_str()
+                }
+                ReviewVerdict::Blocked => dispatch_terminal(&phase),
+            };
+            if !admissible {
                 return Err(workflow_error("store_workflow_review_unsettled"));
             }
             bound = true;

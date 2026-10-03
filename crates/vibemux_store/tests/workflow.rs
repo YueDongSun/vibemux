@@ -1248,7 +1248,7 @@ fn review_attempt_must_match_the_candidate_task_and_contract() {
 }
 
 #[test]
-fn passing_review_requires_a_completed_review_dispatch() {
+fn review_verdicts_require_appropriate_dispatch_phase() {
     for outcome in [AttemptOutcome::Failed, AttemptOutcome::Cancelled] {
         let (_file, mut store) = open_store();
         let workflow = running_workflow(&mut store, &["track_a"]);
@@ -1305,14 +1305,35 @@ fn passing_review_requires_a_completed_review_dispatch() {
         let mut diagnostic = pass.clone();
         diagnostic.receipt_id = Uuid::new_v4();
         diagnostic.verdict = ReviewVerdict::ChangesRequested;
-        store
-            .record_workflow_receipt(
-                workflow.workflow_id,
-                &WorkflowReceipt::Review(diagnostic),
-                None,
-                at(7),
-            )
-            .expect("non-pass diagnostic remains recordable");
+        assert_eq!(
+            code(
+                store
+                    .record_workflow_receipt(
+                        workflow.workflow_id,
+                        &WorkflowReceipt::Review(diagnostic.clone()),
+                        None,
+                        at(7),
+                    )
+                    .expect_err("substantive review before dispatch completion")
+            ),
+            "store_workflow_review_unsettled"
+        );
+        let mut blocked = pass.clone();
+        blocked.receipt_id = Uuid::new_v4();
+        blocked.verdict = ReviewVerdict::Blocked;
+        assert_eq!(
+            code(
+                store
+                    .record_workflow_receipt(
+                        workflow.workflow_id,
+                        &WorkflowReceipt::Review(blocked.clone()),
+                        None,
+                        at(7),
+                    )
+                    .expect_err("blocked claim before terminal dispatch")
+            ),
+            "store_workflow_review_unsettled"
+        );
         if outcome == AttemptOutcome::Failed {
             let claim = store
                 .claim_harness_dispatch(attempt.request_id, at(8))
@@ -1373,7 +1394,49 @@ fn passing_review_requires_a_completed_review_dispatch() {
             ),
             "store_workflow_review_unsettled"
         );
+        assert_eq!(
+            code(
+                store
+                    .record_workflow_receipt(
+                        workflow.workflow_id,
+                        &WorkflowReceipt::Review(diagnostic),
+                        None,
+                        at(10),
+                    )
+                    .expect_err("failed or cancelled dispatch cannot request changes")
+            ),
+            "store_workflow_review_unsettled"
+        );
+        store
+            .record_workflow_receipt(
+                workflow.workflow_id,
+                &WorkflowReceipt::Review(blocked),
+                None,
+                at(10),
+            )
+            .expect("terminal blocked diagnostic remains recordable");
     }
+    let (_file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let (_, _, candidate) = collected(
+        &mut store,
+        workflow.workflow_id,
+        "track_a",
+        "slot_a",
+        "tree_a",
+        "a code",
+    );
+    let mut substantive = reviewed(&mut store, workflow.workflow_id, &candidate, "review_tree");
+    substantive.receipt_id = Uuid::new_v4();
+    substantive.verdict = ReviewVerdict::ChangesRequested;
+    store
+        .record_workflow_receipt(
+            workflow.workflow_id,
+            &WorkflowReceipt::Review(substantive),
+            None,
+            at(10),
+        )
+        .expect("completed substantive review remains recordable");
 }
 
 #[test]
