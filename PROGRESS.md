@@ -2731,3 +2731,54 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Remaining**
 - Windows and Linux CI evidence comes from the pull request run.
 - `abrupt_process_recovery_preserves_database_and_allows_restart` also failed once under doubled load (2026-09-15 (9)). It did not fail in any run here and is not changed.
+
+### 2026-10-03 - Dual-track workflow (ADR 031) offline slice (`feat/dual_track_workflow`)
+
+**Status change**
+- New area: the dual-track workflow ([ADR 031](docs/adr/031_dual_track_workflow.md)) is `PARTIAL — OFFLINE ONLY`.
+- Control IPC moves from v5 to v6 and the Rust store schema from 4 to 5. M3 stays `VERIFIED` and ADR 029 dispatch stays `PARTIAL`.
+
+**Implemented**
+- `vibemux_workflow` is a pure crate (no I/O). It covers:
+  - TaskSpec validation against the source request, including prohibitions, numbers, literals, invented scope, and requirement coverage.
+  - The deterministic English renderer and templates, plus contract identity and generations.
+  - Gates, comparison selection, message broker rules, and context bundles with redaction.
+  - Leases, slot planning, candidate snapshots, the gateway route contract, and the prompt optimizer.
+- `vibemux_store` schema 5 is forward-only. It adds nine workflow tables with fenced leases, idempotent admission, a content index, and versioned prompt policies.
+- `vibemux_harness` gains writable worker profiles, final-text extraction, and per-turn prompts.
+- `vibemuxd` gains a workflow service with a deterministic coordinator (at most two broker rounds). The service:
+  - gives every slot an owned worktree;
+  - collects candidates itself;
+  - runs an independent review and the pinned trusted verifier per candidate;
+  - allows bounded repair;
+  - selects between comparison candidates;
+  - integrates into a fresh worktree.
+- Control v6 adds 15 workflow operations. Private workflow state is restricted to the daemon's user. A pre-v6 client refuses a v6 daemon.
+- `vibemuxctl` adds `workflow`, `slots`, `context share`, `session inspect`, and `prompt`.
+- The TaskBoard Lite fixture adds a frozen base and contract, plus trusted `api`, `store`, and `browser` suites calibrated against a good solution and nine mutants.
+- The `vibemux_worker_fixture` binary stands in for every worker, reviewer, and compiler turn.
+- `scripts/verify_dual_track.py` is the acceptance runner, with Python as the test driver only. It pins the 37-scenario benchmark, re-derives every class status from logs and evidence digests, validates the report, and removes its private temporary root.
+
+**Evidence**
+- [docs/evidence/dual_track_offline_acceptance.md](docs/evidence/dual_track_offline_acceptance.md): the offline run on `7de3aa5` with a clean tree.
+  - Verdict `BLOCKED`: 22 `PASS`, 11 `BLOCKED`, 4 `NOT_RUN`, 0 `FAIL`.
+  - `cargo test --workspace --all-features`: 708 passed, 0 failed, 2 ignored in 86 targets.
+  - pytest: 85 passed. Calibration: 9 of 9 mutants caught, browser suite in Edge.
+  - The standalone `--validate` check reported the report valid.
+- On the same head: `cargo fmt --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` are clean. `ruff check` and `ruff format --check` are clean. `mypy --strict` on the runner is clean.
+- Repository-wide mypy reports the 20 pre-existing errors in three files this branch does not touch.
+- Baseline before any workflow code (`0588620`): 531 passed, 0 failed, 2 ignored in 74 targets.
+- No live validation. No model, AAG gateway, or vendor CLI was contacted.
+
+**Remaining**
+- A daemon AAG gateway client, plus live supervisor and compiler routes. Without them G01 and G03 are `NOT_RUN` and G04 is `BLOCKED`, and a `live` config cannot make a slot eligible to code.
+- Owned native TUI sessions, attach, and structured/native handoff. Without them T01 is `BLOCKED`, and T02 and T03 are `NOT_RUN`.
+- A live run of every `live_coding`, `live_mixed_harness` (T04), and `live_optimizer` class, which needs an explicit budget and configuration authorization.
+- The known limitations listed in ADR 031: read-only prompt inspection, the unpersisted negative-control receipt, a crash simulated through the writer, and writable profiles that are cooperative admission rather than an OS sandbox.
+
+**Compatibility / migration**
+- Schema 5 is not downgraded. Rolling back needs a pre-migration store, and `vibemuxctl` and `vibemuxd` are upgraded together.
+- Without `.vibemux\workflow_config.json`, every workflow operation answers `workflow_unconfigured`. Existing dispatch, harness, frontend, and A2A behavior is unchanged.
+
+**Known risks**
+- Workers are same-user processes. Owned paths and scope checks reject a bad candidate when the daemon collects it, but they do not stop a vendor process from writing outside its worktree.
