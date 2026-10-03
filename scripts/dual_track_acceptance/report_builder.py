@@ -38,8 +38,9 @@ STANDING_LIMITATIONS = (
     "no native TUI session is owned or attached; sessions are structured-mode only and "
     "native handoff (T02/T03) is not implemented",
     "the optimizer improvement is measured on fixture cases only and implies no model gain",
-    "workflow worktrees and materializations are retained (workspace_unsafe_cleanup); the "
-    "tests' temporary projects are removed by the tests themselves",
+    "workflow worktrees and materializations are retained by the daemon "
+    "(workspace_unsafe_cleanup); the tests' temporary projects, including those worktrees, are "
+    "removed with the run's private temporary root",
     "prompt editing of a paused session is not implemented; inspection is read-only",
     "model_requests_remaining is not decremented by live usage because no live usage exists",
     "only template_overrides of an optimizer candidate affect admitted runs",
@@ -68,8 +69,13 @@ class EnvironmentInfo:
 class CleanupInfo:
     joined_owned_processes: bool | None
     unjoined_processes: Sequence[str]
+    # What the suites left in the private temporary root, and what of it is
+    # still on disk after the runner's cleanup (every test project and its
+    # worktrees live below that root).
+    suite_leftovers: Sequence[str]
     retained_entries: Sequence[str]
     private_tmp_removed: bool
+    private_tmp_retained_reason: str | None
     # Where retained entries can be found; the root is outside the output
     # directory (see runner_config.PRIVATE_TMP_PREFIX).
     private_tmp_root: str
@@ -185,7 +191,9 @@ def build_report(
             "joined_owned_processes": cleanup.joined_owned_processes,
             "unjoined_processes": list(cleanup.unjoined_processes),
             "retained_worktrees": list(cleanup.retained_entries),
+            "suite_leftovers": list(cleanup.suite_leftovers),
             "private_tmp_removed": cleanup.private_tmp_removed,
+            "private_tmp_retained_reason": cleanup.private_tmp_retained_reason,
             "private_tmp_root": cleanup.private_tmp_root,
         },
         "limitations": limitations,

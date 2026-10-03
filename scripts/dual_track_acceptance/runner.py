@@ -7,7 +7,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -77,7 +76,7 @@ from .runtime_roots import (
     prepare_output,
     private_environment,
     private_tmp_problems,
-    remove_if_empty,
+    remove_private_tmp,
     retained_entries,
 )
 from .scenario_catalog import (
@@ -203,6 +202,7 @@ def _run_suites(
         output_root=layout.root,
         timeout_seconds=CARGO_TEST_TIMEOUT_SECONDS,
     )
+    # pytest's base temporary directory is removed with the private root.
     basetemp = layout.private_tmp / PYTEST_BASETEMP_NAME
     pytest = run_logged(
         PYTEST_COMMAND,
@@ -213,9 +213,6 @@ def _run_suites(
         output_root=layout.root,
         timeout_seconds=PYTEST_TIMEOUT_SECONDS,
     )
-    # pytest's base temporary directory is this run's own; nothing else
-    # writes there.
-    shutil.rmtree(basetemp, ignore_errors=True)
     calibration_stdout = layout.logs / "calibration_summary.json"
     calibration = run_logged(
         CALIBRATION_COMMAND,
@@ -228,6 +225,23 @@ def _run_suites(
         stdout_path=calibration_stdout,
     )
     return [cargo, pytest, calibration], calibration_stdout
+
+
+def private_tmp_retention_reason(
+    commands: Sequence[CommandRecord], unjoined: Sequence[str]
+) -> str | None:
+    """Why the run's private temporary root must outlive the run, if it must.
+
+    A clean run removes the whole root. It is kept while an owned process may
+    still use it, and after a failed suite so its test projects and worktrees
+    can be inspected.
+    """
+    if unjoined:
+        return f"owned processes outlived the suites: {list(unjoined)}"
+    failed = [record.command_id for record in commands if record.exit_code != 0]
+    if failed:
+        return f"kept for diagnosis because {failed} did not succeed"
+    return None
 
 
 def _decide_e01(report: dict[str, Any], layout: OutputLayout, benchmark: Benchmark) -> list[str]:
@@ -349,8 +363,11 @@ def run(request: RunRequest) -> int:
             artifacts = dataclasses.replace(artifacts, live_gate_reason=LIVE_NOT_IMPLEMENTED)
         scenarios = assess_scenarios(benchmark, RULES, artifacts)
 
-    leftovers = retained_entries(layout.private_tmp)
-    private_tmp_removed = not leftovers and remove_if_empty(layout.private_tmp)
+    suite_leftovers = retained_entries(layout.private_tmp)
+    retained_reason = private_tmp_retention_reason(commands, unjoined)
+    private_tmp_removed = retained_reason is None and remove_private_tmp(layout.private_tmp)
+    if retained_reason is None and not private_tmp_removed:
+        retained_reason = "the runner could not remove it"
     calibration_record = (
         {
             "path": calibration_stdout.relative_to(layout.root).as_posix(),
@@ -377,7 +394,13 @@ def run(request: RunRequest) -> int:
         rules=RULES,
         live_gate=live_gate,
         cleanup=CleanupInfo(
-            joined, unjoined, leftovers, private_tmp_removed, str(layout.private_tmp)
+            joined_owned_processes=joined,
+            unjoined_processes=unjoined,
+            suite_leftovers=suite_leftovers,
+            retained_entries=retained_entries(layout.private_tmp),
+            private_tmp_removed=private_tmp_removed,
+            private_tmp_retained_reason=retained_reason,
+            private_tmp_root=str(layout.private_tmp),
         ),
         extra_limitations=extra_limitations,
         started_at=started_at,
@@ -412,7 +435,7 @@ def validate(report_path: Path) -> int:
         return EXIT_USAGE
     try:
         problems = validate_report(report, report_path.parent, benchmark, RULES)
-    except (AttributeError, KeyError, TypeError, ValueError) as error:
+    except (AttributeError, KeyError, TypeError) as error:
         # A report whose fields have the wrong JSON types is invalid, not
         # a reason to stop validating.
         problems = [f"the report does not have the expected shape: {type(error).__name__}"]

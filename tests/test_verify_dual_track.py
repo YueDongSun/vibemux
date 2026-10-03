@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,13 +33,16 @@ from dual_track_acceptance.check_execution import (  # noqa: E402
     CHECK_BLOCKED,
     CHECK_FAIL,
     CHECK_PASS,
+    CommandRecord,
     evaluate_calibration_check,
+    file_sha256,
     package_name,
     parse_cargo_test_output,
     parse_pytest_summary,
 )
 from dual_track_acceptance.evidence_capture import (  # noqa: E402
     FLAGSHIP,
+    OPTIMIZER_CYCLE,
     EvidenceFile,
     EvidenceStore,
     candidate_records,
@@ -48,9 +52,11 @@ from dual_track_acceptance.evidence_capture import (  # noqa: E402
     workflow_summaries,
 )
 from dual_track_acceptance.live_policy import evaluate_live_gate, policy_problems  # noqa: E402
-from dual_track_acceptance.runner import validate  # noqa: E402
+from dual_track_acceptance.report_validation import validate_report  # noqa: E402
+from dual_track_acceptance.runner import private_tmp_retention_reason, validate  # noqa: E402
 from dual_track_acceptance.runner_config import (  # noqa: E402
     BENCHMARK_PATH,
+    EVIDENCE_DIR_NAME,
     EXIT_FAIL,
     MAX_PRIVATE_TMP_PATH_CHARS,
     PRIVATE_TMP_PREFIX,
@@ -60,6 +66,7 @@ from dual_track_acceptance.runtime_roots import (  # noqa: E402
     OutputLayout,
     prepare_output,
     private_tmp_problems,
+    remove_private_tmp,
 )
 from dual_track_acceptance.scenario_catalog import (  # noqa: E402
     LIVE_CLASSES,
@@ -368,6 +375,37 @@ def test_a_private_temporary_root_too_long_for_nested_worktrees_blocks_the_run()
     assert len(problems) == 1 and "Windows path limits" in problems[0]
 
 
+def test_the_private_temporary_root_is_removed_with_read_only_git_objects(tmp_path: Path) -> None:
+    private_tmp = tmp_path / f"{PRIVATE_TMP_PREFIX}run"
+    objects = private_tmp / "pytest_basetemp" / "project" / ".git" / "objects" / "ab"
+    objects.mkdir(parents=True)
+    packed = objects / "cdef"
+    packed.write_bytes(b"object")
+    packed.chmod(stat.S_IREAD)
+    assert remove_private_tmp(private_tmp)
+    assert not private_tmp.exists()
+    # A directory this run did not create is never removed.
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    assert not remove_private_tmp(foreign)
+    assert foreign.is_dir()
+
+
+def command_record(command_id: str, exit_code: int | None) -> CommandRecord:
+    return CommandRecord(command_id, (command_id,), ".", exit_code, 0, "log", "0" * 64, False)
+
+
+def test_the_private_temporary_root_is_kept_only_after_a_failure_or_a_live_process() -> None:
+    succeeded = [command_record("cargo_test", 0), command_record("pytest", 0)]
+    assert private_tmp_retention_reason(succeeded, []) is None
+    assert private_tmp_retention_reason([], []) is None
+    failed = [command_record("cargo_test", 101), command_record("pytest", None)]
+    reason = private_tmp_retention_reason(failed, [])
+    assert reason is not None and "'cargo_test', 'pytest'" in reason
+    outlived = private_tmp_retention_reason(succeeded, ["vibemuxd.exe (pid 7)"])
+    assert outlived is not None and "outlived" in outlived
+
+
 def evidence_store(name: str, document: dict[str, Any]) -> EvidenceStore:
     path = Path(f"{name}.json")
     return EvidenceStore({name: EvidenceFile(name, path, "0" * 64, document)}, {}, ())
@@ -397,3 +435,27 @@ def test_validating_a_report_with_wrong_json_types_reports_it_invalid(tmp_path: 
     report = tmp_path / "dual_track_report.json"
     report.write_text(json.dumps({"scenarios": "not a list", "commands": 7}), encoding="utf-8")
     assert validate(report) == EXIT_FAIL
+
+
+def test_a_report_validates_its_evidence_through_a_relative_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Evidence paths and the directory they are made relative to must come
+    # from one resolved form of the report directory, however it was named.
+    evidence_dir = tmp_path / "run" / EVIDENCE_DIR_NAME
+    evidence_dir.mkdir(parents=True)
+    path = evidence_dir / f"{OPTIMIZER_CYCLE}.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "name": OPTIMIZER_CYCLE, "value": {}}), encoding="utf-8"
+    )
+    recorded = {
+        "name": OPTIMIZER_CYCLE,
+        "path": f"{EVIDENCE_DIR_NAME}/{OPTIMIZER_CYCLE}.json",
+        "sha256": file_sha256(path),
+    }
+    monkeypatch.chdir(tmp_path)
+    benchmark = load_benchmark(REPO_ROOT / BENCHMARK_PATH)
+    problems = validate_report(
+        {"mode": MODE_OFFLINE, "evidence_artifacts": [recorded]}, Path("run"), benchmark, RULES
+    )
+    assert "evidence_artifacts do not match the evidence files on disk" not in problems

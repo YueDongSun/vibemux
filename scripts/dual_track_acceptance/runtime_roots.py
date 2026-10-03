@@ -5,10 +5,12 @@ from __future__ import annotations
 import csv
 import io
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,12 +102,30 @@ def retained_entries(private_tmp: Path) -> list[str]:
     return sorted(entry.name for entry in private_tmp.iterdir())
 
 
-def remove_if_empty(directory: Path) -> bool:
+def _clear_read_only_and_retry(
+    function: Callable[[str], object], path: str, error: BaseException
+) -> None:
+    # Git writes its object files read-only, which Windows refuses to
+    # delete; any other failure, or a second refusal, propagates.
+    if not isinstance(error, PermissionError):
+        raise error
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    function(path)
+
+
+def remove_private_tmp(private_tmp: Path) -> bool:
+    """Removes the run's private temporary root and everything in it.
+
+    Only a directory this run created (see `prepare_output`) is accepted;
+    anything else is refused rather than removed.
+    """
+    if not private_tmp.name.startswith(PRIVATE_TMP_PREFIX):
+        return False
     try:
-        directory.rmdir()
+        shutil.rmtree(private_tmp, onexc=_clear_read_only_and_retry)
     except OSError:
         return False
-    return True
+    return not private_tmp.exists()
 
 
 ProcessKey = tuple[int, str]

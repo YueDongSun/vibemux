@@ -122,7 +122,7 @@ def load_run_artifacts(
             calibration = parse_calibration_output(stdout.read_text(encoding="utf-8"))
     evidence = load_evidence(report_dir / EVIDENCE_DIR_NAME)
     recorded = {item.get("name"): item for item in report.get("evidence_artifacts", [])}
-    actual = {item["name"]: item for item in evidence.artifacts(report_dir.resolve())}
+    actual = {item["name"]: item for item in evidence.artifacts(report_dir)}
     if recorded != actual:
         problems.append("evidence_artifacts do not match the evidence files on disk")
     if evidence.unexpected:
@@ -278,6 +278,10 @@ def validate_report(
 ) -> list[str]:
     """All problems of a report. A draft (`final=False`) skips E01 and the
     verdict, which depend on this very result."""
+    # Every artifact path is derived from this one resolved directory, so a
+    # relative or aliased report path (for example a virtualized profile
+    # directory) names the same files the run recorded.
+    report_dir = report_dir.resolve()
     problems = structural_problems(report, benchmark, final=final)
     if report.get("blocked_reason"):
         # Nothing ran: every class must say so, and nothing reconciles.
