@@ -7,3 +7,6 @@ crates/vibemux_frontend/tests/fixtures/golden/*.txt text eol=lf
 # Harness dispatch fixtures are replayed byte-for-byte against the capture
 # digest and raw-record assertions.
 crates/vibemux_harness/tests/fixtures/dispatch/*.jsonl text eol=lf
+# The pinned acceptance specification: the acceptance report records the
+# digest of these exact bytes.
+tests/fixtures/dual_track_benchmark/*.json text eol=lf
