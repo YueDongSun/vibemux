@@ -10,7 +10,7 @@ use uuid::Uuid;
 use vibemux_harness::{
     AgentKind, HarnessDetection,
     dispatch::{
-        AttemptOutcome, NativeProtocol, OutcomeDecision, PromptDigest,
+        AttemptOutcome, DispatchError, NativeProtocol, OutcomeDecision, PromptDigest,
         capture_budget::{CaptureSummary, KindCounts},
         events::ProcessSummary,
     },
@@ -472,7 +472,7 @@ fn reviewed(
         reviewer_run_id: run_id(store, attempt.request_id),
         reviewer_session_id: attempt.session_id,
         reviewer_route: "reviewer_alias".into(),
-        reviewer_harness: AgentKind::Codex,
+        reviewer_harness: AgentKind::Claude,
         verdict: ReviewVerdict::Pass,
         findings_count: 0,
         findings_digest: Sha256Digest::of(b"[]"),
@@ -1213,6 +1213,22 @@ fn review_attempt_must_match_the_candidate_task_and_contract() {
         ),
         "store_workflow_review_unbound"
     );
+    let mut wrong_harness = review_a.clone();
+    wrong_harness.receipt_id = Uuid::new_v4();
+    wrong_harness.reviewer_harness = AgentKind::Codex;
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Review(wrong_harness),
+                    None,
+                    at(8),
+                )
+                .expect_err("reviewer harness mismatch")
+        ),
+        "store_workflow_review_unbound"
+    );
     let mut wrong_contract = review_a;
     wrong_contract.receipt_id = Uuid::new_v4();
     wrong_contract.contract_id = candidate_b.candidate.contract_id;
@@ -1229,6 +1245,135 @@ fn review_attempt_must_match_the_candidate_task_and_contract() {
         ),
         "store_workflow_review_unknown_candidate"
     );
+}
+
+#[test]
+fn passing_review_requires_a_completed_review_dispatch() {
+    for outcome in [AttemptOutcome::Failed, AttemptOutcome::Cancelled] {
+        let (_file, mut store) = open_store();
+        let workflow = running_workflow(&mut store, &["track_a"]);
+        let (_, _, candidate) = collected(
+            &mut store,
+            workflow.workflow_id,
+            "track_a",
+            "slot_a",
+            "tree_a",
+            "a code",
+        );
+        let latest = current(&store, workflow.workflow_id);
+        let held = lease(&mut store, &latest, "track_a", "slot_r", "review_tree");
+        let admission = attempt_admission(
+            &store,
+            workflow.workflow_id,
+            &held,
+            "review_tree",
+            AttemptPurpose::Review,
+        );
+        let attempt = store
+            .admit_workflow_attempt(&admission)
+            .expect("review attempt")
+            .attempt;
+        let pass = ReviewReceipt {
+            schema_version: RECEIPT_SCHEMA_VERSION,
+            receipt_id: Uuid::new_v4(),
+            workflow_id: workflow.workflow_id,
+            task_key: candidate.candidate.task_key.clone(),
+            contract_id: candidate.candidate.contract_id,
+            candidate_digest: candidate.candidate.candidate_digest,
+            reviewer_run_id: run_id(&store, attempt.request_id),
+            reviewer_session_id: attempt.session_id,
+            reviewer_route: "reviewer_alias".into(),
+            reviewer_harness: AgentKind::Claude,
+            verdict: ReviewVerdict::Pass,
+            findings_count: 0,
+            findings_digest: Sha256Digest::of(b"[]"),
+            candidate_unchanged: true,
+        };
+        assert_eq!(
+            code(
+                store
+                    .record_workflow_receipt(
+                        workflow.workflow_id,
+                        &WorkflowReceipt::Review(pass.clone()),
+                        None,
+                        at(7),
+                    )
+                    .expect_err("admitted review cannot pass")
+            ),
+            "store_workflow_review_unsettled"
+        );
+        let mut diagnostic = pass.clone();
+        diagnostic.receipt_id = Uuid::new_v4();
+        diagnostic.verdict = ReviewVerdict::ChangesRequested;
+        store
+            .record_workflow_receipt(
+                workflow.workflow_id,
+                &WorkflowReceipt::Review(diagnostic),
+                None,
+                at(7),
+            )
+            .expect("non-pass diagnostic remains recordable");
+        if outcome == AttemptOutcome::Failed {
+            let claim = store
+                .claim_harness_dispatch(attempt.request_id, at(8))
+                .expect("claim");
+            assert_eq!(
+                code(
+                    store
+                        .record_workflow_receipt(
+                            workflow.workflow_id,
+                            &WorkflowReceipt::Review(pass.clone()),
+                            None,
+                            at(8),
+                        )
+                        .expect_err("running review cannot pass")
+                ),
+                "store_workflow_review_unsettled"
+            );
+            store
+                .finish_harness_dispatch(&HarnessDispatchFinish {
+                    request_id: attempt.request_id,
+                    fence: claim.fence,
+                    decision: OutcomeDecision {
+                        outcome: AttemptOutcome::Failed,
+                        error_code: Some(DispatchError::ProcessFailed),
+                    },
+                    process: ProcessSummary {
+                        exit_code: Some(1),
+                        forced_termination: false,
+                        stderr_bytes: 0,
+                    },
+                    capture: CaptureSummary {
+                        record_count: 1,
+                        record_bytes: 32,
+                        kinds: KindCounts {
+                            started: 1,
+                            ..KindCounts::default()
+                        },
+                        transcript_sha256: Sha256Digest::of(b"failed review"),
+                    },
+                    timestamp: at(9),
+                })
+                .expect("failed review");
+        } else {
+            store
+                .cancel_harness_dispatch(attempt.request_id, at(9))
+                .expect("cancel review");
+        }
+        assert_eq!(
+            code(
+                store
+                    .record_workflow_receipt(
+                        workflow.workflow_id,
+                        &WorkflowReceipt::Review(pass),
+                        None,
+                        at(10),
+                    )
+                    .expect_err("terminal non-completed review cannot pass")
+            ),
+            "store_workflow_review_unsettled"
+        );
+    }
 }
 
 #[test]

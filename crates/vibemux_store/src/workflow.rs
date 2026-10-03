@@ -39,8 +39,8 @@ use vibemux_workflow::{
 };
 
 use crate::{
-    HarnessDispatchAdmission, HarnessDispatchCommit, SqliteStore, StoreError,
-    harness_dispatch::admit_dispatch_in, resolve_or_mint_project_id,
+    HarnessDispatchAdmission, HarnessDispatchCommit, HarnessDispatchRecord, SqliteStore,
+    StoreError, harness_dispatch::admit_dispatch_in, resolve_or_mint_project_id,
 };
 
 use workflow_rows::uuid_key;
@@ -2070,7 +2070,31 @@ fn check_review(
             && attempt.task_key == review.task_key
             && attempt.contract_id == review.contract_id
         {
+            let dispatch_json: String = transaction.query_row(
+                "SELECT record_json FROM harness_dispatches WHERE request_id = ?",
+                [uuid_key(attempt.request_id)],
+                |row| row.get(0),
+            )?;
+            let dispatch: HarnessDispatchRecord = serde_json::from_str(&dispatch_json)
+                .map_err(|_| workflow_error("store_workflow_projection_mismatch"))?;
+            if dispatch.request_id != attempt.request_id
+                || dispatch.run_id.as_uuid() != &review.reviewer_run_id
+                || dispatch.harness != review.reviewer_harness
+            {
+                return Err(workflow_error("store_workflow_review_unbound"));
+            }
+            let phase = workflow_rows::dispatch_phase(transaction, attempt.request_id)?
+                .ok_or_else(|| workflow_error("store_workflow_projection_mismatch"))?;
+            if dispatch.phase.as_str() != phase {
+                return Err(workflow_error("store_workflow_projection_mismatch"));
+            }
+            if review.verdict == vibemux_workflow::gates::ReviewVerdict::Pass
+                && phase != DispatchPhase::Completed.as_str()
+            {
+                return Err(workflow_error("store_workflow_review_unsettled"));
+            }
             bound = true;
+            break;
         }
     }
     if !bound {
