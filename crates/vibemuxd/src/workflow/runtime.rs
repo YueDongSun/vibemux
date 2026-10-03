@@ -278,32 +278,20 @@ impl RunContext {
             .create(RunId::new())
             .await
             .map_err(|_| WorkflowError::Workspace)?;
-        let ledger = {
-            let mut ledger = self.ledger.lock().map_err(|_| WorkflowError::Internal)?;
-            ledger.workspaces.insert(key.to_string(), workspace.clone());
-            ledger.clone()
-        };
         let state = self.setup.state.clone();
         let workflow_id = self.workflow_id;
-        let published =
-            tokio::task::spawn_blocking(move || state.write_ledger(workflow_id, &ledger))
-                .await
-                .map_err(|_| WorkflowError::Internal)
-                .and_then(|result| result);
-        if let Err(error) = published {
-            // Nothing has used the new worktree yet. Remove it through the
-            // manager's ownership checks, so a failed ledger write cannot
-            // leave an unrecorded worktree behind.
-            if self.manager.cleanup(&workspace).await.is_ok() {
-                self.ledger
-                    .lock()
+        publish_workspace(
+            &self.manager,
+            &self.ledger,
+            key,
+            workspace,
+            move |ledger| async move {
+                tokio::task::spawn_blocking(move || state.write_ledger(workflow_id, &ledger))
+                    .await
                     .map_err(|_| WorkflowError::Internal)?
-                    .workspaces
-                    .remove(key);
-            }
-            return Err(error);
-        }
-        Ok(workspace)
+            },
+        )
+        .await
     }
 
     /// Acquires the unit's next lease, or reuses an active one it already
@@ -578,6 +566,39 @@ impl RunContext {
     }
 }
 
+/// Publishes the ownership ledger before a new worktree can be used by a
+/// turn. A failed publication removes the still-clean worktree through the
+/// manager's ownership checks; if cleanup also fails, the in-memory ledger
+/// keeps it visible to the coordinator's later cleanup pass.
+async fn publish_workspace<F, Fut>(
+    manager: &WorkspaceManager,
+    ledger: &Mutex<WorkspaceLedger>,
+    key: &str,
+    workspace: RunWorkspace,
+    publish: F,
+) -> Result<RunWorkspace, WorkflowError>
+where
+    F: FnOnce(WorkspaceLedger) -> Fut,
+    Fut: Future<Output = Result<(), WorkflowError>>,
+{
+    let next = {
+        let mut ledger = ledger.lock().map_err(|_| WorkflowError::Internal)?;
+        ledger.workspaces.insert(key.to_string(), workspace.clone());
+        ledger.clone()
+    };
+    if let Err(error) = publish(next).await {
+        if manager.cleanup(&workspace).await.is_ok() {
+            ledger
+                .lock()
+                .map_err(|_| WorkflowError::Internal)?
+                .workspaces
+                .remove(key);
+        }
+        return Err(error);
+    }
+    Ok(workspace)
+}
+
 /// [`RunContext::versioned`] for callers without a run context.
 pub(crate) async fn versioned<T, F>(
     writer: &WriterHandle,
@@ -682,5 +703,89 @@ pub(crate) async fn revoke_lease(
         Ok(_) => Ok(()),
         Err(WriterError::Store { code }) if code == LEASE_ENDED_CODE => Ok(()),
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, path::Path, process::Command};
+
+    use super::*;
+
+    fn git_executable() -> PathBuf {
+        let name = if cfg!(windows) { "git.exe" } else { "git" };
+        std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+            .map(|directory| directory.join(name))
+            .find(|path| path.is_file())
+            .and_then(|path| std::fs::canonicalize(path).ok())
+            .expect("Git executable")
+    }
+
+    fn git(executable: &Path, repo: &Path, arguments: &[&str]) -> String {
+        let output = Command::new(executable)
+            .current_dir(repo)
+            .args(["-c", "user.name=VibeMux Test"])
+            .args(["-c", "user.email=fixture@example.invalid"])
+            .args(["-c", "commit.gpgSign=false"])
+            .args(arguments)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
+            .output()
+            .expect("Git fixture command");
+        assert!(
+            output.status.success(),
+            "Git fixture command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("Git output")
+    }
+
+    #[tokio::test]
+    async fn failed_ledger_publication_removes_new_worktree_and_preserves_main() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let repo = directory.path().join("repo");
+        std::fs::create_dir(&repo).expect("repo");
+        let executable = git_executable();
+        git(
+            &executable,
+            &repo,
+            &["init", "--quiet", "--initial-branch=main"],
+        );
+        std::fs::write(repo.join("base.txt"), "unchanged\n").expect("base");
+        std::fs::write(repo.join(".gitignore"), ".vibemux/\n").expect("ignore");
+        git(&executable, &repo, &["add", "base.txt", ".gitignore"]);
+        git(&executable, &repo, &["commit", "--quiet", "-m", "base"]);
+        let base = git(&executable, &repo, &["rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let manager = WorkspaceManager::new(executable.clone(), repo.clone(), base.clone())
+            .await
+            .expect("manager");
+        let workspace = manager.create(RunId::new()).await.expect("worktree");
+        let ledger = Mutex::new(WorkspaceLedger {
+            schema_version: 1,
+            workspaces: BTreeMap::new(),
+        });
+        assert_eq!(
+            publish_workspace(
+                &manager,
+                &ledger,
+                "worker:store",
+                workspace.clone(),
+                |_| async { Err(WorkflowError::Internal) }
+            )
+            .await
+            .err(),
+            Some(WorkflowError::Internal)
+        );
+        assert!(ledger.lock().expect("ledger").workspaces.is_empty());
+        assert!(!Path::new(&workspace.path).exists());
+        let inventory = git(&executable, &repo, &["worktree", "list", "--porcelain"]);
+        assert!(!inventory.contains(&workspace.path));
+        assert_eq!(git(&executable, &repo, &["rev-parse", "HEAD"]).trim(), base);
+        assert_eq!(git(&executable, &repo, &["status", "--porcelain"]), "");
     }
 }

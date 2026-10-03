@@ -10,7 +10,7 @@ mod workflow_support;
 use serde_json::{Value, json};
 use workflow_support::{
     FixtureOptions, WorkflowFixture, cooperative_request, good_files, phase, policy, review_pass,
-    session_id, task_view, track_a, track_b, workflow_id,
+    session_id, task_view, taskboard_file, track_a, track_b, workflow_id,
 };
 
 const QUESTION: &str = "Which error code does the store raise for a blank title?";
@@ -50,6 +50,84 @@ fn finished_at(log: &[Value], key: &str) -> u64 {
         .find(|record| record["event"] == "finished" && record["key"] == key)
         .map(started_at)
         .expect("finished record")
+}
+
+/// A question bound to a failed answer attempt remains unacknowledged.
+/// The later repair turn must launch without rendering or rebinding it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_answer_delivery_does_not_block_later_repair() {
+    let fixture = WorkflowFixture::start(FixtureOptions::default()).await;
+    let mut first_files = good_files(&["src/server.mjs", "src/store.mjs"]);
+    first_files["src/store.mjs"] = json!(taskboard_file(
+        "calibration/mutants/blank_title_accepted/src/store.mjs"
+    ));
+    fixture.write_script(&json!({"steps": {
+        "track_a/implement_1": {"write": first_files},
+        "track_b/implement_1": {
+            "write": good_files(&["public/app.mjs", "public/index.html", "public/styles.css"]),
+            "checkpoint": {"messages": [{"kind": "question", "to": "track_a", "text": QUESTION}]},
+        },
+        "track_a/answer_2": {"fail": true},
+        "track_a/repair_3": {"write": good_files(&["src/store.mjs"])},
+        "track_a/review": review_pass(),
+        "track_b/review": review_pass(),
+    }}));
+    let suites = ["store", "browser_frontend_only"];
+    let prepared = fixture
+        .prepare(
+            cooperative_request(
+                "failed_answer_delivery",
+                &fixture.head,
+                &track_a(&["store"]),
+                &track_b(&["browser_frontend_only"]),
+                &suites,
+            ),
+            policy(&suites, 2, false),
+        )
+        .await;
+    let workflow = workflow_id(&prepared);
+    fixture.start_workflow(&prepared).await;
+    let status = fixture.wait_idle(workflow).await;
+    assert_eq!(phase(&status), "accepted", "{status:#}");
+    assert_eq!(fixture.started("track_a/answer_2").len(), 1);
+    let repair = fixture.started("track_a/repair_3");
+    assert_eq!(repair.len(), 1, "repair did not launch");
+    assert!(
+        !repair[0]["prompt"]
+            .as_str()
+            .expect("prompt")
+            .contains(QUESTION)
+    );
+    let question = status["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|message| message["kind"] == "question")
+        .expect("question");
+    assert_eq!(question["state"], "delivered");
+    let exported = fixture.export_all(workflow).await;
+    let answer = exported
+        .iter()
+        .find(|item| {
+            item["kind"] == "attempt"
+                && item["body"]["task_key"] == "track_a"
+                && item["body"]["purpose"] == "answer"
+        })
+        .expect("failed answer attempt");
+    let message = exported
+        .iter()
+        .find(|item| {
+            item["kind"] == "message"
+                && item["body"]["envelope"]["message_id"] == question["message_id"]
+        })
+        .expect("message evidence");
+    assert_eq!(
+        message["body"]["delivered_in_attempt"],
+        answer["body"]["request_id"]
+    );
+    assert!(message["body"]["acknowledged_in_attempt"].is_null());
+    assert_eq!(fixture.checkout_status(), "");
+    fixture.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -565,13 +565,10 @@ pub(crate) async fn pending_deliveries(
             InboxDecision::Duplicate => continue,
             InboxDecision::OutOfOrder { .. } => break,
         }
-        // A message delivered to an attempt that never completed stays
-        // eligible; `deliver` refuses it for any attempt but that one.
-        if !matches!(
-            message.state,
-            MessageState::Admitted | MessageState::Delivered
-        ) || message.envelope.expires_at_ms <= now_ms()
-        {
+        // A delivery already bound to a previous attempt remains evidence
+        // of that attempt. A new turn must neither render it nor try to
+        // rebind it in the atomic delivery batch.
+        if message.state != MessageState::Admitted || message.envelope.expires_at_ms <= now_ms() {
             continue;
         }
         let Ok(body) = read_body(context, message) else {
