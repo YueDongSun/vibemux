@@ -170,6 +170,33 @@ pub(super) fn list_workflows(
     rows.iter().map(|json| decode(json)).collect()
 }
 
+pub(super) fn list_workflows_after(
+    connection: &Connection,
+    after: Option<Uuid>,
+    limit: usize,
+) -> Result<Vec<WorkflowRecord>, StoreError> {
+    let mut statement = connection.prepare(
+        "SELECT workflow_id FROM workflows WHERE workflow_id > ? ORDER BY workflow_id ASC LIMIT ?",
+    )?;
+    let keys = statement
+        .query_map(
+            params![
+                after.map(uuid_key).unwrap_or_default(),
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    keys.into_iter()
+        .map(|key| {
+            let id = Uuid::parse_str(&key).map_err(|_| mismatch())?;
+            load_workflow(connection, id)?
+                .map(|stored| stored.record)
+                .ok_or_else(mismatch)
+        })
+        .collect()
+}
+
 // --- contracts -----------------------------------------------------------
 
 pub(super) fn load_contract(

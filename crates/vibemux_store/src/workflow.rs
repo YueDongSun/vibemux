@@ -47,6 +47,7 @@ use workflow_rows::uuid_key;
 
 pub const WORKFLOW_STORE_RECORD_SCHEMA_VERSION: u32 = 1;
 const EVENT_ACTOR: &str = "vibemuxd";
+const SUPERVISOR_INBOX_DOMAIN: &str = "vibemux.workflow.supervisor_inbox.v1";
 /// Bound on records returned by one snapshot read.
 pub const MAX_SNAPSHOT_ITEMS: usize = 512;
 
@@ -546,6 +547,15 @@ impl SqliteStore {
         workflow_rows::list_workflows(&self.connection, limit.min(MAX_SNAPSHOT_ITEMS))
     }
 
+    /// Stable, bounded traversal for reconciliation of every workflow.
+    pub fn list_workflows_after(
+        &self,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<WorkflowRecord>, StoreError> {
+        workflow_rows::list_workflows_after(&self.connection, after, limit.min(MAX_SNAPSHOT_ITEMS))
+    }
+
     pub fn workflow_contract(
         &self,
         contract_id: Sha256Digest,
@@ -958,6 +968,14 @@ impl SqliteStore {
         admission: &WorkflowAttemptAdmission,
     ) -> Result<WorkflowAttemptCommit, StoreError> {
         let transaction = self.immediate()?;
+        let stored = workflow_rows::load_existing_workflow(&transaction, admission.workflow_id)?;
+        let contract = workflow_rows::load_contract(&transaction, admission.contract_id)?
+            .ok_or_else(|| workflow_error("store_workflow_stale_contract"))?;
+        if admission.dispatch.base_commit != stored.record.base_commit
+            || contract.base_commit != stored.record.base_commit
+        {
+            return Err(workflow_error("store_workflow_base_mismatch"));
+        }
         if let Some(existing) =
             workflow_rows::load_attempt(&transaction, admission.dispatch.request_id)?
         {
@@ -972,8 +990,7 @@ impl SqliteStore {
                 return Err(workflow_error("store_workflow_attempt_conflict"));
             }
             let dispatch = admit_dispatch_in(&transaction, &admission.dispatch)?;
-            let workflow =
-                workflow_rows::load_existing_workflow(&transaction, admission.workflow_id)?.record;
+            let workflow = stored.record;
             transaction.commit()?;
             return Ok(WorkflowAttemptCommit {
                 attempt: existing,
@@ -982,7 +999,6 @@ impl SqliteStore {
                 duplicate: true,
             });
         }
-        let stored = workflow_rows::load_existing_workflow(&transaction, admission.workflow_id)?;
         if stored.record.version != admission.expected_workflow_version {
             return Err(workflow_error("store_workflow_version_conflict"));
         }
@@ -1160,17 +1176,31 @@ impl SqliteStore {
                 json!({"suite_count": verification.suites.len(), "unpassed_suites": failed, "subject_unchanged": verification.subject_unchanged})
             }
             WorkflowReceipt::Integration(integration) => {
-                let accepted: Vec<Sha256Digest> = stored
+                let accepted: Vec<(Sha256Digest, Sha256Digest)> = stored
                     .record
                     .tasks
                     .iter()
-                    .filter_map(|task| task.accepted_candidate)
+                    .filter_map(|task| {
+                        task.accepted_candidate
+                            .map(|digest| (digest, task.contract_id))
+                    })
                     .collect();
+                if integration.base_commit != stored.record.base_commit {
+                    return Err(workflow_error("store_workflow_base_mismatch"));
+                }
                 if integration
                     .applied_candidates
                     .iter()
-                    .any(|digest| !accepted.contains(digest))
+                    .any(|digest| !accepted.iter().any(|(candidate, _)| candidate == digest))
                 {
+                    return Err(workflow_error("store_workflow_integration_not_approved"));
+                }
+                let mut expected_contracts: Vec<_> =
+                    accepted.iter().map(|(_, contract)| *contract).collect();
+                expected_contracts.sort();
+                let mut receipt_contracts = integration.contract_ids.clone();
+                receipt_contracts.sort();
+                if receipt_contracts != expected_contracts {
                     return Err(workflow_error("store_workflow_integration_not_approved"));
                 }
                 json!({"applied_count": integration.applied_candidates.len(), "conflict_count": integration.conflicts.len()})
@@ -1355,6 +1385,9 @@ impl SqliteStore {
                 WorkflowReceipt::Integration(integration) => Some(integration),
                 _ => None,
             });
+        if integration.is_some_and(|receipt| receipt.base_commit != record.base_commit) {
+            return Err(workflow_error("store_workflow_gate_failed"));
+        }
         let verifications =
             workflow_rows::receipts_for(&transaction, workflow_id, Some("verification"))?;
         let integration_verification: Option<&VerifierReceipt> =
@@ -1518,7 +1551,46 @@ impl SqliteStore {
         timestamp: OffsetDateTime,
     ) -> Result<MessageCommit, StoreError> {
         let transaction = self.immediate()?;
-        let message = workflow_rows::load_message(&transaction, message_id)?
+        let result = Self::change_workflow_message_in(&transaction, message_id, change, timestamp)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    /// Delivers a recipient's pending messages together. A bad or expired
+    /// message rolls back every earlier delivery in this batch.
+    pub fn deliver_workflow_messages(
+        &mut self,
+        workflow_id: Uuid,
+        message_ids: &[Uuid],
+        attempt: Uuid,
+        timestamp: OffsetDateTime,
+    ) -> Result<Vec<MessageCommit>, StoreError> {
+        let transaction = self.immediate()?;
+        let mut delivered = Vec::with_capacity(message_ids.len());
+        for message_id in message_ids {
+            let message = workflow_rows::load_message(&transaction, *message_id)?
+                .ok_or_else(|| workflow_error("store_workflow_unknown_message"))?;
+            if message.envelope.workflow_id != workflow_id {
+                return Err(workflow_error("store_workflow_message_attempt_mismatch"));
+            }
+            delivered.push(Self::change_workflow_message_in(
+                &transaction,
+                *message_id,
+                &MessageChange::Deliver { attempt },
+                timestamp,
+            )?);
+        }
+        transaction.commit()?;
+        Ok(delivered)
+    }
+
+    fn change_workflow_message_in(
+        transaction: &Transaction<'_>,
+        message_id: Uuid,
+        change: &MessageChange,
+        timestamp: OffsetDateTime,
+    ) -> Result<MessageCommit, StoreError> {
+        let message = workflow_rows::load_message(transaction, message_id)?
             .ok_or_else(|| workflow_error("store_workflow_unknown_message"))?;
         let now = millis(timestamp);
         let event = match change {
@@ -1528,6 +1600,16 @@ impl SqliteStore {
         };
         let state = message_transition(&message.envelope, message.state, &event)
             .map_err(|error| workflow_error(error.code()))?;
+        if let MessageChange::Deliver { attempt } | MessageChange::Acknowledge { attempt, .. } =
+            change
+        {
+            check_message_attempt(
+                transaction,
+                &message,
+                *attempt,
+                matches!(change, MessageChange::Acknowledge { .. }),
+            )?;
+        }
         let mut next = message.clone();
         next.state = state;
         match change {
@@ -1540,6 +1622,13 @@ impl SqliteStore {
                 next.delivered_in_attempt = Some(*attempt);
             }
             MessageChange::Acknowledge { attempt, .. } => {
+                if message.delivered_in_attempt != Some(*attempt)
+                    || message
+                        .acknowledged_in_attempt
+                        .is_some_and(|previous| previous != *attempt)
+                {
+                    return Err(workflow_error("store_workflow_message_attempt_mismatch"));
+                }
                 next.acknowledged_in_attempt.get_or_insert(*attempt);
             }
             MessageChange::Expire => {}
@@ -1552,7 +1641,7 @@ impl SqliteStore {
         }
         next.updated_at_ms = now.max(message.updated_at_ms);
         let (envelope, sequence) = append(
-            &transaction,
+            transaction,
             "workflow_message_changed",
             format!(
                 "workflow_message:{}:{}",
@@ -1569,8 +1658,7 @@ impl SqliteStore {
             }),
             timestamp,
         )?;
-        workflow_rows::update_message(&transaction, &next, message.state.as_str(), sequence)?;
-        transaction.commit()?;
+        workflow_rows::update_message(transaction, &next, message.state.as_str(), sequence)?;
         Ok(MessageCommit {
             message: next,
             event: Some(envelope),
@@ -1830,6 +1918,58 @@ fn admitted_candidates(
     )
 }
 
+fn check_message_attempt(
+    transaction: &Transaction<'_>,
+    message: &MessageRecord,
+    attempt_id: Uuid,
+    acknowledge: bool,
+) -> Result<(), StoreError> {
+    match &message.envelope.recipient {
+        Participant::Supervisor => {
+            // The coordinator owns a synthetic inbox; it has no dispatch.
+            let digest = Sha256Digest::of_fields(
+                SUPERVISOR_INBOX_DOMAIN,
+                &[message.envelope.message_id.as_bytes()],
+            );
+            let mut bytes = [0_u8; 16];
+            bytes.copy_from_slice(&digest.as_bytes()[..16]);
+            if attempt_id != uuid::Builder::from_random_bytes(bytes).into_uuid() {
+                return Err(workflow_error("store_workflow_message_attempt_mismatch"));
+            }
+        }
+        Participant::Worker {
+            task_key,
+            session_id,
+        } => {
+            let attempt = workflow_rows::load_attempt(transaction, attempt_id)?
+                .ok_or_else(|| workflow_error("store_workflow_unknown_attempt"))?;
+            if attempt.workflow_id != message.envelope.workflow_id
+                || &attempt.task_key != task_key
+                || attempt.session_id != *session_id
+                || attempt.contract_id != message.envelope.contract_id
+                || attempt.purpose == AttemptPurpose::Review
+            {
+                return Err(workflow_error("store_workflow_message_attempt_mismatch"));
+            }
+            let phase = workflow_rows::dispatch_phase(transaction, attempt_id)?
+                .ok_or_else(|| workflow_error("store_workflow_projection_mismatch"))?;
+            let valid_phase = if acknowledge {
+                phase == DispatchPhase::Completed.as_str()
+            } else {
+                phase == DispatchPhase::Admitted.as_str()
+                    || phase == DispatchPhase::Running.as_str()
+                    || (phase == DispatchPhase::Completed.as_str()
+                        && message.delivered_in_attempt == Some(attempt_id))
+            };
+            if !valid_phase {
+                return Err(workflow_error("store_workflow_message_attempt_unsettled"));
+            }
+        }
+        _ => return Err(workflow_error("store_workflow_message_attempt_mismatch")),
+    }
+    Ok(())
+}
+
 fn check_candidate(
     transaction: &Transaction<'_>,
     record: &WorkflowRecord,
@@ -1882,6 +2022,13 @@ fn check_candidate(
         return Err(workflow_error("store_workflow_attempt_mismatch"));
     }
     if candidate.admitted {
+        if candidate
+            .manifest
+            .as_ref()
+            .is_some_and(|manifest| manifest.base_commit != record.base_commit)
+        {
+            return Err(workflow_error("store_workflow_base_mismatch"));
+        }
         let clean = phase == DispatchPhase::Completed.as_str()
             && candidate.manifest.is_some()
             && candidate.violation_codes.is_empty();
@@ -1905,6 +2052,7 @@ fn check_review(
     if !candidates.iter().any(|candidate| {
         candidate.candidate.candidate_digest == review.candidate_digest
             && candidate.candidate.task_key == review.task_key
+            && candidate.candidate.contract_id == review.contract_id
     }) {
         return Err(workflow_error("store_workflow_review_unknown_candidate"));
     }
@@ -1919,6 +2067,8 @@ fn check_review(
         if workflow_rows::dispatch_run_id(transaction, attempt.request_id)?.as_deref()
             == Some(reviewer_run.as_str())
             && attempt.session_id == review.reviewer_session_id
+            && attempt.task_key == review.task_key
+            && attempt.contract_id == review.contract_id
         {
             bound = true;
         }

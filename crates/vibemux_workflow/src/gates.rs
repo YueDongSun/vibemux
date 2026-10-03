@@ -295,6 +295,9 @@ pub fn candidate_gate(
             if review.candidate_digest != candidate.candidate_digest {
                 failures.push(GateFailure::ReviewWrongCandidate);
             }
+            if review.task_key != candidate.task_key {
+                failures.push(GateFailure::ReviewWrongCandidate);
+            }
             if review.contract_id != candidate.contract_id {
                 failures.push(GateFailure::ReviewWrongContract);
             }
@@ -421,6 +424,13 @@ pub fn cooperative_acceptance(
                 .iter()
                 .map(|(_, acceptance)| acceptance.contract_id)
                 .collect();
+            let mut expected_contracts = contracts.clone();
+            expected_contracts.sort();
+            let mut actual_contracts = integration.contract_ids.clone();
+            actual_contracts.sort();
+            if actual_contracts != expected_contracts {
+                failures.push(GateFailure::IntegrationMismatch);
+            }
             match integration_verification {
                 None => failures.push(GateFailure::VerificationMissing),
                 Some(receipt) => failures.extend(verification_failures(
@@ -632,6 +642,22 @@ mod tests {
         ] {
             assert!(failures.contains(&expected), "{expected:?}");
         }
+        let mut wrong_task_review = review(&candidate);
+        wrong_task_review.task_key = SpecIdentifier::new("track_b").expect("task key");
+        let valid_verification = verification(
+            candidate.candidate_digest,
+            vec![candidate.contract_id],
+            vec![suite("api", SuiteStatus::Passed, 0)],
+        );
+        assert_eq!(
+            candidate_gate(
+                &candidate,
+                Some(&wrong_task_review),
+                Some(&valid_verification),
+                requirements(&suites),
+            ),
+            Err(vec![GateFailure::ReviewWrongCandidate])
+        );
     }
 
     #[test]
@@ -793,5 +819,19 @@ mod tests {
         .expect_err("rejected");
         assert!(failures.contains(&GateFailure::IntegrationMismatch));
         assert!(failures.contains(&GateFailure::IntegrationConflicts));
+
+        let mut wrong_contracts = integration.clone();
+        wrong_contracts.contract_ids = vec![Sha256Digest::of(b"other contract")];
+        assert_eq!(
+            cooperative_acceptance(
+                WorkflowPhase::Integrating,
+                &expected,
+                &accepted,
+                Some(&wrong_contracts),
+                Some(&integrated),
+                requirements(&suites),
+            ),
+            Err(vec![GateFailure::IntegrationMismatch])
+        );
     }
 }

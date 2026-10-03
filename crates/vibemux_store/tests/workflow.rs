@@ -758,6 +758,22 @@ fn attempts_need_a_running_workflow_an_active_lease_and_its_worktree() {
         code(store.admit_workflow_attempt(&stale).expect_err("stale")),
         "workflow_lease_stale_generation"
     );
+    let mut wrong_base = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &held,
+        "tree_a",
+        AttemptPurpose::Implement,
+    );
+    wrong_base.dispatch.base_commit = "ffffffffffffffffffffffffffffffffffffffff".into();
+    assert_eq!(
+        code(
+            store
+                .admit_workflow_attempt(&wrong_base)
+                .expect_err("wrong base")
+        ),
+        "store_workflow_base_mismatch"
+    );
     let admission = attempt_admission(
         &store,
         workflow.workflow_id,
@@ -880,6 +896,24 @@ fn candidates_are_fenced_and_bound_to_their_settled_attempt() {
         "workflow_lease_attempt_unsettled"
     );
     finish_clean(&mut store, attempt.request_id);
+    let mut wrong_base = receipt.clone();
+    wrong_base.receipt_id = Uuid::new_v4();
+    let manifest = wrong_base.manifest.as_mut().expect("manifest");
+    manifest.base_commit = "ffffffffffffffffffffffffffffffffffffffff".into();
+    wrong_base.candidate.candidate_digest = manifest.digest().expect("digest");
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Candidate(wrong_base),
+                    fence(&held),
+                    at(6),
+                )
+                .expect_err("wrong candidate base")
+        ),
+        "store_workflow_base_mismatch"
+    );
     // A stale generation is refused.
     let stale = Some(LeaseFence {
         lease_id: held.lease_id,
@@ -1141,6 +1175,63 @@ fn the_gate_needs_an_independent_review_and_a_passing_verifier_on_the_same_candi
 }
 
 #[test]
+fn review_attempt_must_match_the_candidate_task_and_contract() {
+    let (_file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a", "track_b"]);
+    let (_, _, candidate_a) = collected(
+        &mut store,
+        workflow.workflow_id,
+        "track_a",
+        "slot_a",
+        "tree_a",
+        "a code",
+    );
+    let (_, _, candidate_b) = collected(
+        &mut store,
+        workflow.workflow_id,
+        "track_b",
+        "slot_b",
+        "tree_b",
+        "b code",
+    );
+    let review_a = reviewed(&mut store, workflow.workflow_id, &candidate_a, "review_a");
+    let mut forged = review_a.clone();
+    forged.receipt_id = Uuid::new_v4();
+    forged.task_key = candidate_b.candidate.task_key.clone();
+    forged.contract_id = candidate_b.candidate.contract_id;
+    forged.candidate_digest = candidate_b.candidate.candidate_digest;
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Review(forged),
+                    None,
+                    at(8),
+                )
+                .expect_err("reviewer of another task")
+        ),
+        "store_workflow_review_unbound"
+    );
+    let mut wrong_contract = review_a;
+    wrong_contract.receipt_id = Uuid::new_v4();
+    wrong_contract.contract_id = candidate_b.candidate.contract_id;
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Review(wrong_contract),
+                    None,
+                    at(8),
+                )
+                .expect_err("review candidate contract mismatch")
+        ),
+        "store_workflow_review_unknown_candidate"
+    );
+}
+
+#[test]
 fn workflow_acceptance_requires_integration_and_a_cancel_blocks_late_results() {
     let (_file, mut store) = open_store();
     let workflow = running_workflow(&mut store, &["track_a", "track_b"]);
@@ -1248,6 +1339,53 @@ fn workflow_acceptance_requires_integration_and_a_cancel_blocks_late_results() {
         .iter()
         .map(|candidate| candidate.candidate_digest)
         .collect();
+    let mut wrong_base = integration.clone();
+    wrong_base.base_commit = "ffffffffffffffffffffffffffffffffffffffff".into();
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Integration(wrong_base),
+                    None,
+                    at(13),
+                )
+                .expect_err("wrong integration base")
+        ),
+        "store_workflow_base_mismatch"
+    );
+    let mut missing_contract = integration.clone();
+    missing_contract.contract_ids.pop();
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Integration(missing_contract),
+                    None,
+                    at(13),
+                )
+                .expect_err("missing accepted contract")
+        ),
+        "store_workflow_integration_not_approved"
+    );
+    let mut extra_contract = integration.clone();
+    extra_contract
+        .contract_ids
+        .push(Sha256Digest::of(b"foreign contract"));
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Integration(extra_contract),
+                    None,
+                    at(13),
+                )
+                .expect_err("extra contract")
+        ),
+        "store_workflow_integration_not_approved"
+    );
     store
         .record_workflow_receipt(
             workflow.workflow_id,
@@ -1523,7 +1661,7 @@ fn envelope(workflow_id: Uuid, message_id: Uuid, to: Participant) -> MessageEnve
         correlation_id: message_id,
         reply_to: None,
         depth: 0,
-        contract_id: Sha256Digest::of(b"contract"),
+        contract_id: contract("track_a", 1, None).contract_id,
         contract_version: 1,
         source_refs: vec![],
         body_sha256: Sha256Digest::of(b"body"),
@@ -1539,9 +1677,22 @@ fn envelope(workflow_id: Uuid, message_id: Uuid, to: Participant) -> MessageEnve
 fn messages_are_sequenced_deduplicated_and_survive_reopen() {
     let (file, mut store) = open_store();
     let workflow = running_workflow(&mut store, &["track_a", "track_b"]);
+    let held = lease(&mut store, &workflow, "track_a", "slot_a", "message_tree");
+    let admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &held,
+        "message_tree",
+        AttemptPurpose::Implement,
+    );
+    let attempt = admission.dispatch.request_id;
+    let recipient_session = admission.session_id;
+    store
+        .admit_workflow_attempt(&admission)
+        .expect("recipient attempt");
     let recipient = Participant::Worker {
         task_key: id("track_a"),
-        session_id: Uuid::from_u128(1),
+        session_id: recipient_session,
     };
     let first = store
         .admit_workflow_message(
@@ -1549,11 +1700,10 @@ fn messages_are_sequenced_deduplicated_and_survive_reopen() {
             at(2),
         )
         .expect("first");
+    let mut expiring = envelope(workflow.workflow_id, Uuid::from_u128(12), recipient.clone());
+    expiring.expires_at_ms = at(5).unix_timestamp() as u64 * 1000;
     let second = store
-        .admit_workflow_message(
-            &envelope(workflow.workflow_id, Uuid::from_u128(12), recipient.clone()),
-            at(3),
-        )
+        .admit_workflow_message(&expiring, at(3))
         .expect("second");
     assert_eq!(
         (
@@ -1579,7 +1729,6 @@ fn messages_are_sequenced_deduplicated_and_survive_reopen() {
         ),
         "store_workflow_message_conflict"
     );
-    let attempt = Uuid::from_u128(500);
     let intruder = Participant::Worker {
         task_key: id("track_b"),
         session_id: Uuid::from_u128(2),
@@ -1599,13 +1748,78 @@ fn messages_are_sequenced_deduplicated_and_survive_reopen() {
         ),
         "message_not_delivered"
     );
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    Uuid::from_u128(11),
+                    &MessageChange::Deliver {
+                        attempt: Uuid::new_v4()
+                    },
+                    at(5),
+                )
+                .expect_err("unknown attempt")
+        ),
+        "store_workflow_unknown_attempt"
+    );
+    let latest = current(&store, workflow.workflow_id);
+    let other_lease = lease(&mut store, &latest, "track_b", "slot_b", "message_tree_b");
+    let other_admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &other_lease,
+        "message_tree_b",
+        AttemptPurpose::Implement,
+    );
     store
-        .change_workflow_message(
-            Uuid::from_u128(11),
-            &MessageChange::Deliver { attempt },
+        .admit_workflow_attempt(&other_admission)
+        .expect("other task attempt");
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    Uuid::from_u128(11),
+                    &MessageChange::Deliver {
+                        attempt: other_admission.dispatch.request_id
+                    },
+                    at(5),
+                )
+                .expect_err("other task")
+        ),
+        "store_workflow_message_attempt_mismatch"
+    );
+    let events_before = store.events().expect("events").len();
+    assert_eq!(
+        code(
+            store
+                .deliver_workflow_messages(
+                    workflow.workflow_id,
+                    &[Uuid::from_u128(11), Uuid::from_u128(12)],
+                    attempt,
+                    at(5),
+                )
+                .expect_err("second message expired")
+        ),
+        "message_expired"
+    );
+    assert_eq!(store.events().expect("events").len(), events_before);
+    assert_eq!(
+        store
+            .workflow_message(Uuid::from_u128(11))
+            .expect("query")
+            .expect("first")
+            .state,
+        MessageState::Admitted,
+    );
+    assert_eq!(
+        store.deliver_workflow_messages(
+            workflow.workflow_id,
+            &[Uuid::from_u128(11)],
+            attempt,
             at(5),
-        )
-        .expect("deliver");
+        ).expect("deliver batch").len(),
+        1,
+    );
     assert!(
         store
             .change_workflow_message(
@@ -1629,7 +1843,7 @@ fn messages_are_sequenced_deduplicated_and_survive_reopen() {
                 )
                 .expect_err("other attempt")
         ),
-        "store_workflow_message_redelivery"
+        "store_workflow_unknown_attempt"
     );
     assert_eq!(
         code(
@@ -1645,6 +1859,64 @@ fn messages_are_sequenced_deduplicated_and_survive_reopen() {
                 .expect_err("intruder")
         ),
         "message_ack_not_recipient"
+    );
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    Uuid::from_u128(11),
+                    &MessageChange::Acknowledge {
+                        by: recipient.clone(),
+                        attempt
+                    },
+                    at(6),
+                )
+                .expect_err("unsettled attempt")
+        ),
+        "store_workflow_message_attempt_unsettled"
+    );
+    finish_clean(&mut store, attempt);
+    let mut second_attempt = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &held,
+        "message_tree",
+        AttemptPurpose::Answer,
+    );
+    second_attempt.session_id = recipient_session;
+    let other_attempt = second_attempt.dispatch.request_id;
+    store
+        .admit_workflow_attempt(&second_attempt)
+        .expect("second attempt");
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    Uuid::from_u128(11),
+                    &MessageChange::Deliver {
+                        attempt: other_attempt
+                    },
+                    at(6),
+                )
+                .expect_err("real other attempt")
+        ),
+        "store_workflow_message_redelivery"
+    );
+    finish_clean(&mut store, other_attempt);
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    Uuid::from_u128(11),
+                    &MessageChange::Acknowledge {
+                        by: recipient.clone(),
+                        attempt: other_attempt
+                    },
+                    at(6),
+                )
+                .expect_err("other delivered attempt")
+        ),
+        "store_workflow_message_attempt_mismatch"
     );
     store
         .change_workflow_message(
@@ -1681,6 +1953,183 @@ fn messages_are_sequenced_deduplicated_and_survive_reopen() {
         pending.state,
         MessageState::Admitted,
         "undelivered messages persist across restart"
+    );
+}
+
+#[test]
+fn message_delivery_rejects_foreign_workflow_session_and_contract() {
+    let (_file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let held = lease(&mut store, &workflow, "track_a", "slot_a", "message_tree");
+    let admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &held,
+        "message_tree",
+        AttemptPurpose::Implement,
+    );
+    store.admit_workflow_attempt(&admission).expect("attempt");
+    let recipient = Participant::Worker {
+        task_key: id("track_a"),
+        session_id: admission.session_id,
+    };
+    let foreign = running_workflow(&mut store, &["track_a"]);
+    let foreign_lease = lease(&mut store, &foreign, "track_a", "slot_b", "foreign_tree");
+    let foreign_admission = attempt_admission(
+        &store,
+        foreign.workflow_id,
+        &foreign_lease,
+        "foreign_tree",
+        AttemptPurpose::Implement,
+    );
+    store
+        .admit_workflow_attempt(&foreign_admission)
+        .expect("foreign attempt");
+    let message_id = Uuid::new_v4();
+    store
+        .admit_workflow_message(
+            &envelope(workflow.workflow_id, message_id, recipient.clone()),
+            at(3),
+        )
+        .expect("message");
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    message_id,
+                    &MessageChange::Deliver {
+                        attempt: foreign_admission.dispatch.request_id
+                    },
+                    at(4),
+                )
+                .expect_err("foreign workflow")
+        ),
+        "store_workflow_message_attempt_mismatch"
+    );
+    let mut wrong_session = envelope(workflow.workflow_id, Uuid::new_v4(), recipient.clone());
+    wrong_session.recipient = Participant::Worker {
+        task_key: id("track_a"),
+        session_id: Uuid::new_v4(),
+    };
+    store
+        .admit_workflow_message(&wrong_session, at(3))
+        .expect("message");
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    wrong_session.message_id,
+                    &MessageChange::Deliver {
+                        attempt: admission.dispatch.request_id
+                    },
+                    at(4),
+                )
+                .expect_err("wrong session")
+        ),
+        "store_workflow_message_attempt_mismatch"
+    );
+    let mut wrong_contract = envelope(workflow.workflow_id, Uuid::new_v4(), recipient);
+    wrong_contract.contract_id = Sha256Digest::of(b"foreign contract");
+    store
+        .admit_workflow_message(&wrong_contract, at(3))
+        .expect("message");
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    wrong_contract.message_id,
+                    &MessageChange::Deliver {
+                        attempt: admission.dispatch.request_id
+                    },
+                    at(4),
+                )
+                .expect_err("wrong contract")
+        ),
+        "store_workflow_message_attempt_mismatch"
+    );
+}
+
+#[test]
+fn supervisor_inbox_uses_only_its_deterministic_message_identity() {
+    let (_file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let message_id = Uuid::new_v4();
+    store
+        .admit_workflow_message(
+            &envelope(workflow.workflow_id, message_id, Participant::Supervisor),
+            at(2),
+        )
+        .expect("supervisor message");
+    assert_eq!(
+        code(
+            store
+                .change_workflow_message(
+                    message_id,
+                    &MessageChange::Deliver {
+                        attempt: Uuid::new_v4()
+                    },
+                    at(3),
+                )
+                .expect_err("arbitrary synthetic id")
+        ),
+        "store_workflow_message_attempt_mismatch"
+    );
+    let digest = Sha256Digest::of_fields(
+        "vibemux.workflow.supervisor_inbox.v1",
+        &[message_id.as_bytes()],
+    );
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    let inbox_id = uuid::Builder::from_random_bytes(bytes).into_uuid();
+    store
+        .change_workflow_message(
+            message_id,
+            &MessageChange::Deliver { attempt: inbox_id },
+            at(3),
+        )
+        .expect("supervisor delivery");
+    store
+        .change_workflow_message(
+            message_id,
+            &MessageChange::Acknowledge {
+                by: Participant::Supervisor,
+                attempt: inbox_id,
+            },
+            at(3),
+        )
+        .expect("supervisor acknowledgement");
+}
+
+#[test]
+fn workflow_keyset_pages_reach_records_beyond_the_latest_snapshot() {
+    let (_file, mut store) = open_store();
+    let contracts = [contract("track_a", 1, None)];
+    let mut expected = Vec::new();
+    for index in 0..270 {
+        let workflow = record(&format!("paged_request_{index}"), &["track_a"]);
+        expected.push(workflow.workflow_id);
+        store
+            .prepare_workflow(&workflow, &contracts, at(0))
+            .expect("prepare");
+    }
+    assert_eq!(store.workflows(256).expect("latest page").len(), 256);
+    let mut seen = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store.list_workflows_after(after, 37).expect("keyset page");
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|record| record.workflow_id);
+        seen.extend(page.into_iter().map(|record| record.workflow_id));
+    }
+    expected.sort();
+    assert_eq!(seen, expected);
+    assert!(
+        store
+            .list_workflows_after(after, 37)
+            .expect("end page")
+            .is_empty()
     );
 }
 
