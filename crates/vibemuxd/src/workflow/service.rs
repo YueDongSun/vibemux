@@ -510,22 +510,30 @@ impl WorkflowService {
             reviewer_turns: tokio::sync::Mutex::new(()),
         };
         let weak = Arc::downgrade(&self.inner);
-        let mut runs = self.inner.runs();
-        if !runs.accepting {
+        let launched = {
+            let mut runs = self.inner.runs();
+            if !runs.accepting {
+                false
+            } else {
+                if runs.active.contains_key(&workflow_id) {
+                    return Err(WorkflowError::AlreadyRunning);
+                }
+                runs.active.insert(
+                    workflow_id,
+                    ActiveRun {
+                        control,
+                        start_request_id: request_id,
+                    },
+                );
+                runs.reports.remove(&workflow_id);
+                runs.tasks.spawn(drive(weak, context, units, width));
+                true
+            }
+        };
+        if !launched {
+            transition(&self.inner.writer, workflow_id, WorkflowPhase::Paused, None).await?;
             return Err(WorkflowError::ShuttingDown);
         }
-        if runs.active.contains_key(&workflow_id) {
-            return Err(WorkflowError::AlreadyRunning);
-        }
-        runs.active.insert(
-            workflow_id,
-            ActiveRun {
-                control,
-                start_request_id: request_id,
-            },
-        );
-        runs.reports.remove(&workflow_id);
-        runs.tasks.spawn(drive(weak, context, units, width));
         Ok(StartResponse {
             workflow_id,
             phase: WorkflowPhase::Running,

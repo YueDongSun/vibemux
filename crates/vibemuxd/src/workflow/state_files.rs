@@ -40,7 +40,8 @@ use super::{collector::BlobStore, error::WorkflowError, prepare::WorkflowPlan};
 
 pub const WORKFLOW_STATE_DIR_NAME: &str = "workflow_state";
 const LEDGER_SCHEMA_VERSION: u32 = 1;
-const CONTENT_INDEX_SCHEMA_VERSION: u32 = 1;
+const LEGACY_CONTENT_INDEX_SCHEMA_VERSION: u32 = 1;
+const CONTENT_INDEX_SCHEMA_VERSION: u32 = 2;
 const CONTENT_INDEX_FILE_NAME: &str = "content_index.json";
 const MAX_STATE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_OUTBOX_BYTES: u64 = 64 * 1024;
@@ -315,6 +316,15 @@ impl StateFiles {
             Some(index) if index.schema_version == CONTENT_INDEX_SCHEMA_VERSION => {
                 Ok(index.entries)
             }
+            Some(index)
+                if index.schema_version == LEGACY_CONTENT_INDEX_SCHEMA_VERSION
+                    && index
+                        .entries
+                        .iter()
+                        .all(|entry| entry.retain_until_ms.is_none()) =>
+            {
+                Ok(index.entries)
+            }
             Some(_) => Err(WorkflowError::Internal),
             None => Ok(Vec::new()),
         }
@@ -521,5 +531,47 @@ mod tests {
             files.read_content(digest).expect("read"),
             Some(b"legacy".to_vec())
         );
+    }
+
+    #[test]
+    fn content_index_reads_v1_and_writes_v2_but_rejects_unknown_versions() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let files = StateFiles::new(directory.path());
+        let index_path = files.root.join(CONTENT_INDEX_FILE_NAME);
+        std::fs::create_dir_all(&files.root).expect("state dir");
+        let workflow_id = Uuid::new_v4();
+        let digest = Sha256Digest::of(b"legacy");
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{"sha256": digest, "workflow_id": workflow_id, "bundle_id": null}]
+        });
+        std::fs::write(&index_path, serde_json::to_vec(&legacy).expect("json"))
+            .expect("legacy index");
+        assert_eq!(
+            files.content_index().expect("legacy read"),
+            vec![ContentIndexEntry {
+                sha256: digest,
+                workflow_id,
+                bundle_id: None,
+                retain_until_ms: None,
+            }]
+        );
+        files
+            .add_content_index(ContentIndexEntry {
+                sha256: Sha256Digest::of(b"new"),
+                workflow_id,
+                bundle_id: None,
+                retain_until_ms: Some(42),
+            })
+            .expect("upgrade");
+        let upgraded: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&index_path).expect("read")).expect("json");
+        assert_eq!(upgraded["schema_version"], 2);
+        assert_eq!(files.content_index().expect("v2 read").len(), 2);
+        let mut unknown = upgraded;
+        unknown["schema_version"] = serde_json::json!(3);
+        std::fs::write(&index_path, serde_json::to_vec(&unknown).expect("json"))
+            .expect("unknown index");
+        assert!(files.content_index().is_err());
     }
 }

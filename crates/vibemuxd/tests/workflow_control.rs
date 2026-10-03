@@ -53,6 +53,53 @@ fn syntax_request(fixture: &WorkflowFixture, request_key: &str) -> Value {
     )
 }
 
+/// A prepared workflow remains addressable after more than one lookup page
+/// of newer workflows has been admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oldest_contract_can_start_after_two_hundred_fifty_six_newer_workflows() {
+    let mut fixture = WorkflowFixture::start(FixtureOptions::default()).await;
+    let first = fixture
+        .prepare(
+            store_request(
+                "oldest_prepared",
+                &fixture.head,
+                "cooperate",
+                &store_task(&SYNTAX),
+                false,
+            ),
+            policy(&SYNTAX, 1, false),
+        )
+        .await;
+    for index in 0..256 {
+        let request_key = format!("newer_{index}");
+        fixture
+            .prepare(
+                store_request(
+                    &request_key,
+                    &fixture.head,
+                    "cooperate",
+                    &store_task(&SYNTAX),
+                    false,
+                ),
+                policy(&SYNTAX, 1, false),
+            )
+            .await;
+    }
+    let oldest = workflow_id(&first);
+    fixture.restart_after_crash(oldest).await;
+    let recovered = fixture.status(oldest).await;
+    assert_eq!(phase(&recovered), "blocked", "{recovered:#}");
+    assert_eq!(recovered["blocked_reason"], "daemon_restart");
+    let contract = first["start_contract"].as_str().expect("contract");
+    let started = fixture
+        .client
+        .workflow_start(contract, Uuid::new_v4())
+        .await
+        .expect("oldest contract remains discoverable");
+    assert_eq!(started["workflow_id"], first["workflow_id"]);
+    fixture.shutdown().await;
+}
+
 /// S02 and the pause walkthrough: with one parallel slot the tracks run
 /// one after the other; a pause lets the running turn finish, keeps the
 /// other track unstarted, and exposes that track's exact next prompt,
