@@ -372,6 +372,62 @@ impl WorkspaceManager {
         Ok(())
     }
 
+    /// The commit an owned worktree's `HEAD` points at. A candidate is
+    /// collected relative to the base commit, so a moved `HEAD` (a worker
+    /// commit) must be refused by the caller.
+    pub async fn head_commit(&self, record: &RunWorkspace) -> Result<String, WorkspaceError> {
+        self.inspect(record).await?;
+        let head = self
+            .git(
+                Path::new(&record.path),
+                &[
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    "HEAD^{commit}".into(),
+                ],
+            )
+            .await?;
+        Ok(head.trim().to_ascii_lowercase())
+    }
+
+    /// NUL-delimited porcelain v1 status of an owned worktree, untracked and
+    /// ignored files included and renames split into delete plus add, so
+    /// every changed path is reported (fail-closed candidate collection).
+    pub async fn change_status(&self, record: &RunWorkspace) -> Result<String, WorkspaceError> {
+        self.inspect(record).await?;
+        self.git(
+            Path::new(&record.path),
+            &[
+                "status".into(),
+                "--porcelain=v1".into(),
+                "-z".into(),
+                "--untracked-files=all".into(),
+                "--ignored=matching".into(),
+                "--no-renames".into(),
+            ],
+        )
+        .await
+    }
+
+    /// NUL-delimited raw diff of tracked paths against the base commit; it
+    /// carries the file modes that the porcelain status does not.
+    pub async fn tracked_raw_diff(&self, record: &RunWorkspace) -> Result<String, WorkspaceError> {
+        self.inspect(record).await?;
+        self.git(
+            Path::new(&record.path),
+            &[
+                "diff".into(),
+                "--raw".into(),
+                "-z".into(),
+                "--no-renames".into(),
+                "--no-abbrev".into(),
+                record.base_commit.clone().into(),
+                "--".into(),
+            ],
+        )
+        .await
+    }
+
     /// Explicit execution only after fresh clean ownership checks. Branch retained.
     pub async fn cleanup(&self, record: &RunWorkspace) -> Result<(), WorkspaceError> {
         self.plan_cleanup(record).await?;

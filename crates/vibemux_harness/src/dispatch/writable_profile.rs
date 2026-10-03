@@ -104,7 +104,16 @@ pub fn build_writable_launch_spec(
             } else {
                 "read-only"
             };
-            owned(&["exec", "--json", "--sandbox", sandbox, "--ephemeral"])
+            // Review turns run in a materialized candidate directory that
+            // is not a Git checkout.
+            owned(&[
+                "exec",
+                "--json",
+                "--sandbox",
+                sandbox,
+                "--ephemeral",
+                "--skip-git-repo-check",
+            ])
         }
         NativeProtocol::CodexAppServer | NativeProtocol::Acp => {
             return Err(DispatchError::ExecutionDisabled);

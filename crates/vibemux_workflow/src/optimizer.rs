@@ -275,7 +275,8 @@ pub struct EvaluationRun {
     pub results: Vec<CaseResult>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluationSummary {
     pub cases: u32,
     pub hard_gate_failures: u32,
@@ -386,7 +387,8 @@ pub struct OptimizerLimits {
     pub max_model_requests: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateOutcome {
     pub candidate_digest: Option<Sha256Digest>,
     pub rejection: Option<OptimizerRejection>,

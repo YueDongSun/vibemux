@@ -3,6 +3,7 @@
 
 pub mod dispatch_commands;
 pub mod recovery;
+pub mod workflow_commands;
 
 use std::{
     ffi::OsString,
@@ -272,6 +273,11 @@ pub enum CliCommand {
         project_root: Option<PathBuf>,
         command: dispatch_commands::DispatchCommand,
     },
+    /// The workflow, slots, context, session, and prompt verbs.
+    Workflow {
+        project_root: Option<PathBuf>,
+        command: workflow_commands::WorkflowCommand,
+    },
     Help,
     Version,
 }
@@ -318,6 +324,8 @@ pub enum DaemonCliError {
     PromptUnavailable,
     #[error("dispatch prompt must be non-blank UTF-8 of at most 32 KiB")]
     InvalidPrompt,
+    #[error("compiled workflow contract was rejected: {}", .0.join(", "))]
+    ContractRejected(Vec<String>),
 }
 
 impl DaemonCliError {
@@ -343,6 +351,7 @@ impl DaemonCliError {
             Self::UnknownHarness(_) => "store_unknown_harness",
             Self::PromptUnavailable => "cli_prompt_unavailable",
             Self::InvalidPrompt => "harness_dispatch_invalid_prompt",
+            Self::ContractRejected(_) => "workflow_contract_rejected",
         }
     }
 }
@@ -491,6 +500,12 @@ pub fn parse_cli_arguments(
     }
     if verb == "dispatch" {
         return dispatch_commands::parse_dispatch_arguments(&arguments[1..]);
+    }
+    if matches!(
+        verb,
+        "workflow" | "slots" | "context" | "session" | "prompt"
+    ) {
+        return workflow_commands::parse_workflow_arguments(verb, &arguments[1..]);
     }
     if verb != "daemon" {
         return Err(DaemonCliError::InvalidArguments);

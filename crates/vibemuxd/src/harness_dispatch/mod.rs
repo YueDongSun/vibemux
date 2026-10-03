@@ -14,8 +14,8 @@
 
 mod config_loader;
 mod executor;
-mod git_head;
-mod native_process;
+pub(crate) mod git_head;
+pub(crate) mod native_process;
 mod output_page;
 mod transcript_store;
 
@@ -43,10 +43,15 @@ use vibemux_harness::{
         capture_budget::{CaptureBudget, CaptureSummary},
         events::ProcessSummary,
         launch_spec::{SessionMode, build_launch_spec},
+        request::DISPATCH_REQUEST_SCHEMA_VERSION,
         route_config::DispatchCatalogEntry,
+        writable_profile::{WritableGrant, build_writable_launch_spec},
     },
 };
-use vibemux_store::{HarnessDispatchAdmission, HarnessDispatchRecord};
+use vibemux_store::{
+    AttemptPurpose, HarnessDispatchAdmission, HarnessDispatchRecord, WorkflowAttemptAdmission,
+};
+use vibemux_workflow::{Sha256Digest, SpecIdentifier};
 
 use crate::{WriterError, WriterHandle};
 
@@ -60,7 +65,8 @@ pub use transcript_store::{
     LiveCapture, MAX_RETAINED_TRANSCRIPT_BYTES, MAX_RETAINED_TRANSCRIPTS, TranscriptPage,
 };
 
-use executor::{ExecutionPlan, call_writer};
+use executor::ExecutionPlan;
+pub(crate) use executor::call_writer;
 use native_process::LaunchPlan;
 use transcript_store::TranscriptStore;
 
@@ -162,6 +168,43 @@ pub struct ProbeReport {
     pub error_code: Option<DispatchError>,
     pub process: ProcessSummary,
     pub capture: CaptureSummary,
+}
+
+/// The workflow binding of one structured worker or reviewer turn
+/// (ADR 031 §5). The store re-checks every field inside the admission
+/// transaction.
+#[derive(Clone, Debug)]
+pub(crate) struct WorkflowTurnBinding {
+    pub workflow_id: Uuid,
+    pub expected_workflow_version: u64,
+    pub lease_id: Uuid,
+    pub lease_generation: u64,
+    pub task_key: SpecIdentifier,
+    pub contract_id: Sha256Digest,
+    pub purpose: AttemptPurpose,
+    pub session_id: Uuid,
+}
+
+/// One workflow turn: a writable (or read-only review) structured turn in
+/// an owned working directory instead of the project root.
+pub(crate) struct WorkflowTurn {
+    pub request_id: Uuid,
+    pub harness: AgentKind,
+    pub prompt: String,
+    pub grant: WritableGrant,
+    /// Owned worktree or materialized candidate directory.
+    pub working_directory: PathBuf,
+    pub base_commit: String,
+    pub binding: WorkflowTurnBinding,
+}
+
+/// What a finished workflow turn left behind.
+#[derive(Clone, Debug)]
+pub(crate) struct WorkflowTurnOutcome {
+    /// The terminal dispatch record.
+    pub record: HarnessDispatchRecord,
+    /// The final assistant message, if the protocol reported one.
+    pub final_text: Option<String>,
 }
 
 /// Cloneable handle; clones share one service.
@@ -295,6 +338,165 @@ impl HarnessDispatchService {
             self.launch(request.request_id, plan).await;
         }
         Ok(receipt)
+    }
+
+    /// Admits one workflow turn through the writer and runs it to its
+    /// fenced finish in the owned working directory. Admission reserves
+    /// that directory (not the project root), so turns in distinct
+    /// worktrees may overlap. Cancel it with [`Self::cancel`].
+    pub(crate) async fn run_workflow_turn(
+        &self,
+        turn: WorkflowTurn,
+    ) -> Result<WorkflowTurnOutcome, DispatchServiceError> {
+        let setup = self.inner.setup()?;
+        self.inner.ensure_accepting()?;
+        let request = DispatchRequest {
+            schema_version: DISPATCH_REQUEST_SCHEMA_VERSION,
+            request_id: turn.request_id,
+            harness: turn.harness,
+            prompt: turn.prompt,
+        };
+        request.validate()?;
+        let detected = self.detected(turn.harness).await?;
+        let config = setup.config.config();
+        let route = config.execution_route(&request, detected)?;
+        let directory = turn.working_directory.clone();
+        let (working_directory, resource_key) =
+            tokio::task::spawn_blocking(move || Self::workflow_resource_key(&directory))
+                .await
+                .ok()
+                .flatten()
+                .ok_or(DispatchError::WorkingDirectoryInvalid)?;
+        let launch = LaunchPlan {
+            trampoline: setup
+                .trampoline
+                .clone()
+                .ok_or(DispatchError::ExecutableUnavailable)?,
+            executable: PathBuf::from(
+                child_path_text(setup.config.executable(route.harness)?)
+                    .ok_or(DispatchError::ExecutableUnavailable)?,
+            ),
+            spec: build_writable_launch_spec(route, turn.grant)?,
+            working_directory: PathBuf::from(&working_directory),
+        };
+        let session = ProtocolSession::for_execution(
+            route,
+            request.prompt.clone(),
+            working_directory.clone(),
+        )?;
+        let budget = CaptureBudget::new(route.protocol, &config.limits)?;
+        let binding = turn.binding;
+        let admission = WorkflowAttemptAdmission {
+            workflow_id: binding.workflow_id,
+            expected_workflow_version: binding.expected_workflow_version,
+            lease_id: binding.lease_id,
+            lease_generation: binding.lease_generation,
+            task_key: binding.task_key,
+            contract_id: binding.contract_id,
+            purpose: binding.purpose,
+            session_id: binding.session_id,
+            dispatch: HarnessDispatchAdmission {
+                request_id: request.request_id,
+                harness: request.harness,
+                protocol: route.protocol,
+                prompt: request.prompt_digest(),
+                config_sha256: setup.config.digest(),
+                resource_key,
+                base_commit: turn.base_commit,
+                timestamp: OffsetDateTime::now_utc(),
+            },
+        };
+        let writer = self.inner.writer.clone();
+        let commit = call_writer(move || writer.admit_workflow_attempt(admission.clone())).await?;
+        let protocol = route.protocol;
+        let request_id = request.request_id;
+        let mut final_text = None;
+        if commit.dispatch.record.phase == DispatchPhase::Admitted {
+            let plan = ExecutionPlan {
+                launch,
+                session,
+                budget,
+                limits: config.limits,
+            };
+            let (done, finished) = oneshot::channel();
+            if self.launch_workflow_turn(request_id, plan, protocol, done) {
+                final_text = finished.await.ok().flatten();
+            } else {
+                let writer = self.inner.writer.clone();
+                let _ = call_writer(move || {
+                    writer.cancel_harness_dispatch(request_id, OffsetDateTime::now_utc())
+                })
+                .await;
+            }
+        }
+        let record = self.status(request_id).await?;
+        Ok(WorkflowTurnOutcome { record, final_text })
+    }
+
+    /// Starts a workflow turn task; `false` if the service stopped
+    /// accepting or the request already runs.
+    fn launch_workflow_turn(
+        &self,
+        request_id: Uuid,
+        plan: ExecutionPlan,
+        protocol: NativeProtocol,
+        done: oneshot::Sender<Option<String>>,
+    ) -> bool {
+        let mut registry = self.inner.registry();
+        if !registry.accepting || registry.attempts.contains_key(&request_id) {
+            return false;
+        }
+        let (signal, cancel) = watch::channel(false);
+        registry.attempts.insert(request_id, signal);
+        let writer = self.inner.writer.clone();
+        let transcripts = Arc::clone(&self.inner.transcripts);
+        let inner = Arc::downgrade(&self.inner);
+        registry.tasks.spawn(async move {
+            let final_text = executor::run_attempt_with_final_text(
+                writer,
+                transcripts,
+                request_id,
+                plan,
+                cancel,
+                Some(protocol),
+            )
+            .await;
+            deregister(&inner, request_id);
+            let _ = done.send(final_text);
+        });
+        while registry.tasks.try_join_next().is_some() {}
+        true
+    }
+
+    /// Canonical working-directory text and the resource key a workflow
+    /// turn in `directory` reserves. Blocking.
+    pub(crate) fn workflow_resource_key(directory: &Path) -> Option<(String, Sha256Digest)> {
+        let canonical = std::fs::canonicalize(directory).ok()?;
+        if !canonical.is_dir() {
+            return None;
+        }
+        let text = child_path_text(&canonical)?;
+        let key = attempt::resource_key(&text);
+        Some((text, key))
+    }
+
+    /// The protocol of `harness`'s route, if the pinned config lets it
+    /// execute.
+    pub(crate) fn execution_protocol(&self, harness: AgentKind) -> Option<NativeProtocol> {
+        let setup = self.inner.setup().ok()?;
+        let route = setup
+            .config
+            .config()
+            .routes
+            .iter()
+            .find(|route| route.harness == harness)?;
+        (route.enabled && route.allow_execution && route.protocol.supports_execution())
+            .then_some(route.protocol)
+    }
+
+    /// The launch trampoline, for other contained daemon processes.
+    pub(crate) fn trampoline(&self) -> Option<PathBuf> {
+        self.inner.setup().ok()?.trampoline.clone()
     }
 
     pub async fn status(
@@ -576,7 +778,7 @@ fn bundled_trampoline() -> Option<PathBuf> {
 /// A canonical path as UTF-8 without the Windows verbatim prefix, which a
 /// vendor CLI does not expect in its program path, its working directory,
 /// or a protocol field.
-fn child_path_text(path: &Path) -> Option<String> {
+pub(crate) fn child_path_text(path: &Path) -> Option<String> {
     let text = path.to_str()?;
     #[cfg(windows)]
     {

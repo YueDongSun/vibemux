@@ -4680,6 +4680,7 @@ dependencies = [
  "vibemux_probe",
  "vibemux_store",
  "vibemux_types",
+ "vibemux_workflow",
  "vibemux_workspace",
 ]
 

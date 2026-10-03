@@ -22,7 +22,8 @@ use tokio::{
 };
 use uuid::Uuid;
 use vibemux_harness::dispatch::{
-    DispatchError, DispatchLimits, ObservedRecord, OutcomeDecision, ProcessExit, ProtocolSession,
+    DispatchError, DispatchLimits, NativeProtocol, ObservedRecord, OutcomeDecision, ProcessExit,
+    ProtocolSession,
     capture_budget::{CaptureBudget, CaptureSummary},
     events::ProcessSummary,
     json_line_framer::JsonLineFramer,
@@ -92,15 +93,29 @@ pub(super) async fn run_attempt(
     transcripts: Arc<TranscriptStore>,
     request_id: Uuid,
     plan: ExecutionPlan,
-    mut cancel: watch::Receiver<bool>,
+    cancel: watch::Receiver<bool>,
 ) {
+    run_attempt_with_final_text(writer, transcripts, request_id, plan, cancel, None).await;
+}
+
+/// [`run_attempt`] that also returns the final assistant text of
+/// `protocol`, read from the live transcript before it can be evicted
+/// (ADR 031 §5).
+pub(super) async fn run_attempt_with_final_text(
+    writer: WriterHandle,
+    transcripts: Arc<TranscriptStore>,
+    request_id: Uuid,
+    plan: ExecutionPlan,
+    mut cancel: watch::Receiver<bool>,
+    final_text_protocol: Option<NativeProtocol>,
+) -> Option<String> {
     let claim_writer = writer.clone();
     let claim = call_writer(move || {
         claim_writer.claim_harness_dispatch(request_id, OffsetDateTime::now_utc())
     })
     .await;
     let Ok(claim) = claim else {
-        return;
+        return None;
     };
     transcripts.begin(request_id);
     let sink = RecordSink::Transcript {
@@ -108,6 +123,8 @@ pub(super) async fn run_attempt(
         request_id,
     };
     let evidence = execute(plan, sink, &mut cancel).await;
+    let final_text =
+        final_text_protocol.and_then(|protocol| transcripts.final_text(request_id, protocol));
     transcripts.finish(request_id);
     let finish = HarnessDispatchFinish {
         request_id,
@@ -118,6 +135,7 @@ pub(super) async fn run_attempt(
         timestamp: OffsetDateTime::now_utc(),
     };
     let _ = call_writer(move || writer.finish_harness_dispatch(finish)).await;
+    final_text
 }
 
 /// Runs an initialize-only probe. Records are counted, never kept.
@@ -131,7 +149,7 @@ pub(super) async fn run_probe(
 /// Runs a blocking writer call off the async runtime. Only a saturated
 /// queue or a late response is retried, so every caller must be safe to
 /// repeat: each writer operation is idempotent or fenced.
-pub(super) async fn call_writer<T, F>(call: F) -> Result<T, WriterError>
+pub(crate) async fn call_writer<T, F>(call: F) -> Result<T, WriterError>
 where
     F: Fn() -> Result<T, WriterError> + Clone + Send + 'static,
     T: Send + 'static,

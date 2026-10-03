@@ -630,8 +630,11 @@ impl SqliteStore {
             .record
             .with_phase(phase, millis(timestamp))
             .map_err(|error| workflow_error(error.code()))?;
-        next.blocked_reason =
-            (phase == WorkflowPhase::Blocked).then(|| reason_code.unwrap_or("blocked").to_string());
+        next.blocked_reason = match phase {
+            WorkflowPhase::Blocked => Some(reason_code.unwrap_or("blocked").to_string()),
+            WorkflowPhase::Failed => Some(reason_code.unwrap_or("failed").to_string()),
+            _ => None,
+        };
         let (event, sequence) = append(
             &transaction,
             "workflow_phase_changed",
@@ -1015,11 +1018,16 @@ impl SqliteStore {
                 )
                 .map_err(|error| workflow_error(error.code()))?;
                 if admission.purpose != AttemptPurpose::Answer {
+                    let compare = next.mode == WorkflowMode::Compare;
                     let task = next
                         .task_mut(&admission.task_key)
                         .map_err(|error| workflow_error(error.code()))?;
-                    task.progress = TaskProgress::Running;
-                    task.failure_code = None;
+                    // Compare competitors share one task: a later competitor
+                    // turn must not hide a candidate already collected.
+                    if !(compare && task.progress == TaskProgress::CandidateCollected) {
+                        task.progress = TaskProgress::Running;
+                        task.failure_code = None;
+                    }
                 }
             }
             AttemptPurpose::Review => {}
@@ -1120,12 +1128,18 @@ impl SqliteStore {
         let summary = match receipt {
             WorkflowReceipt::Candidate(candidate) => {
                 check_candidate(&transaction, &stored.record, candidate, fence)?;
+                // In compare mode a refused competitor does not fail a task
+                // that already holds an admitted competitor candidate.
+                let keeps_collected = stored.record.mode == WorkflowMode::Compare
+                    && admitted_candidates(&transaction, workflow_id)?
+                        .iter()
+                        .any(|other| other.candidate.task_key == candidate.candidate.task_key);
                 let task = next
                     .task_mut(&candidate.candidate.task_key)
                     .map_err(|error| workflow_error(error.code()))?;
                 if candidate.admitted {
                     task.progress = TaskProgress::CandidateCollected;
-                } else {
+                } else if !keeps_collected {
                     task.progress = TaskProgress::Failed;
                     task.failure_code = candidate.violation_codes.first().cloned();
                 }

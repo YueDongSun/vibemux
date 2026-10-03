@@ -44,7 +44,7 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 /// Everything needed to start one vendor process. `Debug` is redacted: the
 /// paths and argv never reach a log.
-pub(super) struct LaunchPlan {
+pub(crate) struct LaunchPlan {
     pub trampoline: PathBuf,
     /// Canonical vendor executable verified by the config loader.
     pub executable: PathBuf,
@@ -63,7 +63,7 @@ impl std::fmt::Debug for LaunchPlan {
 
 /// Reads the allowlisted variables from the daemon environment. A missing
 /// system name is skipped; a missing route name fails the launch.
-pub(super) fn resolve_environment(
+pub(crate) fn resolve_environment(
     names: &[String],
 ) -> Result<Vec<(String, OsString)>, DispatchError> {
     let mut environment = Vec::with_capacity(names.len());
@@ -77,7 +77,7 @@ pub(super) fn resolve_environment(
     Ok(environment)
 }
 
-pub(super) struct NativeProcess {
+pub(crate) struct NativeProcess {
     child: Child,
     tree: ProcessTree,
     /// `None` once closed.
@@ -89,7 +89,7 @@ pub(super) struct NativeProcess {
 
 impl NativeProcess {
     /// Spawns and contains the trampoline, then releases the vendor.
-    pub(super) async fn spawn(
+    pub(crate) async fn spawn(
         plan: &LaunchPlan,
         environment: Vec<(String, OsString)>,
     ) -> Result<Self, DispatchError> {
@@ -155,7 +155,7 @@ impl NativeProcess {
         }
     }
 
-    pub(super) fn close_stdin(&mut self) {
+    pub(crate) fn close_stdin(&mut self) {
         self.stdin = None;
     }
 
@@ -164,7 +164,7 @@ impl NativeProcess {
     /// with `force`, the tree is killed. Either way the tree is terminated
     /// before the trampoline is reaped, which removes any member it left
     /// behind. Returns the exit and the stderr byte count.
-    pub(super) async fn finish(
+    pub(crate) async fn finish(
         &mut self,
         force: bool,
         exit_deadline: Instant,

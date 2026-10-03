@@ -92,6 +92,7 @@ pub struct WorkflowRecord {
     pub tasks: Vec<WorkflowTask>,
     pub budget: LoopBudget,
     pub content_store: ContentStoreMode,
+    /// Reason code of the latest `blocked` or `failed` transition.
     pub blocked_reason: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,

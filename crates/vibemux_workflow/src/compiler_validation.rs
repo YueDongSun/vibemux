@@ -16,6 +16,12 @@
 //! - `span_mismatch`, `contract_excerpt_mismatch`, `request_digest_mismatch`,
 //!   `prohibition_excluded`, `binding_clause_excluded`,
 //!   `normative_assumption`.
+//!
+//! A binding clause may be excluded from one task only as
+//! `addressed_to_other_task`; [`validate_workflow_coverage`] then requires
+//! another task of the same workflow to cover it with binding force
+//! (`unassigned_clause` otherwise). Prohibitions are never excluded: every
+//! task carries them.
 
 use std::collections::BTreeSet;
 
@@ -26,7 +32,7 @@ use crate::{
     source_request::{
         ByteRange, SourceRequest, contains_cjk, has_binding_marker, literal_tokens, numeric_tokens,
     },
-    task_spec::{ArtifactRef, NormativeForce, Requirement, TaskSpec},
+    task_spec::{ArtifactRef, ExclusionReason, NormativeForce, Requirement, TaskSpec},
 };
 
 /// The text of one shared contract artifact, supplied by the daemon from
@@ -114,7 +120,9 @@ pub fn validate_coverage(
             .any(|marker| range.overlaps(*marker))
         {
             violations.push(CoverageViolation::new("prohibition_excluded").offset(range.start));
-        } else if has_binding_marker(text) {
+        } else if has_binding_marker(text)
+            && exclusion.reason != ExclusionReason::AddressedToOtherTask
+        {
             violations.push(CoverageViolation::new("binding_clause_excluded").offset(range.start));
         }
         exclusion_ranges.push(range);
@@ -157,6 +165,53 @@ pub fn validate_coverage(
             requirement_count: spec.requirements.len(),
             prohibition_count: prohibitions.len(),
         })
+    } else {
+        violations.sort();
+        violations.dedup();
+        Err(violations)
+    }
+}
+
+/// Cross-task coverage of one workflow: every clause a task excludes as
+/// addressed to another task must be covered by a requirement of another
+/// task, with binding force when the clause is binding. Each spec must
+/// already have passed [`validate_coverage`] against the same request.
+pub fn validate_workflow_coverage(
+    specs: &[&TaskSpec],
+    request: &SourceRequest,
+) -> Result<(), Vec<CoverageViolation>> {
+    let mut violations = Vec::new();
+    for (index, spec) in specs.iter().enumerate() {
+        for exclusion in &spec.source_exclusions {
+            if exclusion.reason != ExclusionReason::AddressedToOtherTask {
+                continue;
+            }
+            let Some(excluded) = request.resolve(&exclusion.span) else {
+                violations
+                    .push(CoverageViolation::new("span_mismatch").detail("source_exclusions"));
+                continue;
+            };
+            let binding = has_binding_marker(&request.text()[excluded.start..excluded.end]);
+            let covered = specs
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .flat_map(|(_, other)| other.requirements.iter())
+                .filter(|requirement| !binding || requirement.force.is_binding())
+                .flat_map(|requirement| requirement.source_refs.iter())
+                .filter_map(|span| request.resolve(span))
+                .any(|range| range.overlaps(excluded));
+            if !covered {
+                violations.push(
+                    CoverageViolation::new("unassigned_clause")
+                        .offset(excluded.start)
+                        .detail(spec.task_key.to_string()),
+                );
+            }
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
     } else {
         violations.sort();
         violations.dedup();
@@ -437,6 +492,53 @@ mod tests {
         }];
         let report = validate_coverage(&spec.normalized(), &source, &[]).expect("covered");
         assert_eq!(report.excluded_clause_count, 1);
+    }
+
+    #[test]
+    fn a_binding_clause_may_be_assigned_to_another_task_only_if_it_covers_it() {
+        let text = "The server must validate titles. The page must show counts.";
+        let source = request(text);
+        let task = |key: &str, covered: &str, excluded: &str| {
+            let mut spec = track_a_spec();
+            spec.task_key = id(key);
+            spec.original_request_ref = source.digest();
+            spec.requirements.truncate(1);
+            spec.requirements[0].statement = format!("Implement: {covered}");
+            spec.requirements[0].source_refs = vec![span(text, covered)];
+            spec.source_exclusions = vec![SourceExclusion {
+                span: span(text, excluded),
+                reason: ExclusionReason::AddressedToOtherTask,
+            }];
+            spec.normalized()
+        };
+        let server = task(
+            "track_a",
+            "The server must validate titles.",
+            "The page must show counts.",
+        );
+        let page = task(
+            "track_b",
+            "The page must show counts.",
+            "The server must validate titles.",
+        );
+        validate_coverage(&server, &source, &[]).expect("server task");
+        validate_coverage(&page, &source, &[]).expect("page task");
+        validate_workflow_coverage(&[&server, &page], &source).expect("both clauses assigned");
+        let found: Vec<&str> = validate_workflow_coverage(&[&server], &source)
+            .expect_err("nobody covers the page clause")
+            .into_iter()
+            .map(|violation| violation.code)
+            .collect();
+        assert_eq!(found, vec!["unassigned_clause"]);
+        let mut weak_page = page.clone();
+        weak_page.requirements[0].force = NormativeForce::Should;
+        assert!(validate_workflow_coverage(&[&server, &weak_page], &source).is_err());
+        // Background context is still not a way to drop an obligation.
+        let mut hidden = server.clone();
+        hidden.source_exclusions[0].reason = ExclusionReason::BackgroundContext;
+        assert!(
+            codes(validate_coverage(&hidden, &source, &[])).contains(&"binding_clause_excluded")
+        );
     }
 
     #[test]

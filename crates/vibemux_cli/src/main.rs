@@ -6,6 +6,7 @@ use vibemux_cli::{
     harness_list, harness_switch, parse_cli_arguments,
     recovery::{inspect_runtime, recover_runtime},
     start_daemon, stop_daemon,
+    workflow_commands::run_workflow,
 };
 use vibemuxd::control::DaemonHealth;
 
@@ -115,6 +116,13 @@ async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
             let paths = daemon_paths(project_root.as_deref())?;
             run_dispatch(&paths, command).await
         }
+        CliCommand::Workflow {
+            project_root,
+            command,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            run_workflow(&paths, command).await
+        }
         CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
     }
 }
@@ -149,7 +157,17 @@ fn print_help() {
   vibemuxctl dispatch submit <harness> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
   vibemuxctl dispatch status <request_id> [--project-root <path>]
   vibemuxctl dispatch output <request_id> [--after-sequence <n>] [--project-root <path>]
-  vibemuxctl dispatch cancel <request_id> [--project-root <path>]"
+  vibemuxctl dispatch cancel <request_id> [--project-root <path>]
+  vibemuxctl workflow prepare --request-file <path> --policy-file <path> [--project-root <path>]
+  vibemuxctl workflow start --contract <sha256> --request-id <uuid> [--project-root <path>]
+  vibemuxctl workflow status|pause|cancel|purge <workflow_id> [--project-root <path>]
+  vibemuxctl workflow export <workflow_id> --out <new-or-empty-dir> [--project-root <path>]
+  vibemuxctl slots list [--project-root <path>]
+  vibemuxctl context share --bundle <bundle_id> --to <session_id> [--project-root <path>]
+  vibemuxctl session inspect <session_id> [--prompts] [--project-root <path>]
+  vibemuxctl session attach <session_id> [--project-root <path>]
+  vibemuxctl prompt evaluate --candidate <candidate_id> --suite <suite_id> [--project-root <path>]
+  vibemuxctl prompt versions|rollback [--project-root <path>]"
     );
 }
 
