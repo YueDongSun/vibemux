@@ -2782,3 +2782,55 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 **Known risks**
 - Workers are same-user processes. Owned paths and scope checks reject a bad candidate when the daemon collects it, but they do not stop a vendor process from writing outside its worktree.
+
+### 2026-10-03 - Dual-track source review repairs and publication preparation
+
+**Scope and implementation**
+- Reviewed the offline dual-track branch from `342535a` and repaired state,
+  ownership, execution evidence, and acceptance-report defects. The final
+  reviewed and tested source is `b6b490d525d8a7b876776635d91764c84fcbede2`.
+- Message batches bind to the admitted recipient attempt before launch;
+  acknowledgements bind to the same completed attempt. Failed-turn messages
+  remain unacknowledged and do not poison a later repair prompt or batch.
+- Substantive review verdicts require a matching completed dispatch. Base
+  commits and accepted contracts are enforced for attempts, candidates, and
+  integration receipts. Recovery and lookup use bounded keyset pagination.
+- Workflow lifecycle controls serialize with start registration; content
+  retention and purge preserve independent owners; integration rejects ASCII
+  and Unicode case aliases. Ledger publication failure attempts verified
+  cleanup and has a real-Git main-integrity regression.
+- Train cases now gate optimizer eligibility. Reports reconcile artifact
+  summaries as well as scenario statuses, reject malformed metadata, require
+  real passed tests and the complete nine-mutant inventory, and verify source
+  contents. Timed-out acceptance commands terminate their owned process trees.
+
+**Validation executed**
+- Fresh offline acceptance: `BLOCKED`, 22 PASS / 11 BLOCKED / 4 NOT_RUN /
+  0 FAIL. Rust: 721 passed, 0 failed, 2 ignored in 86 targets. Python:
+  111 passed. Edge calibration caught all nine mutants. Standalone report
+  validation succeeded with no problems.
+- Workspace formatting and Clippy with warnings denied passed; repository
+  Ruff lint/format and strict acceptance-module mypy passed. Five Node
+  calibration regressions passed. Repository-wide mypy reports the same
+  20 errors in three untouched files.
+- Independent final static review found no outstanding actionable regression
+  in the repair delta. The exact commands and platform are recorded in
+  [the evidence summary](docs/evidence/dual_track_offline_acceptance.md).
+- An initial fresh build failed because drive space was exhausted. Only
+  task-created caches were moved to another drive before successful rechecks;
+  that failed attempt is not counted as a passing test run.
+- `nextest`, `cargo-deny`, and `cargo-audit` are not installed locally and were
+  not claimed. Linux/WSL and live terminal paths remain unverified here.
+
+**Compatibility and remaining work**
+- SQLite schema 5 and Control v6 are unchanged by the repairs. The private
+  content index writes version 2 and reads legacy version 1 conservatively;
+  rollback requires matching pre-upgrade private state (ADR 031).
+- The workflow remains PARTIAL / OFFLINE ONLY. Gateway/native fixture gaps,
+  live gateway, live coding, native TUI/handoff, and live optimizer acceptance
+  remain blocked or not run. No live model calls, merge, release, or deployment
+  occurred in this verification.
+- Route labels are not independently bound by the store because dispatch
+  route identity is not persisted. If both ledger publication and verified
+  cleanup fail, the resource is retained for later cleanup; the double-failure
+  path is not injected by the new regression.

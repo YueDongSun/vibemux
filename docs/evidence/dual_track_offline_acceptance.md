@@ -1,5 +1,58 @@
 # Dual-track workflow offline acceptance (ADR 031)
 
+## Review repair verification (2026-10-03)
+
+The source review and repair follow-up ran on the clean revision
+`b6b490d525d8a7b876776635d91764c84fcbede2`. The final independent Codex-family
+static review reported no outstanding actionable regression in the repair
+diff. The historical run below remains unchanged.
+
+The fresh offline benchmark retains **BLOCKED: 22 PASS, 11 BLOCKED,
+4 NOT_RUN, 0 FAIL**. G01/G03 gateway fixtures and T02/T03 native adapter
+fixtures remain unimplemented; every live class remains blocked. No live
+model, gateway, vendor harness, or native TUI acceptance is established.
+
+Validation executed on native Windows 11 build 26200, Rust 1.85.0 (MSVC),
+Python 3.12.10 / pytest 9.1.1, Node 24.18.0, Git 2.51.1.windows.1, and
+Microsoft Edge 154.0.4258.48:
+
+- `python scripts/verify_dual_track.py --mode offline --output <owned_output>`:
+  the runner's three command records all exited 0. Rust: 721 passed,
+  0 failed, 2 ignored across 86 test targets (834 seconds). Python:
+  111 passed (24 seconds). Calibration: all nine pinned mutants caught,
+  all reference suites passed, and fixture sources unchanged (173 seconds).
+- `python scripts/verify_dual_track.py --validate <report>`: valid BLOCKED
+  report, no validation problems.
+- `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed.
+- Repository-wide Ruff lint and format checks: passed. Strict mypy on the
+  acceptance modules: passed. Repository-wide mypy retains 20 errors in
+  three files outside the repair scope.
+- `node --test tests/fixtures/taskboard_lite/calibration/calibration_integrity.test.mjs`:
+  five passed.
+- `cargo nextest`, `cargo deny`, and `cargo audit` were unavailable locally;
+  these gates are not claimed. Linux/WSL and live terminal validation were
+  not run in this follow-up.
+
+The repairs bind messages and review receipts to real admitted and settled
+attempts, enforce base and contract identity, make turn-boundary delivery
+atomic, reject altered report summaries and incomplete calibration, preserve
+independent content owners, handle Windows case aliases, and page recovery
+past 256 workflows. Train cases now gate optimizer selection before dev and
+the final candidate holdout. The private content index upgrade and rollback
+boundary are documented in ADR 031.
+
+The runner observed all owned fixture processes joined, no retained runtime
+worktrees, and removal of its private temporary root. The report separately
+records the suites' prior `pytest_basetemp`, `node-compile-cache`, and
+`opencode` leftovers; they were removed with that root. Raw follow-up logs,
+reports, build caches, and isolated review worktrees are temporary validation
+artifacts and are removed after this summary is committed. The historical
+report from the original run is not modified.
+
+## Original offline acceptance
+
 Date: 2026-10-03. Platform: native Windows 11 Pro 10.0.26200, Rust 1.85.0
 (MSVC, debug builds), Python 3.12.10 with pytest 9.1.1, Node v24.18.0, Git
 2.51.1.windows.1, and Microsoft Edge 154.0.4258.48 for the browser suite.
