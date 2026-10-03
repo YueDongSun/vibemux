@@ -10,9 +10,13 @@
 //! files relative to the working directory the daemon chose and ends with
 //! the fenced checkpoint or review block. A step's variants select a
 //! different step when the prompt contains a marker, which is how a prompt
-//! policy change becomes observable offline. Every prompt is appended to
-//! `worker_fixture_log.jsonl` next to the executable so tests can check
-//! what a session was actually sent.
+//! policy change becomes observable offline. A step's `sequence` gives
+//! successive invocations of the same key successive entries (the last
+//! repeats); each invocation claims its index with an exclusively created
+//! file, so parallel turns never share an entry. Every turn appends a
+//! `started` record with the prompt and a `finished` record to
+//! `worker_fixture_log.jsonl` next to the executable, so tests can check
+//! what a session was actually sent and whether turns overlapped.
 //!
 //! This is synthetic evidence only: it proves the daemon's orchestration,
 //! never a vendor model's behavior.
@@ -31,6 +35,9 @@ use serde_json::{Value, json};
 
 const SCRIPT_FILE_NAME: &str = "worker_fixture_script.json";
 const LOG_FILE_NAME: &str = "worker_fixture_log.jsonl";
+const CLAIMS_DIR_NAME: &str = "worker_fixture_claims";
+/// Upper bound on the invocations of one key.
+const MAX_CLAIMS: usize = 64;
 const CHECKPOINT_INFO_STRING: &str = "vibemux_checkpoint";
 const REVIEW_INFO_STRING: &str = "vibemux_review";
 const SESSION_ID: &str = "worker_fixture_session";
@@ -70,6 +77,9 @@ struct Step {
     /// step.
     #[serde(default)]
     variants: Vec<Variant>,
+    /// Successive invocations of this key take successive entries.
+    #[serde(default)]
+    sequence: Vec<Step>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -202,15 +212,28 @@ struct Turn {
 fn perform(script: &Script, name: &str, directory: &Path, prompt: &str) -> Result<Turn> {
     let facts = turn_facts(prompt)?;
     let key = format!("{}/{}_{}", facts.task_key, facts.purpose, facts.turn_number);
-    log_prompt(directory, &key, prompt)?;
-    let step = [
+    let (matched, step) = [
         format!("{name}/{key}"),
         key.clone(),
         format!("{}/{}", facts.task_key, facts.purpose),
     ]
-    .iter()
-    .find_map(|candidate| script.steps.get(candidate))
+    .into_iter()
+    .find_map(|candidate| script.steps.get(&candidate).map(|step| (candidate, step)))
     .ok_or_else(|| format!("fixture_step_missing {key}"))?;
+    let claim = if step.sequence.is_empty() {
+        None
+    } else {
+        Some(claim_index(directory, &matched)?)
+    };
+    log(
+        directory,
+        json!({"event": "started", "harness": name, "key": key, "claim": claim,
+            "at_ms": now_ms(), "prompt": prompt}),
+    )?;
+    let step = match claim {
+        Some(index) => &step.sequence[index.min(step.sequence.len() - 1)],
+        None => step,
+    };
     let step = select_variant(step, prompt);
     let working_directory = env::current_dir()?;
     for (path, content) in &step.write {
@@ -271,6 +294,11 @@ fn perform(script: &Script, name: &str, directory: &Path, prompt: &str) -> Resul
     if let Some((info, block)) = report {
         final_text.push_str(&format!("```{info}\n{block}\n```\n"));
     }
+    log(
+        directory,
+        json!({"event": "finished", "harness": name, "key": key, "claim": claim,
+            "at_ms": now_ms()}),
+    )?;
     Ok(Turn {
         final_text,
         fail: step.fail,
@@ -337,13 +365,39 @@ fn turn_facts(prompt: &str) -> Result<TurnFacts> {
     })
 }
 
-fn log_prompt(directory: &Path, key: &str, prompt: &str) -> Result<()> {
+/// The first unclaimed invocation index of `key`, claimed by creating its
+/// marker file exclusively.
+fn claim_index(directory: &Path, key: &str) -> Result<usize> {
+    let claims = directory.join(CLAIMS_DIR_NAME);
+    std::fs::create_dir_all(&claims)?;
+    let stem = key.replace('/', "__");
+    for index in 0..MAX_CLAIMS {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(claims.join(format!("{stem}__{index}")))
+        {
+            Ok(_) => return Ok(index),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("fixture_claims_exhausted".into())
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
+}
+
+/// Appends one JSON line; a single write keeps concurrent lines whole.
+fn log(directory: &Path, line: Value) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(directory.join(LOG_FILE_NAME))?;
-    let line = json!({"key": key, "prompt": prompt});
-    writeln!(file, "{line}")?;
+    file.write_all(format!("{line}\n").as_bytes())?;
     file.flush()?;
     Ok(())
 }

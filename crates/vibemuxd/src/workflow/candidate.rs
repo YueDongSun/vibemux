@@ -138,6 +138,11 @@ pub(crate) async fn worker_step(
     state: &mut UnitState,
     input: StepInput,
 ) -> Result<StepOutcome, WorkflowError> {
+    // A pause or cancel stops automatic input at the turn boundary: no
+    // new turn starts once either is signalled.
+    if context.stopping() {
+        return Err(WorkflowError::StopRequested);
+    }
     let unit = state.unit.clone();
     let lease = context
         .acquire_lease(
@@ -370,6 +375,9 @@ pub(crate) async fn review_candidate(
         .cloned()
         .ok_or(WorkflowError::SlotUnavailable)?;
     let _turn_guard = context.reviewer_turns.lock().await;
+    if context.stopping() {
+        return Err(WorkflowError::StopRequested);
+    }
     let lease = context
         .acquire_lease(
             &unit.task_key,

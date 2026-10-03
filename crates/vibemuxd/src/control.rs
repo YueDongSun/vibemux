@@ -2172,8 +2172,9 @@ fn endpoint_name(runtime_dir: &Path) -> String {
 }
 
 /// Prefix-based pass-through: codes beginning with known namespaces
-/// (`writer_`, `store_`, `harness_`, `control_`, `a2a_`, `plugin_`) round-trip
-/// as `Remote { code }` so the CLI can distinguish actionable failure modes.
+/// (`writer_`, `workflow_`, `optimizer_`, `store_`, `harness_`, `control_`,
+/// `a2a_`, `plugin_`) round-trip as `Remote { code }` so the CLI can
+/// distinguish actionable failure modes.
 /// The five canonical frame errors (`control_frame_too_large`,
 /// `control_invalid_frame`, `control_invalid_request`, `control_unauthorized`,
 /// `control_unsupported_version`) still map to their typed variants first, so
@@ -2200,6 +2201,7 @@ fn remote_error(code: String) -> ControlError {
         }
         _ if code.starts_with("writer_")
             || code.starts_with("workflow_")
+            || code.starts_with("optimizer_")
             || code.starts_with("store_")
             || code.starts_with("harness_")
             || code.starts_with("control_")
@@ -3139,6 +3141,14 @@ mod tests {
             a2a,
             ControlError::Remote {
                 code: "a2a_invalid_transition".to_string()
+            }
+        );
+        // An optimizer refusal (budget, holdout, history) is actionable.
+        let optimizer = remote_error("optimizer_budget_exhausted".to_string());
+        assert_eq!(
+            optimizer,
+            ControlError::Remote {
+                code: "optimizer_budget_exhausted".to_string()
             }
         );
         // The control_ namespace is prefix-passed too, so a non-canonical

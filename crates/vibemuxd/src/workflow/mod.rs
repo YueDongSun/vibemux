@@ -16,6 +16,7 @@ pub mod settings;
 pub(crate) mod share;
 pub mod startup;
 pub(crate) mod state_files;
+pub(crate) mod state_protection;
 pub mod turns;
 pub(crate) mod verifier_runner;
 

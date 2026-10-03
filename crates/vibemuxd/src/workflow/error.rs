@@ -56,12 +56,20 @@ pub enum WorkflowError {
     NativeTuiUnavailable,
     #[error("prompt evaluation input is invalid")]
     EvaluationInvalid,
+    /// The private workflow state could not be restricted to the daemon's
+    /// user.
+    #[error("workflow state directory is not private to the daemon user")]
+    StateUnprotected,
     /// A bounded optimizer refusal, such as an exhausted budget or a
     /// holdout that was already consulted.
     #[error("{code}")]
     Optimizer { code: &'static str },
     #[error("workflow service is shutting down")]
     ShuttingDown,
+    /// A pause or cancel was signalled before the next turn started, so
+    /// no further input reaches a session.
+    #[error("workflow stop was requested before the turn started")]
+    StopRequested,
     #[error("internal workflow error")]
     Internal,
     #[error("{code}")]
@@ -97,8 +105,10 @@ impl WorkflowError {
             Self::SessionNotFound => "workflow_session_not_found",
             Self::NativeTuiUnavailable => "workflow_native_tui_unavailable",
             Self::EvaluationInvalid => "workflow_evaluation_invalid",
+            Self::StateUnprotected => "workflow_state_unprotected",
             Self::Optimizer { code } => code,
             Self::ShuttingDown => "workflow_shutting_down",
+            Self::StopRequested => "workflow_stop_requested",
             Self::Internal => "workflow_internal",
             Self::Dispatch { code } | Self::Writer { code } => code,
         }

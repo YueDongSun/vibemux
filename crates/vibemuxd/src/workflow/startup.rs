@@ -16,7 +16,8 @@ use super::{
     error::WorkflowError,
     runtime::{WorkflowSetup, now_ms, revoke_lease, transition},
     settings::{WORKFLOW_CONFIG_FILE_NAME, load_workflow_config},
-    state_files::StateFiles,
+    state_files::{StateFiles, WORKFLOW_STATE_DIR_NAME},
+    state_protection::protect_state_root,
     turns::startup_slot_facts,
 };
 use crate::{
@@ -49,6 +50,7 @@ pub(crate) fn load_setup(
                 .map(|protocol| (slot.slot_id.clone(), protocol))
         })
         .collect();
+    protect_state_root(&state_dir.join(WORKFLOW_STATE_DIR_NAME))?;
     Ok(WorkflowSetup {
         config,
         canonical_root,
