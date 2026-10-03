@@ -36,7 +36,7 @@ WORKFLOW_EVIDENCE = (
 )
 VALUE_EVIDENCE = (OPTIMIZER_CYCLE,)
 EXPECTED_EVIDENCE = WORKFLOW_EVIDENCE + VALUE_EVIDENCE
-FLAGSHIP_INTEGRATION_SUITES = ("api", "store", "browser")
+flagship_integration_suites = ("api", "store", "browser")
 
 # The only evidence class an offline run may carry.
 FIXTURE_EVIDENCE_CLASS = "fixture"
@@ -413,8 +413,8 @@ def check_flagship_integration_verified(store: EvidenceStore) -> str:
         == sorted(task["contract_id"] for task in tasks),
         "integration verification covers different contracts",
     )
-    _suites_passed(verification, FLAGSHIP_INTEGRATION_SUITES)
-    suites = list(FLAGSHIP_INTEGRATION_SUITES)
+    _suites_passed(verification, flagship_integration_suites)
+    suites = list(flagship_integration_suites)
     return f"isolated integration of {len(tasks)} candidates passed suites {suites}"
 
 

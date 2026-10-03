@@ -18,6 +18,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .process_execution import run_owned_command
+
+expected_mutant_suites: Mapping[str, str] = {
+    "blank_title_accepted": "store",
+    "corrupt_file_reset": "api",
+    "filter_broken": "browser",
+    "lost_concurrent_updates": "store",
+    "payload_limit_missing": "api",
+    "success_on_rejection": "browser",
+    "title_length_off_by_one": "api",
+    "wrong_delete_status": "api",
+    "xss_inner_html": "browser",
+}
+
 # ------------------------------------------------------------- commands --
 
 
@@ -67,8 +81,8 @@ def run_logged(
     """Runs one command to completion, stdin closed, output to `log_path`.
 
     With `stdout_path`, stdout goes there and stderr to the log; otherwise
-    both go to the log in the order the process wrote them. A timeout kills
-    the process (and only it) and is recorded, never retried. The record
+    both go to the log in the order the process wrote them. A timeout ends
+    the owned process tree and is recorded, never retried. The record
     names the log relative to `output_root`.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,21 +92,14 @@ def run_logged(
     with log_path.open("wb") as log:
         stdout_handle = stdout_path.open("wb") if stdout_path is not None else None
         try:
-            process = subprocess.Popen(
-                list(argv),
+            exit_code, timed_out = run_owned_command(
+                argv,
                 cwd=cwd,
                 env=dict(env),
-                stdin=subprocess.DEVNULL,
                 stdout=stdout_handle if stdout_handle is not None else log,
                 stderr=log if stdout_handle is not None else subprocess.STDOUT,
+                timeout_seconds=timeout_seconds,
             )
-            try:
-                exit_code = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                process.kill()
-                process.wait()
-                exit_code = None
         finally:
             if stdout_handle is not None:
                 stdout_handle.close()
@@ -407,18 +414,6 @@ CHECK_PASS = "PASS"
 CHECK_FAIL = "FAIL"
 CHECK_BLOCKED = "BLOCKED"
 
-EXPECTED_MUTANT_SUITES: Mapping[str, str] = {
-    "blank_title_accepted": "store",
-    "corrupt_file_reset": "api",
-    "filter_broken": "browser",
-    "lost_concurrent_updates": "store",
-    "payload_limit_missing": "api",
-    "success_on_rejection": "browser",
-    "title_length_off_by_one": "api",
-    "wrong_delete_status": "api",
-    "xss_inner_html": "browser",
-}
-
 
 @dataclass(frozen=True)
 class CheckOutcome:
@@ -439,13 +434,13 @@ def _mutant_inventory_error(mutants: Any) -> str | None:
             return "calibration mutant lacks a valid mutant_id"
         if mutant_id in observed:
             return f"duplicate calibration mutant {mutant_id}"
-        expected_suite = EXPECTED_MUTANT_SUITES.get(mutant_id)
+        expected_suite = expected_mutant_suites.get(mutant_id)
         if expected_suite is None:
             return f"unexpected calibration mutant {mutant_id}"
         if suite != expected_suite:
             return f"calibration mutant {mutant_id} targets {suite!r}; expected {expected_suite!r}"
         observed.add(mutant_id)
-    missing = sorted(set(EXPECTED_MUTANT_SUITES) - observed)
+    missing = sorted(set(expected_mutant_suites) - observed)
     if missing:
         return f"calibration omits expected mutants {missing}"
     return None

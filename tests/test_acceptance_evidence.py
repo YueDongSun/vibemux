@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
+repo_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(repo_root / "scripts"))
 
 from dual_track_acceptance.assessment import (  # noqa: E402
     MODE_OFFLINE,
@@ -19,10 +19,10 @@ from dual_track_acceptance.assessment import (  # noqa: E402
 from dual_track_acceptance.check_execution import (  # noqa: E402
     CHECK_FAIL,
     CHECK_PASS,
-    EXPECTED_MUTANT_SUITES,
     CargoTestRun,
     TargetRun,
     evaluate_calibration_check,
+    expected_mutant_suites,
     parse_calibration_output,
 )
 from dual_track_acceptance.evidence_capture import (  # noqa: E402
@@ -50,7 +50,7 @@ def calibration_summary() -> dict[str, Any]:
                 "expectation_met": True,
                 "frontend_only_expectation_met": True,
             }
-            for mutant_id, suite in EXPECTED_MUTANT_SUITES.items()
+            for mutant_id, suite in expected_mutant_suites.items()
         ],
         "sources_unchanged": True,
         "base_api_status": "failed",

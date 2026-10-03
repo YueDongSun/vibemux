@@ -1,4 +1,4 @@
-"""Assembles the acceptance report (master prompt section 14 fields first)."""
+"""Assembles an acceptance report from its artifact projections."""
 
 from __future__ import annotations
 

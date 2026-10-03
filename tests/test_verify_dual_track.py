@@ -203,14 +203,23 @@ def calibration_summary(**overrides: Any) -> dict[str, Any]:
             "browser_frontend_only": "passed",
         },
         "mutants": [
-            {"mutant_id": "a", "expected_failing_suite": "api", "expectation_met": True},
-            {"mutant_id": "s", "expected_failing_suite": "store", "expectation_met": True},
             {
-                "mutant_id": "b",
-                "expected_failing_suite": "browser",
+                "mutant_id": mutant_id,
+                "expected_failing_suite": suite,
                 "expectation_met": True,
-                "frontend_only_expectation_met": True,
-            },
+                **({"frontend_only_expectation_met": True} if suite == "browser" else {}),
+            }
+            for mutant_id, suite in (
+                ("corrupt_file_reset", "api"),
+                ("blank_title_accepted", "store"),
+                ("filter_broken", "browser"),
+                ("lost_concurrent_updates", "store"),
+                ("payload_limit_missing", "api"),
+                ("success_on_rejection", "browser"),
+                ("title_length_off_by_one", "api"),
+                ("wrong_delete_status", "api"),
+                ("xss_inner_html", "browser"),
+            )
         ],
         "base_api_status": "failed",
         "contract_stub_api_status": "passed",
@@ -509,6 +518,21 @@ def test_report_summaries_must_match_their_log_and_evidence_artifacts(
     report[field] = "forged"
     load_run_artifacts(report, tmp_path, RULES, problems)
     assert f"{field} differs from the run artifacts" in problems
+
+
+def test_a_blocked_report_cannot_invent_candidate_artifacts(tmp_path: Path) -> None:
+    benchmark = load_benchmark(REPO_ROOT / BENCHMARK_PATH)
+    problems = validate_report(
+        {
+            "mode": MODE_OFFLINE,
+            "blocked_reason": "prerequisites missing",
+            "candidate_artifacts": [{"evidence_class": "fixture", "candidate_digest": "forged"}],
+        },
+        tmp_path,
+        benchmark,
+        RULES,
+    )
+    assert "candidate_artifacts differs from the run artifacts" in problems
 
 
 def test_a_report_validates_its_evidence_through_a_relative_directory(

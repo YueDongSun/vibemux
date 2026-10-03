@@ -295,7 +295,9 @@ def validate_report(
     report_dir = report_dir.resolve()
     problems = structural_problems(report, benchmark, final=final)
     if report.get("blocked_reason"):
-        # Nothing ran: every class must say so, and nothing reconciles.
+        # Nothing ran: classes stay BLOCKED and summaries must still agree
+        # with the available artifacts.
+        load_run_artifacts(report, report_dir, rules, problems)
         if report.get("commands"):
             problems.append("a blocked run records executed commands")
         for scenario in report.get("scenarios", []):
