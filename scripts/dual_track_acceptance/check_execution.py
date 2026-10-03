@@ -397,6 +397,9 @@ def parse_calibration_output(text: str) -> CalibrationResult:
     for key in ("good", "mutants", "sources_unchanged", "browsers_used", "all_expectations_met"):
         if key not in document:
             return CalibrationResult(None, f"calibration output lacks {key}")
+    inventory_error = _mutant_inventory_error(document["mutants"])
+    if inventory_error is not None:
+        return CalibrationResult(None, inventory_error)
     return CalibrationResult(document, None)
 
 
@@ -404,11 +407,48 @@ CHECK_PASS = "PASS"
 CHECK_FAIL = "FAIL"
 CHECK_BLOCKED = "BLOCKED"
 
+EXPECTED_MUTANT_SUITES: Mapping[str, str] = {
+    "blank_title_accepted": "store",
+    "corrupt_file_reset": "api",
+    "filter_broken": "browser",
+    "lost_concurrent_updates": "store",
+    "payload_limit_missing": "api",
+    "success_on_rejection": "browser",
+    "title_length_off_by_one": "api",
+    "wrong_delete_status": "api",
+    "xss_inner_html": "browser",
+}
+
 
 @dataclass(frozen=True)
 class CheckOutcome:
     status: str
     reason: str
+
+
+def _mutant_inventory_error(mutants: Any) -> str | None:
+    if not isinstance(mutants, list):
+        return "calibration mutants must be a list"
+    observed: set[str] = set()
+    for entry in mutants:
+        if not isinstance(entry, Mapping):
+            return "calibration mutant entry is not an object"
+        mutant_id = entry.get("mutant_id")
+        suite = entry.get("expected_failing_suite")
+        if not isinstance(mutant_id, str) or not mutant_id:
+            return "calibration mutant lacks a valid mutant_id"
+        if mutant_id in observed:
+            return f"duplicate calibration mutant {mutant_id}"
+        expected_suite = EXPECTED_MUTANT_SUITES.get(mutant_id)
+        if expected_suite is None:
+            return f"unexpected calibration mutant {mutant_id}"
+        if suite != expected_suite:
+            return f"calibration mutant {mutant_id} targets {suite!r}; expected {expected_suite!r}"
+        observed.add(mutant_id)
+    missing = sorted(set(EXPECTED_MUTANT_SUITES) - observed)
+    if missing:
+        return f"calibration omits expected mutants {missing}"
+    return None
 
 
 def _mutants_met(summary: Mapping[str, Any], suite: str, frontend_only: bool) -> tuple[int, int]:
@@ -431,6 +471,9 @@ def evaluate_calibration_check(summary: Mapping[str, Any], check: str) -> CheckO
     good = summary.get("good", {})
     if summary.get("sources_unchanged") is not True:
         return CheckOutcome(CHECK_FAIL, "calibration changed the fixture sources")
+    inventory_error = _mutant_inventory_error(summary.get("mutants"))
+    if inventory_error is not None:
+        return CheckOutcome(CHECK_FAIL, inventory_error)
     suites: tuple[str, ...]
     if check == "api":
         suites = ("api",)

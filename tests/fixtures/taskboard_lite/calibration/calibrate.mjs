@@ -14,10 +14,11 @@
 // when every expectation holds. All candidates are temporary copies under
 // os.tmpdir(); nothing in calibration/ or base/ is modified in place.
 
-import { cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { assert_mutant_inventory, snapshot_source_files } from "./calibration_integrity.mjs";
 import {
   create_temp_dir,
   kill_process_tree,
@@ -65,17 +66,14 @@ async function list_files(root_dir, relative_dir = "") {
   return files.sort();
 }
 
-// Size and modification time of every source file; used to prove that
+// File contents and paths of every source input; used to prove that
 // calibration never modifies its inputs in place.
 async function snapshot_sources() {
-  const snapshot = {};
-  for (const [label, root_dir] of [["good", paths.good_dir], ["mutants", paths.mutants_dir], ["base", paths.base_dir]]) {
-    for (const relative_path of await list_files(root_dir)) {
-      const info = await stat(path.join(root_dir, relative_path));
-      snapshot[`${label}/${relative_path}`] = `${info.size}:${info.mtimeMs}`;
-    }
-  }
-  return snapshot;
+  return snapshot_source_files([
+    { label: "good", root_dir: paths.good_dir },
+    { label: "mutants", root_dir: paths.mutants_dir },
+    { label: "base", root_dir: paths.base_dir },
+  ]);
 }
 
 async function load_mutant_definitions() {
@@ -106,6 +104,7 @@ async function load_mutant_definitions() {
     }
     definitions.push({ ...definition, mutant_dir, overlay_files });
   }
+  assert_mutant_inventory(definitions);
   return definitions;
 }
 

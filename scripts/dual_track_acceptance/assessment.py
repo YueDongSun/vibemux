@@ -196,6 +196,10 @@ def _assess_repository(artifacts: RunArtifacts) -> ClassResult:
             f"cargo test exited {artifacts.cargo_exit_code}; failing targets {failed_targets}; "
             f"problems {problems[:5]}"
         )
+    if totals["passed"] == 0:
+        if status == STATUS_PASS:
+            status = STATUS_NOT_RUN
+        reasons.append("cargo reported no passed tests")
     reasons.append(
         f"cargo: {totals['passed']} passed, {totals['failed']} failed, {totals['ignored']} ignored "
         f"in {totals['targets']} targets"
@@ -208,6 +212,10 @@ def _assess_repository(artifacts: RunArtifacts) -> ClassResult:
         bad = summary.get("failed", 0) + summary.get("errors", 0)
         if artifacts.pytest_exit_code != 0 or bad:
             status = STATUS_FAIL
+        elif summary.get("passed", 0) == 0:
+            if status == STATUS_PASS:
+                status = STATUS_NOT_RUN
+            reasons.append("pytest reported no passed tests")
         reasons.append(f"pytest exited {artifacts.pytest_exit_code}: {dict(summary)}")
     evidence = ["command:cargo_test", "command:pytest"] if status == STATUS_PASS else []
     return ClassResult("repository_test", status, "; ".join(reasons), evidence)

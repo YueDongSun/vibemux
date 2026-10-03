@@ -36,6 +36,7 @@ WORKFLOW_EVIDENCE = (
 )
 VALUE_EVIDENCE = (OPTIMIZER_CYCLE,)
 EXPECTED_EVIDENCE = WORKFLOW_EVIDENCE + VALUE_EVIDENCE
+FLAGSHIP_INTEGRATION_SUITES = ("api", "store", "browser")
 
 # The only evidence class an offline run may carry.
 FIXTURE_EVIDENCE_CLASS = "fixture"
@@ -175,8 +176,16 @@ def _workers(status: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _suites_passed(verification: Mapping[str, Any], suite_ids: Iterable[str]) -> None:
-    suites = {suite.get("suite_id"): suite for suite in verification.get("suites", [])}
-    for suite_id in suite_ids:
+    required_suite_ids = tuple(suite_ids)
+    _require(bool(required_suite_ids), "no required verifier suites")
+    suites: dict[str, Mapping[str, Any]] = {}
+    for suite_record in json_objects(verification, "suites"):
+        suite_id = suite_record.get("suite_id")
+        if not isinstance(suite_id, str) or not suite_id:
+            raise CheckFailed("verification has an invalid suite id")
+        _require(suite_id not in suites, f"verification repeats suite {suite_id}")
+        suites[suite_id] = suite_record
+    for suite_id in required_suite_ids:
         suite = suites.get(suite_id)
         _require(suite is not None, f"verification lacks suite {suite_id}")
         assert suite is not None
@@ -404,8 +413,8 @@ def check_flagship_integration_verified(store: EvidenceStore) -> str:
         == sorted(task["contract_id"] for task in tasks),
         "integration verification covers different contracts",
     )
-    suites = [suite.get("suite_id") for suite in verification.get("suites", [])]
-    _suites_passed(verification, suites)
+    _suites_passed(verification, FLAGSHIP_INTEGRATION_SUITES)
+    suites = list(FLAGSHIP_INTEGRATION_SUITES)
     return f"isolated integration of {len(tasks)} candidates passed suites {suites}"
 
 
