@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
-//! Daemon-owned DSH session service (ADR 030 Stage 3).
+//! Daemon-owned DSH session service (ADR 032 Stage 3).
 //!
 //! The daemon is the only component allowed to perform authoritative state
 //! transitions, so it is also the right owner of a long-lived vendor session:
-//! one live session per project, reached through the Control v6 operations.
+//! one live session per project, reached through the Control v7 operations.
 //! This service holds that session and translates each operation into one
 //! [`DshDriver`] call. It performs no framing, no containment, and no record
 //! bookkeeping itself; those live in `vibemux_dsh`.
@@ -235,7 +235,7 @@ impl DshSessionService {
     }
 
     /// Opens a session. Refused while another live session exists, so one
-    /// project cannot accumulate vendor processes (ADR 030 Decision 10).
+    /// project cannot accumulate vendor processes (ADR 032 Decision 10).
     pub async fn open(
         &self,
         request: &DshSessionOpenRequest,

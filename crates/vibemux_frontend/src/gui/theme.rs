@@ -38,14 +38,21 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
 }
 
 fn build_visuals(p: &ThemePalette) -> Visuals {
-    let light = p.name == "studio";
+    let light = p.is_light();
     let mut visuals = if light {
         Visuals::light()
     } else {
         Visuals::dark()
     };
     visuals.override_text_color = Some(color(&p.text_primary));
-    visuals.hyperlink_color = color(&p.accent);
+    let channel = |field: &str| p.rgb(field).unwrap_or((0, 0, 0));
+    let link = crate::theme::contrast::readable_text_color(
+        channel("accent"),
+        &[channel("bg"), channel("surface"), channel("surface_alt")],
+        channel("text_primary"),
+        crate::theme::contrast::TEXT_CONTRAST_MINIMUM,
+    );
+    visuals.hyperlink_color = Color32::from_rgb(link.0, link.1, link.2);
     // Primer window chrome: 1px border-colored stroke, palette radius.
     visuals.window_stroke = egui::Stroke::new(p.border_width, color(&p.border));
     visuals.window_corner_radius = egui::CornerRadius::same(p.corner_radius as u8);

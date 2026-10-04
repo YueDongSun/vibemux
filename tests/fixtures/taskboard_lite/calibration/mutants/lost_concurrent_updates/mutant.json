@@ -1,0 +1,5 @@
+{
+  "mutant_id": "lost_concurrent_updates",
+  "defect": "store mutations re-read and rewrite the data file without serialization, so concurrent mutations are lost",
+  "expected_failing_suite": "store"
+}

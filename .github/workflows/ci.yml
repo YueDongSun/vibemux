@@ -27,6 +27,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The dual-track workflow tests run the TaskBoard Lite trusted suites
+      # with `node --test`, which needs Node 22 or later.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: rustup toolchain install 1.85.0 --profile minimal --component clippy,rustfmt
       - run: rustup default 1.85.0
       - run: cargo fmt --all -- --check

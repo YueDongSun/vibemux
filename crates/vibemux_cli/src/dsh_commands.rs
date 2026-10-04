@@ -1,4 +1,4 @@
-//! `vibemuxctl dsh` (ADR 030 §9): a thin Control v6 client for the daemon's
+//! `vibemuxctl dsh` (ADR 032 §9): a thin Control v7 client for the daemon's
 //! DSH session.
 //!
 //! A prompt is read from a file or stdin, never from argv, so it stays out of

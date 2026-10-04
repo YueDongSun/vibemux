@@ -35,11 +35,11 @@ pub const MAX_ENTRY_SCRIPT_BYTES: usize = 1024;
 pub const MAX_PROFILE_BYTES: usize = 64;
 
 /// The DSH profile a route boots when it does not name one. `dsh --profile sdk`
-/// serves "DeepSeek Harness SDK clients over stdio JSON-RPC" (ADR 030).
+/// serves "DeepSeek Harness SDK clients over stdio JSON-RPC" (ADR 032).
 pub const DEFAULT_DSH_PROFILE: &str = "sdk";
 /// File stem the launcher image of a DSH route must carry. DSH's vendor
 /// runtime is a Node interpreter, so the dispatch rule "the executable's stem
-/// is the harness command name" cannot apply verbatim (ADR 030 Decision 3).
+/// is the harness command name" cannot apply verbatim (ADR 032 Decision 3).
 pub const DSH_NODE_IMAGE_STEM: &str = "node";
 /// Package that must own a DSH route's entry script.
 pub const DSH_ENTRY_PACKAGE_NAME: &str = "@deepseek-ai/dsh";
@@ -74,7 +74,7 @@ pub enum NativeProtocol {
     /// Agent Client Protocol v1 over stdio (OpenCode, Copilot, Grok).
     Acp,
     /// DeepSeek Harness SDK runtime: newline-delimited JSON-RPC 2.0 over
-    /// stdio, booted as `dsh --profile <profile>` (ADR 030).
+    /// stdio, booted as `dsh --profile <profile>` (ADR 032).
     DshSdkJsonRpc,
 }
 
@@ -115,13 +115,14 @@ impl NativeProtocol {
 
     /// Whether an initialize-only handshake exists (no prompt is sent).
     /// `DshSdkJsonRpc` qualifies because `initialize` resolves the provider
-    /// route and rejects later prompts when it fails (ADR 030 Decision 3).
+    /// route and rejects later prompts when it fails (ADR 032 Decision 3).
     #[must_use]
     pub const fn supports_probe(self) -> bool {
         !matches!(self, Self::CodexExec)
     }
 
-    /// Whether prompt execution is allowed in this slice. ACP vendors grant
+    /// Whether the adapter can execute a prompt turn. Admission paths also
+    /// require their permission profile. ACP vendors grant
     /// their own tool permissions (OpenCode allows edit and bash by
     /// default) and no verified per-vendor deny posture exists yet, so ACP
     /// routes are probe-only (ADR 029).
@@ -130,7 +131,17 @@ impl NativeProtocol {
         !matches!(self, Self::Acp)
     }
 
-    /// Whether this protocol requires the Node launcher pair of ADR 030
+    /// ADR 029 has a read-only launch posture for these protocols. DSH's
+    /// SDK profile is session execution, not a certified read-only profile.
+    #[must_use]
+    pub const fn supports_read_only_dispatch(self) -> bool {
+        matches!(
+            self,
+            Self::CodexExec | Self::CodexAppServer | Self::ClaudeStreamJson
+        )
+    }
+
+    /// Whether this protocol requires the Node launcher pair of ADR 032
     /// Decision 3 instead of the plain "stem is the harness command" rule.
     #[must_use]
     pub const fn requires_launcher_pair(self) -> bool {
@@ -206,7 +217,7 @@ pub struct DispatchRoute {
     pub executable: PathBuf,
     /// Node entry script of a launcher-pair protocol (`DshSdkJsonRpc` only).
     /// The daemon canonicalizes it and verifies its owning package before the
-    /// route is trusted (ADR 030 Decision 3).
+    /// route is trusted (ADR 032 Decision 3).
     #[serde(default)]
     pub entry_script: Option<PathBuf>,
     /// Profile the launcher boots. Only a launcher-pair protocol may set it.
@@ -331,7 +342,7 @@ impl DispatchConfig {
     ) -> Result<&DispatchRoute, DispatchError> {
         request.validate()?;
         let route = self.route(request.harness)?;
-        if !route.allow_execution || !route.protocol.supports_execution() {
+        if !route.allow_execution || !route.protocol.supports_read_only_dispatch() {
             return Err(DispatchError::ExecutionDisabled);
         }
         if !harness_detected {
@@ -365,7 +376,8 @@ impl DispatchConfig {
                 harness: route.harness,
                 protocol: route.protocol,
                 enabled: route.enabled,
-                allow_execution: route.allow_execution,
+                allow_execution: route.allow_execution
+                    && route.protocol.supports_read_only_dispatch(),
                 probe_supported: route.protocol.supports_probe(),
             })
             .collect()
@@ -458,7 +470,7 @@ pub fn validate_executable(path: &Path, policy: ExecutablePolicy) -> Result<(), 
 
 /// Checks the shape of a launcher-pair entry script. The owning package is
 /// verified by the daemon, which is the only layer allowed to touch the
-/// filesystem (ADR 030 Decision 3).
+/// filesystem (ADR 032 Decision 3).
 pub fn validate_entry_script_shape(path: &Path) -> Result<(), DispatchError> {
     let Some(text) = path.to_str() else {
         return Err(DispatchError::ConfigRouteInvalid);

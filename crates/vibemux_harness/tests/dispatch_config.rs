@@ -49,7 +49,7 @@ fn route_json(harness: &str, protocol: &str) -> Value {
     });
     if protocol == "dsh_sdk_json_rpc" {
         // The launcher pair replaces the "stem is the harness command name"
-        // rule and requires the provider route `initialize` names (ADR 030).
+        // rule and requires the provider route `initialize` names (ADR 032).
         value["executable"] = json!(native_executable("node"));
         value["entry_script"] = json!(absolute("dsh-package/lib/bin.js"));
         value["provider"] = json!("deepseek-official");
@@ -749,7 +749,7 @@ fn launch_environment_lists_system_names_first_without_duplicates() {
     assert_eq!(spec.environment_names, expected);
 }
 
-// --- DSH launcher pair (ADR 030 Decision 3) -------------------------------
+// --- DSH launcher pair (ADR 032 Decision 3) -------------------------------
 
 #[test]
 fn the_dsh_route_requires_a_node_image_entry_script_and_provider() {
@@ -915,14 +915,22 @@ fn the_dsh_launch_argv_is_the_node_pair_and_never_the_prompt() {
 }
 
 #[test]
-fn the_dsh_catalog_entry_reports_probe_and_execution_support() {
+fn the_dsh_catalog_entry_allows_probe_but_refuses_generic_execution() {
     let config = parse(&config_json(vec![route_json("dsh", "dsh_sdk_json_rpc")])).unwrap();
     let catalog = config.catalog();
     let entry: DispatchCatalogEntry = catalog[0];
     assert_eq!(entry.harness, AgentKind::Dsh);
     assert_eq!(entry.protocol, NativeProtocol::DshSdkJsonRpc);
     assert!(entry.probe_supported);
-    assert!(entry.allow_execution);
+    assert!(!entry.allow_execution);
+    assert!(NativeProtocol::DshSdkJsonRpc.supports_execution());
+    assert!(!NativeProtocol::DshSdkJsonRpc.supports_read_only_dispatch());
+    assert!(config.probe_route(AgentKind::Dsh, true).is_ok());
+    let request = request(AgentKind::Dsh, PROMPT);
+    assert_eq!(
+        config.execution_route(&request, true).unwrap_err(),
+        DispatchError::ExecutionDisabled
+    );
     // The public projection carries no path, script, or provider.
     let encoded = serde_json::to_string(&catalog).unwrap();
     assert!(!encoded.contains(PRIVATE_SENTINEL));

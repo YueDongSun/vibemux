@@ -35,6 +35,7 @@ use crate::plugin_registry::{
 use crate::process::DaemonPaths;
 use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapshot};
+use crate::workflow::{WorkflowService, WorkflowServiceSettings};
 use crate::{WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
 #[path = "control_dsh_session.rs"]
@@ -47,6 +48,8 @@ pub use crate::dsh_session::{
     DshSessionOpenRequest, DshSessionPollPage, DshSessionPollQuery, DshSessionPromptRequest,
     DshSessionRecord, DshSessionStatus,
 };
+#[path = "control_workflow.rs"]
+mod workflow_ops;
 pub use harness_dispatch_ops::{
     HARNESS_DISPATCH_PROBE_DEADLINE, HarnessDispatchLookup, HarnessDispatchOutputQuery,
     HarnessDispatchReceipt, HarnessDispatchStatus, HarnessDispatchTarget,
@@ -58,11 +61,18 @@ use vibemux_types::{
         MAX_FRONTEND_TASKS,
     },
 };
+pub use workflow_ops::{
+    WORKFLOW_SLOW_DEADLINE, WorkflowEvaluateArgument, WorkflowExportQuery, WorkflowLookup,
+    WorkflowPrepareArgument, WorkflowPromptQuery, WorkflowSessionLookup, WorkflowShareArgument,
+    WorkflowStartArgument,
+};
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V6;
-/// V6 adds the DSH session operations (ADR 030 §9).
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V7;
+/// V7 adds DSH session operations (ADR 032); workflow operations retain V6.
+pub const CONTROL_PROTOCOL_V7: u32 = 7;
+/// V6 adds the dual-track workflow operations (ADR 031 §8).
 pub const CONTROL_PROTOCOL_V6: u32 = 6;
-/// V5 adds harness request dispatch (ADR 029 §7).
+/// V5 added harness request dispatch (ADR 029 §7).
 pub const CONTROL_PROTOCOL_V5: u32 = 5;
 /// V4 added the frontend queries and terminal operations.
 pub const CONTROL_PROTOCOL_V4: u32 = 4;
@@ -108,6 +118,21 @@ pub enum ControlOperation {
     DshSessionStatus,
     DshSessionCancel,
     DshSessionClose,
+    WorkflowPrepare,
+    WorkflowStart,
+    WorkflowStatus,
+    WorkflowPause,
+    WorkflowCancel,
+    WorkflowExport,
+    WorkflowSlots,
+    WorkflowShare,
+    WorkflowSessionInspect,
+    WorkflowSessionPrompt,
+    WorkflowSessionAttach,
+    WorkflowPolicyVersions,
+    WorkflowPolicyRollback,
+    WorkflowPolicyEvaluate,
+    WorkflowPurgeContent,
     Shutdown,
 }
 
@@ -140,7 +165,22 @@ impl ControlOperation {
             | Self::DshSessionPoll
             | Self::DshSessionStatus
             | Self::DshSessionCancel
-            | Self::DshSessionClose => CONTROL_PROTOCOL_V6,
+            | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
+            Self::WorkflowPrepare
+            | Self::WorkflowStart
+            | Self::WorkflowStatus
+            | Self::WorkflowPause
+            | Self::WorkflowCancel
+            | Self::WorkflowExport
+            | Self::WorkflowSlots
+            | Self::WorkflowShare
+            | Self::WorkflowSessionInspect
+            | Self::WorkflowSessionPrompt
+            | Self::WorkflowSessionAttach
+            | Self::WorkflowPolicyVersions
+            | Self::WorkflowPolicyRollback
+            | Self::WorkflowPolicyEvaluate
+            | Self::WorkflowPurgeContent => CONTROL_PROTOCOL_V6,
         }
     }
 }
@@ -228,6 +268,8 @@ pub enum ControlPayload {
     /// carries runtime content.
     DshSessionStatus(Box<DshSessionStatus>),
     DshSessionPoll(DshSessionPollPage),
+    /// Answer to every workflow operation: the service's serialized view.
+    Workflow(Box<serde_json::Value>),
     ShutdownAccepted,
 }
 
@@ -569,10 +611,13 @@ struct ServerState {
     /// Harness dispatch (ADR 029), reached by the Control v5 operations;
     /// its attempts are joined at shutdown.
     dispatch: HarnessDispatchService,
-    /// DSH session (ADR 030), reached by the Control v6 operations. At most
+    /// DSH session (ADR 032), reached by the Control v7 operations. At most
     /// one live session per project; joined at shutdown so no vendor process
     /// outlives the daemon.
     dsh: DshSessionService,
+    /// The dual-track workflow service (ADR 031), reached by the Control
+    /// v6 operations; its coordinators stop before dispatch shuts down.
+    workflow: WorkflowService,
     writer: Mutex<Option<WriterWorker>>,
     plugins: PluginStatusReader,
     process_id: u32,
@@ -613,7 +658,7 @@ impl DaemonControlServer {
             plugins,
             None,
             paths.probe_cache_path(),
-            Some(dispatch_settings_for(paths)),
+            Some(execution_settings_for(paths)),
             Some(paths),
         )
         .await
@@ -722,6 +767,37 @@ impl DaemonControlServer {
             PluginStartup::default(),
             None,
             probe_cache_path,
+            Some(ExecutionSettings {
+                dispatch: settings,
+                workflow: None,
+            }),
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::start_with_dispatch`] with the workflow service
+    /// configured too, so tests reach Control v6 without the trusted
+    /// project layout.
+    #[cfg(feature = "test_helpers")]
+    pub async fn start_with_execution(
+        database_path: &Path,
+        runtime_dir: &Path,
+        settings: ExecutionSettings,
+    ) -> Result<Self, ControlError> {
+        let writer_lock_path = crate::writer_lock_path_for_database(database_path);
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        let probe_cache_path = crate::process::probe_cache_path_for_state_dir(state_dir);
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            &writer_lock_path,
+            None,
+            PluginStartup::default(),
+            None,
+            probe_cache_path,
             Some(settings),
             None,
         )
@@ -751,7 +827,7 @@ impl DaemonControlServer {
             plugins,
             Some(supervisor),
             paths.probe_cache_path(),
-            Some(dispatch_settings_for(paths)),
+            Some(execution_settings_for(paths)),
             Some(paths),
         )
         .await
@@ -788,23 +864,48 @@ async fn verify_control_phase(
     Ok(())
 }
 
-/// Production dispatch inputs: the operator route config lives in the
-/// validated state directory.
-fn dispatch_settings_for(paths: &crate::process::DaemonPaths) -> DispatchServiceSettings {
-    DispatchServiceSettings::for_project(paths.project_root(), paths.state_dir())
+/// Trusted inputs of the execution services one daemon start owns.
+#[derive(Clone, Debug)]
+pub struct ExecutionSettings {
+    pub dispatch: DispatchServiceSettings,
+    /// `None` leaves the workflow service unconfigured.
+    pub workflow: Option<WorkflowServiceSettings>,
 }
 
-/// Harness dispatch for one daemon start (ADR 029). Without settings (the
-/// raw constructors) the service is unconfigured.
-async fn start_dispatch(
+/// Production execution inputs: the operator route and workflow configs
+/// live in the validated state directory.
+fn execution_settings_for(paths: &crate::process::DaemonPaths) -> ExecutionSettings {
+    ExecutionSettings {
+        dispatch: DispatchServiceSettings::for_project(paths.project_root(), paths.state_dir()),
+        workflow: Some(WorkflowServiceSettings::for_project(
+            paths.project_root(),
+            paths.state_dir(),
+        )),
+    }
+}
+
+/// Harness dispatch (ADR 029) and the workflow service (ADR 031) for one
+/// daemon start. Without settings (the raw constructors) both are
+/// unconfigured. The workflow service starts after dispatch: it pins the
+/// dispatch routes it executes through.
+async fn start_execution(
     writer: &WriterWorker,
-    settings: Option<DispatchServiceSettings>,
-) -> Result<HarnessDispatchService, WriterError> {
+    settings: Option<ExecutionSettings>,
+) -> Result<(HarnessDispatchService, WorkflowService), WriterError> {
     let handle = writer.handle()?;
-    Ok(match settings {
-        Some(settings) => HarnessDispatchService::start(handle, settings).await,
-        None => HarnessDispatchService::unconfigured(handle),
-    })
+    let (dispatch_settings, workflow_settings) = match settings {
+        Some(settings) => (Some(settings.dispatch), settings.workflow),
+        None => (None, None),
+    };
+    let dispatch = match dispatch_settings {
+        Some(settings) => HarnessDispatchService::start(handle.clone(), settings).await,
+        None => HarnessDispatchService::unconfigured(handle.clone()),
+    };
+    let workflow = match workflow_settings {
+        Some(settings) => WorkflowService::start(handle, dispatch.clone(), settings).await,
+        None => WorkflowService::unconfigured(handle, dispatch.clone()),
+    };
+    Ok((dispatch, workflow))
 }
 
 /// Join the writer worker so the lifecycle locks are removed
@@ -839,7 +940,7 @@ impl DaemonControlServer {
         plugins: PluginStartup,
         supervisor: Option<SupervisorServiceConfig>,
         probe_cache_path: PathBuf,
-        dispatch_settings: Option<DispatchServiceSettings>,
+        execution: Option<ExecutionSettings>,
         security: Option<&crate::process::DaemonPaths>,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
@@ -962,8 +1063,8 @@ impl DaemonControlServer {
                 // writer returns early, so a healthy start still owns it.
                 return Err(ControlError::ServerTerminated);
             };
-            let dispatch = match start_dispatch(&writer, dispatch_settings).await {
-                Ok(dispatch) => dispatch,
+            let (dispatch, workflow) = match start_execution(&writer, execution).await {
+                Ok(services) => services,
                 Err(error) => {
                     let _ = registry.shutdown().await;
                     let _ = join_writer(Some(writer)).await;
@@ -1010,6 +1111,7 @@ impl DaemonControlServer {
                 terminal: TerminalObserver::new(registry.request_client()),
                 dispatch,
                 dsh: dsh_service,
+                workflow,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1070,8 +1172,8 @@ impl DaemonControlServer {
                     return Err(error.into());
                 }
             }
-            let dispatch = match start_dispatch(&writer, dispatch_settings).await {
-                Ok(dispatch) => dispatch,
+            let (dispatch, workflow) = match start_execution(&writer, execution).await {
+                Ok(services) => services,
                 Err(error) => {
                     let _ = registry.shutdown().await;
                     let _ = tokio::task::spawn_blocking(move || writer.shutdown()).await;
@@ -1106,6 +1208,7 @@ impl DaemonControlServer {
                 terminal: TerminalObserver::new(registry.request_client()),
                 dispatch,
                 dsh: dsh_service,
+                workflow,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1195,7 +1298,12 @@ async fn serve_owned(
         _ = stop.changed() => Ok(()),
         result = server => result,
     };
-    // Dispatch attempts end first: their finish goes through the writer.
+    // Workflow coordinators stop first, then dispatch attempts end: both
+    // finish through the writer. Cancellation of running turns starts
+    // before the coordinators are awaited so none waits out a long turn.
+    state.workflow.begin_shutdown();
+    state.dispatch.begin_shutdown();
+    state.workflow.shutdown().await;
     state.dispatch.shutdown().await;
     // Then the DSH runtime, so no vendor process outlives the daemon and its
     // exit is observed before the writer's state is finalized.
@@ -1506,6 +1614,30 @@ where
                 false,
             )
         }
+        operation @ (ControlOperation::WorkflowPrepare
+        | ControlOperation::WorkflowStart
+        | ControlOperation::WorkflowStatus
+        | ControlOperation::WorkflowPause
+        | ControlOperation::WorkflowCancel
+        | ControlOperation::WorkflowExport
+        | ControlOperation::WorkflowSlots
+        | ControlOperation::WorkflowShare
+        | ControlOperation::WorkflowSessionInspect
+        | ControlOperation::WorkflowSessionPrompt
+        | ControlOperation::WorkflowSessionAttach
+        | ControlOperation::WorkflowPolicyVersions
+        | ControlOperation::WorkflowPolicyRollback
+        | ControlOperation::WorkflowPolicyEvaluate
+        | ControlOperation::WorkflowPurgeContent) => {
+            let result = workflow_ops::dispatch(&state, operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
         ControlOperation::Health => match writer_health(state).await {
             Ok(health) => (
                 ControlResponse::success(request_id, ControlPayload::Health(health)),
@@ -1594,6 +1726,7 @@ where
         // Dispatch cancellation starts now, so a connection waiting on a
         // probe ends before the server drains connections.
         ControlOperation::Shutdown => {
+            state.workflow.begin_shutdown();
             state.dispatch.begin_shutdown();
             (
                 ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
@@ -2056,6 +2189,7 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V4
             | CONTROL_PROTOCOL_V5
             | CONTROL_PROTOCOL_V6
+            | CONTROL_PROTOCOL_V7
     )
 }
 
@@ -2109,8 +2243,9 @@ fn endpoint_name(runtime_dir: &Path) -> String {
 }
 
 /// Prefix-based pass-through: codes beginning with known namespaces
-/// (`writer_`, `store_`, `harness_`, `control_`, `a2a_`, `plugin_`) round-trip
-/// as `Remote { code }` so the CLI can distinguish actionable failure modes.
+/// (`writer_`, `workflow_`, `optimizer_`, `store_`, `harness_`, `control_`,
+/// `a2a_`, `plugin_`) round-trip as `Remote { code }` so the CLI can
+/// distinguish actionable failure modes.
 /// The five canonical frame errors (`control_frame_too_large`,
 /// `control_invalid_frame`, `control_invalid_request`, `control_unauthorized`,
 /// `control_unsupported_version`) still map to their typed variants first, so
@@ -2136,6 +2271,8 @@ fn remote_error(code: String) -> ControlError {
             ControlError::Remote { code }
         }
         _ if code.starts_with("writer_")
+            || code.starts_with("workflow_")
+            || code.starts_with("optimizer_")
             || code.starts_with("store_")
             || code.starts_with("harness_")
             || code.starts_with("control_")
@@ -2550,7 +2687,7 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_through_v6() {
+    fn control_contract_accepts_v1_through_v7() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
@@ -2560,7 +2697,8 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V4));
         assert!(supported_control_version(CONTROL_PROTOCOL_V5));
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V6);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V7));
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V7);
         assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(!supported_control_version(0));
         // The minimum-version table is the single source of truth that
@@ -2604,9 +2742,30 @@ mod tests {
             assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V5);
         }
         for operation in DSH_SESSION_OPERATIONS {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V7);
+        }
+        for operation in WORKFLOW_OPERATIONS {
             assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V6);
         }
     }
+
+    const WORKFLOW_OPERATIONS: [ControlOperation; 15] = [
+        ControlOperation::WorkflowPrepare,
+        ControlOperation::WorkflowStart,
+        ControlOperation::WorkflowStatus,
+        ControlOperation::WorkflowPause,
+        ControlOperation::WorkflowCancel,
+        ControlOperation::WorkflowExport,
+        ControlOperation::WorkflowSlots,
+        ControlOperation::WorkflowShare,
+        ControlOperation::WorkflowSessionInspect,
+        ControlOperation::WorkflowSessionPrompt,
+        ControlOperation::WorkflowSessionAttach,
+        ControlOperation::WorkflowPolicyVersions,
+        ControlOperation::WorkflowPolicyRollback,
+        ControlOperation::WorkflowPolicyEvaluate,
+        ControlOperation::WorkflowPurgeContent,
+    ];
 
     const HARNESS_DISPATCH_OPERATIONS: [ControlOperation; 6] = [
         ControlOperation::HarnessDispatchCatalog,
@@ -2627,7 +2786,7 @@ mod tests {
     ];
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn dsh_operations_require_v6_and_fail_closed_without_a_configuration() {
+    async fn dsh_operations_require_v7_and_fail_closed_without_a_configuration() {
         let temp = tempfile::tempdir().expect("tempdir");
         let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
             .await
@@ -2666,17 +2825,23 @@ mod tests {
                 code: "dsh_session_unconfigured".to_string()
             })
         );
-        // A v5 client refuses the v6 operations before they reach the server.
+        // A v6 client refuses the v7 operations before they reach the server.
         for operation in DSH_SESSION_OPERATIONS {
-            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V6);
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V7);
         }
-        let mut v5 = client.clone();
-        v5.descriptor.version = CONTROL_PROTOCOL_V5;
+        let mut v6 = client.clone();
+        v6.descriptor.version = CONTROL_PROTOCOL_V6;
         assert_eq!(
-            v5.dsh_session_status().await,
+            v6.dsh_session_status().await,
             Err(ControlError::UnsupportedVersion)
         );
-        assert!(v5.health().await.expect("v5 health").healthy);
+        assert!(v6.health().await.expect("v6 health").healthy);
+        assert_eq!(
+            v6.workflow_slots().await,
+            Err(ControlError::Remote {
+                code: "workflow_unconfigured".to_string()
+            })
+        );
         server.shutdown().await.expect("shutdown");
     }
 
@@ -3122,6 +3287,14 @@ mod tests {
             a2a,
             ControlError::Remote {
                 code: "a2a_invalid_transition".to_string()
+            }
+        );
+        // An optimizer refusal (budget, holdout, history) is actionable.
+        let optimizer = remote_error("optimizer_budget_exhausted".to_string());
+        assert_eq!(
+            optimizer,
+            ControlError::Remote {
+                code: "optimizer_budget_exhausted".to_string()
             }
         );
         // The control_ namespace is prefix-passed too, so a non-canonical

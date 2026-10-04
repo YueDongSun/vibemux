@@ -95,7 +95,8 @@ crates/
 ├── vibemux_types/              # opaque IDs, domain objects, state machines, frontend query types
 ├── vibemux_events/             # canonical envelopes, idempotency, payload invariants
 ├── vibemux_harness/            # AgentKind/LauncherKind/ProbeState, harness registry/profiles/rows, dispatch + DSH session state machines (pure logic, no I/O)
-├── vibemux_store/              # SQLite migrations (schema 4) and repositories (bundled)
+├── vibemux_workflow/           # dual-track workflow contracts, gates, broker rules, optimizer (pure logic, no I/O; ADR 031)
+├── vibemux_store/              # SQLite migrations (schema 5) and repositories (bundled)
 ├── vibemux_platform/           # Windows/POSIX process, IPC, process-tree containment, and launch trampoline primitives
 ├── vibemux_a2a/                # official A2A Rust SDK adapter (loopback verified)
 ├── vibemux_model_peer/         # optional, out-of-process model-provider peer
@@ -106,15 +107,15 @@ crates/
 ├── vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache
 ├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
 ├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump
-├── vibemuxd/                   # M3 daemon (writer worker + control IPC v5 + plugin registry + harness dispatch)
-└── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch client
+├── vibemuxd/                   # M3 daemon (writer worker + control IPC v7 + plugin registry + harness dispatch + workflow + DSH session service)
+└── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch + workflow/DSH client
 ```
 
 Outside `crates/`: `src/vibemux/` is the Python behavior-reference package, `tests/` holds Python tests and fixtures, `scripts/` holds smoke and benchmark scripts, and `docs/` holds architecture, ADRs, boundaries, and labs.
 
 ### Dependency direction
 
-Domain crates must not depend on platform, database, terminal, or network implementations (ADR 013). `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it. The harness dispatch request, route config, launch argv, protocol session machines, framer, capture budget, and attempt phases are also pure `vibemux_harness` logic; `vibemuxd` performs every effect (ADR 029). The normative layering from `AGENTS.md` §4.2:
+Domain crates must not depend on platform, database, terminal, or network implementations (ADR 013). `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it. The harness dispatch request, route config, launch argv, protocol session machines, framer, capture budget, and attempt phases are also pure `vibemux_harness` logic; `vibemuxd` performs every effect (ADR 029). The dual-track workflow contracts in `vibemux_workflow` depend only on `vibemux_harness`; `vibemux_store` applies them inside writer transactions, and `vibemuxd` performs every effect (ADR 031). The normative layering from `AGENTS.md` §4.2:
 
 ```text
 types
@@ -130,7 +131,7 @@ vibemuxd
 vibemux-cli
 ```
 
-With the current crates placed in that layering: `types → events → harness → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli`.
+With the current crates placed in that layering: `types → events → harness → workflow → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli`.
 
 ## Core versus plugin boundary
 
@@ -183,11 +184,13 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 
 `vibemuxd::WriterWorker` constructs and exclusively owns `SqliteStore` inside a dedicated blocking thread. Callers only hold a bounded queue handle; when the queue is full, an explicit backpressure error is returned. The nonce-bearing lock next to the database is established through an atomic `create_new`; a second writer fails closed. After shutdown, the holder verifies the nonce before deletion.
 
-`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v6 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 adds the six `harness_dispatch_*` operations (see below), and v6 adds the six `dsh_session_*` operations (ADR 030 §9); v1 `health`/`shutdown` and v2–v5 requests remain accepted for their operations. A pre-v6 client refuses a v6 descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
+`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v7 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 added the six `harness_dispatch_*` operations, and v6 added the 15 `workflow_*` operations, and v7 adds the six `dsh_session_*` operations (see below); v1 `health`/`shutdown` and v2–v6 requests remain accepted for their operations. A client that predates the daemon's version refuses its descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
+
+DSH session operations require Control v7; established workflow operations retain v6.
 
 The `vibemuxd` binary is an unprivileged foreground process owner; `vibemuxctl daemon start|health|stop` is responsible for the on-demand lifecycle. Readiness must come from authenticated health; the PID is only used to compare this spawn's identity. Windows uses a fixed, non-user-code-interpolated system PowerShell companion that holds the exact process handle and severs captured-stdout inheritance; POSIX uses direct argv spawn with a separate process group. During migration the path layer is fixed to `.vibemux/vibemux_rust.sqlite3`, and runtime symlinks and symlink/hardlink aliases that point at the Python database are refused.
 
-Control v6 adds the six DSH session operations (ADR 030 §9) to the v5 surface.
+Control v7 adds the six DSH session operations (ADR 032 §9) to the v6 surface.
 The allowlisted remote-error namespace set includes `dsh_`, so a DSH failure
 reaches a client as its own actionable code rather than collapsing to
 `control_remote_error`.
@@ -218,7 +221,7 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 
 Live vendor CLIs have been exercised only through initialize-only probes on native Windows ([Stage 7 evidence](evidence/harness_dispatch_validation.md)); no live execution turn has run. See [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the remaining gates.
 
-## DSH session substrate (ADR 030)
+## DSH session substrate (ADR 032)
 
 DeepSeek Harness (`dsh`) is the eleventh registered harness. It differs from
 the other adapter targets in one decisive way: it publishes a first-party
@@ -264,26 +267,40 @@ registry (ADR 026), and is a separate binary from the read-only diagnostic TUI
 because it owns a live session and an input loop.
 
 `vibemuxd::dsh_session::DshSessionService` holds at most one live session per
-project and exposes it through Control v6
+project and exposes it through Control v7
 (`dsh_session_{open,prompt,poll,status,cancel,close}`). It performs no framing,
 containment, or record bookkeeping itself — those come from `vibemux_dsh` — and
 owns only the control-frame page budget, because a poll page must fit the
 64 KiB IPC frame even when the driver's own page bound is larger. The daemon
 joins the session at shutdown, so no vendor process outlives it.
-`vibemuxctl dsh` is the thin Control v6 client; a prompt comes from a file or
+`vibemuxctl dsh` is the thin Control v7 client; a prompt comes from a file or
 stdin, never from argv.
 
 Not implemented: a canonical session record (a session lives in daemon memory
 and is lost on restart), multi-session support, resume, and image prompts. No
 prompt has been sent to a real DSH runtime. See
-[ADR 030](adr/030_dsh_harness_adapter.md) and the
+[ADR 032](adr/032_dsh_harness_adapter.md) and the
 [DSH session protocol](dsh_session_protocol.md).
+
+## Dual-track workflows (ADR 031)
+
+`vibemuxd` can run a supervised two-worker coding workflow on one repository: `cooperate` (disjoint owned paths of one task, integrated together) or `compare` (two competitors on one task, at most one selected). The pure contracts, gates, broker rules, and optimizer live in `vibemux_workflow`. Store schema 5 persists workflows, contracts, slots, leases, attempts, receipts, messages, the content index, and prompt-policy versions through the single writer. The daemon's workflow service owns every effect.
+
+- **Opt-in and pinned.** The service needs `.vibemux/workflow_config.json` (schema 1), read once at startup and pinned by digest. The Git executable and the trusted verifier must be absolute and outside the project root; the verifier directory is hashed at startup. Without the file, workflow operations answer `workflow_unconfigured`.
+- **Admission.** Prepare validates each TaskSpec candidate against the exact request bytes and narrows it with the operator policy. Each contract is rendered once; its identity pins the TaskSpec, policy, template, harness profile, and base commit.
+- **Turns.** Each worker turn holds a fenced lease and is admitted through the existing dispatch admission inside the workflow transaction. It runs with a writable profile in its own owned worktree, which is not an OS sandbox. ADR 029's read-only profiles and one-per-project reservation are unchanged.
+- **Gates.** The daemon collects each candidate from Git and admits only regular text files inside the owned paths. Review and trusted verification run on materialized copies of the collected bytes in fresh worktrees. Integration applies accepted candidates to a fresh worktree at the base commit and verifies it again. Only the writer's gate marks a workflow `accepted`; nothing is committed, merged, or pushed.
+- **Context.** Worker checkpoints are claims. The broker binds messages to authenticated sessions and delivers them at turn boundaries. Bundles carry snapshot ranges and attributed claims, redacted and bounded.
+- **Private state.** `.vibemux/workflow_state` holds candidate blobs, the opt-in content store, plans, ledgers, and outboxes. It is restricted to the daemon's user (Windows protected ACL, POSIX `0700`).
+- **Control.** The 15 `workflow_*` operations require Control v6. Answers are content-free except `workflow_session_prompt`. `vibemuxctl workflow|slots|context|session|prompt` is the thin client.
+
+There is no AAG gateway client, live supervisor, or native TUI session, and a `live` config cannot make a slot eligible to code. Evidence is offline fixture evidence only ([offline evidence](evidence/dual_track_offline_acceptance.md)).
 
 ## Probe and unified frontend boundary
 
 `vibemux_probe` only produces versioned, content-free, read-only diagnostics: launcher/version, explicit provider endpoint, CC Switch health/aggregate telemetry, and the A2A self-test. Launcher verification is not the same as authentication/inference verification.
 
-`vibemux_frontend` consumes probe reports and authenticated Control v4 snapshots; it never opens the core SQLite database. Its native Supervisor Chat workspace (ADR 028) has one main conversation, real task activity, secondary Agents/Settings/Diagnostics, and docked or independent task windows. The Studio light theme is the default for new profiles; five existing dark themes remain compatible. Task queries run through the daemon writer channel and return bounded metadata, not prompt bodies. A separately configured WezTerm observation plugin may list matching native panes and focus an explicitly linked pane after identity validation. Native TUI content stays in WezTerm. There is no continuous coordinator chat adapter, harness launch/input forwarding, embedded terminal renderer, or terminal-text completion inference. Ratatui remains the diagnostic surface, with existing classic/high-contrast/mono/light/nord/gruvbox themes. The `vibemux_dsh_tui` binary is the one surface that owns a runtime process, and it does so through `vibemux_dsh` rather than through the core; it writes no canonical state. Shared palette export and terminal theme generation remain governed by ADR 026.
+`vibemux_frontend` consumes probe reports and authenticated Control v4 snapshots; it never opens the core SQLite database. Its native Supervisor Chat workspace (ADR 028) has one main conversation, real task activity, secondary Agents/Settings/Diagnostics, and docked or independent task windows. The Claude light theme is the default for new profiles (ADR 030); Studio and the five dark themes remain available. Task queries run through the daemon writer channel and return bounded metadata, not prompt bodies. A separately configured WezTerm observation plugin may list matching native panes and focus an explicitly linked pane after identity validation. Native TUI content stays in WezTerm. There is no continuous coordinator chat adapter, harness launch/input forwarding, embedded terminal renderer, or terminal-text completion inference. Ratatui remains the diagnostic surface, with existing classic/high-contrast/mono/light/nord/gruvbox themes. Shared palette export and terminal theme generation remain governed by ADR 026. The `vibemux_dsh_tui` surface independently owns an SDK runtime through `vibemux_dsh`; it writes no canonical state.
 
 ## Stateful local A2A and supervisor
 
@@ -299,8 +316,10 @@ The Python package (`src/vibemux/`) is the behavior reference and complete proto
 - Implementation status and evidence: [PROGRESS.md](../PROGRESS.md)
 - Architecture decisions: [docs/adr/](adr/)
 - Harness dispatch: [ADR 029](adr/029_daemon_harness_dispatch.md)
-- DSH harness adapter and session substrate: [ADR 030](adr/030_dsh_harness_adapter.md)
+- DSH harness adapter and session substrate: [ADR 032](adr/032_dsh_harness_adapter.md)
 - DSH session protocol: [docs/dsh_session_protocol.md](dsh_session_protocol.md)
+
+- Dual-track workflows: [ADR 031](adr/031_dual_track_workflow.md)
 - Platform support matrix: [docs/platform_support.md](platform_support.md)
 - Wire/protocol boundaries: [docs/protocol_boundaries.md](protocol_boundaries.md)
 - Plugin registry protocol: [docs/plugin_registry_protocol.md](plugin_registry_protocol.md)

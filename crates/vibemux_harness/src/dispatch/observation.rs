@@ -300,7 +300,7 @@ fn classify_acp(value: &Value) -> ObservationKind {
 }
 
 // Contract: @deepseek-ai/dsh-sdk-protocol (newline-delimited JSON-RPC 2.0 over
-// stdio) and @deepseek-ai/dsh-session `SessionEventMap` (ADR 030).
+// stdio) and @deepseek-ai/dsh-session `SessionEventMap` (ADR 032).
 //
 // `session.status` is deliberately never terminal: an idle whole-agent state is
 // not proof of task completion (AGENTS.md §2 invariant 5). Only `turn/end`

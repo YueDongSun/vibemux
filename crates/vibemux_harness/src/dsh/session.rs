@@ -238,7 +238,7 @@ impl DshSessionMachine {
     }
 
     /// Admits one prompt. Refused while another turn runs: the session admits
-    /// one turn at a time rather than queueing model work (ADR 030 §4).
+    /// one turn at a time rather than queueing model work (ADR 032 §4).
     pub fn prompt(&mut self, prompt: &str) -> Result<Vec<DshAction>, DshError> {
         if self.phase.is_terminal() {
             return Err(DshError::Closed);

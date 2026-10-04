@@ -21,7 +21,7 @@ const WORKING_DIRECTORY: &str = "SYNTHETIC_PRIVATE_PATH";
 
 fn route(harness: AgentKind, protocol: NativeProtocol) -> DispatchRoute {
     // A launcher-pair protocol needs a Node image, an entry script, and a
-    // provider route; the other protocols take none of them (ADR 030).
+    // provider route; the other protocols take none of them (ADR 032).
     let paired = protocol.requires_launcher_pair();
     DispatchRoute {
         harness,

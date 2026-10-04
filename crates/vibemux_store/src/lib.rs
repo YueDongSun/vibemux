@@ -15,14 +15,21 @@ use vibemux_types::{ProjectId, Run, Task};
 mod a2a;
 mod frontend;
 mod harness_dispatch;
+mod workflow;
 pub use a2a::A2aCommitOutcome;
 pub use harness_dispatch::{
     ClaimFence, HARNESS_DISPATCH_RECORD_SCHEMA_VERSION, HarnessDispatchAdmission,
     HarnessDispatchClaim, HarnessDispatchCommit, HarnessDispatchFinish, HarnessDispatchRecord,
     HarnessDispatchRecovery, QuarantinedDispatch,
 };
+pub use workflow::{
+    AttemptPurpose, ContentEntry, ContentKind, ContentState, LeaseCommit, LeaseFence, LeaseRecord,
+    LeaseRequest, MessageChange, MessageCommit, MessageRecord, PolicyVersionRecord, ReceiptCommit,
+    WORKFLOW_STORE_RECORD_SCHEMA_VERSION, WorkflowAttemptAdmission, WorkflowAttemptCommit,
+    WorkflowAttemptRecord, WorkflowCommit, WorkflowRecovery, WorkflowSnapshot,
+};
 
-pub const STORE_SCHEMA_VERSION: u32 = 4;
+pub const STORE_SCHEMA_VERSION: u32 = 5;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -90,6 +97,8 @@ pub enum StoreError {
     HarnessDispatchVersionConflict,
     #[error("dispatch-owned entities require the harness dispatch API")]
     HarnessDispatchBoundProjection,
+    #[error("workflow operation was rejected: {0}")]
+    Workflow(&'static str),
     #[error("SQLite store operation failed")]
     Database(#[source] rusqlite::Error),
     #[error("canonical JSON operation failed")]
@@ -131,6 +140,8 @@ impl StoreError {
             Self::HarnessDispatchProjectionMismatch => "store_harness_dispatch_projection_mismatch",
             Self::HarnessDispatchVersionConflict => "store_harness_dispatch_version_conflict",
             Self::HarnessDispatchBoundProjection => "store_harness_dispatch_bound_projection",
+            // The pure-crate or store code itself, so it reaches Control IPC unchanged.
+            Self::Workflow(code) => code,
             Self::Database(_) => "store_database_error",
             Self::Json(_) => "store_json_error",
             Self::Event(_) => "store_event_error",
@@ -682,6 +693,13 @@ impl SqliteStore {
             transaction.execute_batch(harness_dispatch::MIGRATION_V4)?;
             transaction.commit()?;
         }
+        if found < 5 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(workflow::MIGRATION_V5)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -1117,19 +1135,28 @@ mod tests {
     }
 
     #[test]
-    fn schema_3_database_migrates_to_schema_4_and_keeps_its_history() {
+    fn schema_3_database_migrates_forward_and_keeps_its_history() {
         let temporary = tempfile::NamedTempFile::new().expect("temporary database");
         schema_3_database(temporary.path());
         let history = event_log(temporary.path());
         assert!(!history.is_empty());
 
-        drop(SqliteStore::open(temporary.path()).expect("migrate to schema 4"));
-        assert_eq!(schema_version(temporary.path()), 4);
+        drop(SqliteStore::open(temporary.path()).expect("migrate to the current schema"));
+        assert_eq!(schema_version(temporary.path()), STORE_SCHEMA_VERSION);
         assert_eq!(event_log(temporary.path()), history);
         let connection = Connection::open(temporary.path()).expect("open raw database");
         for (kind, name) in [
             ("table", "harness_dispatches"),
             ("index", "harness_dispatches_active_resource"),
+            ("table", "workflows"),
+            ("table", "workflow_leases"),
+            ("index", "workflow_leases_holding_slot"),
+            ("index", "workflow_leases_holding_worktree"),
+            ("table", "workflow_attempts"),
+            ("table", "workflow_receipts"),
+            ("table", "workflow_messages"),
+            ("table", "content_store_entries"),
+            ("index", "prompt_policy_versions_one_active"),
         ] {
             let exists: bool = connection
                 .query_row(
@@ -1142,8 +1169,8 @@ mod tests {
         }
         drop(connection);
 
-        drop(SqliteStore::open(temporary.path()).expect("reopen at schema 4"));
-        assert_eq!(schema_version(temporary.path()), 4);
+        drop(SqliteStore::open(temporary.path()).expect("reopen at the current schema"));
+        assert_eq!(schema_version(temporary.path()), STORE_SCHEMA_VERSION);
         assert_eq!(event_log(temporary.path()), history);
     }
 
@@ -1178,6 +1205,51 @@ mod tests {
                 )
                 .expect("schema object query");
             assert!(!table_exists, "{attempt}: the table must roll back");
+        }
+    }
+
+    /// A MIGRATION_V5 that fails part way rolls back every workflow table
+    /// and the marker, so the database stays at schema 4 and keeps its
+    /// dispatch history across reopen.
+    #[test]
+    fn failed_schema_5_migration_stays_at_schema_4_across_reopen() {
+        let temporary = tempfile::NamedTempFile::new().expect("temporary database");
+        schema_3_database(temporary.path());
+        {
+            let mut connection = Connection::open(temporary.path()).expect("open raw database");
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("schema 4 transaction");
+            transaction
+                .execute_batch(harness_dispatch::MIGRATION_V4)
+                .expect("schema 4");
+            transaction.commit().expect("schema 4 commit");
+            connection
+                .execute_batch(
+                    "CREATE TABLE occupied(value TEXT); CREATE INDEX workflow_leases_holding_worktree ON occupied(value);",
+                )
+                .expect("conflicting index name");
+        }
+        let history = event_log(temporary.path());
+        for attempt in ["open", "reopen"] {
+            match SqliteStore::open(temporary.path()) {
+                Err(StoreError::Database(_)) => {}
+                Err(other) => panic!("{attempt}: unexpected error {other:?}"),
+                Ok(_) => panic!("{attempt}: a failed migration must not open"),
+            }
+            assert_eq!(schema_version(temporary.path()), 4, "{attempt}");
+            assert_eq!(event_log(temporary.path()), history, "{attempt}");
+            let connection = Connection::open(temporary.path()).expect("open raw database");
+            for table in ["workflows", "workflow_leases", "workflow_contracts"] {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .expect("schema object query");
+                assert!(!exists, "{attempt}: {table} must roll back");
+            }
         }
     }
 

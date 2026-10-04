@@ -1,12 +1,28 @@
-# ADR 030: DSH harness adapter and the DSH session interaction substrate
+# ADR 032: DSH harness adapter and the DSH session interaction substrate
 
 Status: Accepted and implemented. Stage 1 (pure substrate and harness
 registration in `vibemux_harness::dsh`), Stage 2 (the shared session driver in
 `vibemux_dsh` and the `vibemux_dsh_tui` operator surface), and Stage 3
-(`vibemuxd`'s session service, Control v6, and the `vibemuxctl dsh` client) are
+(`vibemuxd`'s session service, Control v7, and the `vibemuxctl dsh` client) are
 implemented in this change. What remains unimplemented is listed under
 `docs/dsh_session_protocol.md` §10 and `PROGRESS.md`; it is a canonical
 persisted session record and live validation against a real vendor runtime.
+
+Integration compatibility: workflow operations keep their established Control
+v6 minimum (ADR 031); DSH operations require v7. The daemon accepts v1-v7
+requests for their compatible operations and returns the requested version.
+Older clients reject the v7 descriptor, so daemon and clients upgrade together.
+This merge adds no persistence migration beyond workflow schema 5. DSH sessions
+remain in memory. Rolling back the workflow code requires the database and
+private workflow-state backup described in ADR 031; a schema-4 binary cannot
+open a schema-5 database.
+
+The generic daemon dispatch loader shares the session driver's DSH package
+ownership check. Only this protocol may use Node, and both canonical launcher
+paths must be regular files outside the project. An unowned script or a
+repository-supplied launcher is refused before any process starts. This is
+an operator configuration trust boundary, not an OS sandbox or workflow
+write-mode certification.
 
 Extends ADR 013 (detection-gated enablement), ADR 015 (single writer), ADR 017
 (local control IPC), ADR 026 (theme system), and ADR 029 (daemon-owned harness
@@ -109,7 +125,8 @@ Consequences accepted with this decision:
 
 - the pinned `AgentKind` wire-name test changes from ten names to eleven;
 - `vibemux_probe`'s detection table and its report fixture gain a DSH row;
-- the Python behaviour reference and its parity test gain the matching name;
+- the Rust registry and probe fixtures gain the matching name; Python
+  behaviour-reference parity remains pending and is not evidence for DSH;
 - every document that says "ten harnesses" must say "eleven".
 
 Detection stays `--version`-verified, as for every other harness: a bare PATH
@@ -252,15 +269,15 @@ count, never its text, and a working directory contributes only its length.
   core database, and writes no canonical state. It drives `vibemux_dsh`
   directly, so an operator needs no daemon; the control surface below reaches
   the same service for every other client.
-- **Control IPC v6 (implemented).** Six operations:
+- **Control IPC v7 (implemented).** Six operations:
   `dsh_session_open`, `dsh_session_prompt`, `dsh_session_poll`,
-  `dsh_session_status`, `dsh_session_cancel`, `dsh_session_close`. A pre-v6
-  client refuses a v6 descriptor, so `vibemuxctl` and `vibemuxd` upgrade
+  `dsh_session_status`, `dsh_session_cancel`, `dsh_session_close`. A pre-v7
+  client refuses a v7 descriptor, so `vibemuxctl` and `vibemuxd` upgrade
   together, exactly as for v5 (ADR 017, ADR 029). `vibemuxd` holds the session
   in `DshSessionService`, which joins it at shutdown so no vendor process
   outlives the daemon.
 - **CLI (implemented).** `vibemuxctl dsh open|prompt|poll|status|cancel|close`,
-  a thin Control v6 client in the shape of `vibemuxctl dispatch`. A prompt
+  a thin Control v7 client in the shape of `vibemuxctl dispatch`. A prompt
   comes from a file or stdin, never from argv, and `dsh poll` is the only
   command that prints runtime content.
 
@@ -284,12 +301,14 @@ documentation and the TUI status line both say so.
 
 - VibeMux gains a first-party structured adapter for a long-lived harness, with
   a session model that the existing one-prompt-per-process dispatch cannot
-  express. The two coexist: DSH one-shot turns remain expressible through the
-  ADR 029 dispatch path, which gains `NativeProtocol::DshSdkJsonRpc` with a
-  real `initialize`-only probe.
-- `AgentKind` grows to eleven, so probe report fixtures, store projections, CLI
-  rows, the Python parity test, and every "ten harnesses" document must change
-  together.
+  express. ADR 029 gains `NativeProtocol::DshSdkJsonRpc` for initialize-only
+  probes. Generic prompt-bearing dispatch is refused until a certified
+  read-only DSH profile exists; protocol support and operator execution
+  consent alone cannot establish that posture. The dedicated SDK driver and
+  session surfaces remain available under their explicit operator configuration.
+- Rust `AgentKind` grows to eleven, so its probe report fixtures, store
+  projections, and CLI rows change together. The Python prototype still has
+  its previous harness set; it does not provide DSH parity in this slice.
 - The route config gains two fields (`entry_script`, `profile`) plus a
   `provider`, and they are protocol-conditional in both directions: a
   launcher-pair protocol must carry them, and no other protocol may. Both

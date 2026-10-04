@@ -24,6 +24,7 @@ from vibemux.theme import (
     PALETTE_FILE_NAME,
     THEME_ENV_VAR,
     ThemePaletteError,
+    _fallback_palette,
     active_palette,
     load_palettes,
     palette_file_path,
@@ -57,13 +58,26 @@ def run_cli(
     )
 
 
-def test_repository_palette_file_loads_six_themes() -> None:
+def test_repository_palette_file_loads_seven_themes() -> None:
     palettes = load_palettes()
-    assert list(palettes) == ["claude", "github", "vscode", "nord", "gruvbox", "studio"]
+    assert list(palettes) == [
+        "claude",
+        "github",
+        "vscode",
+        "nord",
+        "gruvbox",
+        "studio",
+        "claude_light",
+    ]
     assert palettes["nord"].accent == "#88C0D0"
     assert palettes["nord"].terminal_bg == "#242933"
     assert palettes["gruvbox"].accent == "#FE8019"
     assert palettes["gruvbox"].terminal_bg == "#1D2021"
+    assert palettes["claude_light"].bg == "#FAF9F5"
+
+
+def test_fallback_palette_matches_the_exported_default() -> None:
+    assert _fallback_palette() == load_palettes()[DEFAULT_THEME_NAME]
 
 
 def test_palette_file_path_prefers_first_existing_candidate(tmp_path: Path) -> None:
@@ -284,7 +298,7 @@ def test_generation_is_deterministic() -> None:
 def test_cli_theme_list_lists_every_theme() -> None:
     result = run_cli("theme", "--list")
     assert result.returncode == 0
-    for name in ("claude", "github", "vscode", "nord", "gruvbox"):
+    for name in ("claude", "github", "vscode", "nord", "gruvbox", "studio", "claude_light"):
         assert name in result.stdout
 
 

@@ -1,4 +1,4 @@
-//! Control v6 DSH session operations (ADR 030 §9).
+//! Control v7 DSH session operations (ADR 032 §9).
 //!
 //! Every argument is a strict JSON document; a malformed one is
 //! `control_invalid_request`, and a service refusal passes its `dsh_session_*`
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dsh_operations_require_v6_only() {
+    fn the_dsh_operations_require_v7_and_keep_v6_compatible() {
         for operation in [
             ControlOperation::DshSessionOpen,
             ControlOperation::DshSessionPrompt,
@@ -338,20 +338,12 @@ mod tests {
             ControlOperation::DshSessionCancel,
             ControlOperation::DshSessionClose,
         ] {
-            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V6);
-            assert!(supported_control_version(CONTROL_PROTOCOL_V6));
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V7);
         }
-        // The current protocol is exactly v6, and v5 remains accepted so a
-        // v5-only operation still works against a v6 daemon.
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V6);
-        assert!(supported_control_version(vibemuxd_v5()));
-        assert!(!supported_control_version(CONTROL_PROTOCOL_V6 + 1));
-    }
-
-    /// Read through a function so the assertion is a runtime check rather
-    /// than a constant one the compiler folds away.
-    fn vibemuxd_v5() -> u32 {
-        CONTROL_PROTOCOL_V5
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V7);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V6));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V7));
+        assert!(!supported_control_version(CONTROL_PROTOCOL_V7 + 1));
     }
 
     #[test]

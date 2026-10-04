@@ -203,7 +203,7 @@ impl ProtocolSession {
         match self.protocol {
             NativeProtocol::CodexExec => InitialInput::PromptThenClose(self.prompt.clone()),
             // `initialize` is the first frame of the SDK handshake; stdin stays
-            // open because `session/prompt` follows it (ADR 030 Decision 3).
+            // open because `session/prompt` follows it (ADR 032 Decision 3).
             NativeProtocol::DshSdkJsonRpc => InitialInput::Message(json!({
                 "jsonrpc": "2.0",
                 "id": DSH_INITIALIZE_ID,
@@ -275,7 +275,7 @@ impl ProtocolSession {
         match self.protocol {
             // The SDK protocol publishes no cancel or session-close method:
             // "a client abandons a turn by closing the runtime process"
-            // (ADR 030 Decision 6).
+            // (ADR 032 Decision 6).
             NativeProtocol::DshSdkJsonRpc => None,
             NativeProtocol::Acp => self.session_id.as_ref().map(|session_id| {
                 json!({"jsonrpc": "2.0", "method": "session/cancel",
@@ -459,7 +459,7 @@ impl ProtocolSession {
         }])
     }
 
-    /// Drives the DSH SDK stdio session (ADR 030). Frames are JSON-RPC 2.0:
+    /// Drives the DSH SDK stdio session (ADR 032). Frames are JSON-RPC 2.0:
     /// `id` plus `method` is a server request, `id` alone is a response, and
     /// `method` alone is a notification. `session.event` is unfiltered, so
     /// every notification is checked against this session's own id first.

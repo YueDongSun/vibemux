@@ -8,7 +8,9 @@
 //! is a regular file outside the project root (so a repository cannot ship
 //! the binary a route runs), and the target's file stem is the harness
 //! command name (so a route cannot name an interpreter such as `cmd.exe`
-//! or `powershell.exe`). Failures carry fixed codes only.
+//! or `powershell.exe`). DSH's explicit Node launcher pair instead requires
+//! a canonical external entry script owned by the DSH package (ADR 032).
+//! Failures carry fixed codes only.
 
 use std::{
     collections::BTreeMap,
@@ -24,7 +26,8 @@ use vibemux_harness::{
         DispatchConfig, DispatchError, DispatchRoute, Sha256Digest,
         route_config::{
             ExecutablePolicy, MAX_ROUTE_CONFIG_BYTES, PinnedDispatchConfig,
-            executable_names_harness, validate_executable,
+            executable_is_node_image, executable_names_harness, validate_entry_script_shape,
+            validate_executable,
         },
     },
 };
@@ -77,13 +80,21 @@ pub fn load_dispatch_config(
 ) -> Result<LoadedDispatchConfig, DispatchError> {
     let bytes = read_config(config_path)?;
     let policy = ExecutablePolicy::for_host();
-    let pinned = DispatchConfig::parse(&bytes, policy)?;
+    let mut pinned = DispatchConfig::parse(&bytes, policy)?;
     let mut executables = BTreeMap::new();
-    for route in pinned.config.routes.iter().filter(|route| route.enabled) {
+    for route in pinned
+        .config
+        .routes
+        .iter_mut()
+        .filter(|route| route.enabled)
+    {
         executables.insert(
             route.harness,
             trusted_executable(route, canonical_root, policy)?,
         );
+        if route.protocol.requires_launcher_pair() {
+            route.entry_script = Some(trusted_entry_script(route, canonical_root)?);
+        }
     }
     Ok(LoadedDispatchConfig {
         pinned,
@@ -132,9 +143,113 @@ fn trusted_executable(
     if !regular
         || canonical.starts_with(canonical_root)
         || validate_executable(&canonical, policy).is_err()
-        || !executable_names_harness(&canonical, route.harness, policy)
+        || !(if route.protocol.requires_launcher_pair() {
+            executable_is_node_image(&canonical, policy)
+        } else {
+            executable_names_harness(&canonical, route.harness, policy)
+        })
     {
         return Err(invalid);
     }
     Ok(canonical)
+}
+
+/// Pins the same bounded package ownership rule used by the session driver.
+fn trusted_entry_script(
+    route: &DispatchRoute,
+    canonical_root: &Path,
+) -> Result<PathBuf, DispatchError> {
+    let invalid = DispatchError::ConfigExecutableInvalid;
+    let configured = route.entry_script.as_ref().ok_or(invalid)?;
+    let canonical = std::fs::canonicalize(configured).map_err(|_| invalid)?;
+    if !canonical.is_file()
+        || canonical.starts_with(canonical_root)
+        || validate_entry_script_shape(&canonical).is_err()
+        || !vibemux_dsh::config::dsh_package_owns(&canonical)
+    {
+        return Err(invalid);
+    }
+    Ok(canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use vibemux_harness::dispatch::route_config::ROUTE_CONFIG_SCHEMA_VERSION;
+
+    #[test]
+    fn dsh_launcher_pair_is_pinned_and_rejects_unowned_or_project_files() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let project = temp.path().join("project");
+        let package = temp.path().join("vendor/node_modules/@deepseek-ai/dsh");
+        std::fs::create_dir_all(&project).expect("project");
+        std::fs::create_dir_all(package.join("lib")).expect("package");
+        let node = temp
+            .path()
+            .join(format!("node{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&node, b"synthetic node image").expect("image");
+        let script = package.join("lib/bin.js");
+        std::fs::write(&script, "// fixture\n").expect("script");
+        let manifest = package.join("package.json");
+        std::fs::write(
+            &manifest,
+            json!({"name":"@deepseek-ai/dsh",
+            "bin":{"dsh":"lib/bin.js"}})
+            .to_string(),
+        )
+        .expect("manifest");
+        let config_path = project.join(DISPATCH_CONFIG_FILE_NAME);
+        let mut config = json!({"schema_version": ROUTE_CONFIG_SCHEMA_VERSION,
+            "routes": [{"harness":"dsh", "protocol":"dsh_sdk_json_rpc",
+                "executable":node,"entry_script":script,"provider":"fixture",
+                "model":"fixture","enabled":true,"allow_execution":true}]});
+        std::fs::write(&config_path, config.to_string()).expect("config");
+        let root = std::fs::canonicalize(&project).expect("canonical project");
+        let loaded = load_dispatch_config(&config_path, &root).expect("trusted pair");
+        assert_eq!(
+            loaded.config().routes[0].entry_script,
+            Some(std::fs::canonicalize(&script).expect("canonical script"))
+        );
+        std::fs::write(
+            &manifest,
+            json!({"name":"unrelated_package",
+            "bin":{"dsh":"lib/bin.js"}})
+            .to_string(),
+        )
+        .expect("unowned manifest");
+        assert!(matches!(
+            load_dispatch_config(&config_path, &root),
+            Err(DispatchError::ConfigExecutableInvalid)
+        ));
+        std::fs::write(
+            &manifest,
+            json!({"name":"@deepseek-ai/dsh", "bin":{"dsh":"lib/bin.js"}}).to_string(),
+        )
+        .expect("restore owned manifest");
+        let local_node = project.join(format!("node{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&local_node, b"repository image").expect("local image");
+        config["routes"][0]["executable"] = json!(local_node);
+        std::fs::write(&config_path, config.to_string()).expect("local config");
+        assert!(matches!(
+            load_dispatch_config(&config_path, &root),
+            Err(DispatchError::ConfigExecutableInvalid)
+        ));
+        let local_package = project.join("node_modules/@deepseek-ai/dsh");
+        std::fs::create_dir_all(local_package.join("lib")).expect("local package");
+        let local_script = local_package.join("lib/bin.js");
+        std::fs::write(&local_script, "// repository script\n").expect("local script");
+        std::fs::write(
+            local_package.join("package.json"),
+            json!({"name":"@deepseek-ai/dsh", "bin":{"dsh":"lib/bin.js"}}).to_string(),
+        )
+        .expect("local manifest");
+        config["routes"][0]["executable"] = json!(node);
+        config["routes"][0]["entry_script"] = json!(local_script);
+        std::fs::write(&config_path, config.to_string()).expect("local script config");
+        assert!(matches!(
+            load_dispatch_config(&config_path, &root),
+            Err(DispatchError::ConfigExecutableInvalid)
+        ));
+    }
 }

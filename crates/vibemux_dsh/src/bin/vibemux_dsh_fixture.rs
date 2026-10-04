@@ -2,7 +2,7 @@
 //! A stand-in DSH SDK runtime for driver and terminal-UI tests.
 //!
 //! It speaks the newline-delimited JSON-RPC 2.0 shapes of
-//! `@deepseek-ai/dsh-sdk-protocol` (ADR 030) and nothing else: no model, no
+//! `@deepseek-ai/dsh-sdk-protocol` (ADR 032) and nothing else: no model, no
 //! network, no filesystem. Tests never need the real vendor runtime, and no
 //! test can spend inference.
 //!

@@ -93,7 +93,7 @@ fn protocol_arguments(
         // from the validated route config, and nothing else reaches argv. The
         // provider, model, and reasoning effort travel in `initialize`
         // params, and the prompt travels in `session/prompt` params, so no
-        // prompt text can reach a command line (ADR 030 Decision 3).
+        // prompt text can reach a command line (ADR 032 Decision 3).
         NativeProtocol::DshSdkJsonRpc => {
             let script = route
                 .entry_script

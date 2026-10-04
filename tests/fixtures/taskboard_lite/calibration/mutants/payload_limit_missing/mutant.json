@@ -1,0 +1,5 @@
+{
+  "mutant_id": "payload_limit_missing",
+  "defect": "request bodies are read without the 8192-byte limit, so no 413 payload_too_large is returned",
+  "expected_failing_suite": "api"
+}

@@ -5,11 +5,11 @@
 //! touches the operating system: resolving the operator configuration,
 //! spawning the Node launcher pair through `vibemux_platform::ProcessTree`,
 //! framing stdout, enforcing deadlines, and terminating the contained tree
-//! (ADR 030).
+//! (ADR 032).
 //!
-//! Two consumers are planned. `vibemux_dsh_tui` drives a session directly for
-//! an operator, and a later stage wires the same driver behind
-//! `vibemuxd`'s control operations. Keeping the effects here rather than in
+//! Two consumers share this driver. `vibemux_dsh_tui` drives a session directly
+//! for an operator, and `vibemuxd` exposes it through DSH control operations.
+//! Keeping the effects here rather than in
 //! the terminal UI means the daemon does not have to reimplement framing,
 //! deadlines, or containment.
 

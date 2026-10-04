@@ -10,7 +10,7 @@
 //! one-shot capture: reaching a ceiling evicts the oldest records and counts
 //! the evictions, so a poll page can report the gap honestly. A single record
 //! larger than the byte ceiling is refused outright — a record is never
-//! truncated in place (ADR 030 Decision 8).
+//! truncated in place (ADR 032 Decision 8).
 
 use std::collections::VecDeque;
 

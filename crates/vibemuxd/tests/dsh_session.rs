@@ -1,5 +1,5 @@
 #![cfg(feature = "test_helpers")]
-//! DSH session service contract (ADR 030 §§4–10) over the real control IPC,
+//! DSH session service contract (ADR 032 §§4–10) over the real control IPC,
 //! against the synthetic SDK runtime.
 //!
 //! The property under test is the whole Stage 3 path: control request →
@@ -17,7 +17,7 @@ use vibemuxd::control::{
     DshSessionPromptRequest,
 };
 
-const FIXTURE: &str = env!("CARGO_BIN_EXE_vibemux_dsh_fixture");
+const FIXTURE: &str = env!("CARGO_BIN_EXE_vibemux_dsh_service_fixture");
 /// The SDK session id the tests use; the protocol lets the client choose it.
 const SESSION_ID: &str = "vibemux_test_session";
 

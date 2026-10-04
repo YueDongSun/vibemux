@@ -12,8 +12,8 @@
 //!
 //! The surface is a separate binary because the existing diagnostic TUI is
 //! deliberately read-only, while this one owns a live runtime session. It
-//! never opens the core database and writes no canonical state; a later stage
-//! moves the same driver behind `vibemuxd`'s control operations.
+//! never opens the core database and writes no canonical state. The daemon
+//! exposes the same shared driver through its separate DSH control operations.
 
 use std::{path::PathBuf, process::ExitCode};
 

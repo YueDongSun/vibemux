@@ -51,27 +51,46 @@ pub fn probe_cache_path_for_state_dir(state_dir: &Path) -> PathBuf {
 
 impl DaemonPaths {
     pub fn from_project_root(project_root: &Path) -> Result<Self, DaemonPathError> {
-        let project_root =
-            std::fs::canonicalize(project_root).map_err(|_| DaemonPathError::InvalidProjectRoot)?;
-        if !project_root.is_dir() {
-            return Err(DaemonPathError::InvalidProjectRoot);
-        }
+        let project_root = canonical_project_root(project_root)?;
+        #[cfg(windows)]
+        let control_runtime_root =
+            windows_control_runtime_root(std::env::var_os("LOCALAPPDATA").map(PathBuf::from))?;
+        // On unix the control runtime IS the project-local state directory.
+        #[cfg(unix)]
+        let control_runtime_root = project_root.join(RUNTIME_DIR_NAME);
+        Ok(Self::assemble(project_root, control_runtime_root))
+    }
+
+    /// Test-only twin of [`Self::from_project_root`] that roots the Windows
+    /// control runtime under `local_app_data` instead of the user's real
+    /// `%LOCALAPPDATA%`. The production control root and its `.acl_v1`
+    /// marker are SHARED by every project, test binary, and live daemon of
+    /// the user, and every trusted start verifies the marker's ACL (phase
+    /// 1, ADR 025); a test that deliberately loosens, empties, or removes
+    /// the marker must therefore do so on a private root, or it fails
+    /// sibling starts running concurrently in-process or in another process.
+    /// The layout below the base is identical to production and the ensure
+    /// path secures it the same way, so tampering tests keep exercising the
+    /// real code.
+    #[cfg(all(windows, any(test, feature = "test_helpers")))]
+    pub fn from_project_root_with_local_app_data(
+        project_root: &Path,
+        local_app_data: &Path,
+    ) -> Result<Self, DaemonPathError> {
+        let project_root = canonical_project_root(project_root)?;
+        let control_runtime_root =
+            windows_control_runtime_root(Some(local_app_data.to_path_buf()))?;
+        Ok(Self::assemble(project_root, control_runtime_root))
+    }
+
+    fn assemble(project_root: PathBuf, control_runtime_root: PathBuf) -> Self {
         let state_dir = project_root.join(RUNTIME_DIR_NAME);
         let database_path = state_dir.join(RUST_DATABASE_FILE_NAME);
         let runtime_key = project_runtime_key(&project_root);
         #[cfg(windows)]
-        let (control_runtime_root, runtime_dir) = {
-            let local_app_data = std::env::var_os("LOCALAPPDATA")
-                .map(PathBuf::from)
-                .ok_or(DaemonPathError::ControlRuntimeUnavailable)?;
-            let local_app_data = std::fs::canonicalize(local_app_data)
-                .map_err(|_| DaemonPathError::ControlRuntimeUnavailable)?;
-            let control_runtime_root = local_app_data.join("VibeMux").join("runtime");
-            let runtime_dir = control_runtime_root.join(&runtime_key);
-            (control_runtime_root, runtime_dir)
-        };
+        let runtime_dir = control_runtime_root.join(&runtime_key);
         #[cfg(unix)]
-        let (control_runtime_root, runtime_dir) = (state_dir.clone(), state_dir.clone());
+        let runtime_dir = control_runtime_root.clone();
         let descriptor_path = runtime_dir.join(DESCRIPTOR_FILE_NAME);
         #[cfg(windows)]
         let writer_lock_path = runtime_dir.join(CONTROL_WRITER_LOCK_FILE_NAME);
@@ -79,7 +98,7 @@ impl DaemonPaths {
         let writer_lock_path = writer_lock_path_for_database(&database_path);
         let legacy_descriptor_path = state_dir.join(DESCRIPTOR_FILE_NAME);
         let legacy_writer_lock_path = writer_lock_path_for_database(&database_path);
-        Ok(Self {
+        Self {
             project_root,
             state_dir,
             control_runtime_root,
@@ -90,7 +109,7 @@ impl DaemonPaths {
             writer_lock_path,
             legacy_descriptor_path,
             legacy_writer_lock_path,
-        })
+        }
     }
 
     pub fn ensure_runtime_dir(&self) -> Result<(), DaemonPathError> {
@@ -391,6 +410,28 @@ impl DaemonPaths {
     }
 }
 
+fn canonical_project_root(project_root: &Path) -> Result<PathBuf, DaemonPathError> {
+    let project_root =
+        std::fs::canonicalize(project_root).map_err(|_| DaemonPathError::InvalidProjectRoot)?;
+    if !project_root.is_dir() {
+        return Err(DaemonPathError::InvalidProjectRoot);
+    }
+    Ok(project_root)
+}
+
+/// `<canonical local_app_data>\VibeMux\runtime`: the per-user control root
+/// shared by every project. `None` (the variable is unset) or a base that
+/// cannot be canonicalized fails closed.
+#[cfg(windows)]
+fn windows_control_runtime_root(
+    local_app_data: Option<PathBuf>,
+) -> Result<PathBuf, DaemonPathError> {
+    let local_app_data = local_app_data.ok_or(DaemonPathError::ControlRuntimeUnavailable)?;
+    let local_app_data = std::fs::canonicalize(local_app_data)
+        .map_err(|_| DaemonPathError::ControlRuntimeUnavailable)?;
+    Ok(local_app_data.join("VibeMux").join("runtime"))
+}
+
 pub(crate) fn project_runtime_key(project_root: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"vibemux-project-runtime-v1\0");
@@ -532,20 +573,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
-    }
-
-    /// Serializes the tests that deliberately invalidate the SHARED global
-    /// marker (`%LOCALAPPDATA%\VibeMux\runtime\.acl_v1`). Sibling tests only
-    /// ever publish VALID contents through `ensure_runtime_dir`, so without
-    /// this lock one test's empty-marker window could land between another
-    /// test's marker read and its assertion - reintroducing the very
-    /// straddle this module's production fix removed (issue #6 follow-up).
-    #[cfg(windows)]
-    fn marker_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]
@@ -695,11 +722,51 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn ensure_runtime_dir_heals_a_stale_acl_marker() {
-        let _marker_guard = marker_test_lock();
+    fn isolated_local_app_data_relocates_the_whole_control_surface() {
+        // Contract of the test-only constructor the marker-tampering tests
+        // rely on: EVERY control artifact (root, leaf, marker, descriptor,
+        // writer lock) moves under the private base, while the project-local
+        // state stays identical to production. An artifact left under the
+        // real shared root would let a tampering test fail sibling trusted
+        // starts again.
         let temp = tempfile::tempdir().expect("temp directory");
-        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
-        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        let base = tempfile::tempdir().expect("isolated control base");
+        let production = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let isolated = DaemonPaths::from_project_root_with_local_app_data(temp.path(), base.path())
+            .expect("isolated daemon paths");
+        let canonical_base = std::fs::canonicalize(base.path()).expect("canonical base");
+        assert_eq!(
+            isolated.control_runtime_root(),
+            canonical_base.join("VibeMux").join("runtime")
+        );
+        let marker = isolated.acl_marker_path();
+        for artifact in [
+            isolated.runtime_dir(),
+            marker.as_path(),
+            isolated.descriptor_path(),
+            isolated.writer_lock_path(),
+        ] {
+            assert!(artifact.starts_with(isolated.control_runtime_root()));
+            assert!(!artifact.starts_with(production.control_runtime_root()));
+        }
+        assert_eq!(isolated.runtime_key(), production.runtime_key());
+        assert_eq!(isolated.state_dir(), production.state_dir());
+        assert_eq!(isolated.database_path(), production.database_path());
+        assert_eq!(
+            isolated.legacy_descriptor_path(),
+            production.legacy_descriptor_path()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ensure_runtime_dir_heals_a_stale_acl_marker() {
+        // Runs on a private control root: emptying the SHARED marker would
+        // race every concurrent reader of it in this and other processes.
+        let temp = tempfile::tempdir().expect("temp directory");
+        let base = tempfile::tempdir().expect("isolated control base");
+        let paths = DaemonPaths::from_project_root_with_local_app_data(temp.path(), base.path())
+            .expect("daemon paths");
         std::fs::create_dir_all(paths.control_runtime_root()).expect("control root");
         let marker = paths.acl_marker_path();
         // An existing marker with no contents used to fail every later
@@ -719,23 +786,23 @@ mod tests {
         // temporary name, so without `control_acl_init_lock` the threads
         // below would interleave truncate/write/rename on the same
         // temporary and could publish an empty marker or fail a rename -
-        // an issue-#6-class failure no other test would catch. Removing the
-        // shared marker forces the first-touch path on every run.
-        let _marker_guard = marker_test_lock();
+        // an issue-#6-class failure no other test would catch. A fresh
+        // PRIVATE control root (shared by the four projects, like the real
+        // one) forces the first-touch path on every run without removing
+        // the user's shared marker under concurrent readers.
+        let base = tempfile::tempdir().expect("isolated control base");
         let roots: Vec<_> = (0..4)
             .map(|_| tempfile::tempdir().expect("temp directory"))
             .collect();
         let paths_list: Vec<_> = roots
             .iter()
-            .map(|root| DaemonPaths::from_project_root(root.path()).expect("daemon paths"))
+            .map(|root| {
+                DaemonPaths::from_project_root_with_local_app_data(root.path(), base.path())
+                    .expect("daemon paths")
+            })
             .collect();
         let marker = paths_list[0].acl_marker_path();
-        match std::fs::remove_file(&marker) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("remove stale marker: {error}"),
-        }
-        let cleanups: Vec<_> = paths_list.iter().map(ControlRuntimeCleanup::new).collect();
+        assert!(!marker.exists(), "private control root starts untouched");
         std::thread::scope(|scope| {
             let handles: Vec<_> = paths_list
                 .iter()
@@ -752,17 +819,11 @@ mod tests {
             }
         });
         assert!(acl_marker_valid(&marker));
-        drop(cleanups);
     }
 
     #[cfg(windows)]
     #[test]
     fn verify_control_security_accepts_a_secured_runtime() {
-        // Verifying the full surface includes the SHARED `.acl_v1` marker:
-        // the concurrent first-touch test removes and republishes it, and a
-        // verify straddling that window would fail on a missing (not
-        // insecure) path. Hold the same test lock as the marker-writers.
-        let _marker_guard = marker_test_lock();
         let temp = tempfile::tempdir().expect("temp directory");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
         let _control_cleanup = ControlRuntimeCleanup::new(&paths);
@@ -782,7 +843,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn verify_control_security_rejects_a_loosened_runtime_dir() {
-        let _marker_guard = marker_test_lock();
         let temp = tempfile::tempdir().expect("temp directory");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
         let _control_cleanup = ControlRuntimeCleanup::new(&paths);
@@ -817,7 +877,6 @@ mod tests {
         // must accept the secured root/leaf/marker with a writer.lock
         // stand-in while the descriptor does NOT exist yet, and must fail
         // closed on a loosened leaf - before any token is published.
-        let _marker_guard = marker_test_lock();
         let temp = tempfile::tempdir().expect("temp directory");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
         let _control_cleanup = ControlRuntimeCleanup::new(&paths);

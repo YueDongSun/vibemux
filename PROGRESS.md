@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4) and the DSH session substrate (ADR 030: `vibemux_harness::dsh` pure state machine, `vibemux_dsh` driver, `vibemuxd::dsh_session` service, Control v6, `vibemuxctl dsh`, and the `vibemux_dsh_tui` surface; fixture-verified, no live vendor turn and no persisted session record yet) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and DSH sessions (control protocol v6) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), and DSH sessions (control protocol v7) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -791,6 +791,8 @@ Scope:
 - [x] Rejected verification creates new repair Runs without rewriting prior evidence.
 - [ ] Manual merge gate.
 
+ADR 031 adds an offline-verified dual-track slice to this milestone: TaskSpec-owned paths per worker, daemon-collected candidates, independent review and trusted verifier receipts per candidate, bounded repair, comparison selection, and integration into a fresh worktree without commit or merge. Live workers, DAG dependencies, and the manual merge gate remain open.
+
 Exit criteria:
 
 - A multi-agent task can be replayed from task specification, base commit, events, artifacts, and verifier result.
@@ -854,6 +856,8 @@ The next implementation work should follow this order:
 The M4.2 registry/status slice is integrated and locally tested with mock children. The user-requested M7.1/M8.0 path now proves a local structured-data supervisor loop using real providers, with the necessary owned-worktree subset. Neither establishes full workspace/terminal parity, vendor CLI readiness, remote readiness, or overall M7/M8 completion.
 
 The user-requested ADR 029 harness dispatch slice (one daemon-owned dispatch per project, read-only protocol profiles, Codex/Claude execution, ACP probes) was implemented ahead of item 5 and has only fixture evidence and live initialize-only probes. It does not establish vendor plugin readiness, concurrent multi-harness execution, or the M6 exit criteria.
+
+The user-requested ADR 031 dual-track workflow slice (two workers in owned worktrees, independent review, trusted verification, integration into a fresh worktree) was also implemented ahead of item 5. Its evidence is offline fixture evidence only: there is no AAG gateway client, live worker, or native TUI session, so it establishes neither vendor readiness nor any live acceptance.
 
 ---
 
@@ -2644,14 +2648,40 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 ---
 
-### 2026-10-04 - DSH harness adapter and session interaction substrate (ADR 030)
+### 2026-10-04 - Dual-track workflow and DSH integration on main
+
+**Scope and resulting contracts**
+- Combine the reviewed dual-track branch at `6edb1aa` with the DSH SDK driver, daemon service, CLI, and terminal surface; preserve the newer GUI and the existing workflow hardening.
+- Workflow operations retain Control v6; DSH operations require Control v7. The daemon accepts v1-v7 requests for their established operations. Older clients reject the new descriptor and must upgrade with the daemon. Store schema 5 is unchanged by this integration.
+- Preserve GUI ADR 030 and workflow ADR 031; the DSH decision is ADR 032. DSH sessions remain in memory and are not canonical Task/Run records.
+- Verify and pin the external Node/DSH package launcher pair. Generic ADR 029 DSH dispatch is initialize-only until a read-only profile is certified; operator consent and raw SDK protocol support cannot grant generic execution. Dedicated SDK sessions remain explicitly configured. DSH has no workflow writable profile and cannot acquire fixture write-mode certification or worker admission.
+- Retain the intentional deletion of the uncompiled GUI stub bank and give the daemon DSH fixture a distinct binary name.
+
+**Independently executed validation**
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`: passed on the final permission boundary.
+- `cargo test -p vibemux_harness -p vibemux_dsh -p vibemux_frontend --all-features --locked`: 266 passed, 0 failed, 1 ignored.
+- `cargo test -p vibemuxd --lib --test workflow_admission --test dsh_session --test control_harness_dispatch --test harness_dispatch --all-features --locked`: 152 passed, 0 failed. The subsequent actual-IPC DSH execution/slot refusal regression also passed after its final assertions were added.
+- `python -m pytest`: 111 passed using the integration source via `PYTHONPATH` and a test directory outside that checkout. Repository Ruff format/lint passed; strict mypy for the 14 acceptance-tooling modules passed.
+- `node --test tests/fixtures/taskboard_lite/calibration/calibration_integrity.test.mjs`: 5 passed. The pinned good frontend also passed all 16 direct browser checks.
+- CLI help lists both workflow and DSH verbs; the DSH terminal surface refuses an unconfigured project without launching a runtime.
+- Environment: native Windows, Rust 1.85.0/MSVC. Build/test debug information was disabled after an MSVC D8050 debug-record error; TEMP/TMP and LOCALAPPDATA were scoped to owned test directories because the managed environment denied normal runtime writes. Global settings were not changed.
+
+**Remaining failures and qualification limits**
+- The complete `cargo test --workspace --all-features --locked --no-fail-fast` run, before the final generic-dispatch permission fence, observed 819 passed, 5 failed, and 2 ignored across 93 targets. This is not a green full-workspace result. Final changes were verified with the affected suites and the explicit IPC regression above.
+- Three unchanged `vibemux_cli::bootstrap_process` tests failed with `SpawnFailed`; an independent reproduction of the unchanged PowerShell detached-launch helper timed out. A direct immediate-exit fixture and CLI help succeeded. Detached daemon startup remains unqualified in this execution environment.
+- The two unchanged `workflow_cooperate` tests failed after contained frontend browser verification, ending with `dispatch_not_completed`. The same good frontend passed all 16 checks directly; the contained verifier boundary remains unresolved. No test, acceptance gate, or cleanup rule was weakened.
+- Repository-wide `python -m mypy .` still reports 20 errors in three untouched files. `cargo nextest`, `cargo deny`, and `cargo audit` are unavailable; no installation was performed.
+- Linux/WSL, interactive DSH/vendor operation, AAG model routing, and live native terminal acceptance were not run. The pinned 37-case acceptance report was not regenerated, and its historical results do not certify this merged source. The Version 2 runtime enhancements and live gates remain unfinished.
+
+### 2026-10-04 - DSH harness adapter and session interaction substrate (ADR 032)
 
 **Status change**
 - New adapter: DeepSeek Harness (`dsh`) is registered as the eleventh harness, and `NativeProtocol::DshSdkJsonRpc` describes its SDK JSON-RPC stdio protocol. `DshSdkJsonRpc` joins the ADR 029 dispatch path with a real initialize-only probe.
-- New crate `vibemux_dsh`, new surface `vibemux_dsh_tui`, and a new daemon service with **Control v6** plus the `vibemuxctl dsh` client.
-- Control protocol moves from v5 to v6. v1–v5 requests remain accepted for their operations; a pre-v6 client refuses a v6 descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together.
+- New crate `vibemux_dsh`, new surface `vibemux_dsh_tui`, and a new daemon service with **Control v7** plus the `vibemuxctl dsh` client.
+- Control protocol moves from v6 to v7. v1–v6 requests remain accepted for their operations; a pre-v7 client refuses a v7 descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together.
 - The substrate is `VERIFIED` at the fixture level: a pure state-machine suite plus a driver suite and a daemon-level end-to-end suite against `vibemux_dsh_fixture`. **No prompt has been sent to a real DSH runtime.**
-- No milestone changes. No persistence schema change: a DSH session has **no canonical record** and lives in daemon memory (ADR 030 open decision 1).
+- No milestone changes. No persistence schema change: a DSH session has **no canonical record** and lives in daemon memory (ADR 032 open decision 1).
 
 **Implemented**
 - `vibemux_harness::dsh` (pure, no I/O): the observed wire vocabulary with strict bounded decoders, the client-side session state machine, a record classifier, and a bounded sequenced record ring (`wire`, `session`, `records`).
@@ -2660,7 +2690,7 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - `vibemux_harness::dispatch::protocol_session`: a DSH arm for the one-shot path, including the `initialize` handshake, the `session/prompt` admission, notification correlation by session id, and structured `turn/end` terminal evidence.
 - `vibemux_dsh`: operator config loading and trust verification, the Node launcher pair, `ProcessTree` containment, bounded JSON-line framing, initialize and turn deadlines, cancellation by tree termination, the record buffer, and a `summary()` accessor.
 - `vibemuxd::dsh_session::DshSessionService`: one live session per project, opened lazily against `.vibemux/dsh_session.json`, joined at daemon shutdown so no vendor process outlives the daemon. It owns only the control-frame page budget; framing, containment, and records stay in `vibemux_dsh`.
-- Control v6: `dsh_session_{open,prompt,poll,status,cancel,close}`, with `dsh_*` added to the allowlisted remote-error namespaces so an actionable DSH code reaches a client instead of collapsing to `control_remote_error`.
+- Control v7: `dsh_session_{open,prompt,poll,status,cancel,close}`, with `dsh_*` added to the allowlisted remote-error namespaces so an actionable DSH code reaches a client instead of collapsing to `control_remote_error`.
 - `vibemuxctl dsh open|prompt|poll|status|cancel|close`: a prompt comes from a file or stdin, never argv; `dsh poll` is the only DSH command that prints runtime content.
 - `vibemux_frontend::dsh_tui` and the `vibemux_dsh_tui` binary: a live session surface with an input editor, bounded transcript, cancel path, teardown, and the audited `tui::Theme` registry.
 - Test fixture `vibemux_dsh_fixture` (modes `serve`, `hang`, `error-turn`, `foreign`, `garbage`, `no-turn-end`, `exit-early`), selectable through `--profile` so a daemon test picks a behaviour the way an operator picks a profile.
@@ -2690,12 +2720,201 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - Other environment workarounds used for this run only, none applied to the repository: `TMP`/`TEMP` redirected into `target/tmp` (the platform temp directory is not writable here, which breaks `prost-build` and `tempfile`), and `CARGO_PROFILE_DEV_DEBUG=0` (MSVC `D8050`, the C7 debug-record limit, is hit by this checkout's long paths when compiling bundled C dependencies). Separately, `target/` had grown to 71.8 GB and filled the drive; `cargo clean` reclaimed it.
 
 **Remaining**
-- A canonical persisted session record. The service keeps the session in memory, so a daemon restart loses it and its records (ADR 030 open decision 1).
+- A canonical persisted session record. The service keeps the session in memory, so a daemon restart loses it and its records (ADR 032 open decision 1).
 - Live validation against a real DSH runtime. No prompt has been sent to the vendor: the adapter is verified against the wire shapes read from `@deepseek-ai/dsh-sdk-protocol` 0.1.2-rc.1 and against `vibemux_dsh_fixture`.
 - Bootstrapping the `sdk` profile for the first time writes to the operator's DSH home; that side effect is documented in `docs/dsh_session_protocol.md` and README, and it did occur on the reference host during reconnaissance.
-- ADR 030 open decisions 2 to 6, including consolidating the two trusted-launcher-pair loaders.
+- ADR 032 open decisions 2 to 6, including consolidating the two trusted-launcher-pair loaders.
 
 **Known risks**
 - DSH's protocol carries no version negotiation and no compatibility promise, so this adapter binds to observed 0.1.2-rc.1 shapes. A later release may change them silently; the handshake checks only `serverInfo.name`.
 - The vendor `sdk` profile defaults `DSH_MAX_TOKENS_AS_SUCCESS` to true, so a token-limited turn may reach VibeMux already reported as `completed`. VibeMux's own mapping stays conservative, but it cannot recover the distinction.
 - The runtime is not a sandbox: containment governs lifetime only, and the vendor profile decides what the session may read and write.
+
+### 2026-09-28 (3) - Claude-style GUI phase 1 (ADR 030, `feat/claude_style_gui`)
+
+**Status change**
+- M5.0 frontend stays `PARTIAL`. ADR 030 phase 1 is implemented; phase 2 (shortcuts, quick switcher, appearance modes, motion, copy buttons) is not.
+
+**Implemented**
+- `claude_light` palette as the default for new profiles and a retuned warm charcoal `claude` palette; `config/theme_palettes.json` and the Python fallback updated under the parity test; ADR 026's surface invariant amended to a 5.0 luma gap in either direction.
+- WCAG contrast math, luminance-based light detection, and readable accent text in every palette.
+- Serif display family from Georgia or Cambria, with sans, serif, and CJK faces loaded independently (a missing CJK font no longer skips Segoe UI).
+- Collapsible sidebar with New task, Recents, and a workspace menu; welcome state with a local-time greeting; rounded composer with a target chip, a muted placeholder, and Enter/Shift+Enter handling that never sends; borderless serif task rows with a scroll fade; a quiet top bar; an always-docked task drawer with one header and an aligned details grid; deletion of four uncompiled shell files.
+- Final whole-branch review (fresh reviewer): no Critical findings; two Important findings fixed with RED-to-GREEN tests. Long drafts now scroll inside a composer area capped at 35% of the window height (48 to 240 px), so they can no longer push the send row and the "not connected" caption off screen or collapse the conversation. Custom controls (icon buttons, New task, Recents rows, the workspace button, navigation rows) draw a 2 px accent focus ring when keyboard-focused.
+- The frontend enables `time`'s `local-offset` feature for the greeting, which adds `num_threads` 0.1.7 (MIT or Apache-2.0, used on Unix only) to `Cargo.lock`.
+
+**Evidence**
+- commands on the final head (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features --no-fail-fast`: 529 passed, 1 failed, 2 ignored. The failure was `vibemux_cli` `startup_timeout_terminates_only_the_spawned_fixture`, a timing flake that also fails on `main` at `21447ac` (1 of 8 runs there, 1 of 5 on this branch). An earlier run on this branch instead failed the `vibemux_cli` recovery tests `live_daemon_is_never_recoverable` and `descriptor_only_recovery_and_pid_mismatch_fail_closed` (`ControlRuntimeSecurityInvalid`), which fail the same way on `main` on this machine. None of these tests or their crates change in this branch. Python: pytest 64 passed; ruff check and ruff format clean; mypy reports 20 errors in `tools/a2a_python_interop.py`, `tools/a2a_tck_auth.py`, and `tests/test_harness.py`, the same 20 as on `main`. `git diff --check` over the branch is clean.
+- Screenshots: `claude_light` and `claude` at 1280x800, 960x600, and 1.5x scale for the chat, drawer, welcome, and collapsed scenes were reviewed; the committed previews in `docs/frontend_previews/` were regenerated with `claude_light` at 1440x900.
+
+**Remaining**
+- ADR 030 phase 2.
+- At the 960x600 minimum with the drawer open, the conversation column is narrow and its header badge is clipped.
+- Deferred review minors: the workspace badge letter reaches about 4.2:1 instead of 4.5:1; Esc closes an open popup and the drawer in one press; Recents keeps highlighting a task after its drawer closes; every disabled composer target says "Not detected" even when the version check failed; the Agents page title is still sans; the collapsed rail lacks Diagnostics and a current-page indicator; ADR 030's 3:1 control-boundary goal conflicts with its own border tokens and needs an ADR decision.
+- The flaky `vibemux_cli` startup-timeout test and the recovery-test failures on this machine are pre-existing and tracked separately.
+- No live check yet on a real display at scales other than 1.0 and 1.5, with other system fonts, or with IME input on a real keyboard.
+
+### 2026-09-29 - Shared ACL-marker test isolation (`fix/acl_marker_test_isolation`)
+
+**Status change**
+- None. M3 stays `VERIFIED`. This is a test isolation fix plus a `DaemonPaths` constructor refactor that keeps production behavior the same. No ACL check, wire contract, schema, or CLI output changed.
+
+**Symptom**
+- On `main` at `21447ac`, `cargo test -p vibemux_cli --lib` failed in 12 of 15 back-to-back runs of the built test binary on the development machine. `recovery::tests::live_daemon_is_never_recoverable` and `recovery::tests::descriptor_only_recovery_and_pid_mismatch_fail_closed` panicked at `DaemonControlServer::start_for_paths` with `ControlRuntimeSecurityInvalid`. Each test passed when run alone. The "2 load-flake failures in `vibemux_cli` recovery tests" in the 2026-09-26 entry, attributed there to issue #6, match this signature, as do the recovery-test failures recorded as pre-existing in the 2026-09-28 (3) entry. That entry's `startup_timeout_terminates_only_the_spawned_fixture` flake is a different issue and is not addressed here.
+
+**Root cause**
+- `tests::classify_daemon_exit_distinguishes_security_failures` came from the issue #8 review round (V2). It granted Everyone on the real, shared `%LOCALAPPDATA%\VibeMux\runtime\.acl_v1` marker and restored the ACL afterwards. Its comment assumed no sibling test verifies the marker's ACL. That has been false since issue #7: every trusted start verifies the marker in phase 1 (`verify_control_pre_publish` covers root, leaf, marker, and writer lock). The two recovery tests start daemons in parallel with it, so a start that landed inside the loosen/restore window failed closed, as designed.
+- Temporary diagnostics on the failing call reported `AccessControlInvalidAt { stage: 7, index: 3 }` for the four-path phase-1 batch. Index 3 is the marker and stage 7 means the effective ACE count was not 3. The checks behaved as specified. The failure was test isolation against shared user state.
+- Skipping only the classify test gave 0 failures in 15 runs.
+- The same design had a second hazard. A panic between the loosen and the restore left the user's shared marker loosened, which fails every later trusted start on the machine, including a real `vibemuxctl daemon start`. This happened during validation (below) and was repaired by hand.
+- Two `vibemuxd` tests had the same problem across processes. `ensure_runtime_dir_heals_a_stale_acl_marker` emptied the shared marker and `concurrent_first_touch_serializes_marker_publication` deleted it. `marker_test_lock` serialized them inside the `vibemuxd` test binary, but not against other processes reading the marker at the same time, such as another worktree's test run or a live daemon start.
+
+**Implemented**
+- `crates/vibemuxd/src/process.rs`: `DaemonPaths::from_project_root` is split into `canonical_project_root`, `windows_control_runtime_root` (the `<LOCALAPPDATA>\VibeMux\runtime` derivation), and a shared `assemble`. Production paths, error codes, and error order are unchanged. The new test-only `DaemonPaths::from_project_root_with_local_app_data` is compiled under `cfg(all(windows, any(test, feature = "test_helpers")))`, the same gating pattern as `start_with_dispatch`. It roots the control runtime under a private base with the production layout, so the ensure path secures it with the same helper and the tampering tests still exercise the real code.
+- The three tests that loosen, empty, or remove the marker now use private roots. `marker_test_lock` is removed because no test in the workspace mutates the shared marker any more.
+- `crates/vibemux_cli/Cargo.toml`: adds a dev-dependency on `vibemuxd` with `test_helpers`.
+
+**Evidence**
+- Regression pin in the classify test: while its private marker is loosened, a sibling project's surviving surface under the real shared root must still verify. With the test pointed back at the shared root, it failed deterministically at that assertion even when run alone (`sibling control surface is unaffected by this test: ControlRuntimeSecurityInvalid`). With the fix it passes.
+- New `isolated_local_app_data_relocates_the_whole_control_surface`: every control artifact (root, leaf, marker, descriptor, writer lock) is under the private base and none is under the shared root. Project-local state paths match production.
+- After the fix, the `vibemux_cli` lib test binary failed 0 of 20 runs (before: 12 of 15). A full workspace run left the shared marker's modification time unchanged. Before the fix, the first-touch test deleted and republished the marker on every run.
+- Commands (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features` (parallel, as in CI) exit 0, 492 passed, 0 failed, 2 ignored. The one extra test is the new contract test.
+
+**Observations (not changed)**
+- With `control_acl_init_lock` temporarily removed, `concurrent_first_touch_serializes_marker_publication` passed 10 of 10 runs. It therefore no longer pins the lock, although its comment says it does; the issue #6 review round measured 8 of 10 failing. The likely cause is issue #7 Stage 1's `helper_slot`, which serializes each thread's `secure_user_directory` helper and so staggers the publications. This predates this change and does not depend on which root the test uses. It is left for a separate change.
+- Validation side effect: the deliberate pre-fix run above panicked before its restore and left the real marker with an extra Everyone ACE, the hazard described above. `icacls <marker> /remove *S-1-1-0` removed it, and the marker again has its three inherited ACEs. Those runs also left five empty per-project leaves under the shared root. The root already held many empty leaves from earlier test runs. None are removed here.
+
+**Remaining**
+- The `rust-ubuntu` compile of the refactored unix path comes from the pull request CI run. A local Linux cross-check stopped at the bundled SQLite C build.
+
+### 2026-09-29 - Deterministic startup-timeout bootstrap test (`fix/startup_timeout_fixture_race`)
+
+**Status change**
+- None. Test-only change: no production code changed. It removes the known load-sensitive flake in `bootstrap_process::startup_timeout_terminates_only_the_spawned_fixture` recorded in the 2026-09-15 (5) and (9) entries.
+
+**Root cause**
+- The test gave `start_daemon` a real-time 150 ms startup deadline and then required the hang fixture's started marker. The deadline starts once the fixture's PID is known (on Windows, after the PowerShell launcher helper reports it), so it raced only the fixture's own launch. Temporary instrumentation on a loaded Windows host (not committed) showed the marker 50-590 ms after the PID was known. In every failing run, the deadline fired 150-161 ms after the PID with no marker, and the fixture was killed before it ran. Unmodified, the test failed 15 of 20 runs on that host at `started.is_file()`.
+- A second mode appeared with the CPU saturated (24 busy loops on 24 logical CPUs). The 150 ms timeout also cut the Windows helper's PID wait to its `max(startup_timeout, 3 s)` floor. With three helpers starting at once, that wait sometimes expired (`SpawnFailed`, 3 of 12 full-binary runs).
+- The termination check was a third real-time assumption. It slept 700 ms and required `completed` to be absent, against a 600 ms hang, so the kill had to land within 600 ms of the marker.
+
+**Implemented**
+- The test runs on a paused tokio clock (`start_paused`) with the production `DaemonBootstrapConfig` timing. A `spawn_blocking` task waits on real time for the marker. While it runs, the paused current_thread clock cannot auto-advance (tokio test-util, tokio-rs/tokio#5115), so the startup deadline cannot expire before the fixture has written its marker. After that, the clock jumps to the deadline without real waiting. The production timing gives the Windows helper its 30 s PID wait. The marker wait is bounded by the default start timeout plus 30 s.
+- The test proves termination by process exit. It reads the fixture's PID from the marker and waits on real time (5 s) for that process to exit, under `FixtureProcessGuard`. It then requires `completed`, the descriptor, and the writer lock to be absent. The hang fixture now hangs for 30 s instead of 600 ms, so only a kill ends it within the bound.
+- `vibemux_cli` dev-dependency: `tokio` with `test-util`. This adds no crates and leaves `Cargo.lock` unchanged; non-test builds are unaffected.
+
+**Evidence**
+- Under 24 CPU busy loops, full `bootstrap_process` binary: the original test failed 15 of 15 and 12 of 12 runs (the marker race plus `SpawnFailed`). The fixed test passed 20 of 20. The marker gate with the old 150 ms timeout passed 12 of 15, and its 3 failures were the `SpawnFailed` mode, which led to the production timing.
+- Mutations (temporary, not committed): with the fixture delayed 2 s before its marker, the original test failed 3 of 3 and the fixed test passed 3 of 3. With a launcher helper that never kills the fixture, the fixed test failed with `fixture process did not exit`, and the guard removed the leaked fixture.
+- The test alone now takes about 0.7 s; the fixed 700 ms sleep is gone.
+- commands (native Windows): `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo test --workspace --all-features --no-fail-fast` 490 passed, 1 failed, 2 ignored, and all three `bootstrap_process` tests passed.
+- The one failure, `vibemux_cli` `recovery::tests::live_daemon_is_never_recoverable` (`ControlRuntimeSecurityInvalid`), is the pre-existing shared-marker race addressed by PR #14 and is unrelated to this change. `classify_daemon_exit_distinguishes_security_failures` loosens the per-user `.acl_v1` marker while sibling tests start control servers. Over eight `cargo test -p vibemux_cli --all-features --lib` runs, two failed; with that test skipped, none of eight failed.
+
+**Known risks**
+- The gate depends on tokio test-util not auto-advancing a paused clock while a `spawn_blocking` task runs (`tokio` is pinned at `=1.47.1`). If an upgrade dropped that, the deadline would expire before the marker. The test would then fail loudly at "fixture never wrote its started marker"; it would not pass silently.
+
+**Remaining**
+- Windows and Linux CI evidence comes from the pull request run.
+- `abrupt_process_recovery_preserves_database_and_allows_restart` also failed once under doubled load (2026-09-15 (9)). It did not fail in any run here and is not changed.
+
+### 2026-10-03 - Dual-track workflow (ADR 031) offline slice (`feat/dual_track_workflow`)
+
+**Status change**
+- New area: the dual-track workflow ([ADR 031](docs/adr/031_dual_track_workflow.md)) is `PARTIAL — OFFLINE ONLY`.
+- Control IPC moves from v5 to v6 and the Rust store schema from 4 to 5. M3 stays `VERIFIED` and ADR 029 dispatch stays `PARTIAL`.
+
+**Implemented**
+- `vibemux_workflow` is a pure crate (no I/O). It covers:
+  - TaskSpec validation against the source request, including prohibitions, numbers, literals, invented scope, and requirement coverage.
+  - The deterministic English renderer and templates, plus contract identity and generations.
+  - Gates, comparison selection, message broker rules, and context bundles with redaction.
+  - Leases, slot planning, candidate snapshots, the gateway route contract, and the prompt optimizer.
+- `vibemux_store` schema 5 is forward-only. It adds nine workflow tables with fenced leases, idempotent admission, a content index, and versioned prompt policies.
+- `vibemux_harness` gains writable worker profiles, final-text extraction, and per-turn prompts.
+- `vibemuxd` gains a workflow service with a deterministic coordinator (at most two broker rounds). The service:
+  - gives every slot an owned worktree;
+  - collects candidates itself;
+  - runs an independent review and the pinned trusted verifier per candidate;
+  - allows bounded repair;
+  - selects between comparison candidates;
+  - integrates into a fresh worktree.
+- Control v6 adds 15 workflow operations. Private workflow state is restricted to the daemon's user. A pre-v6 client refuses a v6 daemon.
+- `vibemuxctl` adds `workflow`, `slots`, `context share`, `session inspect`, and `prompt`.
+- The TaskBoard Lite fixture adds a frozen base and contract, plus trusted `api`, `store`, and `browser` suites calibrated against a good solution and nine mutants.
+- The `vibemux_worker_fixture` binary stands in for every worker, reviewer, and compiler turn.
+- `scripts/verify_dual_track.py` is the acceptance runner, with Python as the test driver only. It pins the 37-scenario benchmark, re-derives every class status from logs and evidence digests, validates the report, and removes its private temporary root.
+
+**Evidence**
+- [docs/evidence/dual_track_offline_acceptance.md](docs/evidence/dual_track_offline_acceptance.md): the offline run on `7de3aa5` with a clean tree.
+  - Verdict `BLOCKED`: 22 `PASS`, 11 `BLOCKED`, 4 `NOT_RUN`, 0 `FAIL`.
+  - `cargo test --workspace --all-features`: 708 passed, 0 failed, 2 ignored in 86 targets.
+  - pytest: 85 passed. Calibration: 9 of 9 mutants caught, browser suite in Edge.
+  - The standalone `--validate` check reported the report valid.
+- On the same head: `cargo fmt --check` and `cargo clippy --workspace --all-targets --all-features -- -D warnings` are clean. `ruff check` and `ruff format --check` are clean. `mypy --strict` on the runner is clean.
+- Repository-wide mypy reports the 20 pre-existing errors in three files this branch does not touch.
+- Baseline before any workflow code (`0588620`): 531 passed, 0 failed, 2 ignored in 74 targets.
+- No live validation. No model, AAG gateway, or vendor CLI was contacted.
+
+**Remaining**
+- A daemon AAG gateway client, plus live supervisor and compiler routes. Without them G01 and G03 are `NOT_RUN` and G04 is `BLOCKED`, and a `live` config cannot make a slot eligible to code.
+- Owned native TUI sessions, attach, and structured/native handoff. Without them T01 is `BLOCKED`, and T02 and T03 are `NOT_RUN`.
+- A live run of every `live_coding`, `live_mixed_harness` (T04), and `live_optimizer` class, which needs an explicit budget and configuration authorization.
+- The known limitations listed in ADR 031: read-only prompt inspection, the unpersisted negative-control receipt, a crash simulated through the writer, and writable profiles that are cooperative admission rather than an OS sandbox.
+
+**Compatibility / migration**
+- Schema 5 is not downgraded. Rolling back needs a pre-migration store, and `vibemuxctl` and `vibemuxd` are upgraded together.
+- Without `.vibemux\workflow_config.json`, every workflow operation answers `workflow_unconfigured`. Existing dispatch, harness, frontend, and A2A behavior is unchanged.
+
+**Known risks**
+- Workers are same-user processes. Owned paths and scope checks reject a bad candidate when the daemon collects it, but they do not stop a vendor process from writing outside its worktree.
+
+### 2026-10-03 - Dual-track source review repairs and publication preparation
+
+**Scope and implementation**
+- Reviewed the offline dual-track branch from `342535a` and repaired state,
+  ownership, execution evidence, and acceptance-report defects. The final
+  reviewed and tested source is `b6b490d525d8a7b876776635d91764c84fcbede2`.
+- Message batches bind to the admitted recipient attempt before launch;
+  acknowledgements bind to the same completed attempt. Failed-turn messages
+  remain unacknowledged and do not poison a later repair prompt or batch.
+- Substantive review verdicts require a matching completed dispatch. Base
+  commits and accepted contracts are enforced for attempts, candidates, and
+  integration receipts. Recovery and lookup use bounded keyset pagination.
+- Workflow lifecycle controls serialize with start registration; content
+  retention and purge preserve independent owners; integration rejects ASCII
+  and Unicode case aliases. Ledger publication failure attempts verified
+  cleanup and has a real-Git main-integrity regression.
+- Train cases now gate optimizer eligibility. Reports reconcile artifact
+  summaries as well as scenario statuses, reject malformed metadata, require
+  real passed tests and the complete nine-mutant inventory, and verify source
+  contents. Timed-out acceptance commands terminate their owned process trees.
+
+**Validation executed**
+- Fresh offline acceptance: `BLOCKED`, 22 PASS / 11 BLOCKED / 4 NOT_RUN /
+  0 FAIL. Rust: 721 passed, 0 failed, 2 ignored in 86 targets. Python:
+  111 passed. Edge calibration caught all nine mutants. Standalone report
+  validation succeeded with no problems.
+- Workspace formatting and Clippy with warnings denied passed; repository
+  Ruff lint/format and strict acceptance-module mypy passed. Five Node
+  calibration regressions passed. Repository-wide mypy reports the same
+  20 errors in three untouched files.
+- Independent final static review found no outstanding actionable regression
+  in the repair delta. The exact commands and platform are recorded in
+  [the evidence summary](docs/evidence/dual_track_offline_acceptance.md).
+- An initial fresh build failed because drive space was exhausted. Only
+  task-created caches were moved to another drive before successful rechecks;
+  that failed attempt is not counted as a passing test run.
+- `nextest`, `cargo-deny`, and `cargo-audit` are not installed locally and were
+  not claimed. Linux/WSL and live terminal paths remain unverified here.
+
+**Compatibility and remaining work**
+- SQLite schema 5 and Control v6 are unchanged by the repairs. The private
+  content index writes version 2 and reads legacy version 1 conservatively;
+  rollback requires matching pre-upgrade private state (ADR 031).
+- The workflow remains PARTIAL / OFFLINE ONLY. Gateway/native fixture gaps,
+  live gateway, live coding, native TUI/handoff, and live optimizer acceptance
+  remain blocked or not run. No live model calls, merge, release, or deployment
+  occurred in this verification.
+- Route labels are not independently bound by the store because dispatch
+  route identity is not persisted. If both ledger publication and verified
+  cleanup fail, the resource is retained for later cleanup; the double-failure
+  path is not injected by the new regression.

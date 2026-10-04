@@ -1,0 +1,5 @@
+{
+  "mutant_id": "corrupt_file_reset",
+  "defect": "store silently replaces a corrupt data file with an empty store instead of failing with corrupt_store",
+  "expected_failing_suite": "api"
+}

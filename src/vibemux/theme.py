@@ -192,19 +192,19 @@ def _fallback_palette() -> ThemePalette:
     repository ``config/`` directory)."""
     return ThemePalette(
         name=DEFAULT_THEME_NAME,
-        bg="#0F0E0C",
-        surface="#171512",
-        surface_alt="#211F1A",
-        border="#2B2822",
-        text_primary="#EAE6DC",
-        text_muted="#9C958A",
+        bg="#262624",
+        surface="#1F1E1D",
+        surface_alt="#30302E",
+        border="#3A3935",
+        text_primary="#F5F4EE",
+        text_muted="#A8A59B",
         accent="#D97757",
         accent_alt="#E7C6B4",
         success="#8AB487",
         warning="#D9A85F",
-        danger="#CB6D63",
-        terminal_bg="#0A0908",
-        terminal_fg="#E8E4D8",
+        danger="#E07A6F",
+        terminal_bg="#1A1918",
+        terminal_fg="#EDEBE4",
         terminal_cursor="#D97757",
     )
 

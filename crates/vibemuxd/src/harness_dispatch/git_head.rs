@@ -29,7 +29,7 @@ const GIT_DIR_PREFIX: &str = "gitdir: ";
 const SYMBOLIC_REF_PREFIX: &str = "ref: ";
 
 /// The commit `HEAD` names under `project_root`, as lowercase hex.
-pub(super) fn read_head_commit(project_root: &Path) -> Result<String, DispatchError> {
+pub(crate) fn read_head_commit(project_root: &Path) -> Result<String, DispatchError> {
     let git_dir = git_dir(project_root)?;
     let common_dir = common_dir(&git_dir)?;
     let mut target = read_line(&git_dir.join("HEAD"), MAX_METADATA_BYTES)?;

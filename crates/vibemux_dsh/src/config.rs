@@ -1,4 +1,4 @@
-//! Operator configuration for one DSH session (ADR 030 Decision 7).
+//! Operator configuration for one DSH session (ADR 032 Decision 7).
 //!
 //! `.vibemux/dsh_session.json` (schema 1) is read once, validated, and its
 //! trusted paths canonicalized before any process starts. The file carries no
@@ -10,7 +10,7 @@
 //! strings:
 //!
 //! - the executable must be a native image whose file stem is `node`, because
-//!   DSH's vendor runtime *is* a Node interpreter (ADR 030 Decision 3);
+//!   DSH's vendor runtime *is* a Node interpreter (ADR 032 Decision 3);
 //! - the entry script must be an absolute `.js` file that the installed
 //!   `@deepseek-ai/dsh` package's own `bin` map names;
 //! - neither target may live inside the project root, so a repository cannot

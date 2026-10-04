@@ -1,6 +1,6 @@
 //! DeepSeek Harness (DSH) session substrate: pure contracts and state machines
 //! for driving one long-lived SDK runtime over newline-delimited JSON-RPC 2.0
-//! stdio (ADR 030).
+//! stdio (ADR 032).
 //!
 //! Everything here is deterministic logic over values supplied by the caller.
 //! No process, pipe, filesystem, clock, or network access happens in this

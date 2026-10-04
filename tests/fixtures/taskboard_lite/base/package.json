@@ -1,0 +1,8 @@
+{
+  "name": "taskboard_lite",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}

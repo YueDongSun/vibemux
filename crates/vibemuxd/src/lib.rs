@@ -22,7 +22,7 @@ use vibemux_harness::{HarnessDetection, HarnessRow};
 use vibemux_store::{
     A2aCommitOutcome, HarnessDispatchAdmission, HarnessDispatchClaim, HarnessDispatchCommit,
     HarnessDispatchFinish, HarnessDispatchRecord, HarnessSnapshotOutcome, HarnessSwitchOutcome,
-    QuarantinedDispatch, STORE_SCHEMA_VERSION, SqliteStore,
+    QuarantinedDispatch, STORE_SCHEMA_VERSION, SqliteStore, StoreError, WorkflowRecovery,
 };
 use vibemux_types::{
     ProjectId, RunId, TaskId,
@@ -63,6 +63,8 @@ pub mod recovery;
 pub mod supervisor_service;
 pub mod supervisor_workflow;
 pub mod terminal_observer;
+pub mod workflow;
+pub mod workflow_writer;
 
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -258,6 +260,12 @@ enum WriterRequest {
     HarnessDispatchRecovery {
         response: mpsc::Sender<Result<HarnessDispatchRecoveryReport, WriterError>>,
     },
+    WorkflowRecovery {
+        response: mpsc::Sender<Result<WorkflowRecovery, WriterError>>,
+    },
+    /// A typed store operation built only by daemon modules
+    /// (`workflow_writer`); it runs on the writer's own connection.
+    Store(StoreOperation),
     Shutdown(mpsc::Sender<Result<(), WriterError>>),
     #[cfg(test)]
     HoldForBackpressureTest {
@@ -265,6 +273,8 @@ enum WriterRequest {
         release: mpsc::Receiver<()>,
     },
 }
+
+type StoreOperation = Box<dyn FnOnce(&mut SqliteStore) + Send>;
 
 struct LifecycleLock {
     path: PathBuf,
@@ -498,6 +508,30 @@ impl WriterHandle {
     pub fn harness_dispatch_recovery(&self) -> Result<HarnessDispatchRecoveryReport, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::HarnessDispatchRecovery { response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    /// The workflow lease reconciliation this writer ran at startup, after
+    /// dispatch recovery (ADR 031 §4).
+    pub fn workflow_recovery(&self) -> Result<WorkflowRecovery, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::WorkflowRecovery { response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    /// Runs one store operation on the writer thread and returns its
+    /// result. Crate-private: the public surface is the typed methods in
+    /// `workflow_writer`, so callers outside the daemon cannot run
+    /// arbitrary statements on the authoritative connection.
+    pub(crate) fn with_store<T, F>(&self, operation: F) -> Result<T, WriterError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut SqliteStore) -> Result<T, StoreError> + Send + 'static,
+    {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::Store(Box::new(move |store| {
+            let _ = response.send(operation(store).map_err(|error| store_error(error.code())));
+        })))?;
         receive(receiver, self.response_timeout)
     }
 
@@ -760,6 +794,15 @@ fn writer_loop(
             return;
         }
     };
+    // Leases are reconciled after their attempts were: a lease whose
+    // attempt did not settle stays reserved (quarantined).
+    let workflow_recovery = match store.recover_workflows(OffsetDateTime::now_utc()) {
+        Ok(recovery) => recovery,
+        Err(error) => {
+            let _ = ready_sender.send(Err(store_error(error.code())));
+            return;
+        }
+    };
     if ready_sender.send(Ok(())).is_err() {
         return;
     }
@@ -906,6 +949,10 @@ fn writer_loop(
             WriterRequest::HarnessDispatchRecovery { response } => {
                 let _ = response.send(Ok(recovery.clone()));
             }
+            WriterRequest::WorkflowRecovery { response } => {
+                let _ = response.send(Ok(workflow_recovery.clone()));
+            }
+            WriterRequest::Store(operation) => operation(&mut store),
             WriterRequest::Shutdown(response) => {
                 let _ = response.send(Ok(()));
                 break;

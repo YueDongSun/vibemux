@@ -17,6 +17,7 @@ uuid.workspace = true
 vibemux_events = { path = "../vibemux_events" }
 vibemux_harness = { path = "../vibemux_harness" }
 vibemux_types = { path = "../vibemux_types" }
+vibemux_workflow = { path = "../vibemux_workflow" }
 
 [dev-dependencies]
 tempfile.workspace = true

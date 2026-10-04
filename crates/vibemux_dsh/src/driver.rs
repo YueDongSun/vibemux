@@ -5,7 +5,7 @@
 //! in `vibemux_harness::dsh`; this module supplies bytes, time, and
 //! containment.
 //!
-//! Cancellation follows ADR 030 Decision 6. The SDK protocol publishes no
+//! Cancellation follows ADR 032 Decision 6. The SDK protocol publishes no
 //! cancel or session-close method, so abandoning a turn means tearing the
 //! contained process tree down. `close` first asks politely with `shutdown`
 //! and only escalates when the grace period expires.
@@ -213,7 +213,7 @@ impl DshDriver {
     }
 
     /// Sends one prompt. The turn is admitted only when the session is `Ready`
-    /// and no other turn is running (ADR 030 Decision 4).
+    /// and no other turn is running (ADR 032 Decision 4).
     pub async fn prompt(&mut self, prompt: &str) -> Result<(), DshDriverError> {
         let actions = self
             .with_machine(|machine| machine.prompt(prompt))
@@ -287,7 +287,7 @@ impl DshDriver {
     /// `ShutdownTimeout` is reported only when the runtime was asked to close
     /// and ignored the request. A session that already failed or was cancelled
     /// is torn down without a spurious error, because termination is its
-    /// documented teardown (ADR 030 Decision 6).
+    /// documented teardown (ADR 032 Decision 6).
     pub async fn close(&mut self) -> Result<(), DshDriverError> {
         let cooperative = !self.phase().is_terminal();
         if cooperative {

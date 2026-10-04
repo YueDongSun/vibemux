@@ -15,7 +15,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use vibemux_harness::dispatch::{DispatchError, ObservedRecord};
+use vibemux_harness::dispatch::{
+    DispatchError, NativeProtocol, ObservedRecord, final_text::final_assistant_text,
+};
 
 use super::output_page::{DispatchOutputPage, OutputCursor, OutputPageLimits, build_output_page};
 
@@ -109,6 +111,13 @@ impl TranscriptStore {
             .cloned()
             .collect();
         Ok(TranscriptPage { records, complete })
+    }
+
+    /// The final assistant text of a transcript, live or retained.
+    pub fn final_text(&self, request_id: Uuid, protocol: NativeProtocol) -> Option<String> {
+        let state = self.lock();
+        let (transcript, _) = state.find(request_id).ok()?;
+        final_assistant_text(protocol, &transcript.records)
     }
 
     /// The page at `cursor`, built under the lock so only the page's bytes

@@ -5,7 +5,7 @@
 > the operator configuration, the driver's bounds and failure codes, and the
 > terminal surface. **Out of scope:** milestone evidence
 > ([PROGRESS.md](../PROGRESS.md)); engineering rules ([AGENTS.md](../AGENTS.md));
-> the decision record ([ADR 030](adr/030_dsh_harness_adapter.md)).
+> the decision record ([ADR 032](adr/032_dsh_harness_adapter.md)).
 
 ## 1. What this binds to
 
@@ -257,7 +257,7 @@ the input), **Ctrl-C** / **Ctrl-Q** quit, **Up**/**Down**/**PageUp**/**PageDown*
 scroll the transcript. Every printable key goes to the input, so no shortcut
 can steal a character.
 
-### Control IPC v6
+### Control IPC v7
 
 Six operations. Every argument is a strict JSON document; a malformed one is
 `control_invalid_request`, and a service refusal passes its `dsh_session_*` or
@@ -273,8 +273,8 @@ Six operations. Every argument is a strict JSON document; a malformed one is
 | `dsh_session_close` | none | status |
 
 Only `dsh_session_poll` returns runtime content. Every status view is
-allowlisted and carries no path, no digest, and no prompt text. A pre-v6 client
-refuses a v6 descriptor, so `vibemuxctl` and `vibemuxd` upgrade together.
+allowlisted and carries no path, no digest, and no prompt text. A pre-v7 client
+refuses a v7 descriptor, so `vibemuxctl` and `vibemuxd` upgrade together.
 
 Service codes: `dsh_session_unconfigured` (no configuration; DSH is off),
 `dsh_session_config_invalid` (malformed or untrusted), `dsh_session_busy` (a
@@ -301,7 +301,7 @@ records and the cursor to resume from.
 
 The terminal surface writes no canonical state. The daemon path also writes no
 canonical state today: a DSH session has no persisted record, so a daemon
-restart loses it and its records (ADR 030 open decision 1).
+restart loses it and its records (ADR 032 open decision 1).
 
 ## 10. Not implemented
 
@@ -322,7 +322,7 @@ restart loses it and its records (ADR 030 open decision 1).
 
 ## 11. References
 
-- Decision record: [ADR 030](adr/030_dsh_harness_adapter.md).
+- Decision record: [ADR 032](adr/032_dsh_harness_adapter.md).
 - Harness registration and dispatch: [ADR 029](adr/029_daemon_harness_dispatch.md).
 - Architecture: [docs/architecture.md](architecture.md).
 - DSH SDK protocol (vendor): `@deepseek-ai/dsh-sdk-protocol` package README and

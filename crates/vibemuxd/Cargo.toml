@@ -25,12 +25,17 @@ name = "vibemux_native_fixture"
 path = "src/bin/vibemux_native_fixture.rs"
 required-features = ["test_helpers"]
 
-# Synthetic DSH SDK runtime for the DSH session tests (ADR 030). The source is
+# Synthetic DSH SDK runtime for the DSH session tests (ADR 032). The source is
 # shared with `vibemux_dsh` so the wire behaviour under test is the same code
 # its own driver tests exercise.
 [[bin]]
-name = "vibemux_dsh_fixture"
+name = "vibemux_dsh_service_fixture"
 path = "../vibemux_dsh/src/bin/vibemux_dsh_fixture.rs"
+required-features = ["test_helpers"]
+
+[[bin]]
+name = "vibemux_worker_fixture"
+path = "src/bin/vibemux_worker_fixture.rs"
 required-features = ["test_helpers"]
 
 [dependencies]
@@ -59,6 +64,7 @@ vibemux_plugin_protocol = { path = "../vibemux_plugin_protocol" }
 vibemux_plugin_supervisor = { path = "../vibemux_plugin_supervisor" }
 vibemux_store = { path = "../vibemux_store" }
 vibemux_types = { path = "../vibemux_types" }
+vibemux_workflow = { path = "../vibemux_workflow" }
 
 [dev-dependencies]
 sysinfo.workspace = true

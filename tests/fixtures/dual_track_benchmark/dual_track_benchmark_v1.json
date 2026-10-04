@@ -1,0 +1,653 @@
+{
+  "schema_version": 1,
+  "kind": "development_acceptance_specification",
+  "title": "VibeMux dual-track TaskBoard Lite acceptance",
+  "created_date": "2026-10-03",
+  "timezone": "Asia/Tokyo",
+  "execution_status": "NOT_RUN",
+  "notice": "This is an acceptance specification, not a test runner or observed result. Commands described by the companion development prompt are target interfaces to implement.",
+  "source_baselines": {
+    "vibemux": {
+      "repository": "YueDongSun/vibemux",
+      "ref": "main",
+      "commit": "2445a0153b665b60f402cb5606106022a43d6775"
+    },
+    "aag_public": {
+      "repository": "YueDongSun/ai-agent-gateway",
+      "ref": "main",
+      "commit": "285788561b31b2829fcb974aea464e4ea704af2a"
+    },
+    "aag_development": {
+      "repository": "YueDongSun/cc_copilot_kilo",
+      "ref": "master",
+      "commit": "5287cfd30af9d98f5b958bf479fd2a0ddde1dca7"
+    }
+  },
+  "normative_prompt": "VIBEMUX_MASTER_DEVELOPMENT_PROMPT_EN.md",
+  "product": {
+    "name": "TaskBoard Lite",
+    "product_dependencies": "Node.js standard library; plain HTML, CSS and JavaScript",
+    "task_schema": {
+      "id": "nonempty unique stable string assigned by server",
+      "title": "trimmed string, 1..120 Unicode code points",
+      "completed": "boolean"
+    },
+    "launch_argv": [
+      "node",
+      "src/server.mjs",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "0",
+      "--data",
+      "<owned-temporary-data-file>"
+    ],
+    "routes": [
+      {
+        "method": "GET",
+        "path": "/health",
+        "success_status": 200,
+        "response": {
+          "ok": true
+        }
+      },
+      {
+        "method": "GET",
+        "path": "/api/tasks",
+        "success_status": 200,
+        "response": "Task[] in insertion order"
+      },
+      {
+        "method": "POST",
+        "path": "/api/tasks",
+        "request": {
+          "title": "string"
+        },
+        "success_status": 201,
+        "response": "Task"
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/tasks/:id",
+        "request": {
+          "completed": "boolean"
+        },
+        "success_status": 200,
+        "response": "Task"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/tasks/:id",
+        "success_status": 204,
+        "response": "empty"
+      }
+    ],
+    "error_response_shape": {
+      "error": {
+        "code": "stable string"
+      }
+    },
+    "errors": {
+      "invalid_title": 400,
+      "invalid_request": 400,
+      "invalid_json": 400,
+      "not_found": 404,
+      "payload_too_large": 413
+    },
+    "max_json_body_bytes": 8192,
+    "persistence": "successful mutation persisted before response; orderly restart; no silent corruption reset; no lost single-process concurrent updates",
+    "browser_checks": [
+      "add",
+      "toggle both ways",
+      "delete",
+      "All/Active/Completed filtering",
+      "counts",
+      "keyboard submit",
+      "accessible labels",
+      "server validation failure",
+      "Unicode title",
+      "duplicate titles",
+      "HTML-like title rendered as text"
+    ],
+    "excluded_product_features": [
+      "authentication",
+      "cloud deployment",
+      "framework migration",
+      "multi-process data-file writers",
+      "external APIs"
+    ]
+  },
+  "cooperative_mode": {
+    "same_base_required": true,
+    "minimum_parallel_slots": 2,
+    "track_a": {
+      "role": "backend_domain",
+      "owned_paths": [
+        "src/server.mjs",
+        "src/store.mjs",
+        "tests/worker_a/**"
+      ]
+    },
+    "track_b": {
+      "role": "frontend",
+      "owned_paths": [
+        "public/index.html",
+        "public/app.mjs",
+        "public/styles.css",
+        "tests/worker_b/**"
+      ]
+    },
+    "integrator_owned": [
+      "shared HTTP contract",
+      "package.json",
+      "dependency lockfiles",
+      "fixture harness entrypoints"
+    ],
+    "verifier_location": "outside worker-owned paths",
+    "required_exchange": "B asks A for a source-backed edge-case explanation; bundle delivered at a safe turn boundary; source, recipient prompt and acknowledgment recorded",
+    "integration": "approved immutable artifacts assembled in a new owned integration worktree; no mutation of original checkout; no automatic commit/merge/push"
+  },
+  "comparison_mode": {
+    "subject": "TaskBoard storage and validation component",
+    "owned_paths": [
+      "src/store.mjs",
+      "tests/worker_store/**"
+    ],
+    "interface": [
+      "createStore(dataFile) -> Promise<Store>",
+      "Store.list() -> Promise<Task[]>",
+      "Store.add(title) -> Promise<Task>",
+      "Store.setCompleted(id, completed) -> Promise<Task>",
+      "Store.remove(id) -> Promise<void>"
+    ],
+    "contract_details": {
+      "list": "returns insertion order; mutating returned data must not bypass persistence rules",
+      "add": "non-string => invalid_request; trimmed blank or >120 code points => invalid_title; duplicate title allowed",
+      "setCompleted": "non-string/empty id or non-boolean completed => invalid_request; missing valid id => not_found",
+      "remove": "non-string/empty id => invalid_request; missing valid id => not_found",
+      "createStore": "missing file creates empty store; corrupt existing file rejects with corrupt_store and does not erase it",
+      "errors": "rejected Error with stable string code; no HTTP dependency required",
+      "concurrency": "single-process awaited/concurrent successful mutations are not lost; multiple independently opened writers at once excluded"
+    },
+    "fairness": [
+      "same base",
+      "same contract",
+      "same visible examples",
+      "same verifier",
+      "fresh data files",
+      "same declared route and budget policy",
+      "record all failed attempts and helper-model calls"
+    ],
+    "selection": "hard gates first; predeclared metrics next; stable deterministic tie-breaker; no winner if both fail",
+    "negative_test": "separately labeled mutated candidate artifact, not falsely attributed to the live worker"
+  },
+  "live_policy_template": {
+    "enabled": false,
+    "configuration_status": "REQUIRES_OPERATOR_CONFIGURATION",
+    "gateway_endpoint": null,
+    "credential_reference": null,
+    "role_routes": {
+      "supervisor": null,
+      "compiler": null,
+      "worker_a": null,
+      "worker_b": null,
+      "reviewer": null,
+      "optimizer": null
+    },
+    "per_session_config_isolation": true,
+    "global_provider_switching_allowed": false,
+    "content_store_opt_in": false,
+    "max_parallel_worker_slots": 2,
+    "max_repairs_per_task": 2,
+    "max_optimizer_candidates": 3,
+    "max_elapsed_seconds": 1800,
+    "max_total_model_requests": 80,
+    "known_cost_cap": null,
+    "currency": null,
+    "budget_note": "These are proposed configurable ceilings, not performance estimates. Live admission must validate enforceability. Unknown usage/cost is not zero. Do not reduce existing model context-window settings.",
+    "publish_allowed": false,
+    "original_checkout_writes_allowed": false
+  },
+  "scenarios": [
+    {
+      "id": "B01",
+      "description": "Existing baseline behavior remains compatible; relevant regression suites actually run.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "repository_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "B02",
+      "description": "Windows test/runtime resources are isolated; no shared ACL-marker mutation or unknown-process termination.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "native_windows_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "P01",
+      "description": "Fixed TaskSpec/template/policy inputs render byte-identical English; replay reuses the accepted artifact.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "P02",
+      "description": "Dropped prohibitions, changed numbers, invented scope and missing requirement coverage are rejected.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "P03",
+      "description": "Literal Unicode/code/paths and adversarial source text cannot change compiler policy or trigger unintended expansion.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test",
+        "adapter_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "P04",
+      "description": "User semantic edits produce a new contract generation; admitted old work is not silently mutated.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "G01",
+      "description": "Two concurrent role routes through AAG do not cross-talk through global defaults or provider pinning.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "gateway_fixture",
+        "live_gateway"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "G02",
+      "description": "Unsupported gateway/harness protocol capability is refused before coding admission.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "adapter_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "G03",
+      "description": "Pre-output failover and post-output failure are distinguished; no stream stitching or blind tool replay.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "gateway_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "G04",
+      "description": "Actual configured live model requests reach AAG; reported identity/usage and unknown fields are truthful.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "live_gateway"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "S01",
+      "description": "Two eligible slots acquire separate workspaces and demonstrate real overlapping work.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "S02",
+      "description": "Zero slots blocks/queues and one slot runs sequentially without inventing parallelism.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "S03",
+      "description": "Slot loss/lease expiry cannot cause simultaneous ownership or stale completion.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "S04",
+      "description": "The same admitted request cannot produce duplicated canonical effects across restart/retry.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "T01",
+      "description": "Two real native TUI sessions are owned and visible on Windows; start/attach/focus/resize work.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "live_native_windows"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "T02",
+      "description": "Safe prompt submission, human input ownership, interruption and unknown-delivery handling work.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "adapter_fixture",
+        "live_native_windows"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "T03",
+      "description": "Structured/native handoff never runs two controllers; unsupported native resume is reported as context transfer.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "adapter_fixture",
+        "live_native_windows"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "T04",
+      "description": "Two distinct harness kinds perform real writable turns; initialize-only probes do not count.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "live_mixed_harness"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "C01",
+      "description": "A scoped source-backed bundle travels A→B and appears in a permitted recipient turn with a delivery receipt.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "C02",
+      "description": "Unauthorized audience, forged sender, stale source, duplicate and out-of-order messages are handled correctly.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "C03",
+      "description": "Secrets are excluded from ordinary logs/events; opt-in content retention and deletion boundaries are tested.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test",
+        "native_windows_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "C04",
+      "description": "Reopening the supervisor/context view after restart does not lose acknowledged shares or forge missing content.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "W01",
+      "description": "Artifact admission/integration rejects out-of-scope changes; any detected protected-path mutation fails the Run. Enforcement claims match the declared sandbox backend.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "W02",
+      "description": "Snapshot collection includes permitted untracked files and detects candidate mutation after verification.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "W03",
+      "description": "Dirty, mismatched or externally owned resources are retained, not cleaned or killed.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "V01",
+      "description": "A protocol-completed but incorrect candidate cannot pass the workflow gate.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "V02",
+      "description": "Fresh independent review and trusted verifier receipts refer to the exact same candidate and contract.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "V03",
+      "description": "Both cooperative artifacts form a passing integration candidate without editing the user's original checkout.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "V04",
+      "description": "The comparison selector refuses the defective candidate; both-fail does not select a winner.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "V05",
+      "description": "A late canceled/stale workflow cannot be promoted by a delayed successful child result.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "A01",
+      "description": "TaskBoard API validation, status/error contracts and persistence pass the trusted external test suite.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "live_coding",
+        "trusted_api_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "A02",
+      "description": "Real browser add/toggle/delete/filter/count/keyboard/error/Unicode/XSS checks pass.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "live_coding",
+        "trusted_browser_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "A03",
+      "description": "One bounded repair closes an injected defect without modifying tests, requirements or historical evidence.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "O01",
+      "description": "Optimizer proposals are restricted to allowed prompt/context/scheduling parameters.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "O02",
+      "description": "Candidate evaluation uses fixed train/dev inputs and protected holdout; active contracts are unchanged.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "O03",
+      "description": "Harmful/no-gain candidates are rejected; accepted policy versions are rollbackable and budget-bounded.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_optimizer"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    },
+    {
+      "id": "E01",
+      "description": "Exported report includes every scenario, failures, skips, commands, identities and supported claims.",
+      "required_for_full_pass": true,
+      "execution_classes": [
+        "evidence_validation"
+      ],
+      "status": "NOT_RUN",
+      "evidence_refs": []
+    }
+  ],
+  "full_pass_rule": "Every required scenario has genuine supporting execution evidence for its required classes; simulated results do not substitute for live/native classes. No open hard-gate failures or missing mandatory evidence.",
+  "allowed_summary_verdicts": [
+    "PASS",
+    "OFFLINE_PASS",
+    "FAIL",
+    "BLOCKED",
+    "NOT_RUN"
+  ],
+  "self_optimization": {
+    "allowed": [
+      "template wording outside immutable blocks",
+      "context retrieval order/budget within policy",
+      "approved decomposition hints",
+      "scheduler ranking weights within eligibility rules"
+    ],
+    "forbidden": [
+      "requirements",
+      "permissions",
+      "tests",
+      "held-out cases",
+      "hard budgets",
+      "providers",
+      "state-machine rules",
+      "accepted history",
+      "active contracts"
+    ],
+    "evaluation": "fixed train/dev sets; protected final holdout; explicit call/time budget; no claimed guaranteed improvement",
+    "promotion": "future admissions only; versioned; rollbackable; reject regressions; no-gain may be valid result"
+  },
+  "metrics": [
+    "verified_success",
+    "requirement_coverage",
+    "wall_time_total",
+    "queue_time",
+    "compile_time",
+    "supervisor_time",
+    "worker_time",
+    "review_time",
+    "verifier_time",
+    "model_requests_total",
+    "reported_input_tokens",
+    "reported_output_tokens",
+    "reported_cached_tokens",
+    "known_cost",
+    "unknown_usage",
+    "repair_count",
+    "context_bytes",
+    "user_interventions"
+  ],
+  "not_established": [
+    "general model superiority",
+    "hostile same-user isolation",
+    "all harness compatibility",
+    "full official A2A ITK conformance",
+    "remote production security",
+    "N_qubit scientific validity"
+  ]
+}
