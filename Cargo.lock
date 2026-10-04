@@ -4437,12 +4437,27 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror 2.0.20",
+ "time",
  "tokio",
  "uuid",
+ "vibemux_dsh",
  "vibemux_harness",
  "vibemux_platform",
  "vibemux_probe",
  "vibemuxd",
+]
+
+[[package]]
+name = "vibemux_dsh"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "vibemux_harness",
+ "vibemux_platform",
 ]
 
 [[package]]
@@ -4471,6 +4486,8 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "vibemux_dsh",
+ "vibemux_harness",
  "vibemux_probe",
  "vibemux_types",
  "vibemuxd",
@@ -4646,6 +4663,7 @@ dependencies = [
  "tokio",
  "uuid",
  "vibemux_a2a",
+ "vibemux_dsh",
  "vibemux_events",
  "vibemux_harness",
  "vibemux_model_peer",

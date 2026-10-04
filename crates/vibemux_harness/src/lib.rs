@@ -14,6 +14,7 @@
 
 pub mod agent;
 pub mod dispatch;
+pub mod dsh;
 
 use std::collections::BTreeMap;
 
@@ -249,9 +250,9 @@ impl HarnessError {
     }
 }
 
-/// The ten supported harnesses, in canonical probe/dashboard order.
+/// The eleven supported harnesses, in canonical probe/dashboard order.
 #[must_use]
-pub fn profiles() -> [HarnessProfile; 10] {
+pub fn profiles() -> [HarnessProfile; 11] {
     AgentKind::all().map(|agent| HarnessProfile {
         command: agent.command_name(),
         protocol: HarnessProtocol::Pty,
@@ -265,6 +266,9 @@ pub fn profiles() -> [HarnessProfile; 10] {
             AgentKind::Trae => "bytedance",
             AgentKind::Codebuddy => "tencent",
             AgentKind::Kimi => "moonshot",
+            // The SDK profile's own default route is the official DeepSeek
+            // provider; this label is observability-only (ADR 030).
+            AgentKind::Dsh => "deepseek",
         },
     })
 }
@@ -598,14 +602,15 @@ mod tests {
     }
 
     #[test]
-    fn profiles_cover_all_ten_agents_in_probe_order() {
+    fn profiles_cover_all_eleven_agents_in_probe_order() {
         let profiles = profiles();
-        assert_eq!(profiles.len(), 10);
+        assert_eq!(profiles.len(), 11);
         for (profile, agent) in profiles.iter().zip(AgentKind::all()) {
             assert_eq!(profile.command, agent.command_name());
             assert_eq!(profile.protocol, HarnessProtocol::Pty);
             assert!(!profile.provider.is_empty());
         }
+        assert_eq!(profiles.last().map(|profile| profile.command), Some("dsh"));
     }
 
     #[test]
@@ -623,7 +628,7 @@ mod tests {
         };
         let detections = BTreeMap::from([("claude".to_string(), detection(true))]);
         let rows = build_rows(&registry, &config, &detections);
-        assert_eq!(rows.len(), 10);
+        assert_eq!(rows.len(), 11);
         let claude = rows.iter().find(|row| row.name == "claude").expect("row");
         assert!(claude.available);
         assert!(claude.default);
@@ -658,7 +663,7 @@ mod tests {
         // both detected and missing arrays are sorted ascending.
         assert_eq!(
             payload,
-            json!({"detected": ["claude", "qwen"], "missing": ["codebuddy", "codex", "copilot", "grok", "iflow", "kimi", "opencode", "trae"]})
+            json!({"detected": ["claude", "qwen"], "missing": ["codebuddy", "codex", "copilot", "dsh", "grok", "iflow", "kimi", "opencode", "trae"]})
         );
         // The persisted snapshot still classifies by detection state, not
         // by the payload — claude and qwen are detected, the rest are not.

@@ -23,6 +23,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use tokio::time::{Instant, sleep};
 
+use crate::dsh_session::DshSessionService;
 use crate::harness_dispatch::{
     DispatchOutputPage, DispatchServiceSettings, HarnessDispatchService, ProbeReport,
 };
@@ -36,10 +37,16 @@ use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapshot};
 use crate::{WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
+#[path = "control_dsh_session.rs"]
+mod dsh_session_ops;
 #[path = "control_harness_dispatch.rs"]
 mod harness_dispatch_ops;
 #[path = "control_terminal.rs"]
 mod terminal;
+pub use crate::dsh_session::{
+    DshSessionOpenRequest, DshSessionPollPage, DshSessionPollQuery, DshSessionPromptRequest,
+    DshSessionRecord, DshSessionStatus,
+};
 pub use harness_dispatch_ops::{
     HARNESS_DISPATCH_PROBE_DEADLINE, HarnessDispatchLookup, HarnessDispatchOutputQuery,
     HarnessDispatchReceipt, HarnessDispatchStatus, HarnessDispatchTarget,
@@ -52,7 +59,9 @@ use vibemux_types::{
     },
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V5;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V6;
+/// V6 adds the DSH session operations (ADR 030 §9).
+pub const CONTROL_PROTOCOL_V6: u32 = 6;
 /// V5 adds harness request dispatch (ADR 029 §7).
 pub const CONTROL_PROTOCOL_V5: u32 = 5;
 /// V4 added the frontend queries and terminal operations.
@@ -93,6 +102,12 @@ pub enum ControlOperation {
     HarnessDispatchStatus,
     HarnessDispatchOutput,
     HarnessDispatchCancel,
+    DshSessionOpen,
+    DshSessionPrompt,
+    DshSessionPoll,
+    DshSessionStatus,
+    DshSessionCancel,
+    DshSessionClose,
     Shutdown,
 }
 
@@ -120,6 +135,12 @@ impl ControlOperation {
             | Self::HarnessDispatchStatus
             | Self::HarnessDispatchOutput
             | Self::HarnessDispatchCancel => CONTROL_PROTOCOL_V5,
+            Self::DshSessionOpen
+            | Self::DshSessionPrompt
+            | Self::DshSessionPoll
+            | Self::DshSessionStatus
+            | Self::DshSessionCancel
+            | Self::DshSessionClose => CONTROL_PROTOCOL_V6,
         }
     }
 }
@@ -202,6 +223,11 @@ pub enum ControlPayload {
     /// Answer to both the status and the cancel operation.
     HarnessDispatchStatus(Box<HarnessDispatchStatus>),
     HarnessDispatchOutput(DispatchOutputPage),
+    /// Answer to open, prompt, status, cancel, and close: the session's
+    /// content-free status. `dsh_session_poll` is the only DSH answer that
+    /// carries runtime content.
+    DshSessionStatus(Box<DshSessionStatus>),
+    DshSessionPoll(DshSessionPollPage),
     ShutdownAccepted,
 }
 
@@ -543,6 +569,10 @@ struct ServerState {
     /// Harness dispatch (ADR 029), reached by the Control v5 operations;
     /// its attempts are joined at shutdown.
     dispatch: HarnessDispatchService,
+    /// DSH session (ADR 030), reached by the Control v6 operations. At most
+    /// one live session per project; joined at shutdown so no vendor process
+    /// outlives the daemon.
+    dsh: DshSessionService,
     writer: Mutex<Option<WriterWorker>>,
     plugins: PluginStatusReader,
     process_id: u32,
@@ -813,6 +843,18 @@ impl DaemonControlServer {
         security: Option<&crate::process::DaemonPaths>,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
+        // `.vibemux/` is the project state dir; its parent is the project
+        // root. The trusted constructors hand the real `DaemonPaths` in, so
+        // the derivation only affects raw-path constructors (tests), where DSH
+        // stays unconfigured and every DSH operation fails closed.
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?
+            .to_path_buf();
+        let project_root = security
+            .map(|paths| paths.project_root().to_path_buf())
+            .or_else(|| state_dir.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| state_dir.clone());
         std::fs::create_dir_all(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
         let runtime_dir =
             std::fs::canonicalize(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -959,10 +1001,15 @@ impl DaemonControlServer {
                 .as_ref()
                 .map(|service| service.base_url().to_string());
             let a2a_grpc_base_url = supervisor.as_ref().map(SupervisorService::grpc_base_url);
+            // DSH is opt-in: the service reads `.vibemux/dsh_session.json` only
+            // when an operation asks for it, so an unconfigured project pays
+            // nothing and every DSH operation fails closed.
+            let dsh_service = DshSessionService::new(&project_root, &state_dir);
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
                 dispatch,
+                dsh: dsh_service,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1050,10 +1097,15 @@ impl DaemonControlServer {
                 .as_ref()
                 .map(|service| service.base_url().to_string());
             let a2a_grpc_base_url = supervisor.as_ref().map(SupervisorService::grpc_base_url);
+            // DSH is opt-in: the service reads `.vibemux/dsh_session.json` only
+            // when an operation asks for it, so an unconfigured project pays
+            // nothing and every DSH operation fails closed.
+            let dsh_service = DshSessionService::new(&project_root, &state_dir);
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
                 dispatch,
+                dsh: dsh_service,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1145,6 +1197,9 @@ async fn serve_owned(
     };
     // Dispatch attempts end first: their finish goes through the writer.
     state.dispatch.shutdown().await;
+    // Then the DSH runtime, so no vendor process outlives the daemon and its
+    // exit is observed before the writer's state is finalized.
+    state.dsh.shutdown().await;
     // Signal all plugins together, join their cleanup, then release the one writer.
     let supervisor_result = match supervisor {
         Some(service) => service
@@ -1428,6 +1483,21 @@ where
         | ControlOperation::HarnessDispatchOutput
         | ControlOperation::HarnessDispatchCancel) => {
             let result = harness_dispatch_ops::dispatch(&state, operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        operation @ (ControlOperation::DshSessionOpen
+        | ControlOperation::DshSessionPrompt
+        | ControlOperation::DshSessionPoll
+        | ControlOperation::DshSessionStatus
+        | ControlOperation::DshSessionCancel
+        | ControlOperation::DshSessionClose) => {
+            let result = dsh_session_ops::dispatch(&state.dsh, operation, request.argument).await;
             (
                 match result {
                     Ok(payload) => ControlResponse::success(request_id, payload),
@@ -1985,6 +2055,7 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V3
             | CONTROL_PROTOCOL_V4
             | CONTROL_PROTOCOL_V5
+            | CONTROL_PROTOCOL_V6
     )
 }
 
@@ -2069,6 +2140,7 @@ fn remote_error(code: String) -> ControlError {
             || code.starts_with("harness_")
             || code.starts_with("control_")
             || code.starts_with("a2a_")
+            || code.starts_with("dsh_")
             || code.starts_with("plugin_") =>
         {
             ControlError::Remote { code }
@@ -2478,7 +2550,7 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_through_v5() {
+    fn control_contract_accepts_v1_through_v6() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
@@ -2487,7 +2559,8 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V3));
         assert!(supported_control_version(CONTROL_PROTOCOL_V4));
         assert!(supported_control_version(CONTROL_PROTOCOL_V5));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V5);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V6));
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V6);
         assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(!supported_control_version(0));
         // The minimum-version table is the single source of truth that
@@ -2530,6 +2603,9 @@ mod tests {
         for operation in HARNESS_DISPATCH_OPERATIONS {
             assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V5);
         }
+        for operation in DSH_SESSION_OPERATIONS {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V6);
+        }
     }
 
     const HARNESS_DISPATCH_OPERATIONS: [ControlOperation; 6] = [
@@ -2540,6 +2616,69 @@ mod tests {
         ControlOperation::HarnessDispatchOutput,
         ControlOperation::HarnessDispatchCancel,
     ];
+
+    const DSH_SESSION_OPERATIONS: [ControlOperation; 6] = [
+        ControlOperation::DshSessionOpen,
+        ControlOperation::DshSessionPrompt,
+        ControlOperation::DshSessionPoll,
+        ControlOperation::DshSessionStatus,
+        ControlOperation::DshSessionCancel,
+        ControlOperation::DshSessionClose,
+    ];
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dsh_operations_require_v6_and_fail_closed_without_a_configuration() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        // A raw start has no `.vibemux/dsh_session.json`, so DSH is off. Every
+        // DSH operation must fail closed with the same fixed code and must not
+        // start a process.
+        assert_eq!(
+            client.dsh_session_status().await,
+            Err(ControlError::Remote {
+                code: "dsh_session_unconfigured".to_string()
+            })
+        );
+        assert_eq!(
+            client
+                .dsh_session_open(&DshSessionOpenRequest::default())
+                .await,
+            Err(ControlError::Remote {
+                code: "dsh_session_unconfigured".to_string()
+            })
+        );
+        assert_eq!(
+            client
+                .dsh_session_prompt(&DshSessionPromptRequest {
+                    prompt: "must not run".to_string()
+                })
+                .await,
+            Err(ControlError::Remote {
+                code: "dsh_session_unconfigured".to_string()
+            })
+        );
+        assert_eq!(
+            client.dsh_session_cancel().await,
+            Err(ControlError::Remote {
+                code: "dsh_session_unconfigured".to_string()
+            })
+        );
+        // A v5 client refuses the v6 operations before they reach the server.
+        for operation in DSH_SESSION_OPERATIONS {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V6);
+        }
+        let mut v5 = client.clone();
+        v5.descriptor.version = CONTROL_PROTOCOL_V5;
+        assert_eq!(
+            v5.dsh_session_status().await,
+            Err(ControlError::UnsupportedVersion)
+        );
+        assert!(v5.health().await.expect("v5 health").healthy);
+        server.shutdown().await.expect("shutdown");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn harness_dispatch_requires_v5_and_validates_arguments() {
@@ -2835,7 +2974,7 @@ mod tests {
         write_probe_cache(temp.path(), &["claude", "codex"]);
 
         let rows = client.harness_refresh().await.expect("refresh");
-        assert_eq!(rows.len(), 10);
+        assert_eq!(rows.len(), 11);
         let claude = rows
             .iter()
             .find(|row| row.name == "claude")
@@ -2926,7 +3065,7 @@ mod tests {
             .harness_snapshot()
             .await
             .expect("v3 snapshot succeeds");
-        assert_eq!(rows.len(), 10);
+        assert_eq!(rows.len(), 11);
         server.shutdown().await.expect("shutdown");
     }
 

@@ -73,7 +73,7 @@ Core responsibilities:
 
 Vendor-specific and optional capabilities run out of process.
 
-Exception ([ADR 029](docs/adr/029_daemon_harness_dispatch.md)): first-party structured adapters for Codex, Claude, OpenCode, Copilot, and Grok keep their pure protocol state machines in `vibemux_harness`, and `vibemuxd` drives them. The vendor CLI itself still runs as a separate, contained OS process. Third-party and optional harness adapters stay out of process.
+Exception ([ADR 029](docs/adr/029_daemon_harness_dispatch.md), [ADR 030](docs/adr/030_dsh_harness_adapter.md)): first-party structured adapters for Codex, Claude, OpenCode, Copilot, Grok, and DeepSeek Harness keep their pure protocol state machines in `vibemux_harness`, and `vibemuxd` drives them. DeepSeek Harness is a long-lived session protocol rather than a one-shot turn, so its effect half lives in `vibemux_dsh` until `vibemuxd` adopts it. The vendor CLI itself still runs as a separate, contained OS process. Third-party and optional harness adapters stay out of process.
 
 Initial plugin kinds:
 

@@ -186,11 +186,12 @@ Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` sto
 
 ## Frontend binaries, dashboard themes, and machine-readable output
 
-The frontend crate builds three binaries:
+The frontend crate builds four binaries:
 
 - `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps Agents/Settings/Diagnostics secondary, and preserves all five appearance palettes. The composer retains a local draft but Send is unavailable until a continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
+- `vibemux_dsh_tui` — the DeepSeek Harness terminal surface: one live DSH SDK session with a prompt editor, a scrolling record view, and a status line. Flags: `--project-root <path>`, `--config <path>`, `--theme <name>`, `--print-config` (with `--json`). Keys: `Enter` sends, `Esc` cancels the running turn or clears the input, `Ctrl-C` / `Ctrl-Q` quit, `Up`/`Down`/`PageUp`/`PageDown` scroll. It is the only frontend surface that owns a runtime process, it writes no canonical state, and it never opens the core database. Setup and the wire contract are in [docs/dsh_session_protocol.md](docs/dsh_session_protocol.md) and [ADR 030](docs/adr/030_dsh_harness_adapter.md).
 
 The redesigned GUI defaults to **Studio**: an off-white canvas, quiet sidebar,
 dark-green accent, native Windows typography, and a continuous task activity
@@ -199,7 +200,7 @@ list. Six themes are available in **Settings → Appearance**: `studio`, `github
 are preserved; select Studio in Settings to adopt the new light style.
 
 Task windows have Overview, Activity, Artifacts and Terminal tabs. Closing a
-window does not stop its task. `Ctrl+1..0` accesses the ten harness diagnostics;
+window does not stop its task. `Ctrl+1..0` accesses the ten pre-existing harness diagnostics;
 Escape closes overlays before returning to Coordinator. Task and terminal
 connection states are separate. An explicitly configured WezTerm observer can
 associate an existing native pane with an A2A-backed Run and focus it after
@@ -256,7 +257,56 @@ cargo run -p vibemux_frontend --bin vibemux_frontend_tui
 cargo run -p vibemux_frontend --bin vibemux_frontend
 ```
 
-`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the Supervisor Chat GUI described above. All ten harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi) appear as TUI dashboard rows and GUI diagnostics; real PTY/ConPTY attach is not implemented and must not be treated as usable.
+`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the Supervisor Chat GUI described above. All eleven harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi, DSH) appear as TUI dashboard rows and GUI diagnostics; real PTY/ConPTY attach is not implemented and must not be treated as usable. DSH additionally has the live `vibemux_dsh_tui` session surface, which speaks DSH's own SDK protocol rather than attaching to a terminal.
+
+## DeepSeek Harness (DSH)
+
+DSH is registered as the eleventh harness and is driven through its first-party
+SDK protocol: newline-delimited JSON-RPC 2.0 over stdio, served by the `sdk`
+profile bundle. Setup is opt-in and lives outside the repository:
+
+```powershell
+# 1. Boot the runtime once so DSH initializes its `sdk` profile.
+#    This writes to $DSH_HOME (by default %USERPROFILE%\.dsh).
+dsh --profile sdk --help
+
+# 2. Describe the launcher pair. See docs/dsh_session_protocol.md for every field.
+#    .vibemux/dsh_session.json
+#    {
+#      "schema_version": 1,
+#      "executable": "<npm prefix>\\node.exe",
+#      "entry_script": "<npm prefix>\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+#      "provider": "deepseek-official",
+#      "model": "deepseek-v4-flash"
+#    }
+
+cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .
+```
+
+Both paths are verified before anything starts: the executable must be a
+canonical `node` image, and the entry script must be a `.js` file the installed
+`@deepseek-ai/dsh` package names in its own `bin` map. Neither may live inside
+the project root, so a repository cannot ship the code a session runs.
+
+`vibemuxctl dsh …` drives the same session through the daemon over Control v6:
+
+```powershell
+.\target\debug\vibemuxctl.exe dsh open   --project-root .
+.\target\debug\vibemuxctl.exe dsh prompt --prompt-file prompt.txt --project-root .
+.\target\debug\vibemuxctl.exe dsh poll   --after-sequence 0 --project-root .
+.\target\debug\vibemuxctl.exe dsh status --project-root .
+.\target\debug\vibemuxctl.exe dsh cancel --project-root .
+.\target\debug\vibemuxctl.exe dsh close  --project-root .
+```
+
+`dsh poll` is the only DSH command that prints runtime content; the others print
+a content-free status projection. A prompt comes from a file or stdin, never
+from argv.
+
+A DSH session currently has no canonical Task/Run record: it lives in daemon
+memory and is lost on a daemon restart. Never treat `session.status: idle` as
+completion — only a correlated `turn/end` event with a recognized reason is
+terminal evidence.
 
 ## See also
 

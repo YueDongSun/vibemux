@@ -94,7 +94,7 @@ The root `Cargo.toml` is authoritative for workspace membership (`version = "0.2
 crates/
 ├── vibemux_types/              # opaque IDs, domain objects, state machines, frontend query types
 ├── vibemux_events/             # canonical envelopes, idempotency, payload invariants
-├── vibemux_harness/            # AgentKind/LauncherKind/ProbeState, harness registry/profiles/rows, dispatch protocol state machines (pure logic, no I/O)
+├── vibemux_harness/            # AgentKind/LauncherKind/ProbeState, harness registry/profiles/rows, dispatch + DSH session state machines (pure logic, no I/O)
 ├── vibemux_store/              # SQLite migrations (schema 4) and repositories (bundled)
 ├── vibemux_platform/           # Windows/POSIX process, IPC, process-tree containment, and launch trampoline primitives
 ├── vibemux_a2a/                # official A2A Rust SDK adapter (loopback verified)
@@ -104,7 +104,8 @@ crates/
 ├── vibemux_terminal_observer/  # out-of-process WezTerm observation plugin (list/focus native panes)
 ├── vibemux_workspace/          # Git worktree lifecycle and cleanup
 ├── vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache
-├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + ASCII dump
+├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
+├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump
 ├── vibemuxd/                   # M3 daemon (writer worker + control IPC v5 + plugin registry + harness dispatch)
 └── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch client
 ```
@@ -182,9 +183,14 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 
 `vibemuxd::WriterWorker` constructs and exclusively owns `SqliteStore` inside a dedicated blocking thread. Callers only hold a bounded queue handle; when the queue is full, an explicit backpressure error is returned. The nonce-bearing lock next to the database is established through an atomic `create_new`; a second writer fails closed. After shutdown, the holder verifies the nonce before deletion.
 
-`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v5 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), and v5 adds the six `harness_dispatch_*` operations (see below); v1 `health`/`shutdown` and v2–v4 requests remain accepted for their operations. A pre-v5 client refuses a v5 descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
+`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v6 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 adds the six `harness_dispatch_*` operations (see below), and v6 adds the six `dsh_session_*` operations (ADR 030 §9); v1 `health`/`shutdown` and v2–v5 requests remain accepted for their operations. A pre-v6 client refuses a v6 descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
 
 The `vibemuxd` binary is an unprivileged foreground process owner; `vibemuxctl daemon start|health|stop` is responsible for the on-demand lifecycle. Readiness must come from authenticated health; the PID is only used to compare this spawn's identity. Windows uses a fixed, non-user-code-interpolated system PowerShell companion that holds the exact process handle and severs captured-stdout inheritance; POSIX uses direct argv spawn with a separate process group. During migration the path layer is fixed to `.vibemux/vibemux_rust.sqlite3`, and runtime symlinks and symlink/hardlink aliases that point at the Python database are refused.
+
+Control v6 adds the six DSH session operations (ADR 030 §9) to the v5 surface.
+The allowlisted remote-error namespace set includes `dsh_`, so a DSH failure
+reaches a client as its own actionable code rather than collapsing to
+`control_remote_error`.
 
 `vibemuxctl daemon inspect` first attempts authenticated health and then reads bounded, Debug-redacted descriptor/writer-lock snapshots. It returns the domain-separated SHA-256 confirmation only when every recorded PID is absent, recorded identities agree across the artifacts that are present, and all present artifacts parse successfully. Descriptor-only and lock-only stale states can also be recoverable. `daemon recover` re-checks the confirmation, PID, and original bytes, and then removes only unchanged descriptor/UDS socket/writer lock; there is no force flag, no PID kill, and no database operation. Python database cutover remains unimplemented; same Windows logon SID is the collaboration trust boundary; inter-process ACL isolation is not promised.
 
@@ -212,11 +218,72 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 
 Live vendor CLIs have been exercised only through initialize-only probes on native Windows ([Stage 7 evidence](evidence/harness_dispatch_validation.md)); no live execution turn has run. See [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the remaining gates.
 
+## DSH session substrate (ADR 030)
+
+DeepSeek Harness (`dsh`) is the eleventh registered harness. It differs from
+the other adapter targets in one decisive way: it publishes a first-party
+machine protocol — newline-delimited JSON-RPC 2.0 over stdio
+(`@deepseek-ai/dsh-sdk-protocol`, served by `@deepseek-ai/dsh-sdk-jsonrpc-server`
+in the `sdk` profile bundle) — and it serves many turns from one long-lived
+process.
+
+`vibemux_harness::dsh` is the pure half: the wire vocabulary with strict
+bounded decoders, the client-side session state machine (handshake, one turn at
+a time, notification correlation, teardown), the record classifier, and the
+bounded record ring. It performs no I/O and reuses the ADR 029 JSON-line framer.
+
+`vibemux_dsh` is the effect half: it verifies and canonicalizes the operator
+configuration, spawns the vendor launcher pair (`node` native image plus the
+`@deepseek-ai/dsh` entry script) through `vibemux_platform::ProcessTree`,
+frames stdout, enforces the initialize and per-turn deadlines, and terminates
+the contained tree on cancel or close. It depends only on `vibemux_harness` and
+`vibemux_platform`.
+
+Two rules shape the substrate:
+
+- **Idle is not completion.** A `session.status: idle` notification is rendered
+  as a diagnostic and never ends a turn. Only a correlated `turn/end` event
+  with a recognized `reason.kind` produces a terminal outcome; an unrecognized
+  one degrades to `unverified`, which is never success.
+- **The notification stream is unfiltered.** DSH delivers every session in the
+  runtime to every client, so notifications are matched against the session's
+  own id and everything else is counted and dropped. `subagent.*` payloads are
+  keyed by parent and child session ids instead, so they are never correlated
+  through the session-id path.
+
+The SDK protocol publishes no cancel and no session-close method, so
+cancellation terminates the contained process tree and `close` asks politely
+with `shutdown` before escalating. The runtime is contained for lifetime, not
+confined: it is not a sandbox, and its own profile decides what it may read and
+write.
+
+`vibemux_frontend`'s `vibemux_dsh_tui` binary is the operator surface: it
+drives `vibemux_dsh` directly, so an operator needs no daemon. It never opens
+the core database, writes no canonical state, reuses the audited `tui::Theme`
+registry (ADR 026), and is a separate binary from the read-only diagnostic TUI
+because it owns a live session and an input loop.
+
+`vibemuxd::dsh_session::DshSessionService` holds at most one live session per
+project and exposes it through Control v6
+(`dsh_session_{open,prompt,poll,status,cancel,close}`). It performs no framing,
+containment, or record bookkeeping itself — those come from `vibemux_dsh` — and
+owns only the control-frame page budget, because a poll page must fit the
+64 KiB IPC frame even when the driver's own page bound is larger. The daemon
+joins the session at shutdown, so no vendor process outlives it.
+`vibemuxctl dsh` is the thin Control v6 client; a prompt comes from a file or
+stdin, never from argv.
+
+Not implemented: a canonical session record (a session lives in daemon memory
+and is lost on restart), multi-session support, resume, and image prompts. No
+prompt has been sent to a real DSH runtime. See
+[ADR 030](adr/030_dsh_harness_adapter.md) and the
+[DSH session protocol](dsh_session_protocol.md).
+
 ## Probe and unified frontend boundary
 
 `vibemux_probe` only produces versioned, content-free, read-only diagnostics: launcher/version, explicit provider endpoint, CC Switch health/aggregate telemetry, and the A2A self-test. Launcher verification is not the same as authentication/inference verification.
 
-`vibemux_frontend` consumes probe reports and authenticated Control v4 snapshots; it never opens the core SQLite database. Its native Supervisor Chat workspace (ADR 028) has one main conversation, real task activity, secondary Agents/Settings/Diagnostics, and docked or independent task windows. The Studio light theme is the default for new profiles; five existing dark themes remain compatible. Task queries run through the daemon writer channel and return bounded metadata, not prompt bodies. A separately configured WezTerm observation plugin may list matching native panes and focus an explicitly linked pane after identity validation. Native TUI content stays in WezTerm. There is no continuous coordinator chat adapter, harness launch/input forwarding, embedded terminal renderer, or terminal-text completion inference. Ratatui remains the diagnostic surface, with existing classic/high-contrast/mono/light/nord/gruvbox themes. Shared palette export and terminal theme generation remain governed by ADR 026.
+`vibemux_frontend` consumes probe reports and authenticated Control v4 snapshots; it never opens the core SQLite database. Its native Supervisor Chat workspace (ADR 028) has one main conversation, real task activity, secondary Agents/Settings/Diagnostics, and docked or independent task windows. The Studio light theme is the default for new profiles; five existing dark themes remain compatible. Task queries run through the daemon writer channel and return bounded metadata, not prompt bodies. A separately configured WezTerm observation plugin may list matching native panes and focus an explicitly linked pane after identity validation. Native TUI content stays in WezTerm. There is no continuous coordinator chat adapter, harness launch/input forwarding, embedded terminal renderer, or terminal-text completion inference. Ratatui remains the diagnostic surface, with existing classic/high-contrast/mono/light/nord/gruvbox themes. The `vibemux_dsh_tui` binary is the one surface that owns a runtime process, and it does so through `vibemux_dsh` rather than through the core; it writes no canonical state. Shared palette export and terminal theme generation remain governed by ADR 026.
 
 ## Stateful local A2A and supervisor
 
@@ -232,6 +299,8 @@ The Python package (`src/vibemux/`) is the behavior reference and complete proto
 - Implementation status and evidence: [PROGRESS.md](../PROGRESS.md)
 - Architecture decisions: [docs/adr/](adr/)
 - Harness dispatch: [ADR 029](adr/029_daemon_harness_dispatch.md)
+- DSH harness adapter and session substrate: [ADR 030](adr/030_dsh_harness_adapter.md)
+- DSH session protocol: [docs/dsh_session_protocol.md](dsh_session_protocol.md)
 - Platform support matrix: [docs/platform_support.md](platform_support.md)
 - Wire/protocol boundaries: [docs/protocol_boundaries.md](protocol_boundaries.md)
 - Plugin registry protocol: [docs/plugin_registry_protocol.md](plugin_registry_protocol.md)

@@ -2,6 +2,7 @@
 members = [
     "crates/vibemux_a2a",
     "crates/vibemux_cli",
+    "crates/vibemux_dsh",
     "crates/vibemux_events",
     "crates/vibemux_frontend",
     "crates/vibemux_harness",

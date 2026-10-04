@@ -42,7 +42,7 @@ src/vibemux/           # Python prototype (CLI: typer + rich; `vibemux theme` sn
 config/theme_palettes.json         # exported GUI palettes (pinned by the palette_parity test)
 crates/vibemux_types/              # IDs, state machines, frontend query types
 crates/vibemux_events/             # canonical event envelopes, idempotency
-crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness registry/profiles/rows + canonical event drafts + dispatch protocol state machines (pure logic, no I/O)
+crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness registry/profiles/rows + canonical event drafts + dispatch protocol state machines + DSH session substrate (pure logic, no I/O)
 crates/vibemux_store/              # SQLite migrations (schema 4: + harness projections, harness dispatch records) + repositories (bundled)
 crates/vibemux_platform/           # Windows/POSIX process, IPC, and process-tree containment primitives + launch trampoline logic
 crates/vibemux_a2a/                # official A2A Rust SDK adapter (loopback only)
@@ -50,9 +50,10 @@ crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest (+ optiona
 crates/vibemux_plugin_supervisor/  # M4.1 child process supervision
 crates/vibemux_terminal_observer/  # out-of-process WezTerm observation plugin (list/focus native panes)
 crates/vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache (depends on vibemux_harness)
-crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + ASCII dump
-crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v5: health/plugin/harness/frontend/terminal/dispatch ops + harness dispatch service)
-crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch client
+crates/vibemux_dsh/                # ADR 030 DSH session driver: config trust, Node launcher pair, containment, framing, deadlines, bounded records
+crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump
+crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v6: health/plugin/harness/frontend/terminal/dispatch ops + harness dispatch service + DSH session service)
+crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch/dsh client
 tests/                              # Python pytest suite
 scripts/                            # smoke + benchmark scripts
 docs/adr/                           # architecture decision records
@@ -93,6 +94,7 @@ MSRV is **Rust 1.85.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 - Run the read-only probe: `cargo run -p vibemux_probe --bin vibemux_probe`
 - Render the frontend dashboard once (non-interactive smoke): `cargo run -p vibemux_frontend --bin vibemux_frontend_dump`
 - Interactive terminal dashboard: `cargo run -p vibemux_frontend --bin vibemux_frontend_tui` (`--json`, `--theme <name>`; `t` cycles themes, `c` snapshots, `q`/`Esc` exit)
+- DSH terminal surface (ADR 030; needs an operator `.vibemux/dsh_session.json`): `cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .` (`--config`, `--theme`, `--print-config`; `Enter` sends, `Esc` cancels the turn, `Ctrl-C` quits)
 - GUI (egui/eframe, opens a window): `cargo run -p vibemux_frontend --bin vibemux_frontend`
 
 ### Daemon + harness surface (Windows, pre-alpha)
@@ -103,7 +105,7 @@ MSRV is **Rust 1.85.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 .\target\debug\vibemuxctl.exe daemon inspect --project-root .
 .\target\debug\vibemuxctl.exe daemon stop   --project-root .
 
-# Harness orchestration (needs control protocol v3+; the daemon speaks v5 and accepts v1-v4 for older ops; daemon must be running):
+# Harness orchestration (needs control protocol v3+; the daemon speaks v6 and accepts v1-v5 for older ops; daemon must be running):
 .\target\debug\vibemux_probe.exe --write-cache --project-root .  # atomically writes the trusted detection cache to .vibemux\probe_cache.json (stdout report unchanged)
 .\target\debug\vibemuxctl.exe harnesses --project-root .          # live refresh from the probe cache
 .\target\debug\vibemuxctl.exe harnesses --cached --project-root . # persisted snapshot (no re-probe)
@@ -125,6 +127,19 @@ Harness dispatch (ADR 029, pre-alpha, needs control protocol v5) is off until th
 
 Codex and Claude routes execute; ACP routes (OpenCode/Copilot/Grok) are probe-only. At most one dispatch is active per project, the read-only protocol profiles are not an OS sandbox, and transcripts live in daemon memory only. Do not run `probe` or `submit` against real vendor CLIs without the user's explicit authorization (`submit` sends a real prompt); tests use the `vibemux_native_fixture` binary.
 
+DSH sessions (ADR 030, pre-alpha, needs control protocol v6) are off until the operator creates `.vibemux\dsh_session.json` (schema 1; example and rules in [docs/dsh_session_protocol.md](docs/dsh_session_protocol.md)). Booting `dsh --profile sdk` once writes to `$DSH_HOME`, so do that under operator control first. The daemon must be running:
+
+```powershell
+.\target\debug\vibemuxctl.exe dsh open   --project-root .
+.\target\debug\vibemuxctl.exe dsh prompt --prompt-file prompt.txt --project-root .   # real prompt; may use paid inference
+.\target\debug\vibemuxctl.exe dsh poll   --after-sequence 0 --project-root .         # the only command that prints runtime content
+.\target\debug\vibemuxctl.exe dsh status --project-root .
+.\target\debug\vibemuxctl.exe dsh cancel --project-root .
+.\target\debug\vibemuxctl.exe dsh close  --project-root .
+```
+
+At most one DSH session is live per project, and it lives in daemon memory: there is no canonical Task/Run record and a daemon restart loses it. Never treat `session.status: idle` as completion. Live validation against a real DSH runtime has not run; tests use the `vibemux_dsh_fixture` binary.
+
 If `inspect` reports `recoverable`, the output contains a 64-character hexadecimal SHA-256 confirmation that must be passed to a separate `daemon recover` invocation. Recovery never kills a PID and never opens or modifies the database — it only removes unchanged stale descriptor/socket/writer lock artifacts.
 
 Release-start benchmark (script refuses a project that already has a daemon descriptor):
@@ -142,6 +157,7 @@ Release-start benchmark (script refuses a project that already has a daemon desc
 - **No public Rust ABI plugin.** Plugins are out-of-process executables speaking length-delimited Protobuf over stdin/stdout (`vibemux_plugin_protocol`). WASM may be considered later for deterministic policy/transform plugins, but never as a substitute for OS-accessing harness or terminal plugins.
 - **Do not describe planned behavior as implemented.** Keep plans and accepted ADRs explicit about unimplemented work. If implementation status changes, update `PROGRESS.md` in the same PR. Commands in docs must match the current CLI.
 - **Secrets, prompts, full environments, and database paths are never emitted by lifecycle, recovery, or probe JSON.** Probe and frontend treat that as a hard contract. Harness dispatch events, status, and errors are content-free too; only `harness_dispatch_output` returns raw vendor records.
+- **Keep `rust-analyzer` in `rust-toolchain.toml`'s `components` list, spelled exactly.** The rust-analyzer VS Code extension chooses its server by running `rustup which rust-analyzer` in each workspace folder that has a toolchain file. If that command fails — a missing or misspelled component — the extension silently falls back to its own bundled server, which targets a newer toolchain and then warns "Your workspace uses a rust-toolchain file with a toolchain too old…". Correcting the component list and reloading the window is the whole fix; do not "solve" it with `rust-analyzer.server.path`, which would put a machine path in tracked configuration. A misspelled component also makes rustup re-sync the channel on *every* cargo invocation, which leaves stale `target/` artifacts and phantom compile errors until `cargo clean`.
 
 ## Targeted cross-references
 
@@ -162,7 +178,7 @@ Unless explicitly authorized for a known safe resource, do not run: `git reset -
 
 - `99d1f8e` is only the **original Python audit baseline**; the current Python package remains the behavior reference while new orchestration or A2A work targets Rust. Do not let the Python prototype grow a second authoritative state writer after cutover.
 - During migration, Rust only writes `.vibemux/vibemux_rust.sqlite3`; it never opens `.vibemux/vibemux.sqlite3`. Path code refuses symlinks/hardlinks that alias the Python database.
-- The GUI is the Supervisor Chat workspace (ADR 028): it reads real task/run/event/artifact summaries over Control v4 and never fabricates a transcript or reply; Send stays unavailable until a continuous coordinator-chat adapter exists. The ten harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) appear as diagnostics and TUI dashboard rows. Nothing attaches to PTYs/ConPTYs or renders a native TUI; the optional WezTerm observer only lists and focuses an explicitly linked native pane. Treat any reference to live native-TUI attach, embedded terminals, or harness launch/input forwarding as premature.
+- The GUI is the Supervisor Chat workspace (ADR 028): it reads real task/run/event/artifact summaries over Control v4 and never fabricates a transcript or reply; Send stays unavailable until a continuous coordinator-chat adapter exists. The ten pre-existing harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) plus DSH appear as diagnostics and TUI dashboard rows. Nothing attaches to PTYs/ConPTYs or renders a native TUI; the optional WezTerm observer only lists and focuses an explicitly linked native pane. Treat any reference to live native-TUI attach, embedded terminals, or harness launch/input forwarding as premature. DSH is the one exception, and it is not terminal attach: `vibemux_dsh_tui` speaks DSH's own SDK JSON-RPC stdio protocol through `vibemux_dsh`, and it writes no canonical state.
 - `vibemuxctl dispatch` (ADR 029) runs one-shot structured turns through the daemon; it is not a continuous chat adapter, does not enable the GUI Send action, and has live vendor evidence only for initialize-only probes ([docs/evidence/harness_dispatch_validation.md](docs/evidence/harness_dispatch_validation.md)). Do not describe ACP execution, concurrent dispatch, or writable dispatch as implemented.
 - The current A2A gateway remains **loopback-only and local-only** even though HTTP+JSON, JSON-RPC, gRPC, authentication, bounded streaming, cancellation, and artifacts are implemented within that local contract. Do not infer remote/TLS deployment, complete official ITK coverage, message history, automatic restart recovery, or unrestricted coding-harness integration.
 - `vibemuxctl` is pre-alpha; it does not replace the installed Python `vibemux` command and it does not override a public database path.

@@ -31,6 +31,20 @@ pub const MAX_ENVIRONMENT_NAMES: usize = 24;
 pub const MAX_ENVIRONMENT_NAME_BYTES: usize = 128;
 pub const MAX_EXECUTABLE_PATH_BYTES: usize = 1024;
 pub const MAX_MODEL_BYTES: usize = 256;
+pub const MAX_ENTRY_SCRIPT_BYTES: usize = 1024;
+pub const MAX_PROFILE_BYTES: usize = 64;
+
+/// The DSH profile a route boots when it does not name one. `dsh --profile sdk`
+/// serves "DeepSeek Harness SDK clients over stdio JSON-RPC" (ADR 030).
+pub const DEFAULT_DSH_PROFILE: &str = "sdk";
+/// File stem the launcher image of a DSH route must carry. DSH's vendor
+/// runtime is a Node interpreter, so the dispatch rule "the executable's stem
+/// is the harness command name" cannot apply verbatim (ADR 030 Decision 3).
+pub const DSH_NODE_IMAGE_STEM: &str = "node";
+/// Package that must own a DSH route's entry script.
+pub const DSH_ENTRY_PACKAGE_NAME: &str = "@deepseek-ai/dsh";
+/// `bin` key the owning package must map to the entry script.
+pub const DSH_ENTRY_BIN_NAME: &str = "dsh";
 
 pub const DEFAULT_FRAME_BYTES: usize = 128 * 1024;
 pub const MIN_FRAME_BYTES: usize = 64;
@@ -59,14 +73,18 @@ pub enum NativeProtocol {
     ClaudeStreamJson,
     /// Agent Client Protocol v1 over stdio (OpenCode, Copilot, Grok).
     Acp,
+    /// DeepSeek Harness SDK runtime: newline-delimited JSON-RPC 2.0 over
+    /// stdio, booted as `dsh --profile <profile>` (ADR 030).
+    DshSdkJsonRpc,
 }
 
 impl NativeProtocol {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::CodexExec,
         Self::CodexAppServer,
         Self::ClaudeStreamJson,
         Self::Acp,
+        Self::DshSdkJsonRpc,
     ];
 
     #[must_use]
@@ -76,6 +94,7 @@ impl NativeProtocol {
             Self::CodexAppServer => "codex_app_server",
             Self::ClaudeStreamJson => "claude_stream_json",
             Self::Acp => "acp",
+            Self::DshSdkJsonRpc => "dsh_sdk_json_rpc",
         }
     }
 
@@ -90,10 +109,13 @@ impl NativeProtocol {
                     Self::Acp,
                     AgentKind::OpenCode | AgentKind::Copilot | AgentKind::Grok
                 )
+                | (Self::DshSdkJsonRpc, AgentKind::Dsh)
         )
     }
 
     /// Whether an initialize-only handshake exists (no prompt is sent).
+    /// `DshSdkJsonRpc` qualifies because `initialize` resolves the provider
+    /// route and rejects later prompts when it fails (ADR 030 Decision 3).
     #[must_use]
     pub const fn supports_probe(self) -> bool {
         !matches!(self, Self::CodexExec)
@@ -106,6 +128,13 @@ impl NativeProtocol {
     #[must_use]
     pub const fn supports_execution(self) -> bool {
         !matches!(self, Self::Acp)
+    }
+
+    /// Whether this protocol requires the Node launcher pair of ADR 030
+    /// Decision 3 instead of the plain "stem is the harness command" rule.
+    #[must_use]
+    pub const fn requires_launcher_pair(self) -> bool {
+        matches!(self, Self::DshSdkJsonRpc)
     }
 }
 
@@ -175,6 +204,18 @@ pub struct DispatchRoute {
     pub harness: AgentKind,
     pub protocol: NativeProtocol,
     pub executable: PathBuf,
+    /// Node entry script of a launcher-pair protocol (`DshSdkJsonRpc` only).
+    /// The daemon canonicalizes it and verifies its owning package before the
+    /// route is trusted (ADR 030 Decision 3).
+    #[serde(default)]
+    pub entry_script: Option<PathBuf>,
+    /// Profile the launcher boots. Only a launcher-pair protocol may set it.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Provider route an SDK session runs on. `InitializeParams.provider` is
+    /// required by the DSH SDK protocol, so a launcher-pair route must set it.
+    #[serde(default)]
+    pub provider: Option<String>,
     #[serde(default)]
     pub environment_names: Vec<String>,
     #[serde(default)]
@@ -185,6 +226,14 @@ pub struct DispatchRoute {
     pub model: Option<String>,
 }
 
+impl DispatchRoute {
+    /// The profile this route boots, defaulting to [`DEFAULT_DSH_PROFILE`].
+    #[must_use]
+    pub fn effective_profile(&self) -> &str {
+        self.profile.as_deref().unwrap_or(DEFAULT_DSH_PROFILE)
+    }
+}
+
 impl fmt::Debug for DispatchRoute {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -193,6 +242,7 @@ impl fmt::Debug for DispatchRoute {
             .field("protocol", &self.protocol)
             .field("enabled", &self.enabled)
             .field("allow_execution", &self.allow_execution)
+            .field("launcher_pair", &self.entry_script.is_some())
             .field("environment_name_count", &self.environment_names.len())
             .finish_non_exhaustive()
     }
@@ -330,9 +380,44 @@ fn validate_route(route: &DispatchRoute, policy: ExecutablePolicy) -> Result<(),
     }
     validate_executable(&route.executable, policy)?;
     validate_environment_names(&route.environment_names)?;
+    // The launcher pair is protocol-conditional in both directions: a
+    // launcher-pair protocol must carry a well-shaped entry script and a Node
+    // image, and no other protocol may carry either field. Without the second
+    // half, a route could smuggle an unused interpreter through the config.
+    let paired = route.protocol.requires_launcher_pair();
+    match (&route.entry_script, paired) {
+        (Some(script), true) => {
+            validate_entry_script_shape(script)?;
+            if !executable_is_node_image(&route.executable, policy) {
+                return Err(DispatchError::ConfigExecutableInvalid);
+            }
+            if let Some(profile) = &route.profile {
+                if !profile_is_valid(profile) {
+                    return Err(DispatchError::ConfigRouteInvalid);
+                }
+            }
+            // `initialize` names the provider and model, so both are required
+            // and validated here rather than at launch time.
+            match &route.provider {
+                Some(provider) if is_valid_route_label(provider) => {}
+                _ => return Err(DispatchError::ConfigRouteInvalid),
+            }
+            match &route.model {
+                Some(model) if is_valid_route_label(model) => {}
+                _ => return Err(DispatchError::ConfigRouteInvalid),
+            }
+        }
+        (None, true) => return Err(DispatchError::ConfigRouteInvalid),
+        (Some(_), false) => return Err(DispatchError::ConfigRouteInvalid),
+        (None, false) => {
+            if route.profile.is_some() || route.provider.is_some() {
+                return Err(DispatchError::ConfigRouteInvalid);
+            }
+        }
+    }
     if let Some(model) = &route.model {
         // ACP v1 has no standard model selection; refuse rather than ignore.
-        if route.protocol == NativeProtocol::Acp || !is_valid_model(model) {
+        if route.protocol == NativeProtocol::Acp || !is_valid_route_label(model) {
             return Err(DispatchError::ConfigRouteInvalid);
         }
     }
@@ -371,10 +456,64 @@ pub fn validate_executable(path: &Path, policy: ExecutablePolicy) -> Result<(), 
     }
 }
 
+/// Checks the shape of a launcher-pair entry script. The owning package is
+/// verified by the daemon, which is the only layer allowed to touch the
+/// filesystem (ADR 030 Decision 3).
+pub fn validate_entry_script_shape(path: &Path) -> Result<(), DispatchError> {
+    let Some(text) = path.to_str() else {
+        return Err(DispatchError::ConfigRouteInvalid);
+    };
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let well_formed = !text.is_empty()
+        && text.len() <= MAX_ENTRY_SCRIPT_BYTES
+        && !text.contains('\0')
+        && path.is_absolute()
+        && extension.as_deref() == Some("js")
+        && path.file_stem().is_some_and(|stem| !stem.is_empty());
+    if well_formed {
+        Ok(())
+    } else {
+        Err(DispatchError::ConfigRouteInvalid)
+    }
+}
+
+/// Whether `path` carries the launcher-image stem of a launcher-pair protocol.
+/// Windows compares ASCII case-insensitively; POSIX is exact.
+#[must_use]
+pub fn executable_is_node_image(path: &Path, policy: ExecutablePolicy) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    match policy {
+        ExecutablePolicy::WindowsNativeImage => stem.eq_ignore_ascii_case(DSH_NODE_IMAGE_STEM),
+        ExecutablePolicy::PosixExecutable => stem == DSH_NODE_IMAGE_STEM,
+    }
+}
+
+/// Whether `profile` is a bounded, shell-safe DSH profile name. The value
+/// reaches argv, so the alphabet is deliberately narrow.
+#[must_use]
+pub fn profile_is_valid(profile: &str) -> bool {
+    let bytes = profile.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= MAX_PROFILE_BYTES
+        && bytes[0].is_ascii_lowercase()
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
 /// Whether the file stem of `path` is the harness's command name (ADR 029
 /// §4 executable trust). The daemon applies it to the canonical target so a
 /// route cannot point at an interpreter such as `cmd.exe` or `powershell.exe`
 /// under another harness's name. Windows compares ASCII case-insensitively.
+///
+/// A launcher-pair protocol never satisfies this rule, because its executable
+/// is the vendor's own interpreter; the daemon uses
+/// [`executable_is_node_image`] plus the owning-package check instead.
 #[must_use]
 pub fn executable_names_harness(path: &Path, harness: AgentKind, policy: ExecutablePolicy) -> bool {
     let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
@@ -410,11 +549,14 @@ fn validate_environment_names(names: &[String]) -> Result<(), DispatchError> {
     Ok(())
 }
 
-fn is_valid_model(model: &str) -> bool {
-    !model.is_empty()
-        && model.len() <= MAX_MODEL_BYTES
-        && !model.starts_with('-')
-        && model.bytes().all(|byte| {
+/// Whether `label` is a bounded, argv-safe route label. Used for the model
+/// name and for the DSH provider route; both reach protocol params, and the
+/// alphabet is deliberately narrow.
+fn is_valid_route_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= MAX_MODEL_BYTES
+        && !label.starts_with('-')
+        && label.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'/')
         })
 }

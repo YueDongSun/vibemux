@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One of the ten supported coding harnesses, in canonical probe/dashboard
+/// One of the eleven supported coding harnesses, in canonical probe/dashboard
 /// order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,11 +28,14 @@ pub enum AgentKind {
     Trae,
     Codebuddy,
     Kimi,
+    /// DeepSeek Harness. Appended last so the ten pre-existing wire names
+    /// keep their positions (ADR 030 Decision 2).
+    Dsh,
 }
 
 impl AgentKind {
     #[must_use]
-    pub const fn all() -> [Self; 10] {
+    pub const fn all() -> [Self; 11] {
         [
             Self::Claude,
             Self::Codex,
@@ -44,6 +47,7 @@ impl AgentKind {
             Self::Trae,
             Self::Codebuddy,
             Self::Kimi,
+            Self::Dsh,
         ]
     }
 
@@ -60,6 +64,7 @@ impl AgentKind {
             Self::Trae => "trae",
             Self::Codebuddy => "codebuddy",
             Self::Kimi => "kimi",
+            Self::Dsh => "dsh",
         }
     }
 
@@ -76,6 +81,7 @@ impl AgentKind {
             Self::Trae => "TRAE",
             Self::Codebuddy => "CodeBuddy",
             Self::Kimi => "Kimi",
+            Self::Dsh => "DSH",
         }
     }
 }
@@ -111,7 +117,7 @@ mod tests {
         let encoded = serde_json::to_string(&AgentKind::all()).expect("encode agents");
         assert_eq!(
             encoded,
-            r#"["claude","codex","open_code","copilot","grok","qwen","iflow","trae","codebuddy","kimi"]"#
+            r#"["claude","codex","open_code","copilot","grok","qwen","iflow","trae","codebuddy","kimi","dsh"]"#
         );
         for agent in AgentKind::all() {
             let name = serde_json::to_string(&agent).expect("encode agent");
@@ -175,5 +181,7 @@ mod tests {
         assert_eq!(AgentKind::Iflow.display_name(), "iFlow");
         assert_eq!(AgentKind::Trae.display_name(), "TRAE");
         assert_eq!(AgentKind::Codebuddy.display_name(), "CodeBuddy");
+        assert_eq!(AgentKind::Dsh.command_name(), "dsh");
+        assert_eq!(AgentKind::Dsh.display_name(), "DSH");
     }
 }

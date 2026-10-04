@@ -2,12 +2,17 @@
 //! VibeMux unified frontend crate.
 //!
 //! - Read-only TUI debug view (legacy, ASCII-only).
+//! - DSH terminal surface (`dsh_tui`, the `vibemux_dsh_tui` binary): a live
+//!   DeepSeek Harness SDK session with an input loop of its own.
 //! - egui-based GUI central console (preferred entry point for
 //!   humans; theme switcher, harness panels, diagnostics, settings).
 //!
-//! Both surfaces consume the same `view_model::ViewModel` so the
-//! backend shape never diverges across UIs.
+//! Both diagnostic surfaces consume the same `view_model::ViewModel` so the
+//! backend shape never diverges across UIs. The DSH surface reads its own
+//! session driver instead, because it owns a runtime process rather than a
+//! read-only probe report.
 
+pub mod dsh_tui;
 pub mod gui;
 mod live_app;
 #[cfg(feature = "gui_screenshot")]

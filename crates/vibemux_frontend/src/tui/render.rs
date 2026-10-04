@@ -285,7 +285,7 @@ mod tests {
                 code: "version_verified".to_string(),
             })
             .collect();
-        // The five domestic agents are not installed on the capture machine:
+        // The domestic agents are not installed on the capture machine:
         // their probes report an unavailable launcher with no version and an
         // unknown route, exactly matching the live snapshot output.
         let domestic = [
@@ -294,6 +294,7 @@ mod tests {
             AgentKind::Trae,
             AgentKind::Codebuddy,
             AgentKind::Kimi,
+            AgentKind::Dsh,
         ];
         for agent in domestic {
             probe.agents.push(AgentProbe {

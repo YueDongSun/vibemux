@@ -2,6 +2,7 @@
 //! Thin lifecycle client and controlled bootstrap for the Rust daemon.
 
 pub mod dispatch_commands;
+pub mod dsh_commands;
 pub mod recovery;
 
 use std::{
@@ -272,6 +273,10 @@ pub enum CliCommand {
         project_root: Option<PathBuf>,
         command: dispatch_commands::DispatchCommand,
     },
+    Dsh {
+        project_root: Option<PathBuf>,
+        command: dsh_commands::DshCommand,
+    },
     Help,
     Version,
 }
@@ -491,6 +496,12 @@ pub fn parse_cli_arguments(
     }
     if verb == "dispatch" {
         return dispatch_commands::parse_dispatch_arguments(&arguments[1..]);
+    }
+    if verb == "dsh" {
+        return match dsh_commands::parse_dsh_arguments(&arguments[1..])? {
+            Some(command) => Ok(command),
+            None => Err(DaemonCliError::InvalidArguments),
+        };
     }
     if verb != "daemon" {
         return Err(DaemonCliError::InvalidArguments);

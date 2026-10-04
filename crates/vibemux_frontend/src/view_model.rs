@@ -294,9 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn view_model_has_ten_agents() {
+    fn view_model_has_eleven_agents() {
         let vm = ViewModel::from_report(&report_with_env());
-        assert_eq!(vm.agents.len(), 10);
+        assert_eq!(vm.agents.len(), 11);
+        // The registry order is a wire contract: DSH is appended last.
+        assert_eq!(vm.agents.last().map(|row| row.name.as_str()), Some("DSH"));
     }
 
     #[test]
@@ -305,7 +307,7 @@ mod tests {
         assert_eq!(vm.health, Health::Ok);
         assert_eq!(
             vm.overall_status,
-            "agents: 10 verified | gateway: verified | a2a: verified"
+            "agents: 11 verified | gateway: verified | a2a: verified"
         );
         assert_eq!(vm.observed_at, "1970-01-01T00:00:01Z");
 

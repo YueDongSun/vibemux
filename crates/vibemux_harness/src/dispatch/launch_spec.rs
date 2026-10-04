@@ -11,7 +11,7 @@ use std::{fmt, path::PathBuf};
 
 use crate::AgentKind;
 
-use super::{DispatchError, DispatchRoute, NativeProtocol};
+use super::{DispatchError, DispatchRoute, NativeProtocol, route_config};
 
 /// Names always forwarded when set; Windows processes need them to start.
 pub const SYSTEM_ENVIRONMENT_NAMES: [&str; 4] = ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"];
@@ -88,6 +88,27 @@ fn protocol_arguments(
             AgentKind::Grok => owned(&["agent", "stdio"]),
             _ => return Err(DispatchError::ConfigRouteInvalid),
         },
+        // The launcher pair: `node <entry script> --profile <profile>`. The
+        // entry script is the interpreter's first argument, the profile comes
+        // from the validated route config, and nothing else reaches argv. The
+        // provider, model, and reasoning effort travel in `initialize`
+        // params, and the prompt travels in `session/prompt` params, so no
+        // prompt text can reach a command line (ADR 030 Decision 3).
+        NativeProtocol::DshSdkJsonRpc => {
+            let script = route
+                .entry_script
+                .as_ref()
+                .ok_or(DispatchError::ConfigRouteInvalid)?;
+            let script = script
+                .to_str()
+                .ok_or(DispatchError::ConfigRouteInvalid)?
+                .to_string();
+            let profile = route.effective_profile().to_string();
+            if !route_config::profile_is_valid(&profile) {
+                return Err(DispatchError::ConfigRouteInvalid);
+            }
+            vec![script, "--profile".to_string(), profile]
+        }
         // `--tools=` removes every built-in tool, `--strict-mcp-config` skips
         // project and user MCP servers, and `--restricted` ignores project and
         // user settings files, so a repository cannot re-enable tools.

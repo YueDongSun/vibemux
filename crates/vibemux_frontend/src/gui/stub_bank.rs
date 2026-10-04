@@ -456,6 +456,29 @@ pub const BANK: &[(AgentKind, &[&str])] = &[
             "(end)",
         ],
     ),
+    (
+        AgentKind::Dsh,
+        &[
+            "DeepSeek Harness SDK runtime (stub)",
+            "dsh> ",
+            "(stub transcript; the real surface is `vibemux_dsh_tui`)",
+            "  profile: sdk (stub)",
+            "  protocol: dsh_sdk_json_rpc (stub)",
+            "  initialize: not run (stub)",
+            "  session: none (stub)",
+            "dsh> ",
+            "(end of stub transcript)",
+            "  last_seen_at: 1970-01-01T00:00:00Z (stub)",
+            "dsh> ",
+            "  no backend running (stub)",
+            "  click Send to append a line",
+            "...",
+            "dsh> ",
+            "(stub)",
+            "(stub)",
+            "(end)",
+        ],
+    ),
 ];
 
 /// Get the stub transcript for a given harness as a single `String`

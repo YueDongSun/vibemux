@@ -139,6 +139,7 @@ pub fn classify(protocol: NativeProtocol, value: &Value) -> ObservationKind {
         NativeProtocol::CodexAppServer => classify_codex_app_server(value),
         NativeProtocol::ClaudeStreamJson => classify_claude(value),
         NativeProtocol::Acp => classify_acp(value),
+        NativeProtocol::DshSdkJsonRpc => classify_dsh(value),
     }
 }
 
@@ -294,6 +295,38 @@ fn classify_acp(value: &Value) -> ObservationKind {
             _ => ObservationKind::Opaque,
         },
         // session/cancel is a request to cancel, not a cancellation result.
+        _ => ObservationKind::Opaque,
+    }
+}
+
+// Contract: @deepseek-ai/dsh-sdk-protocol (newline-delimited JSON-RPC 2.0 over
+// stdio) and @deepseek-ai/dsh-session `SessionEventMap` (ADR 030).
+//
+// `session.status` is deliberately never terminal: an idle whole-agent state is
+// not proof of task completion (AGENTS.md §2 invariant 5). Only `turn/end`
+// carries a structured reason, and an unrecognized reason stays `Opaque` so a
+// merge-extensible vocabulary degrades instead of failing.
+fn classify_dsh(value: &Value) -> ObservationKind {
+    match value["method"].as_str() {
+        Some("session.event") => match value["params"]["event"]["type"].as_str() {
+            Some("turn/start") => ObservationKind::Started,
+            Some("turn/end") => classify_dsh_turn_end(value),
+            Some("assistant/message" | "assistant/chunk") => ObservationKind::Text,
+            Some("tool/call" | "tool/result") => ObservationKind::Tool,
+            Some("approval/asked") => ObservationKind::Approval,
+            _ => ObservationKind::Opaque,
+        },
+        // Progress, subagent lifecycle, and handshake notifications are not
+        // turn results.
+        _ => ObservationKind::Opaque,
+    }
+}
+
+fn classify_dsh_turn_end(value: &Value) -> ObservationKind {
+    match value["params"]["event"]["data"]["reason"]["kind"].as_str() {
+        Some("completed") => ObservationKind::Completed,
+        Some("aborted") => ObservationKind::Cancelled,
+        Some("blocked" | "error" | "max-tokens" | "interrupted") => ObservationKind::Failed,
         _ => ObservationKind::Opaque,
     }
 }

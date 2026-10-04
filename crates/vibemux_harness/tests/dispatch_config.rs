@@ -39,14 +39,23 @@ fn native_executable(name: &str) -> String {
 }
 
 fn route_json(harness: &str, protocol: &str) -> Value {
-    json!({
+    let mut value = json!({
         "harness": harness,
         "protocol": protocol,
         "executable": native_executable(&format!("{PRIVATE_SENTINEL}_{harness}")),
         "environment_names": [format!("{PRIVATE_SENTINEL}_KEY")],
         "enabled": true,
         "allow_execution": protocol != "acp",
-    })
+    });
+    if protocol == "dsh_sdk_json_rpc" {
+        // The launcher pair replaces the "stem is the harness command name"
+        // rule and requires the provider route `initialize` names (ADR 030).
+        value["executable"] = json!(native_executable("node"));
+        value["entry_script"] = json!(absolute("dsh-package/lib/bin.js"));
+        value["provider"] = json!("deepseek-official");
+        value["model"] = json!("deepseek-v4-flash");
+    }
+    value
 }
 
 fn config_json(routes: Vec<Value>) -> Value {
@@ -193,8 +202,18 @@ fn a_protocol_must_be_a_verified_adapter_for_its_harness() {
             AgentKind::OpenCode,
             AgentKind::Copilot,
             AgentKind::Grok,
+            AgentKind::Dsh,
         ]
     );
+    // Every other registered harness has no verified native adapter yet.
+    for harness in AgentKind::all() {
+        if accepted.contains(&harness) {
+            continue;
+        }
+        for protocol in NativeProtocol::ALL {
+            assert!(!protocol.accepts(harness), "{harness:?} {protocol:?}");
+        }
+    }
 }
 
 #[test]
@@ -680,7 +699,7 @@ fn acp_routes_are_probe_only_at_every_gate() {
         .iter()
         .map(|protocol| protocol.supports_execution())
         .collect();
-    assert_eq!(supports, [true, true, true, false]);
+    assert_eq!(supports, [true, true, true, false, true]);
     for harness in ["open_code", "copilot", "grok"] {
         assert_eq!(
             parse_route(with(
@@ -728,4 +747,185 @@ fn launch_environment_lists_system_names_first_without_duplicates() {
     let mut expected: Vec<&str> = SYSTEM_ENVIRONMENT_NAMES.to_vec();
     expected.extend(["OPENAI_API_KEY", "PATH"]);
     assert_eq!(spec.environment_names, expected);
+}
+
+// --- DSH launcher pair (ADR 030 Decision 3) -------------------------------
+
+#[test]
+fn the_dsh_route_requires_a_node_image_entry_script_and_provider() {
+    // The shape `route_json` builds for this protocol is valid.
+    let valid = route_json("dsh", "dsh_sdk_json_rpc");
+    assert!(parse_route(valid.clone()).is_ok());
+
+    // Dropping any leg of the pair is refused.
+    let mut no_script = valid.clone();
+    no_script.as_object_mut().unwrap().remove("entry_script");
+    assert_eq!(
+        parse_route(no_script).unwrap_err(),
+        DispatchError::ConfigRouteInvalid
+    );
+    let mut no_provider = valid.clone();
+    no_provider.as_object_mut().unwrap().remove("provider");
+    assert_eq!(
+        parse_route(no_provider).unwrap_err(),
+        DispatchError::ConfigRouteInvalid
+    );
+    // The executable must be the Node image, not the harness command name.
+    assert_eq!(
+        parse_route(with(
+            valid.clone(),
+            "executable",
+            json!(native_executable("dsh"))
+        ))
+        .unwrap_err(),
+        DispatchError::ConfigExecutableInvalid
+    );
+    // The entry script must be an absolute `.js` path.
+    for script in [
+        json!("relative/lib/bin.js"),
+        json!(absolute("lib/bin.mjs")),
+        json!(""),
+    ] {
+        assert_eq!(
+            parse_route(with(valid.clone(), "entry_script", script.clone())).unwrap_err(),
+            DispatchError::ConfigRouteInvalid,
+            "{script}"
+        );
+    }
+    // `dsh.cmd` and `dsh.ps1` stay rejected even for the launcher pair.
+    for shim in ["dsh.cmd", "dsh.ps1", "dsh.bat", "dsh.vbs"] {
+        assert_eq!(
+            parse_route(with(valid.clone(), "executable", json!(absolute(shim)))).unwrap_err(),
+            DispatchError::ConfigExecutableInvalid,
+            "{shim}"
+        );
+    }
+}
+
+#[test]
+fn only_the_launcher_pair_protocol_may_carry_pair_fields() {
+    for protocol in [
+        "codex_exec",
+        "codex_app_server",
+        "claude_stream_json",
+        "acp",
+    ] {
+        let harness = match protocol {
+            "codex_exec" | "codex_app_server" => "codex",
+            "claude_stream_json" => "claude",
+            _ => "grok",
+        };
+        for field in ["entry_script", "profile", "provider"] {
+            let value = with(
+                route_json(harness, protocol),
+                field,
+                json!(absolute("elsewhere/lib/bin.js")),
+            );
+            assert_eq!(
+                parse_route(value).unwrap_err(),
+                DispatchError::ConfigRouteInvalid,
+                "{protocol} + {field} must be refused"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_dsh_profile_defaults_to_sdk_and_rejects_unsafe_names() {
+    let without_profile = parse_route(route_json("dsh", "dsh_sdk_json_rpc"))
+        .unwrap()
+        .routes
+        .remove(0);
+    assert_eq!(without_profile.profile, None);
+    assert_eq!(without_profile.effective_profile(), "sdk");
+
+    for profile in ["", "Sdk", "-sdk", "sdk minimal", "sdk/../web", "sdk\\web"] {
+        assert_eq!(
+            parse_route(with(
+                route_json("dsh", "dsh_sdk_json_rpc"),
+                "profile",
+                json!(profile)
+            ))
+            .unwrap_err(),
+            DispatchError::ConfigRouteInvalid,
+            "{profile:?}"
+        );
+    }
+    for profile in ["sdk", "sdk-minimal", "my_profile-2"] {
+        let route = parse_route(with(
+            route_json("dsh", "dsh_sdk_json_rpc"),
+            "profile",
+            json!(profile),
+        ))
+        .unwrap()
+        .routes
+        .remove(0);
+        assert_eq!(route.effective_profile(), profile);
+    }
+}
+
+#[test]
+fn the_dsh_launch_argv_is_the_node_pair_and_never_the_prompt() {
+    let route = route(
+        AgentKind::Dsh,
+        NativeProtocol::DshSdkJsonRpc,
+        Some("deepseek-v4-flash"),
+    );
+    let spec = build_launch_spec(&route, SessionMode::Execute).expect("launch spec");
+    assert_eq!(spec.executable, PathBuf::from(native_executable("node")));
+    assert_eq!(
+        spec.arguments,
+        [
+            absolute("dsh-package/lib/bin.js"),
+            "--profile".to_string(),
+            "sdk".to_string(),
+        ]
+    );
+    // The probe uses the same argv: `initialize` is a real handshake.
+    let probe = build_launch_spec(&route, SessionMode::Probe).expect("probe spec");
+    assert_eq!(probe.arguments, spec.arguments);
+    // No prompt text, no operator argv, and no shell can appear.
+    for argument in &spec.arguments {
+        assert!(!argument.contains(PRIVATE_SENTINEL));
+        assert!(!argument.contains("deepseek-v4-flash"));
+    }
+    let debug = format!("{spec:?}");
+    assert!(!debug.contains(PRIVATE_SENTINEL));
+    assert!(!debug.contains("bin.js"));
+
+    // A custom profile reaches argv only after the same validation.
+    let custom = parse_route(with(
+        route_json("dsh", "dsh_sdk_json_rpc"),
+        "profile",
+        json!("sdk-minimal"),
+    ))
+    .unwrap()
+    .routes
+    .remove(0);
+    assert_eq!(
+        build_launch_spec(&custom, SessionMode::Execute)
+            .unwrap()
+            .arguments,
+        [
+            absolute("dsh-package/lib/bin.js"),
+            "--profile".to_string(),
+            "sdk-minimal".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn the_dsh_catalog_entry_reports_probe_and_execution_support() {
+    let config = parse(&config_json(vec![route_json("dsh", "dsh_sdk_json_rpc")])).unwrap();
+    let catalog = config.catalog();
+    let entry: DispatchCatalogEntry = catalog[0];
+    assert_eq!(entry.harness, AgentKind::Dsh);
+    assert_eq!(entry.protocol, NativeProtocol::DshSdkJsonRpc);
+    assert!(entry.probe_supported);
+    assert!(entry.allow_execution);
+    // The public projection carries no path, script, or provider.
+    let encoded = serde_json::to_string(&catalog).unwrap();
+    assert!(!encoded.contains(PRIVATE_SENTINEL));
+    assert!(!encoded.contains("deepseek-official"));
+    assert!(!encoded.contains("bin.js"));
 }

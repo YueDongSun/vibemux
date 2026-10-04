@@ -20,14 +20,24 @@ const PROMPT: &str = "synthetic prompt \"quoted\"\nsecond line $(synthetic_comma
 const WORKING_DIRECTORY: &str = "SYNTHETIC_PRIVATE_PATH";
 
 fn route(harness: AgentKind, protocol: NativeProtocol) -> DispatchRoute {
+    // A launcher-pair protocol needs a Node image, an entry script, and a
+    // provider route; the other protocols take none of them (ADR 030).
+    let paired = protocol.requires_launcher_pair();
     DispatchRoute {
         harness,
         protocol,
-        executable: PathBuf::from("synthetic_executable"),
+        executable: PathBuf::from(if paired {
+            "synthetic_node.exe"
+        } else {
+            "synthetic_executable"
+        }),
+        entry_script: paired.then(|| PathBuf::from("synthetic_dsh/lib/bin.js")),
+        profile: None,
+        provider: paired.then(|| "deepseek-official".to_string()),
         environment_names: vec![],
         enabled: true,
         allow_execution: true,
-        model: None,
+        model: paired.then(|| "deepseek-v4-flash".to_string()),
     }
 }
 

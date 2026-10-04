@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), and harness dispatch (control protocol v5) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4) and the DSH session substrate (ADR 030: `vibemux_harness::dsh` pure state machine, `vibemux_dsh` driver, `vibemuxd::dsh_session` service, Control v6, `vibemuxctl dsh`, and the `vibemux_dsh_tui` surface; fixture-verified, no live vendor turn and no persisted session record yet) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and DSH sessions (control protocol v6) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -2641,3 +2641,61 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Remaining**
 - Windows CI evidence for this change comes from its pull request run.
 - ADR 029 open decision 4 and a live `dispatch submit`, unchanged from the 2026-09-28 (1) entry.
+
+---
+
+### 2026-10-04 - DSH harness adapter and session interaction substrate (ADR 030)
+
+**Status change**
+- New adapter: DeepSeek Harness (`dsh`) is registered as the eleventh harness, and `NativeProtocol::DshSdkJsonRpc` describes its SDK JSON-RPC stdio protocol. `DshSdkJsonRpc` joins the ADR 029 dispatch path with a real initialize-only probe.
+- New crate `vibemux_dsh`, new surface `vibemux_dsh_tui`, and a new daemon service with **Control v6** plus the `vibemuxctl dsh` client.
+- Control protocol moves from v5 to v6. v1–v5 requests remain accepted for their operations; a pre-v6 client refuses a v6 descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together.
+- The substrate is `VERIFIED` at the fixture level: a pure state-machine suite plus a driver suite and a daemon-level end-to-end suite against `vibemux_dsh_fixture`. **No prompt has been sent to a real DSH runtime.**
+- No milestone changes. No persistence schema change: a DSH session has **no canonical record** and lives in daemon memory (ADR 030 open decision 1).
+
+**Implemented**
+- `vibemux_harness::dsh` (pure, no I/O): the observed wire vocabulary with strict bounded decoders, the client-side session state machine, a record classifier, and a bounded sequenced record ring (`wire`, `session`, `records`).
+- `AgentKind::Dsh` appended last, with the wire name `dsh`, command `dsh`, display `DSH`, and provider `deepseek`.
+- `NativeProtocol::DshSdkJsonRpc` with `accepts`, `supports_probe`, `supports_execution`, and `requires_launcher_pair`; route config gains `entry_script`, `profile`, and `provider`, protocol-conditional in both directions.
+- `vibemux_harness::dispatch::protocol_session`: a DSH arm for the one-shot path, including the `initialize` handshake, the `session/prompt` admission, notification correlation by session id, and structured `turn/end` terminal evidence.
+- `vibemux_dsh`: operator config loading and trust verification, the Node launcher pair, `ProcessTree` containment, bounded JSON-line framing, initialize and turn deadlines, cancellation by tree termination, the record buffer, and a `summary()` accessor.
+- `vibemuxd::dsh_session::DshSessionService`: one live session per project, opened lazily against `.vibemux/dsh_session.json`, joined at daemon shutdown so no vendor process outlives the daemon. It owns only the control-frame page budget; framing, containment, and records stay in `vibemux_dsh`.
+- Control v6: `dsh_session_{open,prompt,poll,status,cancel,close}`, with `dsh_*` added to the allowlisted remote-error namespaces so an actionable DSH code reaches a client instead of collapsing to `control_remote_error`.
+- `vibemuxctl dsh open|prompt|poll|status|cancel|close`: a prompt comes from a file or stdin, never argv; `dsh poll` is the only DSH command that prints runtime content.
+- `vibemux_frontend::dsh_tui` and the `vibemux_dsh_tui` binary: a live session surface with an input editor, bounded transcript, cancel path, teardown, and the audited `tui::Theme` registry.
+- Test fixture `vibemux_dsh_fixture` (modes `serve`, `hang`, `error-turn`, `foreign`, `garbage`, `no-turn-end`, `exit-early`), selectable through `--profile` so a daemon test picks a behaviour the way an operator picks a profile.
+
+**Behaviour and invariants**
+- Idle is not completion. `session.status: idle` is rendered as a diagnostic and never ends a turn; only a correlated `turn/end` with a recognized `reason.kind` produces a terminal outcome, and an unrecognized one resolves as `unverified`, which is never success (AGENTS.md §2 invariant 5).
+- The notification stream is unfiltered by the vendor, so notifications are matched against the session's own id; foreign records are counted and dropped. `subagent.*` payloads carry `parentSessionId`/`childSessionId` and no `sessionId`, so they are never correlated through the session-id path.
+- One turn at a time per session, and one session per project (`dsh_session_busy`). The wire carries no prompt-to-turn correlation id, so a second concurrent prompt would make turn attribution impossible.
+- No shell and no shim: the route pairs a canonical `node` image with an entry script the installed `@deepseek-ai/dsh` package names in its own `bin` map, and neither may resolve inside the project root.
+- Cancellation terminates the contained process tree, because the protocol publishes no cancel or session-close method.
+- Prompts reach the vendor only as JSON string data on stdin and never from argv. Status views, events, and errors carry a prompt's size and SHA-256, never its text, and never a path.
+
+**Evidence**
+- commands (native Windows, MSVC, pinned 1.85.0):
+  - `cargo fmt --all -- --check` clean (exit 0).
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean (exit 0).
+  - `cargo test --workspace --all-features -j 2 --no-fail-fast`: every crate passes except 33 tests in `vibemux_cli` and `vibemuxd` that are blocked by this session's execution environment; see the note below.
+- Passing suites that cover this change: `vibemux_harness` 123 (68 lib + 55 integration, including 21 route-config and 14 protocol-session tests); `vibemux_dsh` 18 (6 unit + 12 driver integration); `vibemuxd` 152 (78 lib including the DSH control tests, 9 `dsh_session` end-to-end, 8 plugin_registry, 23 harness_dispatch, 6 launch_trampoline, 3 terminal_observer, 3 control_harness_dispatch, 1 bin, plus the environment-blocked suites listed below); `vibemux_frontend` 80 (68 lib, 1 ignored, plus cli/palette_parity/supervisor_ui); `vibemux_cli` 18 (15 lib including 5 new `dsh` grammar/projection tests, 3 bin); `vibemux_probe` 18; `vibemux_store` 35.
+- The `vibemuxd` `dsh_session` suite is the end-to-end gate: it drives a real contained fixture process over the real control IPC and proves the launcher-pair trust rules, the handshake gate, one-turn-at-a-time admission, structured completion, cancellation by tree termination, teardown on daemon shutdown, and the rule that no prompt text reaches a status view.
+- CLI smoke on the built binary: `--help` lists all six commands; `dsh prompt` without `--prompt-file` and an unknown verb both return `cli_invalid_arguments` (exit 2); `dsh status` against a project with no daemon returns `daemon_not_running` (exit 4).
+- Golden dashboard fixtures were regenerated for the intentional eleventh row and the one-line summary change from `5 unavailable` to `6 unavailable` (6 files, 6 changed lines).
+- Regression coverage added for the subagent-correlation defect found during review: `subagent.*` payloads carry no `sessionId`, so correlating them through the session-id path would have failed the session on the first subagent event.
+
+**Environment limitation (not a defect in this change)**
+- 33 tests fail in this session with `ControlRuntimeUnavailable` from `DaemonPaths::ensure_runtime_dir`, whose protected `%LOCALAPPDATA%\VibeMux\runtime` DACL step cannot complete under the agent's process token: `vibemux_cli` lib 10 and `bootstrap_process` 3; `vibemux_frontend` lib 1 (`supervisor_client`); `vibemuxd` lib 7 (`process::tests`), `daemon_process` 4, `supervisor_grpc` 3, `supervisor_workflow` 4, `plugin_registry` 1 (`daemon exited early`, the same startup failure).
+- Every one of them fails before any harness or DSH code runs; the raw-path control constructors used by the DSH tests do not touch that surface, which is why the DSH suites run here. They are expected to pass on a normal developer or CI token; that has not been re-verified here.
+- Other environment workarounds used for this run only, none applied to the repository: `TMP`/`TEMP` redirected into `target/tmp` (the platform temp directory is not writable here, which breaks `prost-build` and `tempfile`), and `CARGO_PROFILE_DEV_DEBUG=0` (MSVC `D8050`, the C7 debug-record limit, is hit by this checkout's long paths when compiling bundled C dependencies). Separately, `target/` had grown to 71.8 GB and filled the drive; `cargo clean` reclaimed it.
+
+**Remaining**
+- A canonical persisted session record. The service keeps the session in memory, so a daemon restart loses it and its records (ADR 030 open decision 1).
+- Live validation against a real DSH runtime. No prompt has been sent to the vendor: the adapter is verified against the wire shapes read from `@deepseek-ai/dsh-sdk-protocol` 0.1.2-rc.1 and against `vibemux_dsh_fixture`.
+- Bootstrapping the `sdk` profile for the first time writes to the operator's DSH home; that side effect is documented in `docs/dsh_session_protocol.md` and README, and it did occur on the reference host during reconnaissance.
+- ADR 030 open decisions 2 to 6, including consolidating the two trusted-launcher-pair loaders.
+
+**Known risks**
+- DSH's protocol carries no version negotiation and no compatibility promise, so this adapter binds to observed 0.1.2-rc.1 shapes. A later release may change them silently; the handshake checks only `serverInfo.name`.
+- The vendor `sdk` profile defaults `DSH_MAX_TOKENS_AS_SUCCESS` to true, so a token-limited turn may reach VibeMux already reported as `completed`. VibeMux's own mapping stays conservative, but it cannot recover the distinction.
+- The runtime is not a sandbox: containment governs lifetime only, and the vendor profile decides what the session may read and write.

@@ -438,6 +438,10 @@ fn discover_endpoints(agent: AgentKind, config: &ProbeConfig) -> Vec<SafeEndpoin
         | AgentKind::Trae
         | AgentKind::Codebuddy
         | AgentKind::Kimi => {}
+        // DSH keeps its provider routes in YAML settings under `$DSH_HOME`,
+        // which this probe does not parse; its launcher/version probe still
+        // runs, so the route stays `unknown` without hiding detection.
+        AgentKind::Dsh => {}
         AgentKind::Copilot => {}
         AgentKind::Grok => collect_toml_endpoints(
             &config.home_dir.join(".grok/config.toml"),

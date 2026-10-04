@@ -3,6 +3,7 @@ use vibemux_cli::{
     CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome, daemon_executable,
     daemon_health, daemon_paths,
     dispatch_commands::run_dispatch,
+    dsh_commands::run_dsh,
     harness_list, harness_switch, parse_cli_arguments,
     recovery::{inspect_runtime, recover_runtime},
     start_daemon, stop_daemon,
@@ -115,6 +116,13 @@ async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
             let paths = daemon_paths(project_root.as_deref())?;
             run_dispatch(&paths, command).await
         }
+        CliCommand::Dsh {
+            project_root,
+            command,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            run_dsh(&paths, command).await
+        }
         CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
     }
 }
@@ -149,7 +157,13 @@ fn print_help() {
   vibemuxctl dispatch submit <harness> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
   vibemuxctl dispatch status <request_id> [--project-root <path>]
   vibemuxctl dispatch output <request_id> [--after-sequence <n>] [--project-root <path>]
-  vibemuxctl dispatch cancel <request_id> [--project-root <path>]"
+  vibemuxctl dispatch cancel <request_id> [--project-root <path>]
+  vibemuxctl dsh open [--session-id <id>] [--project-root <path>]
+  vibemuxctl dsh prompt --prompt-file <path|-> [--project-root <path>]
+  vibemuxctl dsh poll [--after-sequence <n>] [--project-root <path>]
+  vibemuxctl dsh status [--project-root <path>]
+  vibemuxctl dsh cancel [--project-root <path>]
+  vibemuxctl dsh close [--project-root <path>]"
     );
 }
 
