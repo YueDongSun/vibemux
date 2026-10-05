@@ -2996,3 +2996,13 @@ checkout and pre-existing `ui_check/` are preserved.
   remain incomplete. Unsupported supervisor tools refuse with typed diagnostics.
 - No live inference, global configuration, deployment or unrelated process change
   was performed. Rollback from schema 7 requires matching pre-upgrade backups.
+
+**Local delivery and cleanup**
+- Implementation saved as `a3c65c3`; the test-only naming correction is `df121b7`.
+  Its two Windows test files passed again (20 tests and scoped Ruff checks).
+- Completed worker edits are recoverable at `be33e12` and `aa8d24a`; their clean
+  checkouts were removed with normal Git worktree removal. Task-created build/test
+  scratch, raw logs, patch copies and source caches were removed.
+- The older unregistered optimizer directory has unknown ownership/handle state
+  and remains excluded from cleanup. Main remains `a639ed5`, with `ui_check/`
+  preserved. No push, live inference or deployment was performed.

@@ -7,7 +7,10 @@
     "branch": "codex/remaining_runtime",
     "tested_delivery": "owned integration worktree before local commit",
     "store_schema": 7,
-    "control_version": 8
+    "control_version": 8,
+    "implementation_commit": "a3c65c3eb806c5b4a15541758f91fd27db4657db",
+    "tested_naming_followup_commit": "df121b7d24e06aa9a01190a4547f2e7676d6f16f",
+    "delivery": "local integration commits; no main advancement or push"
   },
   "acceptance_verdict": "BLOCKED",
   "is_inherited_benchmark_report": false,
@@ -99,6 +102,21 @@
       ],
       "source_state": "final_source_default_features_without_fixture_capabilities",
       "exit_code": 0
+    },
+    {
+      "argv": [
+        "project Python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_acceptance_process.py",
+        "tests/test_windows_launch_context.py"
+      ],
+      "source_state": "final naming correction",
+      "exit_code": 0,
+      "passed": 20,
+      "failed": 0,
+      "scoped_ruff_format_and_lint": "passed"
     }
   ],
   "python": {
@@ -167,9 +185,16 @@
     "replacement_rerun": "terminal exit 101 and two unchanged acceptance failures"
   },
   "resources": {
-    "cleanup": "pending until final checks end",
-    "main": "base_head; pre-existing ui_check preserved",
-    "unrelated_processes_modified": false
+    "cleanup": "verified complete for current task-owned scratch and two worker checkouts; four source cache directories removed",
+    "worker_snapshot_commits": {
+      "codex/runtime_supervisor_design": "be33e124c49d2dc01d9fb32128d82aa3c2fcc914",
+      "codex/windows_launch_repair": "aa8d24aa6aa70431a494e642e35da2c50dbef143"
+    },
+    "worker_removal": "normal git worktree remove after clean-tree and branch/head checks; snapshot branches retained",
+    "main": "a639ed5befdf232af4f4aa0f2d7d4dc55cf3c146; pre-existing ui_check preserved",
+    "unrelated_processes_modified": false,
+    "retained_directory": "Earlier unregistered remaining_optimizer directory; unknown ownership/handle, excluded from cleanup",
+    "approval_review": "Initial force-removal rejected; worker edits reconciled and preserved. Unknown-directory deletion rejected; action excluded. Final safe cleanup approved and completed."
   },
   "format_and_clippy": {
     "format": {

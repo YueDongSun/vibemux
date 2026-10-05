@@ -4,6 +4,8 @@
 
 - Task: continue the runtime enhancement after the DSH/dual-track merge and
   investigate the reported `node`/`ruff.exe` Windows application error.
+- Implementation commit: `a3c65c3eb806c5b4a15541758f91fd27db4657db`; tested naming
+  follow-up: `df121b7d24e06aa9a01190a4547f2e7676d6f16f`.
 - Base: `a639ed5befdf232af4f4aa0f2d7d4dc55cf3c146`; owned integration branch:
   `codex/remaining_runtime`. The original main checkout and `ui_check/` are preserved.
 - Owned modules: pure supervisor contracts, writer migration/action accounting,
@@ -95,7 +97,9 @@ and verification limits.
 - `cargo check --workspace --all-targets`: passed with default features, including
   production paths without fixture capabilities.
 - Python: 132 passed. Ruff formatting/lint and scoped mypy (32 source files)
-  passed. Broad mypy has 20 pre-existing errors in unchanged optional tooling.
+  passed. After the final test-only naming correction, both Windows launch test
+  files were rerun: 20 passed, with scoped Ruff formatting/lint passing again.
+  Broad mypy has 20 pre-existing errors in unchanged optional tooling.
 - Workspace formatting and all-target/all-feature Clippy with `-D warnings`
   passed on the final Rust source; exact commands are in the JSON receipt.
 
@@ -169,3 +173,19 @@ completion. Main promotion, remote delivery and live operation are separate Git
 and execution actions. Cleanup retains dirty or uncertain resources. The earlier
 unregistered empty `remaining_optimizer` directory has an unidentified handle
 owner; no unknown process is terminated to remove it.
+
+
+The two current worker checkouts were removed normally only after their complete
+edits were reconciled and preserved on snapshot branches (`be33e12`, `aa8d24a`).
+The task-created Cargo target, test temporary roots, logs, temporary reports and
+patch copies were removed, along with four source cache directories. No task-owned
+check process remained at cleanup. Compact repository evidence and the Codex-owned
+continuity state are retained.
+
+Automatic approval review rejected the initial force removal of dirty worker
+checkouts. Saving their reviewed snapshots and removing clean checkouts normally
+resolved that risk. A second review rejected deletion of the older optimizer
+directory with unknown ownership; that action was excluded. Final bounded cleanup
+was approved and completed. The retained directory and all unrelated worktrees
+and processes remain untouched. No main advancement, push or deployment followed
+these local commits.
