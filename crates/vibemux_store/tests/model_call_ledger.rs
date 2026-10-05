@@ -397,7 +397,8 @@ fn a_v5_marker_without_ledger_tables_migrates_forward_when_reopened() {
     let connection = Connection::open(database.path()).expect("open closed v5 fixture");
     connection
         .execute_batch(
-            "DROP TABLE workflow_supervisor_actions; \
+            "DROP TABLE workflow_contract_edits; \
+             DROP TABLE workflow_supervisor_actions; \
              DROP TABLE workflow_supervisor_rounds; \
              DROP TABLE workflow_supervisors; \
              DROP TABLE workflow_controller_outbox; \

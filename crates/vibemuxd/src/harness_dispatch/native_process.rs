@@ -341,6 +341,9 @@ pub struct BrowserProbeResult {
     pub phases: Vec<String>,
     pub failed_at: Option<String>,
     pub error_class: Option<String>,
+    pub browser_version: Option<String>,
+    pub cdp_error_code: Option<i32>,
+    pub browser_cleanup_observed: bool,
     pub browser_pid: Option<u32>,
     pub renderer_pids: Vec<u32>,
     pub browser_stderr_bytes: Option<u64>,
@@ -382,7 +385,10 @@ pub async fn run_browser_lifecycle_probe(
     if plan.hold_after_attach {
         arguments.push("--hold_after_attach".to_string());
     }
-    let environment = resolve_environment(&plan.environment_names)?;
+    let mut environment = resolve_environment(&plan.environment_names)?;
+    environment.retain(|(name, _)| name != "TEMP" && name != "TMP");
+    environment.push(("TEMP".to_string(), plan.scratch.as_os_str().to_os_string()));
+    environment.push(("TMP".to_string(), plan.scratch.as_os_str().to_os_string()));
     let launch = LaunchPlan {
         trampoline: plan.trampoline,
         executable: PathBuf::from(node),
@@ -395,29 +401,7 @@ pub async fn run_browser_lifecycle_probe(
     };
     let mut process = NativeProcess::spawn(&launch, environment).await?;
     process.close_stdin();
-    let mut result = BrowserProbeResult {
-        phases: Vec::new(),
-        failed_at: None,
-        error_class: None,
-        browser_pid: None,
-        renderer_pids: Vec::new(),
-        browser_stderr_bytes: None,
-        browser_stderr_sandbox: false,
-        browser_stderr_access_denied: false,
-        browser_stderr_renderer: false,
-        browser_stderr_win32_access_denied: false,
-        browser_stderr_process_create: false,
-        browser_stderr_job_object: false,
-        native_stderr: StderrDiagnostic::default(),
-        exit: ProcessExit {
-            exit_code: None,
-            forced_termination: true,
-        },
-        active_members_before_cancel: None,
-        active_members_after_finish: None,
-        timed_out: false,
-        output_truncated: false,
-    };
+    let mut result = empty_browser_probe_result();
     let deadline = Instant::now() + PROBE_DEADLINE;
     let mut pending = Vec::<u8>::new();
     let mut received = 0_usize;
@@ -482,6 +466,59 @@ pub async fn run_browser_lifecycle_probe(
 }
 
 #[cfg(feature = "test_helpers")]
+pub fn observe_browser_probe_output(output: &[u8]) -> BrowserProbeResult {
+    let mut result = empty_browser_probe_result();
+    let mut pending = Vec::<u8>::new();
+    for chunk in output.chunks(1024) {
+        if result.output_truncated {
+            break;
+        }
+        if pending.len().saturating_add(chunk.len()) > 64 * 1024 {
+            result.output_truncated = true;
+            break;
+        }
+        pending.extend_from_slice(chunk);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line = pending.drain(..=end).collect::<Vec<_>>();
+            if let Ok(value) = serde_json::from_slice(&line) {
+                observe_probe_line(&value, &mut result);
+            }
+        }
+    }
+    result
+}
+
+#[cfg(feature = "test_helpers")]
+fn empty_browser_probe_result() -> BrowserProbeResult {
+    BrowserProbeResult {
+        phases: Vec::new(),
+        failed_at: None,
+        error_class: None,
+        browser_version: None,
+        cdp_error_code: None,
+        browser_cleanup_observed: false,
+        browser_pid: None,
+        renderer_pids: Vec::new(),
+        browser_stderr_bytes: None,
+        browser_stderr_sandbox: false,
+        browser_stderr_access_denied: false,
+        browser_stderr_renderer: false,
+        browser_stderr_win32_access_denied: false,
+        browser_stderr_process_create: false,
+        browser_stderr_job_object: false,
+        native_stderr: StderrDiagnostic::default(),
+        exit: ProcessExit {
+            exit_code: None,
+            forced_termination: true,
+        },
+        active_members_before_cancel: None,
+        active_members_after_finish: None,
+        timed_out: false,
+        output_truncated: false,
+    }
+}
+
+#[cfg(feature = "test_helpers")]
 fn observe_probe_line(value: &serde_json::Value, result: &mut BrowserProbeResult) {
     let Some(phase) = value.get("phase").and_then(serde_json::Value::as_str) else {
         return;
@@ -509,6 +546,19 @@ fn observe_probe_line(value: &serde_json::Value, result: &mut BrowserProbeResult
             .and_then(serde_json::Value::as_u64)
             .and_then(|pid| u32::try_from(pid).ok());
     }
+    if phase == "browser_ready" {
+        result.browser_version = value
+            .get("browser_version")
+            .and_then(serde_json::Value::as_str)
+            .filter(|version| {
+                !version.is_empty()
+                    && version.len() <= 32
+                    && version
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+            })
+            .map(str::to_string);
+    }
     if phase == "process_observation" {
         if let Some(processes) = value.get("processes").and_then(serde_json::Value::as_array) {
             result.renderer_pids = processes
@@ -532,11 +582,14 @@ fn observe_probe_line(value: &serde_json::Value, result: &mut BrowserProbeResult
             "runtime_evaluate",
             "page_enable",
         ];
-        const ERROR_CLASSES: [&str; 5] = [
+        const ERROR_CLASSES: [&str; 8] = [
             "invalid_arguments",
             "timeout",
             "websocket",
             "access_denied",
+            "spawn_error",
+            "cdp_error",
+            "aborted",
             "other",
         ];
         result.failed_at = value
@@ -549,6 +602,16 @@ fn observe_probe_line(value: &serde_json::Value, result: &mut BrowserProbeResult
             .and_then(serde_json::Value::as_str)
             .filter(|class| ERROR_CLASSES.contains(class))
             .map(str::to_string);
+        result.cdp_error_code = value
+            .get("cdp_error_code")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|code| i32::try_from(code).ok());
+    }
+    if phase == "cleanup" {
+        result.browser_cleanup_observed = value
+            .get("browser_exit_observed")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
     }
     if phase == "failure" || phase == "cleanup" {
         if let Some(stderr) = value.get("stderr") {

@@ -4,6 +4,7 @@ use super::{workflow_error, workflow_rows};
 use crate::StoreError;
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeSet;
+use time::OffsetDateTime;
 use uuid::Uuid;
 use vibemux_workflow::{
     gates::WorkflowPhase,
@@ -17,8 +18,21 @@ pub(super) fn validate_applied_result(
     execution: &SupervisorExecution,
     action: &SupervisorAction,
     refs: &[Uuid],
+    timestamp: OffsetDateTime,
 ) -> Result<(), StoreError> {
     let invalid = || workflow_error("store_supervisor_result_mismatch");
+    if super::context_actions::is_context_action(&action.action) {
+        if refs.iter().collect::<BTreeSet<_>>().len() != refs.len() {
+            return Err(invalid());
+        }
+        return super::context_actions::validate_result(
+            transaction,
+            execution,
+            action,
+            refs,
+            timestamp,
+        );
+    }
     let workflow = workflow_rows::load_existing_workflow(transaction, action.workflow_id)?.record;
     let claim_sequence: u64 = transaction.query_row(
         "SELECT updated_sequence FROM workflow_supervisor_actions WHERE action_id=?",

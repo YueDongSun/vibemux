@@ -23,10 +23,11 @@ pub use harness_dispatch::{
     HarnessDispatchRecovery, QuarantinedDispatch,
 };
 pub use workflow::{
-    AttemptPurpose, ContentEntry, ContentKind, ContentState, ControllerCommit,
-    ControllerOutboxCommit, ControllerOutboxKind, ControllerOutboxOutcome, ControllerOutboxRecord,
-    ControllerOutboxState, LeaseCommit, LeaseFence, LeaseRecord, LeaseRequest, MessageChange,
-    MessageCommit, MessageRecord, PolicyVersionRecord, ReceiptCommit, RecoveryBindingCommit,
+    AttemptPurpose, ContentEntry, ContentKind, ContentState, ContractEditAdmission,
+    ContractEditCommit, ContractEditRecord, ControllerCommit, ControllerOutboxCommit,
+    ControllerOutboxKind, ControllerOutboxOutcome, ControllerOutboxRecord, ControllerOutboxState,
+    LeaseCommit, LeaseFence, LeaseRecord, LeaseRequest, MessageChange, MessageCommit,
+    MessageRecord, PolicyVersionRecord, ReceiptCommit, RecoveryBindingCommit,
     RecoveryCheckpointCommit, RecoveryPlanBinding, SupervisorActionFinish,
     SupervisorProposalCommit, SupervisorRoundAdmission, SupervisorStart,
     WORKFLOW_STORE_RECORD_SCHEMA_VERSION, WorkflowAttemptAdmission, WorkflowAttemptCommit,
@@ -34,7 +35,7 @@ pub use workflow::{
     WorkflowSnapshot,
 };
 
-pub const STORE_SCHEMA_VERSION: u32 = 7;
+pub const STORE_SCHEMA_VERSION: u32 = 8;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -719,6 +720,13 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V7)?;
             transaction.commit()?;
         }
+        if found < 8 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(workflow::MIGRATION_V8)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -1164,8 +1172,8 @@ mod tests {
         let temporary = tempfile::NamedTempFile::new().expect("owned database");
         schema_6_database(temporary.path());
         let history = event_log(temporary.path());
-        drop(SqliteStore::open(temporary.path()).expect("schema seven"));
-        assert_eq!(schema_version(temporary.path()), 7);
+        drop(SqliteStore::open(temporary.path()).expect("current schema"));
+        assert_eq!(schema_version(temporary.path()), STORE_SCHEMA_VERSION);
         assert_eq!(event_log(temporary.path()), history);
         let connection = Connection::open(temporary.path()).expect("read schema");
         for table in [
@@ -1205,6 +1213,33 @@ mod tests {
             for table in ["workflow_supervisors", "workflow_supervisor_rounds"] {
                 assert!(!connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",[table],|row|row.get::<_,bool>(0)).expect("rolled back"));
             }
+        }
+    }
+
+    #[test]
+    fn failed_schema_8_migration_preserves_schema_7_and_history() {
+        let temporary = tempfile::NamedTempFile::new().expect("owned database");
+        schema_6_database(temporary.path());
+        let mut connection = Connection::open(temporary.path()).expect("owned database");
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("migration");
+        transaction
+            .execute_batch(workflow::MIGRATION_V7)
+            .expect("historical schema seven");
+        transaction.commit().expect("schema seven commit");
+        connection
+            .execute_batch("CREATE TABLE workflow_contract_edits(existing_value TEXT)")
+            .expect("fixture conflict");
+        drop(connection);
+        let history = event_log(temporary.path());
+        for _ in 0..2 {
+            assert!(matches!(
+                SqliteStore::open(temporary.path()),
+                Err(StoreError::Database(_))
+            ));
+            assert_eq!(schema_version(temporary.path()), 7);
+            assert_eq!(event_log(temporary.path()), history);
         }
     }
 

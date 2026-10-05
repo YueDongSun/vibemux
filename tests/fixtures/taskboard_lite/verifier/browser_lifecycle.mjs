@@ -30,6 +30,7 @@ const probe_config = Object.freeze({
     "--proxy-server=http://127.0.0.1:9",
   ],
 });
+const known_process_types = new Set(["browser", "renderer", "gpu-process", "utility", "zygote"]);
 
 function emit(phase, extra = {}) {
   process.stdout.write(`${JSON.stringify({ phase, ...extra })}\n`);
@@ -40,6 +41,8 @@ function pause(ms) {
 }
 
 function error_class(error) {
+  if (error?.code === "ENOENT" || error?.code === "EACCES") return "spawn_error";
+  if (Number.isInteger(error?.details?.code)) return "cdp_error";
   const message = String(error?.message ?? "");
   if (message.includes("timed out")) return "timeout";
   if (message.includes("websocket")) return "websocket";
@@ -80,6 +83,7 @@ function stderr_observer(child) {
 async function devtools_endpoint(profile, child) {
   const deadline = Date.now() + probe_config.devtools_wait_ms;
   while (Date.now() < deadline) {
+    if (child.spawn_error !== null) throw child.spawn_error;
     if (child.exitCode !== null) throw new Error("browser exited before DevTools was ready");
     const text = await readFile(path.join(profile, "DevToolsActivePort"), "utf8").catch(() => null);
     if (text !== null) {
@@ -110,6 +114,7 @@ async function run() {
       browser: { type: "string" },
       temp_root: { type: "string" },
       hold_after_attach: { type: "boolean" },
+      wait_for_start: { type: "boolean" },
     },
   }).values;
   if (!args.browser || !path.isAbsolute(args.browser) || !args.temp_root || !path.isAbsolute(args.temp_root)) {
@@ -117,26 +122,44 @@ async function run() {
     return 2;
   }
   const profile = await mkdtemp(path.join(args.temp_root, "browser_lifecycle_"));
-  const browser = spawn(args.browser, [
-    ...probe_config.flags,
-    `--user-data-dir=${profile}`,
-    "about:blank",
-  ], {
-    cwd: args.temp_root,
-    env: process.env,
-    stdio: ["ignore", "ignore", "pipe"],
-    windowsHide: true,
-    shell: false,
-  });
-  const stderr = stderr_observer(browser);
-  emit("browser_spawned", { browser_pid: browser.pid ?? null });
+  let browser = null;
+  let stderr = null;
   let connection = null;
   let phase = "browser_ready";
   try {
+    if (args.wait_for_start) {
+      const started = await new Promise((resolve) => {
+        process.stdin.once("data", () => resolve(true));
+        process.stdin.once("end", () => resolve(false));
+        process.stdin.resume();
+      });
+      if (!started) throw new Error("direct probe start gate closed");
+    }
+    browser = spawn(args.browser, [
+      ...probe_config.flags,
+      `--user-data-dir=${profile}`,
+      "about:blank",
+    ], {
+      cwd: args.temp_root,
+      env: process.env,
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+      shell: false,
+    });
+    browser.spawn_error = null;
+    browser.on("error", (error) => {
+      browser.spawn_error = error;
+    });
+    stderr = stderr_observer(browser);
+    emit("browser_spawned", { browser_pid: browser.pid ?? null });
     const endpoint = await devtools_endpoint(profile, browser);
     connection = await Cdp_connection.connect(endpoint);
     const version = await connection.send("Browser.getVersion");
-    emit("browser_ready", { version_present: typeof version.product === "string" });
+    const version_match = String(version.product ?? "").match(/\b(?:Edg|Chrome|Chromium)\/(\d+(?:\.\d+){0,3})\b/);
+    emit("browser_ready", {
+      browser_family: String(version.product ?? "").includes("Edg/") ? "edge" : "chromium",
+      browser_version: version_match?.[1] ?? null,
+    });
     phase = "target_create";
     const { targetId } = await connection.send("Target.createTarget", { url: "about:blank" });
     emit("target_created", { target_present: typeof targetId === "string" });
@@ -149,7 +172,10 @@ async function run() {
       const processes = (process_info?.processInfo ?? [])
         .filter((entry) => Number.isInteger(entry.id) && entry.id > 0)
         .slice(0, 32)
-        .map((entry) => ({ pid: entry.id, type: String(entry.type ?? "unknown").slice(0, 32) }));
+        .map((entry) => ({
+          pid: entry.id,
+          type: known_process_types.has(entry.type) ? entry.type : "other",
+        }));
       emit("process_observation", { processes });
       emit("held_for_cancel");
       await new Promise(() => setInterval(() => undefined, 1000));
@@ -164,23 +190,35 @@ async function run() {
     const processes = (process_info?.processInfo ?? [])
       .filter((entry) => Number.isInteger(entry.id) && entry.id > 0)
       .slice(0, 32)
-      .map((entry) => ({ pid: entry.id, type: String(entry.type ?? "unknown").slice(0, 32) }));
+      .map((entry) => ({
+        pid: entry.id,
+        type: known_process_types.has(entry.type) ? entry.type : "other",
+      }));
     emit("process_observation", { processes });
     phase = "page_enable";
     await session.send("Page.enable");
     emit("page_enabled");
     return 0;
   } catch (error) {
-    emit("failure", { failed_at: phase, error_class: error_class(error), stderr });
+    emit("failure", {
+      failed_at: phase,
+      error_class: error_class(error),
+      cdp_error_code: Number.isInteger(error?.details?.code) ? error.details.code : null,
+      stderr,
+    });
     return 1;
   } finally {
     if (connection !== null && !connection.closed) {
       await connection.send("Browser.close", {}, { timeout_ms: 3000 }).catch(() => undefined);
       connection.close();
     }
-    if (!(await wait_exit(browser, probe_config.browser_close_ms))) browser.kill();
-    await rm(profile, { recursive: true, force: true }).catch(() => undefined);
-    emit("cleanup", { browser_exit_observed: browser.exitCode !== null, stderr });
+    let browser_exit_observed = browser === null || await wait_exit(browser, probe_config.browser_close_ms);
+    if (browser !== null && !browser_exit_observed) {
+      browser.kill();
+      browser_exit_observed = await wait_exit(browser, probe_config.browser_close_ms);
+    }
+    if (browser_exit_observed) await rm(profile, { recursive: true, force: true }).catch(() => undefined);
+    emit("cleanup", { browser_exit_observed, stderr });
   }
 }
 

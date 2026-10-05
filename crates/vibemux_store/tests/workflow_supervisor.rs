@@ -35,6 +35,10 @@ use vibemux_workflow::{
     workflow_record::{ContentStoreMode, TaskProgress, WorkflowRecord, WorkflowTask},
 };
 const BASE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+#[path = "workflow_supervisor_context/cases.rs"]
+mod context_cases;
+#[path = "workflow_supervisor_context/read_privacy_cases.rs"]
+mod read_privacy_cases;
 fn id(value: &str) -> SpecIdentifier {
     SpecIdentifier::new(value).expect("test identifier")
 }
@@ -257,14 +261,38 @@ impl Fixture {
     }
 
     fn with_decisions(decisions: u32) -> Self {
+        Self::configured(decisions, false)
+    }
+
+    fn configured(decisions: u32, context_enabled: bool) -> Self {
         let file = NamedTempFile::new().expect("owned database");
         let mut store = SqliteStore::open(file.path()).expect("migrate production schema");
-        let policy = simple_policy();
-        let specs: BTreeMap<_, _> = ["track_a", "track_b"]
+        let mut policy = simple_policy();
+        policy.content_store_opt_in = context_enabled;
+        let mut specs: BTreeMap<_, _> = ["track_a", "track_b"]
             .into_iter()
             .map(|key| (id(key), simple_spec(key)))
             .collect();
         let (mut record, mut contracts) = workflow();
+        if context_enabled {
+            record.content_store = ContentStoreMode::Enabled { retention_days: 1 };
+            for (key, spec) in &mut specs {
+                let other = if key.as_str() == "track_a" {
+                    "track_b"
+                } else {
+                    "track_a"
+                };
+                spec.communication_policy.may_message = vec![id(other)];
+                spec.communication_policy.max_messages_per_turn = 1;
+                spec.context_policy.max_bundle_bytes = 8192;
+                spec.context_policy.allow_public_excerpts = true;
+                spec.context_policy.retrieval_order = vec![
+                    vibemux_workflow::task_spec::ContextSourceKind::CandidateSnapshot,
+                    vibemux_workflow::task_spec::ContextSourceKind::PublicMessages,
+                ];
+                spec.read_scopes = vec![path(&format!("src/{other}.mjs"))];
+            }
+        }
         record.budget.decisions_remaining = decisions;
         record.policy_digest = policy.digest().expect("policy");
         record.budget.deadline_unix_ms =
@@ -747,7 +775,7 @@ fn schema_seven_adds_owned_tables_and_survives_reopen() {
     let path = fixture.file.path().to_path_buf();
     drop(fixture.store);
     let store = SqliteStore::open(&path).expect("reopen schema seven");
-    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 7);
+    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 8);
     assert_eq!(
         store
             .supervisor_status(workflow_id)
@@ -981,8 +1009,8 @@ fn schema_valid_authority_denials_consume_the_same_bounded_response_repair_allow
     for index in 0..3 {
         let (round, proposal) = fixture.proposal(
             &format!("invalid_{index}"),
-            SupervisorTool::ReadArtifact {
-                artifact_digest: Sha256Digest::of(b"unknown artifact"),
+            SupervisorTool::RequestHandoff {
+                task_key: id("track_a"),
             },
         );
         let result = fixture

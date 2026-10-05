@@ -23,6 +23,7 @@ pub mod startup;
 pub(crate) mod state_files;
 pub(crate) mod state_protection;
 pub(crate) mod supervisor_actions;
+pub(crate) mod supervisor_context;
 pub mod turns;
 pub(crate) mod verifier_runner;
 

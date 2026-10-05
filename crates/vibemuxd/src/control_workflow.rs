@@ -89,6 +89,14 @@ pub struct WorkflowEvaluateArgument {
 }
 
 impl ControlClient {
+    pub async fn workflow_contract_edit(&self, edit: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowContractEdit,
+            Some(&edit),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
     /// Validates, compiles, and admits a workflow request. A rejected
     /// contract answers `{"outcome": "rejected", "violation_codes": ...}`.
     pub async fn workflow_prepare(
@@ -323,6 +331,12 @@ pub(super) async fn dispatch(
 ) -> Result<ControlPayload, ControlError> {
     let service = &state.workflow;
     let value = match operation {
+        ControlOperation::WorkflowContractEdit => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let edit: Value =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.edit_contract(edit).await)?
+        }
         ControlOperation::WorkflowPrepare => {
             // The frame already bounds the argument; the service bounds the
             // request and the policy.

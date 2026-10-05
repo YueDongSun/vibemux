@@ -108,6 +108,72 @@ impl StateFiles {
         BlobStore::new(self.root.join("blobs"))
     }
 
+    /// Model-selected reads accept only typed identities beneath private state.
+    /// Reject linked ancestors, including Windows junctions, before bounded I/O.
+    pub fn read_supervisor_content(
+        &self,
+        digest: Sha256Digest,
+        maximum: u64,
+    ) -> Result<Option<Vec<u8>>, WorkflowError> {
+        self.read_private_file(&self.content_dir().join(digest.to_hex()), maximum)
+    }
+
+    pub fn read_supervisor_candidate(
+        &self,
+        digest: Sha256Digest,
+        maximum: u64,
+    ) -> Result<Option<Vec<u8>>, WorkflowError> {
+        self.read_private_file(&self.root.join("blobs").join(digest.to_hex()), maximum)
+    }
+
+    pub fn read_supervisor_outbox(
+        &self,
+        workflow_id: Uuid,
+        id: Uuid,
+        maximum: u64,
+    ) -> Result<Option<Vec<u8>>, WorkflowError> {
+        self.read_private_file(&self.outbox_path(workflow_id, id), maximum)
+    }
+
+    fn read_private_file(
+        &self,
+        path: &Path,
+        maximum: u64,
+    ) -> Result<Option<Vec<u8>>, WorkflowError> {
+        let relative = path
+            .strip_prefix(&self.root)
+            .map_err(|_| WorkflowError::ShareInvalid)?;
+        let mut current = self.root.clone();
+        for component in std::iter::once(None).chain(relative.components().map(Some)) {
+            if let Some(component) = component {
+                current.push(component.as_os_str());
+            }
+            let metadata = match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err(WorkflowError::ShareInvalid),
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(WorkflowError::ShareInvalid);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if metadata.file_attributes() & 0x400 != 0 {
+                    return Err(WorkflowError::ShareInvalid);
+                }
+            }
+        }
+        let bytes = read_bounded(path, maximum)?;
+        if bytes
+            .as_ref()
+            .is_some_and(|bytes| bytes.len() as u64 > maximum)
+        {
+            return Err(WorkflowError::ShareInvalid);
+        }
+        Ok(bytes)
+    }
+
     pub fn content_dir(&self) -> PathBuf {
         self.root.join("content")
     }

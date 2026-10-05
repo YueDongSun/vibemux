@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "kind": "context_edit_increment_evidence",
+  "recorded_date": "2026-10-06",
+  "base_head": "c8ad7e09c582370943754b87dcc342be4c690d09",
+  "branch": "codex/remaining_runtime",
+  "source_delivery": "reviewed integration tree before local commit",
+  "store_schema": 8,
+  "control_version": 9,
+  "acceptance_verdict": "BLOCKED",
+  "is_inherited_benchmark_report": false,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemux_store",
+        "-p",
+        "vibemux_workflow",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "source_stage": "final integrated implementation",
+      "exit_code": 0,
+      "passed": 274,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "-p",
+        "vibemux_cli",
+        "--lib",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "source_stage": "final integrated implementation",
+      "exit_code": 0,
+      "passed": 139,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "--all-features",
+        "--test",
+        "workflow_share",
+        "--test",
+        "workflow_literals",
+        "--test",
+        "workflow_contract_edit",
+        "--test",
+        "workflow_model_supervisor",
+        "--no-fail-fast"
+      ],
+      "source_stage": "final integrated implementation",
+      "exit_code": 0,
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemux_store",
+        "--test",
+        "workflow_supervisor",
+        "--all-features"
+      ],
+      "source_stage": "final integrated implementation",
+      "exit_code": 0,
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "--test",
+        "workflow_model_supervisor",
+        "--all-features"
+      ],
+      "source_stage": "final integrated implementation",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "--test",
+        "browser_containment",
+        "--all-features",
+        "browser_lifecycle_diagnostic_compares_native_and_direct_job_contained_launchers",
+        "--",
+        "--nocapture"
+      ],
+      "source_stage": "final integrated implementation",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "format": {
+    "argv": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0
+  },
+  "clippy": {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0
+  },
+  "default_feature_build": {
+    "argv": [
+      "cargo",
+      "check",
+      "--workspace",
+      "--all-targets"
+    ],
+    "exit_code": 0,
+    "fixture_capabilities": "disabled"
+  },
+  "worker_checkpoints": [
+    "93e72f3a8c104cd2558f02e26093d429f8bf7d11",
+    "308bed0af94062acff456b1fdea1169d122c9bfa"
+  ],
+  "independent_review": {
+    "model": "gpt-6-sol",
+    "mode": "read_only",
+    "context_privacy_and_query_evidence": "reported, repaired, rechecked without remaining source blocker; parent executed tests separately",
+    "contract_edit": "profile drift, complete replay identity, supported fixture setup and legal phase edges repaired"
+  },
+  "intermediate_checks": {
+    "first_compile": "interrupted without terminal receipt; no completion inferred",
+    "edit_test_compile": "borrowed-value fixture error corrected",
+    "context_store_initial": "17 passed, stale schema7 assertion failed; corrected to schema8",
+    "context_store_privacy": "22 passed, history test used full status instead of bounded model observation; corrected while retaining out-of-window assertion",
+    "clippy": "unnecessary Copy clone and lexical test mutex lifetime corrected; no lint suppression"
+  },
+  "browser": {
+    "all_legs_job_contained": true,
+    "edge_version": "154.0.4258.53",
+    "edge_native_process": "Runtime.enable timeout; Windows access-denial markers; observed browser exit and 0 Job members",
+    "edge_direct_launcher": "same Runtime.enable timeout after matching Node entry path; observed browser exit and 0 Job members",
+    "chrome_native_process": "exit before DevTools readiness; observed browser exit and 0 Job members",
+    "qualified": false,
+    "exact_denied_subsystem": "unknown",
+    "sandbox_breakaway_acl_changes": false,
+    "diagnostic_completion_is_support_pass": false
+  },
+  "platform": {
+    "windows": "executed native fixtures and browser diagnostic",
+    "linux_wsl": "not_run",
+    "live_inference": "not_run",
+    "native_terminal_backend": "not_verified"
+  },
+  "fresh_37_case_runner": "not_run; no scenario PASS generated from test references",
+  "full_workspace_tests": "not rerun; earlier browser-dependent acceptance gate remains unresolved",
+  "remaining": [
+    "standalone review mode",
+    "production native backend/Control/UI",
+    "affirmative approval delivery",
+    "complete active-attempt/message/controller recovery joins",
+    "native handoff",
+    "live AAG request-scoped identity and harness qualification"
+  ],
+  "resources": {
+    "cleanup": "pending after final source preservation",
+    "main": "a639ed5; pre-existing ui_check retained",
+    "unknown_optimizer_directory": "excluded",
+    "unrelated_processes_modified": false
+  }
+}

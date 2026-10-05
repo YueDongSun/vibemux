@@ -9,6 +9,9 @@
 //! vendor transcript or emits a prompt unless the operator asks for the
 //! retained text of a session explicitly.
 
+mod contract_edit;
+pub use contract_edit::{ContractEditRequest, ContractEditResponse, EditDisposition};
+
 use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},

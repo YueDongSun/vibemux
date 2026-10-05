@@ -185,6 +185,7 @@ pub(crate) async fn execute_batch(
     states: &mut Vec<UnitState>,
     actions: Vec<SupervisorAction>,
     width: usize,
+    message_bodies: &BTreeMap<String, String>,
 ) -> Result<Option<RunEnd>, WorkflowError> {
     let mut claimed = Vec::new();
     for action in actions {
@@ -301,7 +302,17 @@ pub(crate) async fn execute_batch(
         if context.stopping() {
             return stop_or_recover(context).await.map(Some);
         }
-        match execute_one(context, units, states, action).await {
+        match execute_one(
+            context,
+            units,
+            states,
+            action,
+            message_bodies
+                .get(&action.idempotency_key)
+                .map(String::as_str),
+        )
+        .await
+        {
             Ok((refs, end)) => {
                 let (state, code) = if matches!(end, Some(RunEnd::Failed(_))) {
                     (SupervisorActionState::Blocked, "supervisor_action_failed")
@@ -314,6 +325,22 @@ pub(crate) async fn execute_batch(
                 }
             }
             Err(error) => {
+                // Retrieval has no external submission. A typed absence or
+                // policy refusal is a bounded result the next round can use.
+                if matches!(
+                    action.action,
+                    SupervisorTool::ReadArtifact { .. } | SupervisorTool::QueryContext { .. }
+                ) {
+                    finish(
+                        context,
+                        action,
+                        SupervisorActionState::Blocked,
+                        vec![],
+                        error.code(),
+                    )
+                    .await?;
+                    continue;
+                }
                 finish(
                     context,
                     action,
@@ -334,8 +361,16 @@ async fn execute_one(
     units: &[Unit],
     states: &mut Vec<UnitState>,
     action: &SupervisorAction,
+    message_body: Option<&str>,
 ) -> Result<(Vec<Uuid>, Option<RunEnd>), WorkflowError> {
     match &action.action {
+        SupervisorTool::ReadArtifact { .. }
+        | SupervisorTool::QueryContext { .. }
+        | SupervisorTool::SendMessage { .. }
+        | SupervisorTool::ShareContext { .. } => Ok((
+            super::supervisor_context::execute(context, action, message_body).await?,
+            None,
+        )),
         SupervisorTool::InspectWorkflow {} | SupervisorTool::ListSlots {} => {
             let writer = context.writer.clone();
             let workflow_id = context.workflow_id;

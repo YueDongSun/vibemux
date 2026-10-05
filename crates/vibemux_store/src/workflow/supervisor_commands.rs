@@ -1,5 +1,7 @@
 //! Atomic model-supervisor ownership, observation-bound decisions, and effect intents.
 
+mod context_actions;
+mod context_reads;
 mod observations;
 mod results;
 mod rows;
@@ -28,9 +30,10 @@ use vibemux_workflow::{
     policy::OperatorPolicy,
     supervisor::{
         MAX_PROPOSAL_BYTES, SupervisorAction, SupervisorActionState, SupervisorDecision,
-        SupervisorExecution, SupervisorExecutionState, SupervisorMode, SupervisorObservation,
-        SupervisorProposal, SupervisorRound, SupervisorRoundState, SupervisorStatus,
-        SupervisorTaskBinding, SupervisorTaskGate, SupervisorTool, validate_runtime_proposal,
+        SupervisorExecution, SupervisorExecutionState, SupervisorMessageBinding, SupervisorMode,
+        SupervisorObservation, SupervisorProposal, SupervisorRound, SupervisorRoundState,
+        SupervisorStatus, SupervisorTaskBinding, SupervisorTaskGate, SupervisorTool,
+        validate_runtime_proposal,
     },
     task_spec::TaskSpec,
     workflow_record::TaskProgress,
@@ -497,6 +500,11 @@ impl SqliteStore {
         if let Err(rejections) = validate_runtime_proposal(proposal, &observation) {
             codes.extend(rejections);
         }
+        codes.extend(context_actions::validate_proposal_sources(
+            &transaction,
+            &execution,
+            proposal,
+        )?);
         let stored = workflow_rows::load_existing_workflow(&transaction, round.workflow_id)?;
         let mut workflow = stored.record.clone();
         let count = u32::try_from(proposal.decisions.len())
@@ -574,7 +582,19 @@ impl SqliteStore {
                     round_id,
                     idempotency_key: decision.idempotency_key.clone(),
                     fingerprint,
-                    action: decision.action.clone(),
+                    action: match &decision.action {
+                        SupervisorTool::SendMessage { to, .. } => SupervisorTool::SendMessage {
+                            to: to.clone(),
+                            text: String::new(),
+                        },
+                        other => other.clone(),
+                    },
+                    message_body: match &decision.action {
+                        SupervisorTool::SendMessage { text, .. } => {
+                            Some(SupervisorMessageBinding::for_text(text))
+                        }
+                        _ => None,
+                    },
                     state: SupervisorActionState::Pending,
                     dispatch_request_id,
                     result_refs: vec![],
@@ -815,13 +835,22 @@ impl SqliteStore {
             return Err(workflow_error("store_supervisor_finish_conflict"));
         }
         for id in &finish.result_refs {
+            if context_actions::is_context_action(&action.action) {
+                break;
+            }
             let exists:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM workflow_receipts WHERE workflow_id=? AND receipt_id=?)",params![action.workflow_id.to_string(),id.to_string()],|row|row.get(0))?;
             if !exists {
                 return Err(workflow_error("store_supervisor_result_unknown"));
             }
         }
         if finish.state == SupervisorActionState::Applied {
-            validate_applied_result(&transaction, &execution, &action, &finish.result_refs)?;
+            validate_applied_result(
+                &transaction,
+                &execution,
+                &action,
+                &finish.result_refs,
+                finish.timestamp,
+            )?;
         }
         action.state = finish.state;
         action.result_refs = finish.result_refs.clone();

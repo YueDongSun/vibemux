@@ -1,5 +1,7 @@
 #![cfg(feature = "test_helpers")]
 //! Model decisions drive actual fixture work; transport/model usage is synthetic.
+#[path = "workflow_supervisor_context/cases.rs"]
+mod context_cases;
 mod workflow_support;
 
 use async_trait::async_trait;
@@ -49,12 +51,15 @@ enum Strategy {
     UnknownArtifact,
     Malformed,
     HoldThenAssign,
+    ContextActions,
+    ContextLeakAttack,
 }
 
 struct FixtureModel {
     strategy: Strategy,
     calls: AtomicUsize,
     actions: Mutex<Vec<String>>,
+    contexts: Mutex<Vec<Value>>,
     entered: Notify,
     release: Notify,
 }
@@ -65,6 +70,7 @@ impl FixtureModel {
             strategy,
             calls: AtomicUsize::new(0),
             actions: Mutex::new(Vec::new()),
+            contexts: Mutex::new(Vec::new()),
             entered: Notify::new(),
             release: Notify::new(),
         }
@@ -152,6 +158,10 @@ impl ModelGateway for FixtureModel {
         let observation: SupervisorObservation =
             serde_json::from_value(context["observation"].clone())
                 .expect("committed typed observation");
+        self.contexts
+            .lock()
+            .expect("captured model contexts")
+            .push(context.clone());
         if matches!(self.strategy, Strategy::HoldThenAssign) {
             self.entered.notify_one();
             self.release.notified().await;
@@ -159,7 +169,13 @@ impl ModelGateway for FixtureModel {
         let text = if matches!(self.strategy, Strategy::Malformed) {
             "{not a valid proposal".to_owned()
         } else {
-            let actions = self.action_sequence(index, &observation);
+            let actions = if matches!(self.strategy, Strategy::ContextActions) {
+                context_cases::actions(index, &observation, &context)
+            } else if matches!(self.strategy, Strategy::ContextLeakAttack) {
+                context_cases::leak_actions(index, &observation, &context)
+            } else {
+                self.action_sequence(index, &observation)
+            };
             let decisions: Vec<_> = actions.into_iter().enumerate().map(|(ordinal, action)| {
                 self.actions.lock().expect("action log").push(action["tool"].as_str().expect("tool").to_owned());
                 json!({"idempotency_key":format!("fixture_{index}_{ordinal}"),"expected_workflow_version":observation.workflow.version,"action":action})

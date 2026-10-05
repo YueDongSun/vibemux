@@ -9,6 +9,8 @@
 //! repair prompts; it is never executed as prose. Decisions are bounded by
 //! persisted loop limits that a daemon restart does not reset.
 
+pub mod context_actions;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,9 @@ pub const MAX_DECISIONS_PER_PROPOSAL: usize = 4;
 pub const MAX_RATIONALE_BYTES: usize = 1024;
 pub const MAX_PROPOSAL_BYTES: usize = 16 * 1024;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+/// Aggregate untrusted tool data admitted into one model round.
+pub const MAX_SUPERVISOR_CONTEXT_BYTES: usize = 32 * 1024;
+pub const MAX_SUPERVISOR_CONTEXT_ITEMS: usize = 8;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
@@ -320,7 +325,10 @@ pub fn validate_proposal(
                 if !known_task(to) {
                     rejections.insert(ProposalRejection::UnknownTask);
                 }
-                if text.trim().is_empty() || text.len() > crate::messages::MAX_MESSAGE_BODY_BYTES {
+                if text.trim().is_empty()
+                    || text.len() > crate::messages::MAX_MESSAGE_BODY_BYTES
+                    || text.contains('\0')
+                {
                     rejections.insert(ProposalRejection::InvalidText);
                 }
             }
@@ -541,6 +549,23 @@ pub enum SupervisorActionState {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct SupervisorMessageBinding {
+    pub body_sha256: Sha256Digest,
+    pub body_bytes: u64,
+}
+
+impl SupervisorMessageBinding {
+    #[must_use]
+    pub fn for_text(text: &str) -> Self {
+        Self {
+            body_sha256: Sha256Digest::of(text.as_bytes()),
+            body_bytes: text.len() as u64,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SupervisorAction {
     pub action_id: Uuid,
     pub workflow_id: Uuid,
@@ -548,9 +573,11 @@ pub struct SupervisorAction {
     pub round_id: Uuid,
     pub idempotency_key: String,
     pub fingerprint: Sha256Digest,
-    /// Only supported content-free actions are persisted. Unsupported message
-    /// bodies remain transient and contribute only to the rejected digest.
+    /// Persisted SendMessage.text is empty. Its original body is bound by
+    /// message_body and the full decision fingerprint, and stays transient.
     pub action: SupervisorTool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_body: Option<SupervisorMessageBinding>,
     pub state: SupervisorActionState,
     pub dispatch_request_id: Option<Uuid>,
     pub result_refs: Vec<Uuid>,
@@ -566,18 +593,10 @@ pub struct SupervisorStatus {
     pub actions: Vec<SupervisorAction>,
 }
 
-/// The first model driver supports bounded orchestration effects. It does not
-/// pretend unavailable content-sharing or native capabilities were executed.
+/// Native handoff remains a separate runtime capability.
 #[must_use]
 pub const fn runtime_tool_supported(tool: &SupervisorTool) -> bool {
-    !matches!(
-        tool,
-        SupervisorTool::ReadArtifact { .. }
-            | SupervisorTool::QueryContext { .. }
-            | SupervisorTool::SendMessage { .. }
-            | SupervisorTool::ShareContext { .. }
-            | SupervisorTool::RequestHandoff { .. }
-    )
+    !matches!(tool, SupervisorTool::RequestHandoff { .. })
 }
 
 pub fn validate_runtime_proposal(
@@ -678,10 +697,13 @@ pub fn validate_runtime_proposal(
             }
             SupervisorTool::RequestReview { task_key, .. }
             | SupervisorTool::RequestVerification { task_key, .. }
+            | SupervisorTool::QueryContext { task_key }
             | SupervisorTool::PauseRun { task_key }
             | SupervisorTool::RequestCancel {
                 task_key: Some(task_key),
             } => Some(task_key),
+            SupervisorTool::SendMessage { to, .. } => Some(to),
+            SupervisorTool::ShareContext { to_task, .. } => Some(to_task),
             _ => None,
         };
         if let Some(task) = target {

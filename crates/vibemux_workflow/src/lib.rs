@@ -17,6 +17,7 @@ pub mod checkpoint;
 pub mod compiler_validation;
 pub mod context_bundle;
 pub mod contract;
+pub mod contract_edit;
 pub mod execution_authority;
 pub mod gates;
 pub mod gateway;

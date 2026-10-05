@@ -352,6 +352,20 @@ pub(crate) async fn settle_supervisor_messages(
     context: &RunContext,
     admitted: &[AdmittedMessage],
 ) -> Result<(), WorkflowError> {
+    // A model supervisor must actually retrieve a worker reply before its
+    // private body can be discarded. Pending replies remain queryable to TTL.
+    let writer = context.writer.clone();
+    let workflow_id = context.workflow_id;
+    if call_writer(move || writer.supervisor_status(workflow_id))
+        .await?
+        .is_some_and(|status| {
+            status.execution.mode == vibemux_workflow::supervisor::SupervisorMode::Model
+                && status.execution.state
+                    == vibemux_workflow::supervisor::SupervisorExecutionState::Running
+        })
+    {
+        return Ok(());
+    }
     for message in admitted
         .iter()
         .filter(|message| message.record.envelope.recipient == Participant::Supervisor)
@@ -450,7 +464,7 @@ pub(crate) async fn bundle_for_answer(
 
 /// Keeps the bundle text in the outbox (and the opt-in content store),
 /// then records the content-free bundle receipt.
-async fn stage_bundle(
+pub(crate) async fn stage_bundle(
     context: &RunContext,
     record: &WorkflowRecord,
     bundle: &ContextBundle,
@@ -596,8 +610,18 @@ pub(crate) async fn pending_deliveries(
                 .and_then(|id| Uuid::parse_str(id.trim()).ok())
                 .and_then(|id| bundles.get(&id))
             {
-                if let Some(text) = read_stored_bundle(context, bundle)? {
+                let text = if envelope.sender == Participant::Supervisor {
+                    if !bundle.audience.contains(&participant) {
+                        continue;
+                    }
+                    super::supervisor_context::retained_bundle_text(context, bundle).await?
+                } else {
+                    read_stored_bundle(context, bundle)?
+                };
+                if let Some(text) = text {
                     block = Some(context_block(bundle, text));
+                } else if envelope.sender == Participant::Supervisor {
+                    continue;
                 }
             }
         }

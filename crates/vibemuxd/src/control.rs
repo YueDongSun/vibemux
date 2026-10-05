@@ -67,7 +67,9 @@ pub use workflow_ops::{
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V8;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V9;
+/// V9 adds explicit operator contract-edit successor admission.
+pub const CONTROL_PROTOCOL_V9: u32 = 9;
 /// V8 adds explicit model-supervisor start and bounded supervisor status.
 pub const CONTROL_PROTOCOL_V8: u32 = 8;
 /// V7 adds DSH session operations (ADR 032); workflow operations retain V6.
@@ -124,6 +126,7 @@ pub enum ControlOperation {
     WorkflowStart,
     WorkflowSupervisorStart,
     WorkflowSupervisorStatus,
+    WorkflowContractEdit,
     WorkflowStatus,
     WorkflowPause,
     WorkflowCancel,
@@ -171,6 +174,7 @@ impl ControlOperation {
             | Self::DshSessionCancel
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V8,
+            Self::WorkflowContractEdit => CONTROL_PROTOCOL_V9,
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -1740,6 +1744,7 @@ where
         | ControlOperation::WorkflowStart
         | ControlOperation::WorkflowSupervisorStart
         | ControlOperation::WorkflowSupervisorStatus
+        | ControlOperation::WorkflowContractEdit
         | ControlOperation::WorkflowStatus
         | ControlOperation::WorkflowPause
         | ControlOperation::WorkflowCancel
@@ -2315,6 +2320,7 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V6
             | CONTROL_PROTOCOL_V7
             | CONTROL_PROTOCOL_V8
+            | CONTROL_PROTOCOL_V9
     )
 }
 
@@ -2824,7 +2830,12 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
         assert!(supported_control_version(CONTROL_PROTOCOL_V8));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V8);
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V9);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V9));
+        assert_eq!(
+            ControlOperation::WorkflowContractEdit.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V9
+        );
         assert_eq!(
             ControlOperation::WorkflowSupervisorStart.minimum_protocol_version(),
             CONTROL_PROTOCOL_V8

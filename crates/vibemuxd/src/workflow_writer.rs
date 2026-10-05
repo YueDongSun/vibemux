@@ -29,6 +29,49 @@ use vibemux_workflow::{
 use crate::{WriterError, WriterHandle};
 
 impl WriterHandle {
+    pub fn record_supervisor_context_read(
+        &self,
+        action_id: Uuid,
+        generation: u64,
+        full_plan: serde_json::Value,
+        result_refs: Vec<Uuid>,
+        timestamp: OffsetDateTime,
+    ) -> Result<(), WriterError> {
+        self.with_store(move |store| {
+            store.record_supervisor_context_read(
+                action_id,
+                generation,
+                &full_plan,
+                &result_refs,
+                timestamp,
+            )
+        })
+    }
+    pub fn admit_supervisor_message(
+        &self,
+        action_id: Uuid,
+        generation: u64,
+        full_plan: serde_json::Value,
+        envelope: MessageEnvelope,
+        timestamp: OffsetDateTime,
+    ) -> Result<MessageCommit, WriterError> {
+        self.with_store(move |store| {
+            store.admit_supervisor_message(action_id, generation, &full_plan, &envelope, timestamp)
+        })
+    }
+    pub fn prepare_contract_edit(
+        &self,
+        admission: vibemux_store::ContractEditAdmission,
+    ) -> Result<vibemux_store::ContractEditCommit, WriterError> {
+        self.with_store(move |store| store.prepare_contract_edit(&admission))
+    }
+
+    pub fn workflow_contract_edit(
+        &self,
+        edit_id: Uuid,
+    ) -> Result<Option<vibemux_store::ContractEditRecord>, WriterError> {
+        self.with_store(move |store| store.workflow_contract_edit(edit_id))
+    }
     pub fn begin_supervisor_execution(
         &self,
         start: vibemux_store::SupervisorStart,

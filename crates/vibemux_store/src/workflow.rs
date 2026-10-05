@@ -10,7 +10,10 @@
 //! event in the same immediate transaction. Payloads are content-free:
 //! identifiers, digests, counts, and fixed codes only.
 
+mod contract_edit;
 mod model_calls;
+pub(crate) use contract_edit::MIGRATION_V8;
+pub use contract_edit::{ContractEditAdmission, ContractEditCommit, ContractEditRecord};
 mod recovery_store;
 mod supervisor_commands;
 mod workflow_rows;

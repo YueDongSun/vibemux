@@ -78,6 +78,9 @@ pub enum WorkflowCommand {
         candidate: String,
         suite: String,
     },
+    PromptEdit {
+        request_file: PathBuf,
+    },
     PromptVersions,
     PromptRollback,
 }
@@ -126,6 +129,10 @@ pub(crate) fn parse_workflow_arguments(
                 2
             }
             ("workflow", "prepare", "--request-file") if flags.request_file.is_none() => {
+                flags.request_file = Some(path()?);
+                2
+            }
+            ("prompt", "edit", "--request-file") if flags.request_file.is_none() => {
                 flags.request_file = Some(path()?);
                 2
             }
@@ -243,6 +250,12 @@ pub(crate) fn parse_workflow_arguments(
             WorkflowCommand::PromptEvaluate {
                 candidate: flags.candidate.ok_or(DaemonCliError::InvalidArguments)?,
                 suite: flags.suite.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("prompt", "edit") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PromptEdit {
+                request_file: flags.request_file.ok_or(DaemonCliError::InvalidArguments)?,
             }
         }
         ("prompt", "versions") => {
@@ -368,6 +381,10 @@ pub async fn run_workflow(
         }
         WorkflowCommand::PromptVersions => {
             json!({"ok": true, "versions": client.workflow_policy_versions().await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::PromptEdit { request_file } => {
+            let edit = read_document(request_file, MAX_WORKFLOW_REQUEST_BYTES).await?;
+            json!({"ok": true, "edit": client.workflow_contract_edit(edit).await.map_err(map_workflow_error)?})
         }
         WorkflowCommand::PromptRollback => {
             json!({"ok": true, "active": client.workflow_policy_rollback().await.map_err(map_workflow_error)?})
@@ -560,6 +577,14 @@ mod tests {
     fn every_command_parses_its_documented_form() {
         let id = Uuid::new_v4();
         let text = id.to_string();
+        assert_eq!(
+            parse("prompt", &["edit", "--request-file", "edit.json"]),
+            Ok(WorkflowCommand::PromptEdit {
+                request_file: PathBuf::from("edit.json")
+            })
+        );
+        assert!(parse("prompt", &["edit", "--request-file", "edit.json", "extra"]).is_err());
+        assert!(parse("prompt", &["edit", "--policy-file", "policy.json"]).is_err());
         assert_eq!(
             parse(
                 "workflow",

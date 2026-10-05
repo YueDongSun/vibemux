@@ -21,7 +21,7 @@
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
 | Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7 minimum, CLI and terminal UI; no live vendor or persistence evidence), plus runtime authority/gateway/controller foundations (ADR 033) and an explicit model supervisor driver (ADR 034: schema 7, Control v8, offline fixtures; live and native acceptance incomplete) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), and DSH sessions (control protocol v7 minimum), plus explicit model-supervisor start/status (control protocol v8) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), and DSH sessions (control protocol v7 minimum), plus explicit model-supervisor start/status (control protocol v8 minimum) and operator semantic contract edits (control protocol v9) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -3006,3 +3006,42 @@ checkout and pre-existing `ui_check/` are preserved.
 - The older unregistered optimizer directory has unknown ownership/handle state
   and remains excluded from cleanup. Main remains `a639ed5`, with `ui_check/`
   preserved. No push, live inference or deployment was performed.
+
+### 2026-10-06 - Scoped supervisor context and operator edits (ADRs 035/036)
+
+**Status:** PARTIAL / OFFLINE INCREMENT. Full Version 2 acceptance remains BLOCKED.
+Base is `c8ad7e09c582370943754b87dcc342be4c690d09` on `codex/remaining_runtime`.
+
+**Implemented and focused evidence**
+- Real admitted-artifact/context retrieval, question admission and bilateral scoped
+  context sharing feed bounded untrusted tool results into the next model request.
+  Private bodies stay outside ordinary status/audit records. Read completion requires
+  exact post-claim proof and fresh source session/contract/audience/state/expiry.
+- Free-form sends refuse after any applied private read/query in workflow history;
+  this closes a cross-task disclosure path and leaves scoped shares available.
+- Immutable semantic contract successors preserve source, requirements, checks,
+  policy/profile identity, spent counters and remaining budgets. Quiescent parent
+  retirement and successor provenance commit atomically; stale/active/uncertain
+  parents refuse. Replay binds the complete immutable admitted payload.
+- Store schema 8 adds edit provenance and guards extended strict supervisor JSON.
+  Control v9 adds operator contract edit; previous operation minimums stay unchanged.
+- Focused edit tests: 4 real store cases and 2 Control cases passed. Repaired context
+  suites: 23 real store tests and 7 guarded model-driver cases passed, including zero
+  admitted messages after an attempted source-only disclosure.
+- Final affected regression suites passed: 274 store/domain, 139 daemon/CLI unit
+  and 13 service tests. Workspace formatting and all-target/all-feature Clippy
+  passed. [Source-bound evidence](docs/evidence/context_edit_increment.md) retains
+  exact commands and limitations without inventing scenario PASS.
+
+**Browser qualification and remaining scope**
+- A bounded, content-free probe compared Edge through NativeProcess and a direct
+  launcher, both inside owned Jobs, plus Chrome through NativeProcess. Every tested
+  Job reported zero remaining members. Edge 154.0.4258.53 timed out at Runtime.enable
+  with Windows access-denial markers through both launchers; Chrome exited before
+  DevTools. These observations do not qualify browser support or establish a fix.
+- The direct launcher uses the same verified non-verbatim Node entry path; its first
+  empty observation was corrected and rerun. No sandbox, Job breakaway or host ACL
+  change was introduced. The existing browser-dependent acceptance gate remains.
+- Standalone review mode, production native backend/Control/UI, affirmative approval,
+  complete recovery joins and live gateway/harness qualification remain unfinished.
+  No live inference, deployment or global context/provider change was performed.
