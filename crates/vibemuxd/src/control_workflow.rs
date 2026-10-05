@@ -125,6 +125,30 @@ impl ControlClient {
             .await
     }
 
+    pub async fn workflow_supervisor_start(
+        &self,
+        contract: &str,
+        request_id: Uuid,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowSupervisorStart,
+            Some(&WorkflowStartArgument {
+                contract: contract.to_string(),
+                request_id,
+            }),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_supervisor_status(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<Value, ControlError> {
+        self.workflow_lookup(ControlOperation::WorkflowSupervisorStatus, workflow_id)
+            .await
+    }
+
     pub async fn workflow_pause(&self, workflow_id: Uuid) -> Result<Value, ControlError> {
         self.workflow_lookup(ControlOperation::WorkflowPause, workflow_id)
             .await
@@ -324,6 +348,20 @@ pub(super) async fn dispatch(
         ControlOperation::WorkflowStatus => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;
             encode(service.status(lookup.workflow_id).await)?
+        }
+        ControlOperation::WorkflowSupervisorStart => {
+            let start: WorkflowStartArgument = parse_lookup(argument)?;
+            let contract =
+                Sha256Digest::from_hex(&start.contract).ok_or(ControlError::InvalidRequest)?;
+            encode(
+                service
+                    .start_model_supervisor(contract, start.request_id)
+                    .await,
+            )?
+        }
+        ControlOperation::WorkflowSupervisorStatus => {
+            let lookup: WorkflowLookup = parse_lookup(argument)?;
+            encode(service.supervisor_status(lookup.workflow_id).await)?
         }
         ControlOperation::WorkflowPause => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;

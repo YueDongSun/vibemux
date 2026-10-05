@@ -84,6 +84,8 @@ pub struct ReviewReceipt {
     pub reviewer_run_id: Uuid,
     pub reviewer_session_id: Uuid,
     pub reviewer_route: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_route: Option<crate::execution_authority::EffectiveRouteIdentity>,
     pub reviewer_harness: AgentKind,
     pub verdict: ReviewVerdict,
     pub findings_count: u32,
@@ -120,6 +122,14 @@ pub struct SuiteResult {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct DerivedVerifierSubject {
+    pub source_candidate_digest: Sha256Digest,
+    pub mutation_id: String,
+    pub manifest: crate::snapshot::SnapshotManifest,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifierReceipt {
     pub schema_version: u32,
     pub receipt_id: Uuid,
@@ -129,6 +139,8 @@ pub struct VerifierReceipt {
     pub contract_ids: Vec<Sha256Digest>,
     /// Digest of the snapshot or integration tree actually tested.
     pub subject_digest: Sha256Digest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_subject: Option<DerivedVerifierSubject>,
     pub suites: Vec<SuiteResult>,
     pub verifier_files_digest: Sha256Digest,
     pub tool_versions: BTreeMap<String, String>,
@@ -496,6 +508,7 @@ pub(crate) mod fixtures {
             reviewer_run_id: Uuid::from_u128(3),
             reviewer_session_id: Uuid::from_u128(4),
             reviewer_route: "reviewer".into(),
+            effective_route: None,
             reviewer_harness: AgentKind::Codex,
             verdict: ReviewVerdict::Pass,
             findings_count: 0,
@@ -516,6 +529,7 @@ pub(crate) mod fixtures {
             task_key: None,
             contract_ids: contracts,
             subject_digest: subject,
+            derived_subject: None,
             suites,
             verifier_files_digest: Sha256Digest::of(b"verifier"),
             tool_versions: BTreeMap::new(),

@@ -9,14 +9,14 @@ pub mod workflow_commands;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::Child,
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 #[cfg(windows)]
-use std::io::{BufRead, BufReader, Write};
-#[cfg(windows)]
-use std::{sync::mpsc, thread, time::Instant as StdInstant};
+mod windows_bootstrap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,8 +28,7 @@ use vibemuxd::{
 };
 
 /// Time a start allows beyond the daemon's writer startup bound for process
-/// launch, the Windows launcher helper, control runtime ACL verification, and
-/// descriptor publication.
+/// launch, control runtime ACL verification, and descriptor publication.
 const DAEMON_START_MARGIN: Duration = Duration::from_secs(10);
 /// `daemon start` health wait (30 s). It is derived from the daemon's writer
 /// startup bound, so the CLI never terminates a daemon that is still inside
@@ -44,58 +43,6 @@ const _: () = assert!(
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub const DEFAULT_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-#[cfg(windows)]
-const WINDOWS_POWERSHELL_RELATIVE_PATH: &str = "System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-#[cfg(windows)]
-const DAEMON_EXECUTABLE_ENV: &str = "VIBEMUX_DAEMON_EXECUTABLE";
-#[cfg(windows)]
-const DAEMON_PROJECT_ROOT_ENV: &str = "VIBEMUX_DAEMON_PROJECT_ROOT";
-#[cfg(windows)]
-const WINDOWS_HELPER_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(windows)]
-const WINDOWS_LAUNCHER_SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-$daemon_executable = [Environment]::GetEnvironmentVariable('VIBEMUX_DAEMON_EXECUTABLE')
-$project_root = [Environment]::GetEnvironmentVariable('VIBEMUX_DAEMON_PROJECT_ROOT')
-if ([string]::IsNullOrWhiteSpace($daemon_executable) -or [string]::IsNullOrWhiteSpace($project_root)) { exit 4 }
-[Environment]::SetEnvironmentVariable('VIBEMUX_DAEMON_EXECUTABLE', $null, 'Process')
-$start_info = New-Object System.Diagnostics.ProcessStartInfo
-$start_info.FileName = $daemon_executable
-$start_info.WorkingDirectory = $project_root
-$start_info.UseShellExecute = $true
-$start_info.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
-try {
-    $process = [System.Diagnostics.Process]::Start($start_info)
-    if ($null -eq $process) { exit 4 }
-    [Console]::Out.WriteLine($process.Id)
-    [Console]::Out.Flush()
-    # Read stdin through a plain StreamReader, NOT [Console]::In: on Windows
-    # PowerShell (.NET Framework) Console.In is a SyncTextReader whose
-    # ReadLineAsync() blocks the calling thread until a line arrives, which
-    # made the daemon-exit watchdog below dead code - a daemon that died
-    # before becoming healthy was never observed, and 'vibemuxctl daemon
-    # start' always waited out the full startup deadline (issue #7).
-    $stdin_reader = New-Object IO.StreamReader([Console]::OpenStandardInput())
-    $control_task = $stdin_reader.ReadLineAsync()
-    while (-not $control_task.Wait(25)) {
-        if ($process.HasExited) { exit 5 }
-    }
-    $action = $control_task.Result
-    if ($action -eq 'release') { exit 0 }
-    if (-not $process.HasExited) {
-        $process.Kill()
-        $process.WaitForExit()
-    }
-    exit 0
-} catch {
-    exit 4
-}
-"#;
 
 #[derive(Clone, Debug)]
 pub struct DaemonBootstrapConfig {
@@ -160,16 +107,13 @@ struct SpawnedDaemon {
 
 #[cfg(windows)]
 struct SpawnedDaemon {
-    process_id: u32,
-    helper: Child,
-    control: Option<std::process::ChildStdin>,
-    helper_timeout: Duration,
+    child: Option<Child>,
 }
 
 #[cfg(unix)]
 impl SpawnedDaemon {
-    fn process_id(&self) -> u32 {
-        self.child.id()
+    fn process_id(&self) -> Option<u32> {
+        Some(self.child.id())
     }
 
     fn has_exited(&mut self) -> Result<bool, DaemonCliError> {
@@ -196,41 +140,40 @@ impl SpawnedDaemon {
 
 #[cfg(windows)]
 impl SpawnedDaemon {
-    fn process_id(&self) -> u32 {
-        self.process_id
+    fn process_id(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
     }
 
     fn has_exited(&mut self) -> Result<bool, DaemonCliError> {
-        self.helper
+        self.child
+            .as_mut()
+            .ok_or(DaemonCliError::StartFailed)?
             .try_wait()
             .map(|status| status.is_some())
             .map_err(|_| DaemonCliError::StartFailed)
     }
 
+    /// Drops the process handle only after authenticated health confirms the
+    /// daemon is ready.
     fn release(mut self) -> Result<(), DaemonCliError> {
-        self.send_control("release")?;
-        let status = wait_for_child_exit(&mut self.helper, self.helper_timeout)?
-            .ok_or(DaemonCliError::StartFailed)?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(DaemonCliError::StartFailed)
-        }
+        let child = self.child.take().ok_or(DaemonCliError::StartFailed)?;
+        drop(child);
+        Ok(())
     }
 
     fn terminate(&mut self) {
-        let _ = self.send_control("terminate");
-        if wait_for_child_exit(&mut self.helper, self.helper_timeout)
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            terminate_child(&mut self.helper);
+        if let Some(mut child) = self.child.take() {
+            terminate_child(&mut child);
         }
     }
+}
 
-    fn send_control(&mut self, action: &str) -> Result<(), DaemonCliError> {
-        send_windows_control(&mut self.control, action)
+#[cfg(windows)]
+impl Drop for SpawnedDaemon {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            terminate_child(child);
+        }
     }
 }
 
@@ -712,7 +655,7 @@ async fn wait_for_health(
                 Ok(health) => {
                     let spawned_process = spawned
                         .as_ref()
-                        .map(SpawnedDaemon::process_id)
+                        .and_then(SpawnedDaemon::process_id)
                         .is_some_and(|process_id| process_id == health.process_id);
                     let outcome = if spawned_process {
                         DaemonStartOutcome::Started(health)
@@ -793,125 +736,10 @@ fn spawn_daemon_process(config: &DaemonBootstrapConfig) -> Result<SpawnedDaemon,
 
 #[cfg(windows)]
 fn spawn_daemon_process(config: &DaemonBootstrapConfig) -> Result<SpawnedDaemon, DaemonCliError> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use std::os::windows::process::CommandExt;
-
-    let powershell = windows_powershell()?;
-    let encoded_script = {
-        let mut utf16 = Vec::with_capacity(WINDOWS_LAUNCHER_SCRIPT.len() * 2);
-        for unit in WINDOWS_LAUNCHER_SCRIPT.encode_utf16() {
-            utf16.extend_from_slice(&unit.to_le_bytes());
-        }
-        STANDARD.encode(utf16)
-    };
-    let mut command = Command::new(powershell);
-    command
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-        ])
-        .arg(encoded_script)
-        .env(DAEMON_EXECUTABLE_ENV, &config.daemon_executable)
-        .env(DAEMON_PROJECT_ROOT_ENV, config.paths.project_root())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-    let mut helper = command.spawn().map_err(|_| DaemonCliError::SpawnFailed)?;
-    let control = helper.stdin.take().ok_or(DaemonCliError::SpawnFailed)?;
-    let stdout = helper.stdout.take().ok_or(DaemonCliError::SpawnFailed)?;
-    let (line_sender, line_receiver) = mpsc::sync_channel(1);
-    let reader = thread::spawn(move || {
-        let mut process_id_line = String::new();
-        let result = BufReader::new(stdout)
-            .read_line(&mut process_id_line)
-            .map(|_| process_id_line);
-        let _ = line_sender.send(result);
-    });
-    let helper_timeout = config.startup_timeout.max(WINDOWS_HELPER_TIMEOUT);
-    let process_id_line = match line_receiver.recv_timeout(helper_timeout) {
-        Ok(Ok(line)) => line,
-        Ok(Err(_)) | Err(_) => {
-            let mut control = Some(control);
-            let _ = send_windows_control(&mut control, "terminate");
-            if wait_for_child_exit(&mut helper, helper_timeout)
-                .ok()
-                .flatten()
-                .is_none()
-            {
-                terminate_child(&mut helper);
-            }
-            return Err(DaemonCliError::SpawnFailed);
-        }
-    };
-    let _ = reader.join();
-    let process_id = match process_id_line.trim().parse::<u32>() {
-        Ok(process_id) if process_id != 0 => process_id,
-        _ => {
-            let mut control = Some(control);
-            let _ = send_windows_control(&mut control, "terminate");
-            if wait_for_child_exit(&mut helper, helper_timeout)
-                .ok()
-                .flatten()
-                .is_none()
-            {
-                terminate_child(&mut helper);
-            }
-            return Err(DaemonCliError::SpawnFailed);
-        }
-    };
-    Ok(SpawnedDaemon {
-        process_id,
-        helper,
-        control: Some(control),
-        helper_timeout,
-    })
+    windows_bootstrap::spawn_daemon(&config.daemon_executable, config.paths.project_root())
+        .map(|child| SpawnedDaemon { child: Some(child) })
+        .map_err(|_| DaemonCliError::SpawnFailed)
 }
-
-#[cfg(windows)]
-fn windows_powershell() -> Result<PathBuf, DaemonCliError> {
-    let system_root = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .ok_or(DaemonCliError::SpawnFailed)?;
-    let powershell = system_root.join(WINDOWS_POWERSHELL_RELATIVE_PATH);
-    if powershell.is_file() {
-        Ok(powershell)
-    } else {
-        Err(DaemonCliError::SpawnFailed)
-    }
-}
-
-#[cfg(windows)]
-fn send_windows_control(
-    control: &mut Option<std::process::ChildStdin>,
-    action: &str,
-) -> Result<(), DaemonCliError> {
-    let mut control = control.take().ok_or(DaemonCliError::StartFailed)?;
-    writeln!(control, "{action}").map_err(|_| DaemonCliError::StartFailed)?;
-    control.flush().map_err(|_| DaemonCliError::StartFailed)
-}
-
-#[cfg(windows)]
-fn wait_for_child_exit(
-    child: &mut Child,
-    deadline: Duration,
-) -> Result<Option<std::process::ExitStatus>, DaemonCliError> {
-    let expires = StdInstant::now() + deadline;
-    loop {
-        if let Some(status) = child.try_wait().map_err(|_| DaemonCliError::StartFailed)? {
-            return Ok(Some(status));
-        }
-        if StdInstant::now() >= expires {
-            return Ok(None);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn terminate_child(child: &mut Child) {
     if child.try_wait().ok().flatten().is_none() {
         let _ = child.kill();

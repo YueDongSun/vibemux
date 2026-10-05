@@ -9,7 +9,7 @@
 //! repair prompts; it is never executed as prose. Decisions are bounded by
 //! persisted loop limits that a daemon restart does not reset.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -394,6 +394,379 @@ pub struct DecisionRecord {
     pub evidence_refs: Vec<String>,
     pub accepted: bool,
     pub rejection_codes: Vec<String>,
+}
+
+/// Driver selection is operator-owned. Merely configuring a model route never
+/// switches a deterministic workflow into model-driven execution.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorMode {
+    Deterministic,
+    Model,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorExecutionState {
+    Running,
+    Stopped,
+    RecoveryRequired,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorTaskGate {
+    Active,
+    Paused,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorTaskBinding {
+    pub contract_id: Sha256Digest,
+    pub contract_version: u32,
+    pub allowed_slots: Vec<SpecIdentifier>,
+    pub dependencies: Vec<SpecIdentifier>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorExecution {
+    pub workflow_id: Uuid,
+    pub generation: u64,
+    pub start_request_id: Uuid,
+    pub mode: SupervisorMode,
+    pub state: SupervisorExecutionState,
+    pub plan_digest: Sha256Digest,
+    pub config_digest: Sha256Digest,
+    pub tasks: BTreeMap<SpecIdentifier, SupervisorTaskBinding>,
+    pub slot_harnesses: BTreeMap<SpecIdentifier, vibemux_harness::AgentKind>,
+    pub reviewer_slot: SpecIdentifier,
+    pub task_order: Vec<SpecIdentifier>,
+    pub task_gates: BTreeMap<SpecIdentifier, SupervisorTaskGate>,
+    pub next_round: u64,
+    pub max_model_calls: u32,
+    pub deadline_unix_ms: u64,
+    pub active_round: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorCandidate {
+    pub candidate: crate::gates::CandidateRecord,
+    pub request_id: Uuid,
+    pub reviewed: bool,
+    pub verified: bool,
+    pub gate_passed: bool,
+    pub tests_passed: u32,
+    pub changed_bytes: u64,
+}
+
+/// Complete bounded facts used by the writer; no raw source, prompts, or secrets.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorObservation {
+    pub execution: SupervisorExecution,
+    pub workflow: crate::workflow_record::WorkflowRecord,
+    pub event_cursor: u64,
+    pub eligible_slots: BTreeMap<SpecIdentifier, Vec<SpecIdentifier>>,
+    pub candidates: Vec<SupervisorCandidate>,
+    pub selection: Option<SelectionOutcome>,
+    pub last_round: Option<SupervisorRound>,
+    pub last_actions: Vec<SupervisorAction>,
+}
+
+impl SupervisorObservation {
+    pub fn digest(&self) -> Result<Sha256Digest, crate::canonical_json::CanonicalError> {
+        crate::canonical_json::canonical_digest("vibemux.workflow.supervisor_observation.v1", self)
+    }
+
+    /// Fenced target facts checked after this round's own call accounting.
+    /// Reservation validates the full observation first; only the explicitly
+    /// owned round counter, active-round pointer and accounting timestamp are
+    /// omitted here. Existing action results remain fenced throughout the call.
+    pub fn target_digest(&self) -> Result<Sha256Digest, crate::canonical_json::CanonicalError> {
+        let mut execution = self.execution.clone();
+        execution.active_round = None;
+        execution.next_round = 0;
+        let mut workflow = self.workflow.clone();
+        workflow.updated_at_ms = 0;
+        crate::canonical_json::canonical_digest(
+            "vibemux.workflow.supervisor_targets.v1",
+            &serde_json::json!({
+                "execution":execution,"workflow":workflow,"eligible_slots":self.eligible_slots,
+                "candidates":self.candidates,"selection":self.selection,"last_actions":self.last_actions,
+            }),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorRoundState {
+    Reserved,
+    Accepted,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorRound {
+    pub round_id: Uuid,
+    pub workflow_id: Uuid,
+    pub generation: u64,
+    pub call_id: Uuid,
+    pub observed_version: u64,
+    pub reservation_version: u64,
+    pub observation_digest: Sha256Digest,
+    pub target_digest: Sha256Digest,
+    pub context_digest: Sha256Digest,
+    pub state: SupervisorRoundState,
+    pub proposal_digest: Option<Sha256Digest>,
+    pub rationale_digest: Option<Sha256Digest>,
+    pub rejection_codes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorActionState {
+    Pending,
+    Claimed,
+    Applied,
+    Blocked,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorAction {
+    pub action_id: Uuid,
+    pub workflow_id: Uuid,
+    pub generation: u64,
+    pub round_id: Uuid,
+    pub idempotency_key: String,
+    pub fingerprint: Sha256Digest,
+    /// Only supported content-free actions are persisted. Unsupported message
+    /// bodies remain transient and contribute only to the rejected digest.
+    pub action: SupervisorTool,
+    pub state: SupervisorActionState,
+    pub dispatch_request_id: Option<Uuid>,
+    pub result_refs: Vec<Uuid>,
+    pub result_code: Option<SpecIdentifier>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupervisorStatus {
+    pub schema_version: u32,
+    pub execution: SupervisorExecution,
+    pub rounds: Vec<SupervisorRound>,
+    pub actions: Vec<SupervisorAction>,
+}
+
+/// The first model driver supports bounded orchestration effects. It does not
+/// pretend unavailable content-sharing or native capabilities were executed.
+#[must_use]
+pub const fn runtime_tool_supported(tool: &SupervisorTool) -> bool {
+    !matches!(
+        tool,
+        SupervisorTool::ReadArtifact { .. }
+            | SupervisorTool::QueryContext { .. }
+            | SupervisorTool::SendMessage { .. }
+            | SupervisorTool::ShareContext { .. }
+            | SupervisorTool::RequestHandoff { .. }
+    )
+}
+
+pub fn validate_runtime_proposal(
+    proposal: &SupervisorProposal,
+    observation: &SupervisorObservation,
+) -> Result<(), Vec<String>> {
+    let tasks: Vec<_> = observation.execution.tasks.keys().cloned().collect();
+    let eligible: Vec<_> = observation
+        .eligible_slots
+        .values()
+        .flatten()
+        .cloned()
+        .collect();
+    let collected: Vec<_> = observation
+        .candidates
+        .iter()
+        .map(|value| {
+            (
+                value.candidate.task_key.clone(),
+                value.candidate.candidate_digest,
+            )
+        })
+        .collect();
+    let accepted: Vec<_> = observation
+        .candidates
+        .iter()
+        .filter(|value| value.gate_passed)
+        .map(|value| {
+            (
+                value.candidate.task_key.clone(),
+                value.candidate.candidate_digest,
+            )
+        })
+        .collect();
+    let mut codes: BTreeSet<String> = validate_proposal(
+        proposal,
+        &SupervisorFacts {
+            workflow_version: observation.workflow.version,
+            admits_work: observation.workflow.phase.admits_work(),
+            tasks: &tasks,
+            eligible_slots: &eligible,
+            accepted_candidates: &accepted,
+            collected_candidates: &collected,
+            selection: observation.selection.as_ref(),
+        },
+    )
+    .err()
+    .unwrap_or_default()
+    .into_iter()
+    .map(|error| error.code().to_string())
+    .collect();
+    if proposal.decisions.is_empty()
+        || proposal.decisions.len() > MAX_DECISIONS_PER_PROPOSAL
+        || proposal.rationale.len() > MAX_RATIONALE_BYTES
+        || proposal.evidence_refs.len() > 16
+    {
+        codes.insert("supervisor_proposal_too_large".into());
+    }
+    let mut targeted = BTreeSet::new();
+    for decision in &proposal.decisions {
+        if !runtime_tool_supported(&decision.action) {
+            codes.insert("supervisor_tool_unavailable".into());
+        }
+        let target = match &decision.action {
+            SupervisorTool::AssignTask { task_key, slot_id } => {
+                if !observation
+                    .eligible_slots
+                    .get(task_key)
+                    .is_some_and(|slots| slots.contains(slot_id))
+                {
+                    codes.insert("supervisor_ineligible_slot".into());
+                }
+                if observation.workflow.task(task_key).is_none_or(|task| {
+                    matches!(
+                        task.progress,
+                        crate::workflow_record::TaskProgress::Accepted
+                            | crate::workflow_record::TaskProgress::Failed
+                    ) || task.turns_used >= task.max_turns
+                }) {
+                    codes.insert("supervisor_task_not_active".into());
+                }
+                if observation
+                    .execution
+                    .tasks
+                    .get(task_key)
+                    .is_some_and(|binding| {
+                        binding.dependencies.iter().any(|dependency| {
+                            observation
+                                .workflow
+                                .task(dependency)
+                                .is_none_or(|task| task.accepted_candidate.is_none())
+                        })
+                    })
+                {
+                    codes.insert("supervisor_dependencies_unready".into());
+                }
+                Some(task_key)
+            }
+            SupervisorTool::RequestReview { task_key, .. }
+            | SupervisorTool::RequestVerification { task_key, .. }
+            | SupervisorTool::PauseRun { task_key }
+            | SupervisorTool::RequestCancel {
+                task_key: Some(task_key),
+            } => Some(task_key),
+            _ => None,
+        };
+        if let Some(task) = target {
+            if !targeted.insert(task) {
+                codes.insert("supervisor_conflicting_actions".into());
+            }
+            if observation.execution.task_gates.get(task) != Some(&SupervisorTaskGate::Active)
+                && !matches!(decision.action, SupervisorTool::RequestCancel { .. })
+            {
+                codes.insert("supervisor_task_not_active".into());
+            }
+        }
+        match &decision.action {
+            SupervisorTool::ProposePlan { tasks: order } => {
+                let positions: BTreeMap<_, _> = order
+                    .iter()
+                    .enumerate()
+                    .map(|(index, task)| (task, index))
+                    .collect();
+                if order.len() != tasks.len()
+                    || positions.len() != tasks.len()
+                    || tasks.iter().any(|task| !positions.contains_key(task))
+                    || observation.execution.tasks.iter().any(|(task, binding)| {
+                        binding.dependencies.iter().any(|dependency| {
+                            positions
+                                .get(dependency)
+                                .zip(positions.get(task))
+                                .is_none_or(|(before, after)| before >= after)
+                        })
+                    })
+                {
+                    codes.insert("supervisor_plan_invalid".into());
+                }
+            }
+            SupervisorTool::ProposeIntegration { candidate_digests } => {
+                let unique: BTreeSet<_> = candidate_digests.iter().copied().collect();
+                let expected =
+                    if observation.workflow.mode == crate::task_spec::WorkflowMode::Compare {
+                        observation
+                            .selection
+                            .as_ref()
+                            .and_then(|value| value.winner)
+                            .into_iter()
+                            .collect::<BTreeSet<_>>()
+                    } else {
+                        observation
+                            .workflow
+                            .tasks
+                            .iter()
+                            .filter_map(|task| task.accepted_candidate)
+                            .collect::<BTreeSet<_>>()
+                    };
+                let all_tasks_ready = observation.workflow.tasks.iter().all(|task| {
+                    task.accepted_candidate.is_some()
+                        && observation.execution.task_gates.get(&task.task_key)
+                            == Some(&SupervisorTaskGate::Active)
+                });
+                if unique.len() != candidate_digests.len()
+                    || unique.is_empty()
+                    || unique != expected
+                    || !all_tasks_ready
+                {
+                    codes.insert("supervisor_integration_not_approved".into());
+                }
+            }
+            _ => {}
+        }
+        if proposal.decisions.len() > 1
+            && matches!(
+                decision.action,
+                SupervisorTool::ProposePlan { .. }
+                    | SupervisorTool::ProposeIntegration { .. }
+                    | SupervisorTool::ProposeCandidateSelection { .. }
+                    | SupervisorTool::RequestCancel { task_key: None }
+                    | SupervisorTool::ReportBlocked { .. }
+            )
+        {
+            codes.insert("supervisor_conflicting_actions".into());
+        }
+    }
+    if codes.is_empty() {
+        Ok(())
+    } else {
+        Err(codes.into_iter().collect())
+    }
 }
 
 #[cfg(test)]

@@ -18,7 +18,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .process_execution import run_owned_command
+from .process_execution import run_owned_command, windows_creation_flags
+from .windows_launch_context import (
+    WINDOWS_TOOL_INITIALIZATION_FAILED,
+    Windows_Launch_Error,
+    require_launch_context,
+)
 
 expected_mutant_suites: Mapping[str, str] = {
     "blank_title_accepted": "store",
@@ -119,6 +124,7 @@ def probe_version(
     argv: Sequence[str], env: Mapping[str, str], timeout_seconds: float
 ) -> str | None:
     """The first output line of a `--version` probe, or None if it fails."""
+    require_launch_context()
     try:
         completed = subprocess.run(
             list(argv),
@@ -127,9 +133,20 @@ def probe_version(
             capture_output=True,
             timeout=timeout_seconds,
             check=False,
+            creationflags=windows_creation_flags,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
+    if completed.returncode in (
+        WINDOWS_TOOL_INITIALIZATION_FAILED,
+        WINDOWS_TOOL_INITIALIZATION_FAILED & 0xFFFFFFFF,
+    ):
+        raw_status = completed.returncode
+        unsigned_status = raw_status & 0xFFFFFFFF
+        raise Windows_Launch_Error(
+            "windows_tool_initialization_failed",
+            f"tool exited with status {raw_status} (0x{unsigned_status:08x})",
+        )
     if completed.returncode != 0:
         return None
     text = (completed.stdout or completed.stderr).decode("utf-8", errors="replace").strip()

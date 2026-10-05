@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from dual_track_acceptance.assessment import (  # noqa: E402
+    LIVE_NOT_IMPLEMENTED,
     MODE_LIVE,
     MODE_OFFLINE,
     STATUS_BLOCKED,
@@ -52,6 +53,13 @@ from dual_track_acceptance.evidence_capture import (  # noqa: E402
     workflow_summaries,
 )
 from dual_track_acceptance.live_policy import evaluate_live_gate, policy_problems  # noqa: E402
+from dual_track_acceptance.report_builder import (  # noqa: E402
+    STANDING_LIMITATIONS,
+    CleanupInfo,
+    EnvironmentInfo,
+    SourceInfo,
+    build_report,
+)
 from dual_track_acceptance.report_projection import artifact_report_fields  # noqa: E402
 from dual_track_acceptance.report_validation import (  # noqa: E402
     CARGO_COMMAND,
@@ -143,6 +151,116 @@ def test_live_classes_can_only_be_live_rules() -> None:
     forged[("S01", "live_coding")] = EvidenceRule(RuleKind.TESTS)
     with pytest.raises(CatalogError):
         check_catalog(benchmark, forged)
+
+
+def test_gateway_and_native_adapter_fixture_rules_name_executed_tests() -> None:
+    required_refs = {
+        ("G01", "gateway_fixture"): {
+            "control_compiler_uses_only_permitted_fixture_gateway_and_revalidates_candidates",
+            "a_fixture_label_requires_an_owned_listener_for_the_exact_origin",
+            "concurrent_aliases_keep_correlation_and_unknown_attribution",
+            "anthropic_headers_and_live_attestation_boundary",
+            "configuration_pin_and_protocol_changes_block_before_model_send",
+        },
+        ("G03", "gateway_fixture"): {
+            "completed_sse_uses_the_stream_accumulator_without_inventing_usage",
+            "response_bounds_status_and_partial_streams_are_not_replayed",
+            "cancellation_and_deadline_never_replay_an_ambiguous_request",
+            "oversized_completed_output_is_rejected_and_never_resubmitted",
+            "completed_receipt_in_gateway_error_is_rejected_persisted_and_never_replayed",
+        },
+        ("T02", "adapter_fixture"): {
+            "concurrent_claims_deliver_exact_literal_bytes_once",
+            "two_owned_controllers_do_not_cross_deliver",
+            "mismatched_payload_inventory_and_human_owner_refuse_before_effect",
+            "unknown_or_mismatched_acknowledgement_is_durable_and_never_resent",
+            "interruption_ack_is_not_completion_and_handoff_waits_for_terminal_owner",
+            "codex_exec_completes_and_keeps_its_transcript_out_of_canonical_state",
+            "claude_stream_json_completes_after_denying_the_tool",
+            "claude_confirms_an_interrupt_without_a_kill",
+            "codex_app_server_confirms_an_interrupt_without_a_kill",
+            "a_restart_leaves_a_running_attempt_pending_until_acknowledged",
+        },
+        ("T03", "adapter_fixture"): {
+            "interruption_ack_is_not_completion_and_handoff_waits_for_terminal_owner",
+            "unsupported_same_session_resume_and_wrong_approval_scope_are_refused",
+            "two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration",
+        },
+    }
+    for pair, expected_names in required_refs.items():
+        rule = RULES[pair]
+        assert rule.kind is RuleKind.TESTS
+        assert rule.related == ()
+        assert expected_names <= {reference.name for reference in rule.tests}
+
+
+def test_live_unavailability_describes_the_current_attestation_and_native_boundary() -> None:
+    assert "no AAG gateway client" not in LIVE_NOT_IMPLEMENTED
+    assert "request-scoped upstream attestation" in LIVE_NOT_IMPLEMENTED
+    assert "vendor route certification" in LIVE_NOT_IMPLEMENTED
+    assert "native TUI" in LIVE_NOT_IMPLEMENTED
+
+    assert not any("no AAG gateway client" in item for item in STANDING_LIMITATIONS)
+    assert any("owned loopback HTTP server" in item for item in STANDING_LIMITATIONS)
+    assert any("production-owned native TUI" in item for item in STANDING_LIMITATIONS)
+    assert any(
+        "negative-control verifier receipts are persisted" in item for item in STANDING_LIMITATIONS
+    )
+    assert any(
+        "source-requirement or exact operator-policy provenance" in item
+        for item in STANDING_LIMITATIONS
+    )
+    assert any("active checkpoint joins remain blocked" in item for item in STANDING_LIMITATIONS)
+
+    live = assess_class("live_gateway", RULES[("G01", "live_gateway")], artifacts(MODE_LIVE))
+    assert live.status == STATUS_BLOCKED
+    assert "request-scoped upstream attestation" in live.reason
+    assert "no AAG gateway client" not in live.reason
+
+
+def test_offline_report_keeps_live_billing_zero_separate_from_fixture_traffic() -> None:
+    benchmark = load_benchmark(REPO_ROOT / BENCHMARK_PATH)
+    report = build_report(
+        mode=MODE_OFFLINE,
+        verdict=VERDICT_OFFLINE_PASS,
+        benchmark=benchmark,
+        repository_relative_benchmark=str(BENCHMARK_PATH),
+        runner_argv=["verify_dual_track.py", "--mode", "offline"],
+        source=SourceInfo(vibemux_commit=None, tree_dirty=None),
+        environment=EnvironmentInfo(os="windows", tool_versions={}, runtime_roots_isolated=True),
+        scenarios=[],
+        commands=[],
+        cargo=None,
+        calibration=None,
+        calibration_stdout=None,
+        evidence=EvidenceStore({}, {}, ()),
+        output_root=Path("unused_output"),
+        rules=RULES,
+        live_gate=None,
+        cleanup=CleanupInfo(
+            joined_owned_processes=True,
+            unjoined_processes=(),
+            suite_leftovers=(),
+            retained_entries=(),
+            private_tmp_removed=True,
+            private_tmp_retained_reason=None,
+            private_tmp_root="private_temp_fixture",
+        ),
+        extra_limitations=(),
+        started_at="2026-10-05T00:00:00Z",
+        finished_at="2026-10-05T00:00:01Z",
+    )
+    accounting = report["accounting"]
+    assert accounting["model_calls"] == 0
+    assert accounting["known_cost"] == 0
+    assert accounting["unknown_usage"] is False
+    assert accounting["fixture_http_requests"] is None
+    assert accounting["fixture_usage_is_synthetic"] is True
+    assert "live inference calls and paid usage: 0" in accounting["basis"]
+    assert "Owned local AAG fixture HTTP requests" in accounting["basis"]
+    assert (
+        "fixture HTTP request total is unknown because it is not aggregated" in accounting["basis"]
+    )
 
 
 def test_cargo_output_is_attributed_by_compiler_artifact() -> None:

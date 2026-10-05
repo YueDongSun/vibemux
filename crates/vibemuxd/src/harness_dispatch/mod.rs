@@ -15,6 +15,9 @@
 mod config_loader;
 mod executor;
 pub(crate) mod git_head;
+#[cfg(feature = "test_helpers")]
+pub mod native_process;
+#[cfg(not(feature = "test_helpers"))]
 pub(crate) mod native_process;
 mod output_page;
 mod transcript_store;
@@ -46,7 +49,7 @@ use vibemux_harness::{
         launch_spec::{SessionMode, build_launch_spec},
         request::DISPATCH_REQUEST_SCHEMA_VERSION,
         route_config::DispatchCatalogEntry,
-        writable_profile::{WritableGrant, build_writable_launch_spec},
+        writable_profile::{self, WritableGrant, build_writable_launch_spec},
     },
 };
 use vibemux_store::{
@@ -193,6 +196,9 @@ pub(crate) struct WorkflowTurn {
     pub harness: AgentKind,
     pub prompt: String,
     pub grant: WritableGrant,
+    pub task_spec_digest: Sha256Digest,
+    pub evidence_class: vibemux_workflow::slots::EvidenceClass,
+    pub route_label: String,
     /// Owned worktree or materialized candidate directory.
     pub working_directory: PathBuf,
     pub base_commit: String,
@@ -238,6 +244,8 @@ struct DispatchSetup {
     /// key use: on Windows without the verbatim prefix.
     working_directory: String,
     trampoline: Option<PathBuf>,
+    #[cfg(feature = "test_helpers")]
+    fixture_guard: Option<vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard>,
 }
 
 struct AttemptRegistry {
@@ -257,6 +265,22 @@ impl HarnessDispatchService {
         let setup = tokio::task::spawn_blocking(move || prepare(&settings))
             .await
             .unwrap_or(Err(DispatchError::Internal));
+        Self::with_setup(writer, setup)
+    }
+
+    #[cfg(feature = "test_helpers")]
+    pub(crate) async fn start_with_fixture_guard(
+        writer: WriterHandle,
+        settings: DispatchServiceSettings,
+        guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+    ) -> Self {
+        let setup = tokio::task::spawn_blocking(move || {
+            let mut setup = prepare(&settings)?;
+            setup.fixture_guard = Some(guard);
+            Ok(setup)
+        })
+        .await
+        .unwrap_or(Err(DispatchError::Internal));
         Self::with_setup(writer, setup)
     }
 
@@ -384,7 +408,7 @@ impl HarnessDispatchService {
                 child_path_text(setup.config.executable(route.harness)?)
                     .ok_or(DispatchError::ExecutableUnavailable)?,
             ),
-            spec: build_writable_launch_spec(route, turn.grant)?,
+            spec: setup.workflow_launch_spec(route, turn.grant, turn.evidence_class)?,
             working_directory: PathBuf::from(&working_directory),
         };
         let session = ProtocolSession::for_execution(
@@ -403,6 +427,46 @@ impl HarnessDispatchService {
             contract_id: binding.contract_id,
             purpose: binding.purpose,
             session_id: binding.session_id,
+            execution: vibemux_store::WorkflowExecutionBinding {
+                task_spec_digest: turn.task_spec_digest,
+                effective_tools: [
+                    (
+                        turn.grant.read_files,
+                        vibemux_workflow::task_spec::ToolName::ReadFiles,
+                    ),
+                    (
+                        turn.grant.search_files,
+                        vibemux_workflow::task_spec::ToolName::SearchFiles,
+                    ),
+                    (
+                        turn.grant.edit_files,
+                        vibemux_workflow::task_spec::ToolName::EditFiles,
+                    ),
+                    (
+                        turn.grant.write_files,
+                        vibemux_workflow::task_spec::ToolName::WriteFiles,
+                    ),
+                    (
+                        turn.grant.run_dev_tests,
+                        vibemux_workflow::task_spec::ToolName::RunDevTests,
+                    ),
+                ]
+                .into_iter()
+                .filter_map(|(allowed, tool)| allowed.then_some(tool))
+                .collect(),
+                harness_profile: setup.workflow_profile(route)?.to_string(),
+                route_config_digest: setup.config.digest(),
+                evidence_class: turn.evidence_class,
+                route_label: turn.route_label,
+                effective_route: vibemux_workflow::execution_authority::EffectiveRouteIdentity {
+                    harness: route.harness,
+                    protocol: route.protocol,
+                    model_alias: route.model.clone(),
+                    endpoint: None,
+                    config_digest: setup.config.digest(),
+                    profile: setup.workflow_profile(route)?.to_string(),
+                },
+            },
             dispatch: HarnessDispatchAdmission {
                 request_id: request.request_id,
                 harness: request.harness,
@@ -514,6 +578,27 @@ impl HarnessDispatchService {
             .find(|route| route.harness == harness)?;
         (route.enabled && route.allow_execution && route.protocol.supports_execution())
             .then_some(route.protocol)
+    }
+
+    pub(crate) fn execution_profile(
+        &self,
+        harness: AgentKind,
+        evidence_class: vibemux_workflow::slots::EvidenceClass,
+    ) -> Option<&'static str> {
+        let setup = self.inner.setup().ok()?;
+        if evidence_class == vibemux_workflow::slots::EvidenceClass::Fixture {
+            #[cfg(feature = "test_helpers")]
+            setup.fixture_guard.as_ref()?;
+            #[cfg(not(feature = "test_helpers"))]
+            return None;
+        }
+        let route = setup
+            .config
+            .config()
+            .routes
+            .iter()
+            .find(|route| route.harness == harness)?;
+        setup.workflow_profile(route).ok()
     }
 
     /// The launch trampoline, for other contained daemon processes.
@@ -748,6 +833,41 @@ impl ServiceInner {
 }
 
 impl DispatchSetup {
+    fn workflow_profile(&self, route: &DispatchRoute) -> Result<&'static str, DispatchError> {
+        #[cfg(feature = "test_helpers")]
+        if let Some(guard) = &self.fixture_guard {
+            // Revalidates the registered image before admitting a fixture slot.
+            vibemux_harness::dispatch::fixture_guard::build_writable_fixture_launch_spec(
+                route,
+                WritableGrant::NONE,
+                guard,
+            )?;
+            return vibemux_harness::dispatch::fixture_guard::fixture_profile_id(route.harness);
+        }
+        writable_profile::writable_profile_id(route.protocol)
+    }
+
+    fn workflow_launch_spec(
+        &self,
+        route: &DispatchRoute,
+        grant: WritableGrant,
+        evidence_class: vibemux_workflow::slots::EvidenceClass,
+    ) -> Result<vibemux_harness::dispatch::launch_spec::LaunchSpec, DispatchError> {
+        #[cfg(feature = "test_helpers")]
+        if let Some(guard) = &self.fixture_guard {
+            if evidence_class != vibemux_workflow::slots::EvidenceClass::Fixture {
+                return Err(DispatchError::ExecutionDisabled);
+            }
+            return vibemux_harness::dispatch::fixture_guard::build_writable_fixture_launch_spec(
+                route, grant, guard,
+            );
+        }
+        let _ = evidence_class;
+        if evidence_class == vibemux_workflow::slots::EvidenceClass::Fixture {
+            return Err(DispatchError::ExecutionDisabled);
+        }
+        build_writable_launch_spec(route, grant)
+    }
     fn launch_plan(
         &self,
         route: &DispatchRoute,
@@ -788,6 +908,8 @@ fn prepare(settings: &DispatchServiceSettings) -> Result<DispatchSetup, Dispatch
         config,
         working_directory,
         trampoline: trampoline.filter(|path| path.is_file()),
+        #[cfg(feature = "test_helpers")]
+        fixture_guard: None,
     })
 }
 

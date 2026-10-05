@@ -1,0 +1,695 @@
+{
+  "schema_version": 1,
+  "kind": "runtime_increment_execution_summary",
+  "recorded_at_utc": "2026-10-05T11:20:28.810349+00:00",
+  "source": {
+    "base_head": "a639ed5befdf232af4f4aa0f2d7d4dc55cf3c146",
+    "implemented_head": null,
+    "branch": "codex/remaining_runtime",
+    "tree_dirty": true,
+    "delivery": "uncommitted owned integration worktree"
+  },
+  "acceptance_verdict": "BLOCKED",
+  "is_inherited_benchmark_report": false,
+  "baseline": {
+    "code_observed": "DSH/dual-track merge on local main at the base HEAD; tracked source clean, ui_check preserved.",
+    "repository_reported": "Earlier scenario and test counts retain their original source revision and are not reused here.",
+    "independently_executed": "Commands below executed on this enhancement tree; affected targets rerun after repairs.",
+    "proposed": "Live supervisor, production native Control/UI/backend, approval delivery, standalone review, semantic prompt editing and complete active-job recovery remain future increments."
+  },
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "state": "final_source"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "state": "final_source"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "exit_code": 101,
+      "state": "before_final_test_repairs",
+      "passed": 890,
+      "failed": 8,
+      "ignored": 3,
+      "failed_tests": [
+        "identical_recovery_binding_replays_after_workflow_cancellation",
+        "failed_answer_delivery_does_not_block_later_repair",
+        "two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration",
+        "an_omitted_tool_denies_its_corresponding_worker_effect",
+        "an_empty_tool_policy_stays_empty_and_has_no_winner",
+        "request_tool_narrowing_reaches_every_fixture_launch",
+        "only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back",
+        "an_operator_share_reaches_the_other_track_and_survives_restarts"
+      ],
+      "resolved_by_focused_reruns": [
+        "identical_recovery_binding_replays_after_workflow_cancellation",
+        "an_omitted_tool_denies_its_corresponding_worker_effect",
+        "an_empty_tool_policy_stays_empty_and_has_no_winner",
+        "request_tool_narrowing_reaches_every_fixture_launch",
+        "only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back",
+        "an_operator_share_reaches_the_other_track_and_survives_restarts"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemux_store",
+        "-p",
+        "vibemux_workflow",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "state": "final_source",
+      "passed": 242,
+      "failed": 0,
+      "ignored": 0,
+      "failed_tests": []
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "--all-features",
+        "--test",
+        "model_runtime_output",
+        "--test",
+        "native_controller_runtime",
+        "--test",
+        "aag_gateway_transport",
+        "--test",
+        "workflow_gateway_compile",
+        "--test",
+        "workflow_launch_authority",
+        "--test",
+        "workflow_optimizer",
+        "--test",
+        "workflow_optimizer_operational",
+        "--test",
+        "workflow_share",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "state": "final_source",
+      "passed": 26,
+      "failed": 0,
+      "ignored": 0,
+      "failed_tests": []
+    },
+    {
+      "argv": [
+        "project_python",
+        "-m",
+        "ruff",
+        "format",
+        "--check",
+        "."
+      ],
+      "exit_code": 0,
+      "formatted_files": 138
+    },
+    {
+      "argv": [
+        "project_python",
+        "-m",
+        "ruff",
+        "check",
+        "."
+      ],
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "project_python",
+        "-m",
+        "mypy",
+        "src/vibemux",
+        "scripts/dual_track_acceptance"
+      ],
+      "exit_code": 0,
+      "source_files": 30
+    },
+    {
+      "argv": [
+        "project_python",
+        "-m",
+        "pytest"
+      ],
+      "exit_code": 0,
+      "passed": 114,
+      "failed": 0
+    },
+    {
+      "argv": [
+        "project_python",
+        "-m",
+        "mypy",
+        "."
+      ],
+      "exit_code": 1,
+      "errors": 20,
+      "affected_unchanged_files": [
+        "tools/a2a_python_interop.py",
+        "tools/a2a_tck_auth.py",
+        "tests/test_harness.py"
+      ],
+      "reason": "Optional integration dependencies/stubs are unavailable and an unchanged test has a typing error."
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "execution_environment": {
+    "platform": "native Windows amd64",
+    "project_python": "I:/VibeMux/.venv/Scripts/python.exe",
+    "pythonpath": "integration worktree/src",
+    "rust_build_jobs": 2,
+    "rust_dev_debug": 0,
+    "rust_test_debug": 0,
+    "vs_developer_environment": "VS 2022 Community, amd64 host/target",
+    "temporary_environment": "Task-owned TEMP/TMP/LOCALAPPDATA and CARGO_TARGET_DIR; no global mutation."
+  },
+  "requirement_mapping": [
+    {
+      "requirement": "launch_grant_fidelity",
+      "status": "implemented_fixture_verified",
+      "code": [
+        "crates/vibemux_workflow/src/execution_authority.rs",
+        "crates/vibemux_harness/src/dispatch/writable_profile.rs",
+        "crates/vibemuxd/src/workflow/runtime.rs"
+      ],
+      "tests": [
+        "crates/vibemuxd/tests/workflow_launch_authority.rs",
+        "crates/vibemux_harness/tests/writable_fixture_guard.rs"
+      ],
+      "limit": "Live vendor writable profiles remain uncertified."
+    },
+    {
+      "requirement": "gateway_and_compiler",
+      "status": "implemented_fixture_verified",
+      "code": [
+        "crates/vibemuxd/src/workflow/aag_gateway.rs",
+        "crates/vibemuxd/src/workflow/model_compiler.rs"
+      ],
+      "tests": [
+        "crates/vibemuxd/tests/aag_gateway_transport.rs",
+        "crates/vibemuxd/tests/workflow_gateway_compile.rs"
+      ],
+      "limit": "Production live factory requires route attestation and explicit execution policy; no model supervisor loop."
+    },
+    {
+      "requirement": "model_effect_accounting",
+      "status": "implemented_verified",
+      "code": [
+        "crates/vibemux_workflow/src/model_call.rs",
+        "crates/vibemux_store/src/workflow/model_calls.rs",
+        "crates/vibemuxd/src/workflow/model_runtime.rs"
+      ],
+      "tests": [
+        "crates/vibemux_store/tests/model_call_ledger.rs",
+        "crates/vibemuxd/tests/model_runtime_output.rs"
+      ],
+      "limit": "Compiler association preserves historical admissions. Fixture usage is synthetic; no paid usage is inferred."
+    },
+    {
+      "requirement": "native_input_ownership",
+      "status": "implemented_adapter_fixture_verified",
+      "code": [
+        "crates/vibemux_workflow/src/native_controller.rs",
+        "crates/vibemuxd/src/workflow/native_runtime.rs",
+        "crates/vibemux_store/src/workflow/recovery_store.rs"
+      ],
+      "tests": [
+        "crates/vibemuxd/tests/native_controller_runtime.rs",
+        "crates/vibemux_store/tests/runtime_recovery.rs"
+      ],
+      "limit": "No production native TUI backend, native Control mutation, or affirmative approval transport."
+    },
+    {
+      "requirement": "source_paths_and_negative_control",
+      "status": "implemented_verified",
+      "code": [
+        "crates/vibemux_workflow/src/path_authority.rs",
+        "crates/vibemuxd/src/workflow/prepare.rs",
+        "crates/vibemuxd/src/workflow/candidate.rs",
+        "crates/vibemux_store/src/workflow.rs"
+      ],
+      "tests": [
+        "crates/vibemux_store/tests/workflow.rs",
+        "crates/vibemuxd/tests/workflow_compare.rs"
+      ],
+      "limit": "Source/path admission is enforced; the provenance map is not separately persisted. Derived subjects cannot be promoted."
+    },
+    {
+      "requirement": "optimizer_operational_policy",
+      "status": "implemented_fixture_verified",
+      "code": [
+        "crates/vibemux_workflow/src/optimizer.rs",
+        "crates/vibemuxd/src/workflow/evaluate.rs",
+        "crates/vibemux_store/src/workflow.rs"
+      ],
+      "tests": [
+        "crates/vibemuxd/tests/workflow_optimizer.rs",
+        "crates/vibemuxd/tests/workflow_optimizer_operational.rs"
+      ],
+      "limit": "Only supported template parameters can be evaluated/promoted. Fixture gains imply no live model improvement."
+    },
+    {
+      "requirement": "windows_bootstrap",
+      "status": "implemented_windows_verified",
+      "code": [
+        "crates/vibemux_cli/src/windows_bootstrap.rs"
+      ],
+      "tests": [
+        "crates/vibemux_cli/tests/bootstrap_process.rs"
+      ],
+      "limit": "CLI bootstrap target: 4 passed in broader run. Captured outer-stdio survival remains a distinct limit."
+    },
+    {
+      "requirement": "H01_durable_active_recovery",
+      "status": "partial",
+      "code": [
+        "crates/vibemux_workflow/src/checkpoint.rs",
+        "crates/vibemux_store/src/workflow/recovery_store.rs"
+      ],
+      "tests": [
+        "crates/vibemux_store/tests/runtime_recovery.rs"
+      ],
+      "limit": "Missing active-attempt/controller joins, participant cursors, model-call joins and unsettled effects fail closed; no daemon process-kill acceptance or compaction hook."
+    },
+    {
+      "requirement": "H02_global_context_preservation",
+      "status": "partial",
+      "code": [
+        "crates/vibemux_workflow/src/checkpoint.rs",
+        "crates/vibemux_store/src/workflow/recovery_store.rs"
+      ],
+      "tests": [
+        "crates/vibemux_store/tests/runtime_recovery.rs"
+      ],
+      "limit": "No global setting was written. Bound observations are unknown; the configured one-million-token pipeline regression is not verified."
+    },
+    {
+      "requirement": "H03_policy_to_launch",
+      "status": "fixture_verified_live_blocked",
+      "code": [
+        "crates/vibemux_workflow/src/execution_authority.rs",
+        "crates/vibemux_store/src/workflow.rs"
+      ],
+      "tests": [
+        "crates/vibemuxd/tests/workflow_launch_authority.rs"
+      ],
+      "limit": "Removed tools remain removed on worker/answer/review launches; no installed vendor certification."
+    }
+  ],
+  "inherited_scenarios": [
+    {
+      "id": "B01",
+      "execution_classes": [
+        "repository_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "B02",
+      "execution_classes": [
+        "native_windows_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "P01",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "P02",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "P03",
+      "execution_classes": [
+        "deterministic_test",
+        "adapter_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "P04",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "G01",
+      "execution_classes": [
+        "gateway_fixture",
+        "live_gateway"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "G02",
+      "execution_classes": [
+        "adapter_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "G03",
+      "execution_classes": [
+        "gateway_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "G04",
+      "execution_classes": [
+        "live_gateway"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "S01",
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "S02",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "S03",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "S04",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "T01",
+      "execution_classes": [
+        "live_native_windows"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "T02",
+      "execution_classes": [
+        "adapter_fixture",
+        "live_native_windows"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "T03",
+      "execution_classes": [
+        "adapter_fixture",
+        "live_native_windows"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "T04",
+      "execution_classes": [
+        "live_mixed_harness"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "C01",
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "C02",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "C03",
+      "execution_classes": [
+        "deterministic_test",
+        "native_windows_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "C04",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "W01",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "W02",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "W03",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "V01",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "V02",
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "V03",
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "V04",
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_coding"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "V05",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "A01",
+      "execution_classes": [
+        "live_coding",
+        "trusted_api_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "A02",
+      "execution_classes": [
+        "live_coding",
+        "trusted_browser_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "A03",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "O01",
+      "execution_classes": [
+        "deterministic_test"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "O02",
+      "execution_classes": [
+        "deterministic_fixture"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "O03",
+      "execution_classes": [
+        "deterministic_fixture",
+        "live_optimizer"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    },
+    {
+      "id": "E01",
+      "execution_classes": [
+        "evidence_validation"
+      ],
+      "fresh_runner_status": "NOT_RUN"
+    }
+  ],
+  "inherited_runner": {
+    "executed": false,
+    "validator_executed": false,
+    "reason": "This is command-level increment evidence, not a generated 37-scenario report. Two required cooperative/browser tests still fail."
+  },
+  "remaining_failed_tests": [
+    "failed_answer_delivery_does_not_block_later_repair",
+    "two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration"
+  ],
+  "browser_limit": {
+    "observed": "Cooperative tests return dispatch_not_completed. Prior contained-browser diagnostics reach broker/target attach and report renderer sandbox/access-denied markers. Direct lifecycle and contained cancellation are separate observations.",
+    "causation": "Exact platform mechanism remains unproven; no sandbox bypass or Job breakaway."
+  },
+  "ignored_tests": [
+    {
+      "name": "tui::render::tests::write_golden_fixtures",
+      "reason": "Existing golden generator"
+    },
+    {
+      "name": "tests::process_fixture",
+      "reason": "Existing child entry point invoked by its bounded parent test"
+    },
+    {
+      "name": "browser_cdp_page_lifecycle_is_usable_inside_native_process",
+      "reason": "Diagnostic renderer initialization blocked inside contained Job"
+    }
+  ],
+  "platform_limits": [
+    "Linux/WSL not executed",
+    "Windows symlink test branch skips without symlink privilege",
+    "Live vendor/AAG/native terminal not executed"
+  ],
+  "unavailable_checks": [
+    "cargo nextest run --workspace --all-features",
+    "cargo deny check",
+    "cargo audit"
+  ],
+  "accounting": {
+    "live_model_calls": 0,
+    "paid_inference": false,
+    "fixture_http_requests": null,
+    "fixture_usage_is_synthetic": true,
+    "reason": "Owned fake HTTP/model/native fixtures executed; no aggregate fixture traffic count or paid token claim."
+  },
+  "review": {
+    "type": "independent Codex source review plus parent execution acceptance",
+    "resolved_findings": [
+      "Completed receipt stored despite output rejection",
+      "Completed receipt paired with gateway error",
+      "Compiler charge absent from workflow allowance",
+      "Identical recovery plan refused after terminal workflow"
+    ],
+    "scope": "Offline increment; not full product acceptance."
+  },
+  "cleanup": {
+    "worker_worktrees_unregistered": 5,
+    "integration_source_retained": true,
+    "main_and_preexisting_worktrees_preserved": true,
+    "temporary_cache_cleanup": "complete_except_explicitly_retained_locked_directories",
+    "empty_held_directory": "remaining_optimizer root is unregistered and empty but held by an unidentified process; no unknown process terminated.",
+    "retained_paths": {
+      "test_cache": false,
+      "intake_patch_copies": false,
+      "pytest_cache": false,
+      "ruff_cache": false,
+      "in_worktree_pytest_scratch": false,
+      "empty_optimizer_root": true
+    }
+  },
+  "compatibility": {
+    "sqlite_schema": 6,
+    "workflow_status_export_schema": 2,
+    "control_descriptor": 7,
+    "workflow_control_minimum": 6,
+    "rollback": "Matching pre-upgrade database and private workflow state backups plus matching binaries; no downgrade by old source."
+  },
+  "publication": {
+    "new_commit": false,
+    "new_merge": false,
+    "push": false,
+    "deployment": false
+  }
+}

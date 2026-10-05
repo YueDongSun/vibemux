@@ -4676,6 +4676,8 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "prost",
+ "reqwest",
+ "rusqlite",
  "same-file",
  "serde",
  "serde_json",

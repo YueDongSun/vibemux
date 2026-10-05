@@ -23,13 +23,18 @@ pub use harness_dispatch::{
     HarnessDispatchRecovery, QuarantinedDispatch,
 };
 pub use workflow::{
-    AttemptPurpose, ContentEntry, ContentKind, ContentState, LeaseCommit, LeaseFence, LeaseRecord,
-    LeaseRequest, MessageChange, MessageCommit, MessageRecord, PolicyVersionRecord, ReceiptCommit,
+    AttemptPurpose, ContentEntry, ContentKind, ContentState, ControllerCommit,
+    ControllerOutboxCommit, ControllerOutboxKind, ControllerOutboxOutcome, ControllerOutboxRecord,
+    ControllerOutboxState, LeaseCommit, LeaseFence, LeaseRecord, LeaseRequest, MessageChange,
+    MessageCommit, MessageRecord, PolicyVersionRecord, ReceiptCommit, RecoveryBindingCommit,
+    RecoveryCheckpointCommit, RecoveryPlanBinding, SupervisorActionFinish,
+    SupervisorProposalCommit, SupervisorRoundAdmission, SupervisorStart,
     WORKFLOW_STORE_RECORD_SCHEMA_VERSION, WorkflowAttemptAdmission, WorkflowAttemptCommit,
-    WorkflowAttemptRecord, WorkflowCommit, WorkflowRecovery, WorkflowSnapshot,
+    WorkflowAttemptRecord, WorkflowCommit, WorkflowExecutionBinding, WorkflowRecovery,
+    WorkflowSnapshot,
 };
 
-pub const STORE_SCHEMA_VERSION: u32 = 5;
+pub const STORE_SCHEMA_VERSION: u32 = 7;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -700,6 +705,20 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V5)?;
             transaction.commit()?;
         }
+        if found < 6 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(workflow::MIGRATION_V6)?;
+            transaction.commit()?;
+        }
+        if found < 7 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(workflow::MIGRATION_V7)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -1120,6 +1139,73 @@ mod tests {
                 row.get(0)
             })
             .expect("schema version")
+    }
+
+    fn schema_6_database(path: &Path) {
+        schema_3_database(path);
+        let mut connection = Connection::open(path).expect("owned database");
+        for migration in [
+            harness_dispatch::MIGRATION_V4,
+            workflow::MIGRATION_V5,
+            workflow::MIGRATION_V6,
+        ] {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("migration transaction");
+            transaction
+                .execute_batch(migration)
+                .expect("historical migration");
+            transaction.commit().expect("migration commit");
+        }
+    }
+
+    #[test]
+    fn schema_6_migrates_supervisor_tables_without_rewriting_history() {
+        let temporary = tempfile::NamedTempFile::new().expect("owned database");
+        schema_6_database(temporary.path());
+        let history = event_log(temporary.path());
+        drop(SqliteStore::open(temporary.path()).expect("schema seven"));
+        assert_eq!(schema_version(temporary.path()), 7);
+        assert_eq!(event_log(temporary.path()), history);
+        let connection = Connection::open(temporary.path()).expect("read schema");
+        for table in [
+            "workflow_supervisors",
+            "workflow_supervisor_rounds",
+            "workflow_supervisor_actions",
+        ] {
+            assert!(
+                connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+                        [table],
+                        |row| row.get::<_, bool>(0)
+                    )
+                    .expect("table exists")
+            );
+        }
+    }
+
+    #[test]
+    fn failed_schema_7_migration_preserves_schema_6_and_rolls_back_partial_tables() {
+        let temporary = tempfile::NamedTempFile::new().expect("owned database");
+        schema_6_database(temporary.path());
+        Connection::open(temporary.path())
+            .expect("owned database")
+            .execute_batch("CREATE TABLE workflow_supervisor_actions(existing_value TEXT)")
+            .expect("fixture namespace conflict");
+        let history = event_log(temporary.path());
+        for _ in 0..2 {
+            assert!(matches!(
+                SqliteStore::open(temporary.path()),
+                Err(StoreError::Database(_))
+            ));
+            assert_eq!(schema_version(temporary.path()), 6);
+            assert_eq!(event_log(temporary.path()), history);
+            let connection = Connection::open(temporary.path()).expect("read schema");
+            for table in ["workflow_supervisors", "workflow_supervisor_rounds"] {
+                assert!(!connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",[table],|row|row.get::<_,bool>(0)).expect("rolled back"));
+            }
+        }
     }
 
     fn event_log(path: &Path) -> Vec<String> {

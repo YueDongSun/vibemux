@@ -1,10 +1,10 @@
 //! Bounded, versioned self-optimization of prompt, context, and scheduling
 //! parameters (ADR 031 §7).
 //!
-//! The optimizer may change only the fields of [`OptimizablePolicy`]:
-//! wording of optimizable template blocks, context retrieval order and
-//! summary budget, preapproved decomposition hints, and slot ranking
-//! weights. Requirements, permissions, tests, held-out cases, hard budgets,
+//! The optimizer may change only wording of optimizable template blocks.
+//! Other serialized policy parameters remain readable for compatibility but
+//! are rejected as unsupported candidate changes until operationally tested.
+//! Requirements, permissions, tests, held-out cases, hard budgets,
 //! providers, state-machine rules, accepted history, and active contracts
 //! are not representable in a candidate diff, and a diff naming any other
 //! field is rejected before evaluation.
@@ -108,6 +108,26 @@ impl OptimizablePolicy {
         }
         Ok(())
     }
+
+    /// Validates that this policy uses only parameters with operational
+    /// semantics in the current admission and evaluation path.
+    ///
+    /// [`validate`](Self::validate) remains available for reading and
+    /// validating serialized legacy policies. Admission must use this stricter
+    /// check so an older policy with changed, ineffective knobs is not silently
+    /// treated as a template-only policy.
+    pub fn validate_operational(&self) -> Result<(), OptimizerRejection> {
+        self.validate()?;
+        let baseline = OptimizablePolicy::baseline();
+        if self.retrieval_order != baseline.retrieval_order
+            || self.summary_budget_bytes != baseline.summary_budget_bytes
+            || self.decomposition_hints != baseline.decomposition_hints
+            || self.ranking_weights != RankingWeights::BASELINE
+        {
+            return Err(OptimizerRejection::UnsupportedParameter);
+        }
+        Ok(())
+    }
 }
 
 /// One proposed change, addressed by a dotted field path.
@@ -133,6 +153,8 @@ pub enum OptimizerRejection {
     ForbiddenField,
     #[error("candidate changes an immutable template block")]
     ForbiddenTemplateChange,
+    #[error("candidate changes a parameter that is not operationally supported")]
+    UnsupportedParameter,
     #[error("candidate value is invalid")]
     InvalidValue,
     #[error("candidate makes no change")]
@@ -161,6 +183,7 @@ impl OptimizerRejection {
         match self {
             Self::ForbiddenField => "optimizer_forbidden_field",
             Self::ForbiddenTemplateChange => "optimizer_forbidden_template_change",
+            Self::UnsupportedParameter => "optimizer_parameter_unsupported",
             Self::InvalidValue => "optimizer_invalid_value",
             Self::EmptyDiff => "optimizer_empty_diff",
             Self::DatasetMismatch => "optimizer_dataset_mismatch",
@@ -186,7 +209,6 @@ pub fn apply_candidate(
     let mut candidate = base.clone();
     for change in &diff.changes {
         let parts: Vec<&str> = change.field.split('.').collect();
-        let invalid = |_| OptimizerRejection::InvalidValue;
         match parts.as_slice() {
             ["template_overrides", template, block] => {
                 let text = change
@@ -199,34 +221,18 @@ pub fn apply_candidate(
                     .or_default()
                     .insert((*block).to_string(), text.to_string());
             }
-            ["retrieval_order"] => {
-                candidate.retrieval_order =
-                    serde_json::from_value(change.value.clone()).map_err(invalid)?;
-            }
-            ["summary_budget_bytes"] => {
-                candidate.summary_budget_bytes =
-                    serde_json::from_value(change.value.clone()).map_err(invalid)?;
-            }
-            ["decomposition_hints"] => {
-                candidate.decomposition_hints =
-                    serde_json::from_value(change.value.clone()).map_err(invalid)?;
-            }
-            ["ranking_weights", "known_budget"] => {
-                candidate.ranking_weights.known_budget =
-                    serde_json::from_value(change.value.clone()).map_err(invalid)?;
-            }
-            ["ranking_weights", "live_evidence"] => {
-                candidate.ranking_weights.live_evidence =
-                    serde_json::from_value(change.value.clone()).map_err(invalid)?;
-            }
-            ["ranking_weights", "native_resume"] => {
-                candidate.ranking_weights.native_resume =
-                    serde_json::from_value(change.value.clone()).map_err(invalid)?;
+            ["retrieval_order"]
+            | ["summary_budget_bytes"]
+            | ["decomposition_hints"]
+            | ["ranking_weights", "known_budget"]
+            | ["ranking_weights", "live_evidence"]
+            | ["ranking_weights", "native_resume"] => {
+                return Err(OptimizerRejection::UnsupportedParameter);
             }
             _ => return Err(OptimizerRejection::ForbiddenField),
         }
     }
-    candidate.validate()?;
+    candidate.validate_operational()?;
     if candidate == *base {
         return Err(OptimizerRejection::EmptyDiff);
     }
@@ -616,7 +622,7 @@ mod tests {
         let out_of_range = diff(vec![("summary_budget_bytes", json!(1_000_000))]);
         assert_eq!(
             apply_candidate(&base, &out_of_range),
-            Err(OptimizerRejection::InvalidValue)
+            Err(OptimizerRejection::UnsupportedParameter)
         );
         let duplicate_sources = diff(vec![(
             "retrieval_order",
@@ -624,8 +630,23 @@ mod tests {
         )]);
         assert_eq!(
             apply_candidate(&base, &duplicate_sources),
-            Err(OptimizerRejection::InvalidValue)
+            Err(OptimizerRejection::UnsupportedParameter)
         );
+        for (field, value) in [
+            (
+                "decomposition_hints",
+                json!(["tests_before_implementation"]),
+            ),
+            ("ranking_weights.known_budget", json!(60)),
+            ("ranking_weights.live_evidence", json!(60)),
+            ("ranking_weights.native_resume", json!(60)),
+        ] {
+            assert_eq!(
+                apply_candidate(&base, &diff(vec![(field, value)])),
+                Err(OptimizerRejection::UnsupportedParameter),
+                "{field}"
+            );
+        }
         assert_eq!(
             apply_candidate(&base, &diff(vec![])),
             Err(OptimizerRejection::EmptyDiff)
@@ -706,9 +727,15 @@ mod tests {
     fn a_cycle_is_budget_bounded_consults_holdout_once_and_can_find_nothing() {
         let base = OptimizablePolicy::baseline();
         let candidates = vec![
-            diff(vec![("summary_budget_bytes", json!(4096))]),
+            diff(vec![(
+                "template_overrides.worker_v1.worker_method",
+                json!("Use a concise implementation and verify the focused behavior."),
+            )]),
             diff(vec![("permitted_tools", json!(["write_files"]))]),
-            diff(vec![("summary_budget_bytes", json!(2048))]),
+            diff(vec![(
+                "retrieval_order",
+                json!(["worker_claims", "candidate_snapshot"]),
+            )]),
             diff(vec![("summary_budget_bytes", json!(1024))]),
         ];
         let limits = OptimizerLimits {
@@ -727,7 +754,7 @@ mod tests {
             limits,
             &mut ledger,
             |candidate| {
-                Ok(if candidate.summary_budget_bytes == 2048 {
+                Ok(if candidate.template_overrides.contains_key("worker_v1") {
                     summary(4, 0, Some(30))
                 } else {
                     summary(3, 0, Some(50))
@@ -743,6 +770,10 @@ mod tests {
         assert_eq!(
             decision.outcomes[1].rejection,
             Some(OptimizerRejection::ForbiddenField)
+        );
+        assert_eq!(
+            decision.outcomes[2].rejection,
+            Some(OptimizerRejection::UnsupportedParameter)
         );
         assert_eq!(
             decision.outcomes[3].rejection,
@@ -784,16 +815,112 @@ mod tests {
                 dev: summary(3, 0, Some(40)),
                 holdout: summary(3, 0, Some(20)),
             },
-            &[diff(vec![("summary_budget_bytes", json!(2048))])],
+            &[diff(vec![(
+                "template_overrides.worker_v1.worker_method",
+                json!("Try a more effective method."),
+            )])],
             OptimizerLimits {
                 max_candidates: 3,
                 max_model_requests: 30,
             },
             &mut ledger,
-            |_| Ok(summary(4, 0, Some(30))),
+            |candidate| {
+                assert!(candidate.template_overrides.contains_key("worker_v1"));
+                Ok(summary(4, 0, Some(30)))
+            },
             |_| Ok(summary(2, 0, Some(20))),
         );
         assert!(!decision.optimization_improved);
+    }
+
+    #[test]
+    fn unsupported_parameter_cannot_be_promoted_as_a_no_op_improvement() {
+        let base = OptimizablePolicy::baseline();
+        let mut ledger = HoldoutLedger::default();
+        let mut dev_calls = 0;
+        let mut holdout_calls = 0;
+        let decision = run_cycle(
+            &base,
+            CycleBaseline {
+                dev: summary(3, 0, Some(40)),
+                holdout: summary(2, 0, Some(20)),
+            },
+            &[diff(vec![("summary_budget_bytes", json!(2048))])],
+            OptimizerLimits {
+                max_candidates: 1,
+                max_model_requests: 30,
+            },
+            &mut ledger,
+            |_| {
+                dev_calls += 1;
+                Ok(summary(4, 0, Some(1)))
+            },
+            |_| {
+                holdout_calls += 1;
+                Ok(summary(4, 0, Some(1)))
+            },
+        );
+
+        assert_eq!(dev_calls, 0);
+        assert_eq!(holdout_calls, 0);
+        assert_eq!(ledger.consultations, 0);
+        assert_eq!(decision.promoted, None);
+        assert!(!decision.optimization_improved);
+        assert_eq!(
+            decision.outcomes[0].rejection,
+            Some(OptimizerRejection::UnsupportedParameter)
+        );
+        assert_eq!(
+            OptimizerRejection::UnsupportedParameter.code(),
+            "optimizer_parameter_unsupported"
+        );
+    }
+
+    #[test]
+    fn operational_validation_preserves_legacy_readability_and_template_changes() {
+        let baseline = OptimizablePolicy::baseline();
+        baseline
+            .validate_operational()
+            .expect("baseline is operational");
+
+        let template_only = apply_candidate(
+            &baseline,
+            &diff(vec![(
+                "template_overrides.worker_v1.worker_method",
+                json!("Use a concise implementation and verify its behavior."),
+            )]),
+        )
+        .expect("template-only change is operational");
+        template_only
+            .validate_operational()
+            .expect("template-only policy remains operational");
+
+        let mut legacy_json = serde_json::to_value(&baseline).expect("serialize baseline");
+        legacy_json["retrieval_order"] = json!(["worker_claims", "candidate_snapshot"]);
+        legacy_json["summary_budget_bytes"] = json!(4096);
+        legacy_json["decomposition_hints"] = json!(["tests_before_implementation"]);
+        legacy_json["ranking_weights"]["known_budget"] = json!(3);
+        let legacy_policy: OptimizablePolicy =
+            serde_json::from_value(legacy_json).expect("legacy policy remains readable");
+
+        legacy_policy
+            .validate()
+            .expect("legacy values remain structurally valid");
+        assert_eq!(
+            legacy_policy.validate_operational(),
+            Err(OptimizerRejection::UnsupportedParameter)
+        );
+        assert_eq!(
+            apply_candidate(
+                &legacy_policy,
+                &diff(vec![(
+                    "template_overrides.worker_v1.worker_method",
+                    json!("A new template value."),
+                )])
+            ),
+            Err(OptimizerRejection::UnsupportedParameter),
+            "template changes must not silently normalize legacy operational parameters"
+        );
     }
 
     #[test]

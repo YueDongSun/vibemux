@@ -49,7 +49,8 @@ MODE_OFFLINE = "offline"
 MODE_LIVE = "live"
 
 LIVE_NOT_IMPLEMENTED = (
-    "the daemon has no AAG gateway client and no owned native TUI sessions, so no live turn can run"
+    "live AAG calls are refused pending request-scoped upstream attestation; vendor route "
+    "certification and an owned native TUI backend are not established"
 )
 
 

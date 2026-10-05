@@ -17,7 +17,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use vibemux_harness::dispatch::{NativeProtocol, writable_profile::writable_profile_id};
+use vibemux_harness::dispatch::NativeProtocol;
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier,
     canonical_json::canonical_digest,
@@ -52,6 +52,7 @@ pub(crate) struct PrepareContext<'a> {
     pub head_commit: &'a str,
     /// The execution protocol of each slot whose harness route may execute.
     pub slot_protocols: &'a BTreeMap<SpecIdentifier, NativeProtocol>,
+    pub slot_profiles: &'a BTreeMap<SpecIdentifier, String>,
     /// Wording of the active promoted prompt policy.
     pub template_overrides: &'a TemplateOverrides,
     pub now_ms: u64,
@@ -121,8 +122,8 @@ pub(crate) fn compile(
     context: &PrepareContext<'_>,
 ) -> Result<PreparedWorkflow, WorkflowError> {
     if request.task_specs.is_empty() {
-        // A compiler route would fill the candidates; none is wired for
-        // the deterministic coordinator, so an uncompiled request stops.
+        // Model interpretation belongs to the service's candidate stage.
+        // This deterministic boundary accepts only supplied typed candidates.
         return Err(WorkflowError::CompilerUnavailable);
     }
     if request.task_specs.len() > MAX_WORKFLOW_TASKS {
@@ -172,15 +173,14 @@ pub(crate) fn compile(
             .get(task_key)
             .and_then(|slots| slots.first())
             .ok_or(WorkflowError::RequestInvalid)?;
-        let protocol = context
-            .slot_protocols
+        let profile = context
+            .slot_profiles
             .get(slot)
-            .copied()
             .ok_or(WorkflowError::SlotUnavailable)?;
         let contract = render_contract(
             spec,
             policy_digest,
-            protocol,
+            profile,
             context.template_overrides,
             context.head_commit,
         )?;
@@ -273,7 +273,7 @@ pub fn required_suites(spec: &TaskSpec) -> Vec<SpecIdentifier> {
 pub(crate) fn render_contract(
     spec: &TaskSpec,
     policy_digest: Sha256Digest,
-    protocol: NativeProtocol,
+    harness_profile: &str,
     overrides: &TemplateOverrides,
     base_commit: &str,
 ) -> Result<ContractArtifact, WorkflowError> {
@@ -296,8 +296,6 @@ pub(crate) fn render_contract(
         turn: None,
     })
     .map_err(|error| rejected(vec![error.code().to_string()]))?;
-    let harness_profile =
-        writable_profile_id(protocol).map_err(|_| WorkflowError::SlotUnavailable)?;
     let identity = ContractIdentityInputs {
         task_spec_digest,
         policy_digest,
@@ -355,9 +353,21 @@ fn admit_candidate(
             .map(|violation| violation.code.to_string())
             .collect::<Vec<_>>()
     })?;
-    let intersection = intersect(spec, policy).map_err(|violations| {
+    let intersection = intersect(spec.clone(), policy).map_err(|violations| {
         violations
             .iter()
+            .map(|violation| violation.code.to_string())
+            .collect::<Vec<_>>()
+    })?;
+    vibemux_workflow::path_authority::derive_path_authority(
+        &intersection.spec,
+        source,
+        policy,
+        &texts,
+    )
+    .map_err(|violations| {
+        violations
+            .into_iter()
             .map(|violation| violation.code.to_string())
             .collect::<Vec<_>>()
     })?;
@@ -416,10 +426,12 @@ fn check_plan(
             let configured = context.config.slot(slot_id);
             let protocol = context.slot_protocols.get(slot_id);
             match (configured, protocol) {
-                (Some(slot), Some(protocol)) if !slot.is_reviewer() => {
+                (Some(slot), Some(_)) if !slot.is_reviewer() => {
                     profiles.push(
-                        writable_profile_id(*protocol)
-                            .map_err(|_| WorkflowError::SlotUnavailable)?,
+                        context
+                            .slot_profiles
+                            .get(slot_id)
+                            .ok_or(WorkflowError::SlotUnavailable)?,
                     );
                 }
                 _ => return Err(WorkflowError::SlotUnavailable),

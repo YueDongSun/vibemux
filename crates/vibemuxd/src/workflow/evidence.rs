@@ -27,8 +27,8 @@ use vibemux_workflow::{
 
 use super::{coordinator::RunReport, error::WorkflowError};
 
-pub const STATUS_SCHEMA_VERSION: u32 = 1;
-pub const EXPORT_SCHEMA_VERSION: u32 = 1;
+pub const STATUS_SCHEMA_VERSION: u32 = 2;
+pub const EXPORT_SCHEMA_VERSION: u32 = 2;
 /// Encoded budget of one export page, below the Control frame bound.
 pub const EXPORT_PAGE_BYTES: usize = 40 * 1024;
 
@@ -130,6 +130,7 @@ pub struct ReviewView {
     pub candidate_digest: Sha256Digest,
     pub reviewer_session_id: Uuid,
     pub reviewer_route: String,
+    pub effective_route: Option<vibemux_workflow::execution_authority::EffectiveRouteIdentity>,
     pub verdict: vibemux_workflow::gates::ReviewVerdict,
     pub findings_count: u32,
     pub candidate_unchanged: bool,
@@ -139,6 +140,7 @@ pub struct ReviewView {
 pub struct VerificationView {
     pub task_key: Option<SpecIdentifier>,
     pub subject_digest: Sha256Digest,
+    pub derived_subject: Option<vibemux_workflow::gates::DerivedVerifierSubject>,
     pub suites: Vec<SuiteView>,
     pub subject_unchanged: bool,
 }
@@ -357,6 +359,7 @@ pub fn receipt_summary(snapshot: &WorkflowSnapshot) -> ReceiptSummary {
                 candidate_digest: review.candidate_digest,
                 reviewer_session_id: review.reviewer_session_id,
                 reviewer_route: review.reviewer_route.clone(),
+                effective_route: review.effective_route.clone(),
                 verdict: review.verdict,
                 findings_count: review.findings_count,
                 candidate_unchanged: review.candidate_unchanged,
@@ -365,6 +368,7 @@ pub fn receipt_summary(snapshot: &WorkflowSnapshot) -> ReceiptSummary {
                 summary.verifications.push(VerificationView {
                     task_key: verification.task_key.clone(),
                     subject_digest: verification.subject_digest,
+                    derived_subject: verification.derived_subject.clone(),
                     suites: verification
                         .suites
                         .iter()
@@ -543,6 +547,7 @@ pub struct AttemptView {
     pub lease_generation: u64,
     pub contract_id: Sha256Digest,
     pub rendered_prompt_sha256: Sha256Digest,
+    pub execution: Option<vibemux_store::WorkflowExecutionBinding>,
 }
 
 #[must_use]
@@ -565,6 +570,7 @@ pub fn inspect_session(
             lease_generation: attempt.lease_generation,
             contract_id: attempt.contract_id,
             rendered_prompt_sha256: attempt.rendered_prompt_sha256,
+            execution: attempt.execution.clone(),
         })
         .collect();
     Some(SessionInspection {

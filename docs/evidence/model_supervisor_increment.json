@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "kind": "model_supervisor_increment_evidence",
+  "recorded_date": "2026-10-06",
+  "source": {
+    "base_head": "a639ed5befdf232af4f4aa0f2d7d4dc55cf3c146",
+    "branch": "codex/remaining_runtime",
+    "tested_delivery": "owned integration worktree before local commit",
+    "store_schema": 7,
+    "control_version": 8
+  },
+  "acceptance_verdict": "BLOCKED",
+  "is_inherited_benchmark_report": false,
+  "commands": [
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemux_store",
+        "-p",
+        "vibemux_workflow",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "source_state": "supervisor_and_migrations",
+      "exit_code": 0,
+      "passed": 257,
+      "failed": 0,
+      "ignored": 0,
+      "failed_tests": []
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "source_state": "before_control_assertion_and_browser_preflight_repairs",
+      "exit_code": 101,
+      "passed": 924,
+      "failed": 3,
+      "ignored": 3,
+      "failed_tests": [
+        "control::dsh_session_ops::tests::the_dsh_operations_require_v7_and_keep_v6_compatible",
+        "failed_answer_delivery_does_not_block_later_repair",
+        "two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "--lib",
+        "--test",
+        "workflow_model_supervisor",
+        "--all-features",
+        "--no-fail-fast"
+      ],
+      "source_state": "final_rust_implementation_and_overlap_assertion",
+      "exit_code": 0,
+      "passed": 116,
+      "failed": 0,
+      "ignored": 0,
+      "failed_tests": []
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "vibemuxd",
+        "--test",
+        "workflow_cooperate",
+        "--all-features",
+        "--",
+        "--nocapture"
+      ],
+      "source_state": "final_browser_preflight_source",
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 2,
+      "ignored": 0,
+      "failed_tests": [
+        "failed_answer_delivery_does_not_block_later_repair",
+        "two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "check",
+        "--workspace",
+        "--all-targets"
+      ],
+      "source_state": "final_source_default_features_without_fixture_capabilities",
+      "exit_code": 0
+    }
+  ],
+  "python": {
+    "tests_passed": 132,
+    "ruff_format": "passed",
+    "ruff_check": "passed",
+    "scoped_mypy_source_files": 32,
+    "scoped_mypy": "passed",
+    "broad_mypy": "20 pre-existing errors in unchanged optional integration tooling; not a green repository check"
+  },
+  "browser_preflight_unit": {
+    "argv": [
+      "node",
+      "--test",
+      "tests/fixtures/taskboard_lite/verifier/browser_preflight.test.mjs"
+    ],
+    "exit_code": 0,
+    "passed": 5,
+    "failed": 0
+  },
+  "direct_good_frontend": {
+    "argv": [
+      "node",
+      "tests/fixtures/taskboard_lite/verifier/run_verifier.mjs",
+      "--candidate",
+      "tests/fixtures/taskboard_lite/calibration/good",
+      "--suite",
+      "browser_frontend_only",
+      "--browser",
+      "<installed Edge>",
+      "--out",
+      "<owned temporary result>"
+    ],
+    "exit_code": 0,
+    "status": "passed",
+    "passed": 16,
+    "failed": 0
+  },
+  "contained_browser": {
+    "status": "blocked",
+    "reason": "browser_page_unavailable:page_enable",
+    "candidate_tests_run": 0,
+    "sandbox_or_job_bypass": false,
+    "cooperative_tests_accepted": false
+  },
+  "full_workspace_after_repairs": "not_rerun; focused target outcomes do not replace the recorded 924/3/3 run",
+  "coverage": {
+    "model_calls": "synthetic ModelGateway; no live AAG or paid inference",
+    "effects": "real guarded worker/reviewer processes, trusted verification and isolated integration",
+    "overlap": "both model-assigned turns started before the other finished, asserted from actual fixture timestamps",
+    "windows": "native tests and paired launch-context probes",
+    "linux_wsl": "not_run",
+    "native_terminal_backend": "not_implemented_or_live_verified"
+  },
+  "remaining": [
+    "Production native backend and Control/UI operations",
+    "Affirmative approval delivery",
+    "Standalone review mode and semantic prompt editing",
+    "Full active-attempt/message/controller recovery joins",
+    "Supervisor artifact/context/message/share/native-handoff effects",
+    "Live request-scoped gateway attestation and installed harness grant certification",
+    "Fresh original 37-scenario acceptance and unavailable nextest/deny/audit tools"
+  ],
+  "interrupted_execution": {
+    "first_browser_rerun": "interrupted without terminal result; no pass/fail count inferred; task-owned process identities absent before restart",
+    "replacement_rerun": "terminal exit 101 and two unchanged acceptance failures"
+  },
+  "resources": {
+    "cleanup": "pending until final checks end",
+    "main": "base_head; pre-existing ui_check preserved",
+    "unrelated_processes_modified": false
+  },
+  "format_and_clippy": {
+    "format": {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    "clippy": {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "source_state": "final Rust source"
+    }
+  }
+}

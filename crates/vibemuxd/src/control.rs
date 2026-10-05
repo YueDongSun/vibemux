@@ -67,7 +67,9 @@ pub use workflow_ops::{
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V7;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V8;
+/// V8 adds explicit model-supervisor start and bounded supervisor status.
+pub const CONTROL_PROTOCOL_V8: u32 = 8;
 /// V7 adds DSH session operations (ADR 032); workflow operations retain V6.
 pub const CONTROL_PROTOCOL_V7: u32 = 7;
 /// V6 adds the dual-track workflow operations (ADR 031 §8).
@@ -120,6 +122,8 @@ pub enum ControlOperation {
     DshSessionClose,
     WorkflowPrepare,
     WorkflowStart,
+    WorkflowSupervisorStart,
+    WorkflowSupervisorStatus,
     WorkflowStatus,
     WorkflowPause,
     WorkflowCancel,
@@ -166,6 +170,7 @@ impl ControlOperation {
             | Self::DshSessionStatus
             | Self::DshSessionCancel
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
+            Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V8,
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -660,6 +665,8 @@ impl DaemonControlServer {
             paths.probe_cache_path(),
             Some(execution_settings_for(paths)),
             Some(paths),
+            #[cfg(feature = "test_helpers")]
+            None,
         )
         .await
     }
@@ -684,6 +691,8 @@ impl DaemonControlServer {
             None,
             probe_cache_path,
             None,
+            None,
+            #[cfg(feature = "test_helpers")]
             None,
         )
         .await
@@ -720,6 +729,8 @@ impl DaemonControlServer {
             probe_cache_path,
             None,
             None,
+            #[cfg(feature = "test_helpers")]
+            None,
         )
         .await
     }
@@ -740,6 +751,8 @@ impl DaemonControlServer {
             None,
             probe_cache_path,
             None,
+            None,
+            #[cfg(feature = "test_helpers")]
             None,
         )
         .await
@@ -772,6 +785,8 @@ impl DaemonControlServer {
                 workflow: None,
             }),
             None,
+            #[cfg(feature = "test_helpers")]
+            None,
         )
         .await
     }
@@ -800,6 +815,65 @@ impl DaemonControlServer {
             probe_cache_path,
             Some(settings),
             None,
+            None,
+        )
+        .await
+    }
+
+    /// Fixture execution is available only to a harness that owns registered worker images.
+    #[cfg(feature = "test_helpers")]
+    pub async fn start_with_fixture_execution(
+        database_path: &Path,
+        runtime_dir: &Path,
+        settings: ExecutionSettings,
+        guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+    ) -> Result<Self, ControlError> {
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            &crate::writer_lock_path_for_database(database_path),
+            None,
+            PluginStartup::default(),
+            None,
+            crate::process::probe_cache_path_for_state_dir(state_dir),
+            Some(settings),
+            None,
+            Some(FixtureExecution {
+                guard,
+                models: None,
+            }),
+        )
+        .await
+    }
+
+    #[cfg(feature = "test_helpers")]
+    pub async fn start_with_model_fixture_execution(
+        database_path: &Path,
+        runtime_dir: &Path,
+        settings: ExecutionSettings,
+        guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+        models: std::sync::Arc<dyn crate::workflow::model_compiler::WorkflowModelGatewayFactory>,
+    ) -> Result<Self, ControlError> {
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            &crate::writer_lock_path_for_database(database_path),
+            None,
+            PluginStartup::default(),
+            None,
+            crate::process::probe_cache_path_for_state_dir(state_dir),
+            Some(settings),
+            None,
+            Some(FixtureExecution {
+                guard,
+                models: Some(models),
+            }),
         )
         .await
     }
@@ -829,6 +903,8 @@ impl DaemonControlServer {
             paths.probe_cache_path(),
             Some(execution_settings_for(paths)),
             Some(paths),
+            #[cfg(feature = "test_helpers")]
+            None,
         )
         .await
     }
@@ -872,6 +948,13 @@ pub struct ExecutionSettings {
     pub workflow: Option<WorkflowServiceSettings>,
 }
 
+#[cfg(feature = "test_helpers")]
+struct FixtureExecution {
+    guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+    models:
+        Option<std::sync::Arc<dyn crate::workflow::model_compiler::WorkflowModelGatewayFactory>>,
+}
+
 /// Production execution inputs: the operator route and workflow configs
 /// live in the validated state directory.
 fn execution_settings_for(paths: &crate::process::DaemonPaths) -> ExecutionSettings {
@@ -891,19 +974,43 @@ fn execution_settings_for(paths: &crate::process::DaemonPaths) -> ExecutionSetti
 async fn start_execution(
     writer: &WriterWorker,
     settings: Option<ExecutionSettings>,
+    #[cfg(feature = "test_helpers")] fixture_execution: Option<FixtureExecution>,
 ) -> Result<(HarnessDispatchService, WorkflowService), WriterError> {
     let handle = writer.handle()?;
+    #[cfg(feature = "test_helpers")]
+    let (fixture_guard, model_factory) = fixture_execution
+        .map(|fixture| (Some(fixture.guard), fixture.models))
+        .unwrap_or((None, None));
     let (dispatch_settings, workflow_settings) = match settings {
         Some(settings) => (Some(settings.dispatch), settings.workflow),
         None => (None, None),
     };
     let dispatch = match dispatch_settings {
-        Some(settings) => HarnessDispatchService::start(handle.clone(), settings).await,
+        Some(settings) => {
+            #[cfg(feature = "test_helpers")]
+            if let Some(guard) = fixture_guard {
+                HarnessDispatchService::start_with_fixture_guard(handle.clone(), settings, guard)
+                    .await
+            } else {
+                HarnessDispatchService::start(handle.clone(), settings).await
+            }
+            #[cfg(not(feature = "test_helpers"))]
+            HarnessDispatchService::start(handle.clone(), settings).await
+        }
         None => HarnessDispatchService::unconfigured(handle.clone()),
     };
     let workflow = match workflow_settings {
         Some(settings) => WorkflowService::start(handle, dispatch.clone(), settings).await,
         None => WorkflowService::unconfigured(handle, dispatch.clone()),
+    };
+    #[cfg(feature = "test_helpers")]
+    let workflow = match model_factory {
+        Some(factory) => workflow
+            .with_model_factory(factory)
+            .map_err(|_| WriterError::Store {
+                code: "workflow_internal".into(),
+            })?,
+        None => workflow,
     };
     Ok((dispatch, workflow))
 }
@@ -942,6 +1049,7 @@ impl DaemonControlServer {
         probe_cache_path: PathBuf,
         execution: Option<ExecutionSettings>,
         security: Option<&crate::process::DaemonPaths>,
+        #[cfg(feature = "test_helpers")] fixture_execution: Option<FixtureExecution>,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
         // `.vibemux/` is the project state dir; its parent is the project
@@ -1063,7 +1171,14 @@ impl DaemonControlServer {
                 // writer returns early, so a healthy start still owns it.
                 return Err(ControlError::ServerTerminated);
             };
-            let (dispatch, workflow) = match start_execution(&writer, execution).await {
+            let (dispatch, workflow) = match start_execution(
+                &writer,
+                execution,
+                #[cfg(feature = "test_helpers")]
+                fixture_execution,
+            )
+            .await
+            {
                 Ok(services) => services,
                 Err(error) => {
                     let _ = registry.shutdown().await;
@@ -1172,7 +1287,14 @@ impl DaemonControlServer {
                     return Err(error.into());
                 }
             }
-            let (dispatch, workflow) = match start_execution(&writer, execution).await {
+            let (dispatch, workflow) = match start_execution(
+                &writer,
+                execution,
+                #[cfg(feature = "test_helpers")]
+                fixture_execution,
+            )
+            .await
+            {
                 Ok(services) => services,
                 Err(error) => {
                     let _ = registry.shutdown().await;
@@ -1616,6 +1738,8 @@ where
         }
         operation @ (ControlOperation::WorkflowPrepare
         | ControlOperation::WorkflowStart
+        | ControlOperation::WorkflowSupervisorStart
+        | ControlOperation::WorkflowSupervisorStatus
         | ControlOperation::WorkflowStatus
         | ControlOperation::WorkflowPause
         | ControlOperation::WorkflowCancel
@@ -2190,6 +2314,7 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V5
             | CONTROL_PROTOCOL_V6
             | CONTROL_PROTOCOL_V7
+            | CONTROL_PROTOCOL_V8
     )
 }
 
@@ -2698,7 +2823,16 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V5));
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V7);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V8));
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V8);
+        assert_eq!(
+            ControlOperation::WorkflowSupervisorStart.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V8
+        );
+        assert_eq!(
+            ControlOperation::WorkflowSupervisorStatus.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V8
+        );
         assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(!supported_control_version(0));
         // The minimum-version table is the single source of truth that

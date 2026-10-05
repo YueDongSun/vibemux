@@ -10,8 +10,10 @@
 #![allow(dead_code)]
 
 use std::{
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
@@ -44,6 +46,9 @@ const LOG_FILE_NAME: &str = "worker_fixture_log.jsonl";
 const DATABASE_FILE_NAME: &str = "vibemux_rust.sqlite3";
 const SNAPSHOT_TIME: &str = "2026-10-01T00:00:00Z";
 const MIN_NODE_MAJOR: u32 = 22;
+const NODE_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const NODE_VERSION_PROBE_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_NODE_VERSION_BYTES: u64 = 4096;
 const TURN_DEADLINE_MS: u64 = 120_000;
 const SHUTDOWN_GRACE_MS: u64 = 2_000;
 const VERIFIER_TIMEOUT_MS: u64 = 300_000;
@@ -178,15 +183,107 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Runs the bounded, shell-free Node version probe and reaps its exact child.
+fn run_node_version_probe(node: &Path) -> Output {
+    let output_directory = tempfile::tempdir().expect("temporary node probe directory");
+    let stdout_path = output_directory.path().join("stdout.bin");
+    let stderr_path = output_directory.path().join("stderr.bin");
+    assert!(stdout_path.is_absolute() && stderr_path.is_absolute());
+    let mut stdout_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&stdout_path)
+        .expect("temporary node stdout file");
+    let mut stderr_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&stderr_path)
+        .expect("temporary node stderr file");
+    let child_stdout = stdout_file
+        .try_clone()
+        .expect("clone temporary node stdout file");
+    let child_stderr = stderr_file
+        .try_clone()
+        .expect("clone temporary node stderr file");
+    let mut child = Command::new(node)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(child_stdout))
+        .stderr(Stdio::from(child_stderr))
+        .spawn()
+        .unwrap_or_else(|error| panic!("node --version could not start: {:?}", error.kind()));
+    let deadline = Instant::now() + NODE_VERSION_PROBE_TIMEOUT;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                stdout_file
+                    .seek(SeekFrom::Start(0))
+                    .expect("seek temporary node stdout file");
+                stderr_file
+                    .seek(SeekFrom::Start(0))
+                    .expect("seek temporary node stderr file");
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                (&mut stdout_file)
+                    .take(MAX_NODE_VERSION_BYTES + 1)
+                    .read_to_end(&mut stdout)
+                    .expect("read temporary node stdout file");
+                (&mut stderr_file)
+                    .take(MAX_NODE_VERSION_BYTES + 1)
+                    .read_to_end(&mut stderr)
+                    .expect("read temporary node stderr file");
+                assert!(
+                    stdout.len() as u64 <= MAX_NODE_VERSION_BYTES
+                        && stderr.len() as u64 <= MAX_NODE_VERSION_BYTES,
+                    "node --version output exceeded the probe limit"
+                );
+                return Output {
+                    status,
+                    stdout,
+                    stderr,
+                };
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(NODE_VERSION_PROBE_INTERVAL);
+            }
+            Ok(None) => {
+                let terminated = child.kill().is_ok();
+                let reaped = child.wait().is_ok();
+                panic!(
+                    "node --version timed out after {} ms (terminated={terminated}, \
+                     reaped={reaped}; temporary output files were discarded)",
+                    NODE_VERSION_PROBE_TIMEOUT.as_millis()
+                );
+            }
+            Err(error) => {
+                let terminated = child.kill().is_ok();
+                let reaped = child.wait().is_ok();
+                panic!(
+                    "node --version process wait failed ({:?}; terminated={terminated}, \
+                     reaped={reaped})",
+                    error.kind()
+                );
+            }
+        }
+    }
+}
+
 /// Node 22 or newer: the TaskBoard browser suite needs the global
 /// `WebSocket`. A missing or older Node fails the test loudly instead of
 /// skipping it.
 fn require_node() -> PathBuf {
     let node = find_on_path("node").expect("node 22+ must be on PATH for the workflow tests");
-    let output = Command::new(&node)
-        .arg("--version")
-        .output()
-        .expect("node --version");
+    let output = run_node_version_probe(&node);
+    assert!(
+        output.status.success(),
+        "node --version exited with {:?} (stdout {} chars, stderr {} chars)",
+        output.status.code(),
+        output.stdout.len(),
+        output.stderr.len()
+    );
     let version = String::from_utf8_lossy(&output.stdout);
     let major: u32 = version
         .trim()
@@ -194,7 +291,13 @@ fn require_node() -> PathBuf {
         .split('.')
         .next()
         .and_then(|major| major.parse().ok())
-        .expect("node version");
+        .unwrap_or_else(|| {
+            panic!(
+                "node --version returned non-version output (stdout {} chars, stderr {} chars)",
+                output.stdout.len(),
+                output.stderr.len()
+            )
+        });
     assert!(
         major >= MIN_NODE_MAJOR,
         "the workflow tests need node {MIN_NODE_MAJOR}+, found {}",
@@ -413,10 +516,22 @@ impl ProjectPaths {
                 &self.state_dir,
             )),
         };
-        let server = DaemonControlServer::start_with_execution(
+        let guard =
+            vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard::register_worker_copies(
+                Path::new(WORKER_FIXTURE),
+                &self.vendor_dir,
+                &[AgentKind::Codex, AgentKind::Claude],
+            )
+            .expect("fixture worker ownership")
+            .with_development_runtime(
+                &std::fs::canonicalize(require_node()).expect("canonical node"),
+            )
+            .expect("fixture development runtime");
+        let server = DaemonControlServer::start_with_fixture_execution(
             &self.database(),
             &self.runtime_dir,
             settings,
+            guard,
         )
         .await
         .expect("control server");
@@ -513,6 +628,14 @@ impl WorkflowFixture {
         let (server, client) = self.paths.start_server().await;
         self.server = Some(server);
         self.client = client;
+    }
+
+    /// Stops the daemon while retaining this fixture's temporary state so a
+    /// test can seed a historical database state before restarting it.
+    pub async fn stop_server_for_test(&mut self) {
+        if let Some(server) = self.server.take() {
+            server.shutdown().await.expect("server shutdown");
+        }
     }
 
     /// Restarts over the phase a crashed daemon leaves behind. A graceful
@@ -689,7 +812,7 @@ impl WorkflowFixture {
                 .workflow_export(workflow_id, cursor)
                 .await
                 .expect("export page");
-            assert_eq!(page["schema_version"], 1);
+            assert_eq!(page["schema_version"], 2);
             items.extend(page["items"].as_array().expect("items").iter().cloned());
             match page["next"].as_u64() {
                 Some(next) => cursor = usize::try_from(next).expect("cursor"),

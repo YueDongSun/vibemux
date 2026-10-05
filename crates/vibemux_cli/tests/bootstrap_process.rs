@@ -2,20 +2,21 @@
 
 use std::{
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     time::Duration,
 };
 
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use vibemux_cli::{
-    DEFAULT_STARTUP_TIMEOUT, DaemonBootstrapConfig, DaemonCliError,
+    DEFAULT_STARTUP_TIMEOUT, DaemonBootstrapConfig, DaemonCliError, daemon_health,
     recovery::{RecoveryStatus, inspect_runtime, recover_runtime},
     start_daemon, stop_daemon,
 };
 use vibemuxd::process::DaemonPaths;
 
 /// Real-time bound for the hang fixture's started marker. It covers the
-/// Windows launcher helper's PID wait, which follows the start timeout, plus
-/// the fixture's own launch. Only a failed launch comes near it.
+/// production startup deadline plus fixture launch time. Only a failed launch
+/// comes near it.
 const FIXTURE_MARKER_TIMEOUT: Duration =
     DEFAULT_STARTUP_TIMEOUT.saturating_add(Duration::from_secs(30));
 const FIXTURE_MARKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -44,9 +45,8 @@ impl Drop for ControlRuntimeCleanup {
 // slowly the OS launches it; the clock then jumps to the deadline at no
 // real-time cost. The former real-time 150 ms deadline raced the launch: on a
 // loaded Windows host the marker appeared 50-590 ms after the fixture's PID
-// was known. It also cut the Windows launcher helper's PID wait to its 3 s
-// floor, which three concurrent helpers on a saturated CPU exceeded
-// (`SpawnFailed`); the default start timeout restores its production length.
+// was known. The default start timeout preserves the production writer-startup
+// bound.
 #[tokio::test(start_paused = true)]
 async fn startup_timeout_terminates_only_the_spawned_fixture() {
     let temp = tempfile::tempdir().expect("temp project");
@@ -103,11 +103,9 @@ async fn early_daemon_exit_fails_fast_instead_of_timing_out() {
     );
 
     // The fixture exits immediately without publishing artifacts, so the
-    // start must fail fast with the classified cause. On Windows this pins
-    // the launcher's daemon-exit watchdog: before the fix the helper
-    // blocked in a synchronous stdin read (Console.In is a SyncTextReader
-    // on .NET Framework), the exit was never observed, and this returned
-    // StartupTimeout only after the full deadline (issue #7).
+    // start must fail fast with the classified cause. This also pins the
+    // Windows-owned Child wait: the CLI must observe the exact process exit
+    // before the startup deadline and terminate only a still-running child.
     assert_eq!(
         start_daemon(&config)
             .await
@@ -115,6 +113,64 @@ async fn early_daemon_exit_fails_fast_instead_of_timing_out() {
         DaemonCliError::StartFailed
     );
     assert!(paths.state_dir().join("exit_fixture_started").is_file());
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
+}
+
+/// The CLI can exit only after authenticated health, and the daemon must keep
+/// running after the launcher process that started it has returned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_survives_cli_launcher_exit_until_outer_owner_stops_it() {
+    let temp = tempfile::tempdir().expect("temp project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    #[cfg(windows)]
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    let launcher_executable = PathBuf::from(env!("CARGO_BIN_EXE_vibemuxctl"));
+    let daemon_executable = PathBuf::from(env!("CARGO_BIN_EXE_vibemux_recovery_fixture"));
+    assert!(launcher_executable.is_absolute());
+    assert!(daemon_executable.is_absolute());
+    let project_root = paths.project_root().to_path_buf();
+
+    let launcher_status = tokio::task::spawn_blocking(move || {
+        Command::new(launcher_executable)
+            .args(["daemon", "start", "--project-root"])
+            .arg(project_root)
+            .arg("--daemon-executable")
+            .arg(daemon_executable)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+    })
+    .await
+    .expect("join CLI launcher")
+    .expect("run CLI launcher");
+
+    // Capture the owned daemon identity before checking launcher status so
+    // the guard still cleans it up if a later assertion fails.
+    let health_result = daemon_health(&paths).await;
+    let mut process_guard = health_result
+        .as_ref()
+        .ok()
+        .map(|health| FixtureProcessGuard::new(health.process_id));
+    assert!(
+        launcher_status.success(),
+        "CLI launcher exited unsuccessfully"
+    );
+    let health = health_result.expect("daemon health after CLI process exited");
+    assert!(health.healthy);
+    let process_id = health.process_id;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let health_after_delay = daemon_health(&paths)
+        .await
+        .expect("daemon remains healthy after launcher exit");
+    assert_eq!(health_after_delay.process_id, process_id);
+
+    stop_daemon(&paths).await.expect("outer owner stops daemon");
+    wait_for_process_exit(process_id).await;
+    if let Some(guard) = process_guard.as_mut() {
+        guard.disarm();
+    }
     assert!(!paths.descriptor_path().exists());
     assert!(!paths.writer_lock_path().exists());
 }

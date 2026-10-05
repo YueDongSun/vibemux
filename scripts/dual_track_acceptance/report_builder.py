@@ -20,24 +20,29 @@ OFFLINE_EVIDENCE_CLASS = "offline_fixture"
 # What no offline run of this implementation establishes, whatever its
 # verdict. Kept in step with docs/adr/031_dual_track_workflow.md.
 STANDING_LIMITATIONS = (
-    "offline evidence only: every worker, reviewer, and compiler turn is a synthetic fixture "
-    "process; no model, AAG gateway, or vendor harness was contacted",
-    "no daemon AAG gateway client exists: route_generation is null, the compiler route is "
-    "unavailable, and the aag_only policy flag is declarative",
-    "no native TUI session is owned or attached; sessions are structured-mode only and "
-    "native handoff (T02/T03) is not implemented",
+    "offline evidence only: worker and reviewer turns use copied synthetic adapters; compiler "
+    "and gateway fixtures use an owned loopback HTTP server and synthetic responses. No live "
+    "model, external AAG service, or vendor CLI was contacted",
+    "AAG supports authorized fixture calls; live calls are refused until request-scoped upstream "
+    "attestation is available, and vendor route certification is not established",
+    "native controller input, interruption, and context handoff have adapter-fixture coverage; "
+    "there is no production-owned native TUI session or attach/resume surface",
     "the optimizer improvement is measured on fixture cases only and implies no model gain",
     "workflow worktrees and materializations are retained by the daemon "
     "(workspace_unsafe_cleanup); the tests' temporary projects, including those worktrees, are "
     "removed with the run's private temporary root",
     "prompt editing of a paused session is not implemented; inspection is read-only",
-    "model_requests_remaining is not decremented by live usage because no live usage exists",
-    "only template_overrides of an optimizer candidate affect admitted runs",
-    "the negative-control verifier receipt of compare mode is not persisted",
-    "worker owned paths come from the TaskSpec and are not traced to source requirements",
+    "model-call budgets are charged at reservation, including compiler calls; offline fixture "
+    "traffic provides no observed live token usage",
+    "unsupported optimizer parameters are rejected; operational candidates currently change "
+    "template_overrides only",
+    "negative-control verifier receipts are persisted but remain non-promotable",
+    "owned paths require source-requirement or exact operator-policy provenance at admission; "
+    "the provenance map is not separately persisted",
     "the crash-restart test simulates the crash through the writer, not a killed process",
     "retained content is protected per user (ACL/permissions) only, not against the same user",
-    "the gateway side of G02 is a pure contract test, not a gateway fixture",
+    "G02 gateway refusals are checked with a local fixture; no live route certification is implied",
+    "active checkpoint joins remain blocked until their required evidence and policy are admitted",
 )
 
 
@@ -114,11 +119,15 @@ def build_report(
         "route_generation": None,
         "scenarios": [scenario.to_json() for scenario in scenarios],
         "accounting": {
+            # Schema 1 keeps model_calls as the live/paid inference count.
             "model_calls": 0,
             "known_cost": 0,
             "unknown_usage": False,
-            "basis": "no model, gateway, or vendor harness was contacted; every turn was a "
-            "synthetic fixture process",
+            "fixture_http_requests": None,
+            "fixture_usage_is_synthetic": True,
+            "basis": "live inference calls and paid usage: 0. Owned local AAG fixture HTTP "
+            "requests and synthetic responses may occur; they are excluded from billing counts, "
+            "and the fixture HTTP request total is unknown because it is not aggregated",
         },
         "cleanup": {
             "joined_owned_processes": cleanup.joined_owned_processes,

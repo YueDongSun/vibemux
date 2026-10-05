@@ -39,6 +39,13 @@ pub enum WorkflowCommand {
         contract: String,
         request_id: Uuid,
     },
+    SupervisorStart {
+        contract: String,
+        request_id: Uuid,
+    },
+    SupervisorStatus {
+        workflow_id: Uuid,
+    },
     Status {
         workflow_id: Uuid,
     },
@@ -126,11 +133,15 @@ pub(crate) fn parse_workflow_arguments(
                 flags.policy_file = Some(path()?);
                 2
             }
-            ("workflow", "start", "--contract") if flags.contract.is_none() => {
+            ("workflow", "start" | "supervisor_start", "--contract")
+                if flags.contract.is_none() =>
+            {
                 flags.contract = Some(text_value(value)?.to_string());
                 2
             }
-            ("workflow", "start", "--request-id") if flags.request_id.is_none() => {
+            ("workflow", "start" | "supervisor_start", "--request-id")
+                if flags.request_id.is_none() =>
+            {
                 flags.request_id = Some(parse_id(text_value(value)?)?);
                 2
             }
@@ -194,6 +205,16 @@ pub(crate) fn parse_workflow_arguments(
             }
         }
         ("workflow", "status") => WorkflowCommand::Status { workflow_id: id()? },
+        ("workflow", "supervisor_start") => {
+            none(positional.is_some())?;
+            WorkflowCommand::SupervisorStart {
+                contract: flags.contract.ok_or(DaemonCliError::InvalidArguments)?,
+                request_id: flags.request_id.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("workflow", "supervisor_status") => {
+            WorkflowCommand::SupervisorStatus { workflow_id: id()? }
+        }
         ("workflow", "pause") => WorkflowCommand::Pause { workflow_id: id()? },
         ("workflow", "cancel") => WorkflowCommand::Cancel { workflow_id: id()? },
         ("workflow", "purge") => WorkflowCommand::Purge { workflow_id: id()? },
@@ -291,6 +312,15 @@ pub async fn run_workflow(
         }
         WorkflowCommand::Status { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_status(workflow_id).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::SupervisorStart {
+            contract,
+            request_id,
+        } => {
+            json!({"ok": true, "workflow": client.workflow_supervisor_start(&contract, request_id).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::SupervisorStatus { workflow_id } => {
+            json!({"ok": true, "supervisor": client.workflow_supervisor_status(workflow_id).await.map_err(map_workflow_error)?})
         }
         WorkflowCommand::Pause { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_pause(workflow_id).await.map_err(map_workflow_error)?})

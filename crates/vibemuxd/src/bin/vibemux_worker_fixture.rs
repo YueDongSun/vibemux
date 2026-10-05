@@ -55,6 +55,12 @@ struct Script {
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Step {
+    #[serde(default)]
+    read: Vec<String>,
+    #[serde(default)]
+    search: Vec<String>,
+    #[serde(default)]
+    run_dev_test: bool,
     /// Relative path to new content.
     #[serde(default)]
     write: BTreeMap<String, String>,
@@ -146,6 +152,8 @@ fn main() {
 fn run() -> Result<i32> {
     let arguments: Vec<String> = env::args().skip(1).collect();
     let protocol = protocol(&arguments)?;
+    let grant = fixture_grant(&arguments, protocol)?;
+    let development_runtime = fixture_development_runtime(&arguments)?;
     let executable = env::current_exe()?;
     let directory = executable.parent().ok_or("fixture_directory_missing")?;
     let script: Script = serde_json::from_slice(&std::fs::read(directory.join(SCRIPT_FILE_NAME))?)?;
@@ -164,7 +172,14 @@ fn run() -> Result<i32> {
                 json!({"type":"thread.started","thread_id":SESSION_ID}),
             )?;
             write_json(&mut output, json!({"type":"turn.started"}))?;
-            let turn = perform(&script, &name, directory, &prompt)?;
+            let turn = perform(
+                &script,
+                &name,
+                directory,
+                &prompt,
+                grant,
+                development_runtime.as_deref(),
+            )?;
             finish(protocol, &mut output, &turn)?;
         }
         Protocol::Claude => {
@@ -182,7 +197,14 @@ fn run() -> Result<i32> {
                     let prompt = message["message"]["content"]
                         .as_str()
                         .ok_or("fixture_prompt_invalid")?;
-                    let turn = perform(&script, &name, directory, prompt)?;
+                    let turn = perform(
+                        &script,
+                        &name,
+                        directory,
+                        prompt,
+                        grant,
+                        development_runtime.as_deref(),
+                    )?;
                     finish(protocol, &mut output, &turn)?;
                     break;
                 }
@@ -209,7 +231,61 @@ struct Turn {
     fail: bool,
 }
 
-fn perform(script: &Script, name: &str, directory: &Path, prompt: &str) -> Result<Turn> {
+fn fixture_grant(
+    arguments: &[String],
+    protocol: Protocol,
+) -> Result<vibemux_harness::dispatch::writable_profile::WritableGrant> {
+    let argument = |name: &str| -> Result<&str> {
+        let indices: Vec<usize> = arguments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| (value == name).then_some(index))
+            .collect();
+        if indices.len() != 1 {
+            return Err("fixture_grant_missing_or_duplicate".into());
+        }
+        arguments
+            .get(indices[0] + 1)
+            .map(String::as_str)
+            .ok_or_else(|| "fixture_grant_missing".into())
+    };
+    let expected = match protocol {
+        Protocol::CodexExec => "codex_fixture_writable_v1",
+        Protocol::Claude => "claude_fixture_writable_v1",
+    };
+    if argument("--fixture_profile")? != expected {
+        return Err("fixture_profile_mismatch".into());
+    }
+    Ok(serde_json::from_str(argument("--fixture_grant_json")?)?)
+}
+
+fn fixture_development_runtime(arguments: &[String]) -> Result<Option<PathBuf>> {
+    let indices: Vec<usize> = arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| (value == "--fixture_node").then_some(index))
+        .collect();
+    match indices.as_slice() {
+        [] => Ok(None),
+        [index] => {
+            let path = PathBuf::from(arguments.get(index + 1).ok_or("fixture_runtime_missing")?);
+            if !path.is_absolute() || !path.is_file() {
+                return Err("fixture_runtime_invalid".into());
+            }
+            Ok(Some(path))
+        }
+        _ => Err("fixture_runtime_duplicate".into()),
+    }
+}
+
+fn perform(
+    script: &Script,
+    name: &str,
+    directory: &Path,
+    prompt: &str,
+    grant: vibemux_harness::dispatch::writable_profile::WritableGrant,
+    development_runtime: Option<&Path>,
+) -> Result<Turn> {
     let facts = turn_facts(prompt)?;
     let key = format!("{}/{}_{}", facts.task_key, facts.purpose, facts.turn_number);
     let (matched, step) = [
@@ -228,7 +304,7 @@ fn perform(script: &Script, name: &str, directory: &Path, prompt: &str) -> Resul
     log(
         directory,
         json!({"event": "started", "harness": name, "key": key, "claim": claim,
-            "at_ms": now_ms(), "prompt": prompt}),
+            "at_ms": now_ms(), "prompt": prompt, "grant": grant}),
     )?;
     let step = match claim {
         Some(index) => &step.sequence[index.min(step.sequence.len() - 1)],
@@ -236,14 +312,55 @@ fn perform(script: &Script, name: &str, directory: &Path, prompt: &str) -> Resul
     };
     let step = select_variant(step, prompt);
     let working_directory = env::current_dir()?;
+    for path in &step.read {
+        if !grant.read_files {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        std::fs::read(working_directory.join(relative(path)?))?;
+    }
+    for path in &step.search {
+        if !grant.search_files {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        let directory = working_directory.join(relative(path)?);
+        for (index, entry) in std::fs::read_dir(directory)?.enumerate() {
+            if index >= 256 {
+                return Err("fixture_search_limit".into());
+            }
+            let _ = entry?.file_name();
+        }
+    }
+    if step.run_dev_test {
+        if !grant.run_dev_tests {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        // The fixture offers one fixed development command, never script-supplied argv.
+        let status =
+            std::process::Command::new(development_runtime.ok_or("fixture_runtime_missing")?)
+                .arg("--test")
+                .current_dir(&working_directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()?;
+        if !status.success() {
+            return Err("fixture_dev_test_failed".into());
+        }
+    }
     for (path, content) in &step.write {
         let target = working_directory.join(relative(path)?);
+        if (target.exists() && !grant.edit_files) || (!target.exists() && !grant.write_files) {
+            return Err("fixture_tool_permission_denied".into());
+        }
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(target, content)?;
     }
     for path in &step.remove {
+        if !grant.edit_files {
+            return Err("fixture_tool_permission_denied".into());
+        }
         let target = working_directory.join(relative(path)?);
         if target.is_file() {
             std::fs::remove_file(target)?;

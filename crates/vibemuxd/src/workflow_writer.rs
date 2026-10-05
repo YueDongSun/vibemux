@@ -29,6 +29,211 @@ use vibemux_workflow::{
 use crate::{WriterError, WriterHandle};
 
 impl WriterHandle {
+    pub fn begin_supervisor_execution(
+        &self,
+        start: vibemux_store::SupervisorStart,
+    ) -> Result<vibemux_workflow::supervisor::SupervisorExecution, WriterError> {
+        self.with_store(move |store| store.begin_supervisor_execution(&start))
+    }
+    pub fn supervisor_observation(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<vibemux_workflow::supervisor::SupervisorObservation, WriterError> {
+        self.with_store(move |store| store.supervisor_observation(workflow_id))
+    }
+    pub fn reserve_supervisor_round(
+        &self,
+        admission: vibemux_store::SupervisorRoundAdmission,
+    ) -> Result<vibemux_workflow::supervisor::SupervisorRound, WriterError> {
+        self.with_store(move |store| store.reserve_supervisor_round(&admission))
+    }
+    pub fn commit_supervisor_proposal(
+        &self,
+        round_id: Uuid,
+        proposal: vibemux_workflow::supervisor::SupervisorProposal,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::SupervisorProposalCommit, WriterError> {
+        self.with_store(move |store| {
+            store.commit_supervisor_proposal(round_id, &proposal, timestamp)
+        })
+    }
+    pub fn reject_supervisor_round(
+        &self,
+        round_id: Uuid,
+        reason: String,
+        malformed: bool,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_workflow::supervisor::SupervisorRound, WriterError> {
+        self.with_store(move |store| {
+            store.reject_supervisor_round(round_id, &reason, malformed, timestamp)
+        })
+    }
+    pub fn claim_supervisor_action(
+        &self,
+        action_id: Uuid,
+        generation: u64,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_workflow::supervisor::SupervisorAction, WriterError> {
+        self.with_store(move |store| {
+            store.claim_supervisor_action(action_id, generation, timestamp)
+        })
+    }
+    pub fn finish_supervisor_action(
+        &self,
+        finish: vibemux_store::SupervisorActionFinish,
+    ) -> Result<vibemux_workflow::supervisor::SupervisorAction, WriterError> {
+        self.with_store(move |store| store.finish_supervisor_action(&finish))
+    }
+    pub fn supervisor_status(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<Option<vibemux_workflow::supervisor::SupervisorStatus>, WriterError> {
+        self.with_store(move |store| store.supervisor_status(workflow_id))
+    }
+    pub fn end_supervisor_execution(
+        &self,
+        workflow_id: Uuid,
+        generation: u64,
+        timestamp: OffsetDateTime,
+    ) -> Result<(), WriterError> {
+        self.with_store(move |store| {
+            store.end_supervisor_execution(workflow_id, generation, timestamp)
+        })
+    }
+    pub fn recover_supervisors(&self, timestamp: OffsetDateTime) -> Result<u32, WriterError> {
+        self.with_store(move |store| store.recover_supervisors(timestamp))
+    }
+    pub fn admit_controller(
+        &self,
+        controller: vibemux_workflow::native_controller::NativeController,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::ControllerCommit, WriterError> {
+        self.with_store(move |store| store.admit_controller(&controller, timestamp))
+    }
+    pub fn workflow_controller(
+        &self,
+        key: Uuid,
+    ) -> Result<Option<vibemux_workflow::native_controller::NativeController>, WriterError> {
+        self.with_store(move |store| store.workflow_controller(key))
+    }
+    pub fn controller_outbox(
+        &self,
+        effect_id: Uuid,
+    ) -> Result<Option<vibemux_store::ControllerOutboxRecord>, WriterError> {
+        self.with_store(move |store| store.controller_outbox(effect_id))
+    }
+    pub fn change_workflow_controller(
+        &self,
+        key: Uuid,
+        expected_version: u64,
+        fence: vibemux_workflow::native_controller::ControllerFence,
+        actor: vibemux_workflow::native_controller::ControllerActor,
+        command: vibemux_workflow::native_controller::ControllerCommand,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::ControllerCommit, WriterError> {
+        self.with_store(move |store| {
+            store.change_workflow_controller(
+                key,
+                expected_version,
+                fence,
+                actor,
+                command,
+                timestamp,
+            )
+        })
+    }
+    pub fn claim_controller_outbox(
+        &self,
+        effect_id: Uuid,
+        expected_version: u64,
+        fence: vibemux_workflow::native_controller::ControllerFence,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::ControllerOutboxCommit, WriterError> {
+        self.with_store(move |store| {
+            store.claim_controller_outbox(effect_id, expected_version, fence, timestamp)
+        })
+    }
+    pub fn finish_controller_outbox(
+        &self,
+        effect_id: Uuid,
+        fence: vibemux_workflow::native_controller::ControllerFence,
+        outcome: vibemux_store::ControllerOutboxOutcome,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::ControllerOutboxCommit, WriterError> {
+        self.with_store(move |store| {
+            store.finish_controller_outbox(effect_id, fence, outcome, timestamp)
+        })
+    }
+    pub fn bind_recovery_plan(
+        &self,
+        workflow_id: Uuid,
+        plan: serde_json::Value,
+        generation: u64,
+        settings: vibemux_workflow::checkpoint::ContextSettingsIdentity,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::RecoveryBindingCommit, WriterError> {
+        self.with_store(move |store| {
+            store.bind_recovery_plan(workflow_id, &plan, generation, settings, timestamp)
+        })
+    }
+    pub fn workflow_recovery_state(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<vibemux_workflow::checkpoint::RecoveryState, WriterError> {
+        self.with_store(move |store| store.workflow_recovery_state(workflow_id))
+    }
+    pub fn save_recovery_checkpoint(
+        &self,
+        checkpoint: vibemux_workflow::checkpoint::RecoveryCheckpoint,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::RecoveryCheckpointCommit, WriterError> {
+        self.with_store(move |store| store.save_recovery_checkpoint(&checkpoint, timestamp))
+    }
+    pub fn load_recovery_checkpoint(
+        &self,
+        checkpoint_id: Uuid,
+    ) -> Result<Option<vibemux_workflow::checkpoint::RecoveryCheckpoint>, WriterError> {
+        self.with_store(move |store| store.load_recovery_checkpoint(checkpoint_id))
+    }
+    pub fn reserve_model_call(
+        &self,
+        admission: vibemux_workflow::model_call::ModelCallAdmission,
+    ) -> Result<vibemux_workflow::model_call::ModelCallRecord, WriterError> {
+        self.with_store(move |store| store.reserve_model_call(&admission))
+    }
+    pub fn submit_model_call(
+        &self,
+        call_id: Uuid,
+    ) -> Result<vibemux_workflow::model_call::ModelCallRecord, WriterError> {
+        self.with_store(move |store| store.submit_model_call(call_id))
+    }
+    pub fn finish_model_call(
+        &self,
+        call_id: Uuid,
+        receipt: Option<vibemux_workflow::gateway::ModelCallReceipt>,
+        error_code: Option<String>,
+    ) -> Result<vibemux_workflow::model_call::ModelCallRecord, WriterError> {
+        self.with_store(move |store| store.finish_model_call(call_id, receipt, error_code))
+    }
+    pub fn model_call(
+        &self,
+        call_id: Uuid,
+    ) -> Result<Option<vibemux_workflow::model_call::ModelCallRecord>, WriterError> {
+        self.with_store(move |store| store.model_call(call_id))
+    }
+    pub fn recover_model_calls(&self) -> Result<u32, WriterError> {
+        self.with_store(move |store| store.recover_model_calls())
+    }
+    pub fn bind_workflow_contract_authority(
+        &self,
+        contract_id: Sha256Digest,
+        spec: vibemux_workflow::task_spec::TaskSpec,
+        timestamp: OffsetDateTime,
+    ) -> Result<(), WriterError> {
+        self.with_store(move |store| {
+            store.bind_workflow_contract_authority(contract_id, &spec, timestamp)
+        })
+    }
     pub fn prepare_workflow(
         &self,
         record: WorkflowRecord,

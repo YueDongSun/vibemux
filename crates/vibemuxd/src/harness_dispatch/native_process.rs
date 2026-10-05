@@ -13,7 +13,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -37,6 +37,13 @@ const REAP_DEADLINE: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STDERR_CHUNK_BYTES: usize = 8 * 1024;
+/// Scan only this many stderr bytes for fixed diagnostic categories. Raw
+/// stderr is neither retained nor logged; the byte count remains uncapped.
+const STDERR_DIAGNOSTIC_SCAN_BYTES: usize = 16 * 1024;
+const STDERR_ACCESS_DENIED: u32 = 1 << 0;
+const STDERR_SANDBOX: u32 = 1 << 1;
+const STDERR_RENDERER: u32 = 1 << 2;
+const STDERR_CRASHPAD: u32 = 1 << 3;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
@@ -84,7 +91,19 @@ pub(crate) struct NativeProcess {
     pub stdin: Option<ChildStdin>,
     pub stdout: ChildStdout,
     stderr_bytes: Arc<AtomicU64>,
+    stderr_flags: Arc<AtomicU32>,
     stderr_drain: JoinHandle<()>,
+}
+
+/// Allowlisted, content-free stderr observations. No vendor line, path,
+/// prompt, or environment value is stored in this structure.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct StderrDiagnostic {
+    pub bytes: u64,
+    pub access_denied: bool,
+    pub sandbox: bool,
+    pub renderer: bool,
+    pub crashpad: bool,
 }
 
 impl NativeProcess {
@@ -126,13 +145,19 @@ impl NativeProcess {
             return Err(DispatchError::PipeFailed);
         };
         let stderr_bytes = Arc::new(AtomicU64::new(0));
-        let stderr_drain = tokio::spawn(drain_stderr(stderr, Arc::clone(&stderr_bytes)));
+        let stderr_flags = Arc::new(AtomicU32::new(0));
+        let stderr_drain = tokio::spawn(drain_stderr(
+            stderr,
+            Arc::clone(&stderr_bytes),
+            Arc::clone(&stderr_flags),
+        ));
         let mut process = Self {
             child,
             tree,
             stdin: Some(stdin),
             stdout,
             stderr_bytes,
+            stderr_flags,
             stderr_drain,
         };
         if process.release().await.is_err() {
@@ -159,6 +184,17 @@ impl NativeProcess {
         self.stdin = None;
     }
 
+    pub(crate) fn stderr_diagnostic(&self) -> StderrDiagnostic {
+        let flags = self.stderr_flags.load(Ordering::Relaxed);
+        StderrDiagnostic {
+            bytes: self.stderr_bytes.load(Ordering::Relaxed),
+            access_denied: flags & STDERR_ACCESS_DENIED != 0,
+            sandbox: flags & STDERR_SANDBOX != 0,
+            renderer: flags & STDERR_RENDERER != 0,
+            crashpad: flags & STDERR_CRASHPAD != 0,
+        }
+    }
+
     /// Ends the process and reports how. Unless `force` is set, the
     /// trampoline may exit on its own until `exit_deadline`; after that, or
     /// with `force`, the tree is killed. Either way the tree is terminated
@@ -183,7 +219,7 @@ impl NativeProcess {
             exit_code,
             forced_termination: !exited_naturally,
         };
-        (exit, self.stderr_bytes.load(Ordering::Relaxed))
+        (exit, self.stderr_diagnostic().bytes)
     }
 
     /// Windows: the job holds its members by handle, so the trampoline may
@@ -232,14 +268,311 @@ impl Drop for NativeProcess {
     }
 }
 
-async fn drain_stderr(mut stderr: ChildStderr, counter: Arc<AtomicU64>) {
+async fn drain_stderr(mut stderr: ChildStderr, counter: Arc<AtomicU64>, flags: Arc<AtomicU32>) {
     let mut buffer = vec![0_u8; STDERR_CHUNK_BYTES];
+    let mut scanned = 0_usize;
+    let mut tail = String::new();
     loop {
         match stderr.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
             Ok(count) => {
                 counter.fetch_add(count as u64, Ordering::Relaxed);
+                if scanned < STDERR_DIAGNOSTIC_SCAN_BYTES {
+                    let bounded = count.min(STDERR_DIAGNOSTIC_SCAN_BYTES - scanned);
+                    scanned += bounded;
+                    let mut text = tail.clone();
+                    text.push_str(
+                        &String::from_utf8_lossy(&buffer[..bounded]).to_ascii_lowercase(),
+                    );
+                    let mut found = 0_u32;
+                    if text.contains("access denied") || text.contains("access is denied") {
+                        found |= STDERR_ACCESS_DENIED;
+                    }
+                    if text.contains("sandbox") {
+                        found |= STDERR_SANDBOX;
+                    }
+                    if text.contains("renderer") {
+                        found |= STDERR_RENDERER;
+                    }
+                    if text.contains("crashpad") {
+                        found |= STDERR_CRASHPAD;
+                    }
+                    flags.fetch_or(found, Ordering::Relaxed);
+                    tail = text
+                        .chars()
+                        .rev()
+                        .take(32)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                }
             }
+        }
+    }
+}
+
+/// Test-only lifecycle probe driven through the same trampoline, cleared
+/// environment, and ProcessTree as a trusted workflow verifier.
+#[cfg(feature = "test_helpers")]
+pub struct BrowserProbePlan {
+    pub trampoline: PathBuf,
+    pub node: PathBuf,
+    pub script: PathBuf,
+    pub browser: PathBuf,
+    pub scratch: PathBuf,
+    pub environment_names: Vec<String>,
+    pub hold_after_attach: bool,
+}
+
+#[cfg(feature = "test_helpers")]
+impl std::fmt::Debug for BrowserProbePlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserProbePlan")
+            .field("hold_after_attach", &self.hold_after_attach)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "test_helpers")]
+#[derive(Debug)]
+pub struct BrowserProbeResult {
+    pub phases: Vec<String>,
+    pub failed_at: Option<String>,
+    pub error_class: Option<String>,
+    pub browser_pid: Option<u32>,
+    pub renderer_pids: Vec<u32>,
+    pub browser_stderr_bytes: Option<u64>,
+    pub browser_stderr_sandbox: bool,
+    pub browser_stderr_access_denied: bool,
+    pub browser_stderr_renderer: bool,
+    pub browser_stderr_win32_access_denied: bool,
+    pub browser_stderr_process_create: bool,
+    pub browser_stderr_job_object: bool,
+    pub native_stderr: StderrDiagnostic,
+    pub exit: ProcessExit,
+    pub active_members_before_cancel: Option<u32>,
+    pub active_members_after_finish: Option<u32>,
+    pub timed_out: bool,
+    pub output_truncated: bool,
+}
+
+#[cfg(feature = "test_helpers")]
+pub async fn run_browser_lifecycle_probe(
+    plan: BrowserProbePlan,
+) -> Result<BrowserProbeResult, DispatchError> {
+    use serde_json::Value;
+
+    const MAX_PROBE_OUTPUT_BYTES: usize = 64 * 1024;
+    const PROBE_DEADLINE: Duration = Duration::from_secs(70);
+    // Node and Chromium must receive ordinary Windows paths. The trusted
+    // workflow verifier uses this same conversion before crossing argv.
+    let script = super::child_path_text(&plan.script).ok_or(DispatchError::InvalidRequest)?;
+    let browser = super::child_path_text(&plan.browser).ok_or(DispatchError::InvalidRequest)?;
+    let scratch = super::child_path_text(&plan.scratch).ok_or(DispatchError::InvalidRequest)?;
+    let node = super::child_path_text(&plan.node).ok_or(DispatchError::InvalidRequest)?;
+    let mut arguments = vec![
+        script,
+        "--browser".to_string(),
+        browser,
+        "--temp_root".to_string(),
+        scratch.clone(),
+    ];
+    if plan.hold_after_attach {
+        arguments.push("--hold_after_attach".to_string());
+    }
+    let environment = resolve_environment(&plan.environment_names)?;
+    let launch = LaunchPlan {
+        trampoline: plan.trampoline,
+        executable: PathBuf::from(node),
+        spec: LaunchSpec {
+            executable: plan.node,
+            arguments,
+            environment_names: plan.environment_names,
+        },
+        working_directory: PathBuf::from(scratch),
+    };
+    let mut process = NativeProcess::spawn(&launch, environment).await?;
+    process.close_stdin();
+    let mut result = BrowserProbeResult {
+        phases: Vec::new(),
+        failed_at: None,
+        error_class: None,
+        browser_pid: None,
+        renderer_pids: Vec::new(),
+        browser_stderr_bytes: None,
+        browser_stderr_sandbox: false,
+        browser_stderr_access_denied: false,
+        browser_stderr_renderer: false,
+        browser_stderr_win32_access_denied: false,
+        browser_stderr_process_create: false,
+        browser_stderr_job_object: false,
+        native_stderr: StderrDiagnostic::default(),
+        exit: ProcessExit {
+            exit_code: None,
+            forced_termination: true,
+        },
+        active_members_before_cancel: None,
+        active_members_after_finish: None,
+        timed_out: false,
+        output_truncated: false,
+    };
+    let deadline = Instant::now() + PROBE_DEADLINE;
+    let mut pending = Vec::<u8>::new();
+    let mut received = 0_usize;
+    let mut eof = false;
+    let mut held = false;
+    let mut buffer = [0_u8; 1024];
+    while !eof && !held {
+        let read = timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            process.stdout.read(&mut buffer),
+        )
+        .await;
+        match read {
+            Ok(Ok(0)) => eof = true,
+            Ok(Ok(count)) => {
+                received = received.saturating_add(count);
+                if received > MAX_PROBE_OUTPUT_BYTES {
+                    result.output_truncated = true;
+                    break;
+                }
+                pending.extend_from_slice(&buffer[..count]);
+                while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                    let line = pending.drain(..=end).collect::<Vec<u8>>();
+                    if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                        observe_probe_line(&value, &mut result);
+                        held = plan.hold_after_attach
+                            && value.get("phase").and_then(Value::as_str)
+                                == Some("held_for_cancel");
+                        #[cfg(windows)]
+                        if held {
+                            result.active_members_before_cancel =
+                                process.tree.active_process_count().ok();
+                        }
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => {
+                result.timed_out = true;
+                break;
+            }
+        }
+    }
+    let force = held || !eof || result.output_truncated;
+    let (exit, _) = process.finish(force, Instant::now() + REAP_DEADLINE).await;
+    result.exit = exit;
+    result.native_stderr = process.stderr_diagnostic();
+    #[cfg(windows)]
+    {
+        let query_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match process.tree.active_process_count() {
+                Ok(count) if count == 0 || Instant::now() >= query_deadline => {
+                    result.active_members_after_finish = Some(count);
+                    break;
+                }
+                Ok(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+                Err(_) => break,
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "test_helpers")]
+fn observe_probe_line(value: &serde_json::Value, result: &mut BrowserProbeResult) {
+    let Some(phase) = value.get("phase").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let allowed = [
+        "browser_spawned",
+        "browser_ready",
+        "target_created",
+        "target_attached",
+        "runtime_enabled",
+        "runtime_evaluated",
+        "process_observation",
+        "held_for_cancel",
+        "page_enabled",
+        "failure",
+        "cleanup",
+    ];
+    if !allowed.contains(&phase) {
+        return;
+    }
+    result.phases.push(phase.to_string());
+    if phase == "browser_spawned" {
+        result.browser_pid = value
+            .get("browser_pid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok());
+    }
+    if phase == "process_observation" {
+        if let Some(processes) = value.get("processes").and_then(serde_json::Value::as_array) {
+            result.renderer_pids = processes
+                .iter()
+                .filter(|entry| {
+                    entry.get("type").and_then(serde_json::Value::as_str) == Some("renderer")
+                })
+                .filter_map(|entry| entry.get("pid").and_then(serde_json::Value::as_u64))
+                .filter_map(|pid| u32::try_from(pid).ok())
+                .take(32)
+                .collect();
+        }
+    }
+    if phase == "failure" {
+        const FAILED_AT: [&str; 7] = [
+            "arguments",
+            "browser_ready",
+            "target_create",
+            "target_attach",
+            "runtime_enable",
+            "runtime_evaluate",
+            "page_enable",
+        ];
+        const ERROR_CLASSES: [&str; 5] = [
+            "invalid_arguments",
+            "timeout",
+            "websocket",
+            "access_denied",
+            "other",
+        ];
+        result.failed_at = value
+            .get("failed_at")
+            .and_then(serde_json::Value::as_str)
+            .filter(|stage| FAILED_AT.contains(stage))
+            .map(str::to_string);
+        result.error_class = value
+            .get("error_class")
+            .and_then(serde_json::Value::as_str)
+            .filter(|class| ERROR_CLASSES.contains(class))
+            .map(str::to_string);
+    }
+    if phase == "failure" || phase == "cleanup" {
+        if let Some(stderr) = value.get("stderr") {
+            result.browser_stderr_bytes = stderr.get("bytes").and_then(serde_json::Value::as_u64);
+            result.browser_stderr_sandbox |=
+                stderr.get("sandbox").and_then(serde_json::Value::as_bool) == Some(true);
+            result.browser_stderr_access_denied |= stderr
+                .get("access_denied")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            result.browser_stderr_renderer |=
+                stderr.get("renderer").and_then(serde_json::Value::as_bool) == Some(true);
+            result.browser_stderr_win32_access_denied |= stderr
+                .get("win32_access_denied")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            result.browser_stderr_process_create |= stderr
+                .get("process_create")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            result.browser_stderr_job_object |= stderr
+                .get("job_object")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
         }
     }
 }

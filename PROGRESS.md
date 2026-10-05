@@ -14,14 +14,14 @@
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
 | Historical audited branch | `main` |
-| Current implementation branch | `main` (feature branches merge back via direct merge; PR #3 and the two-shell frontend branch land through `feat/3-two-shell-frontend-integration`); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
+| Current implementation branch | `codex/remaining_runtime` for the owned follow-up; local `main` remains at `a639ed5` (feature branches previously merged back via direct merge; PR #3 and the two-shell frontend branch land through `feat/3-two-shell-frontend-integration`); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), and DSH sessions (control protocol v7) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7 minimum, CLI and terminal UI; no live vendor or persistence evidence), plus runtime authority/gateway/controller foundations (ADR 033) and an explicit model supervisor driver (ADR 034: schema 7, Control v8, offline fixtures; live and native acceptance incomplete) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), and DSH sessions (control protocol v7 minimum), plus explicit model-supervisor start/status (control protocol v8) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -2918,3 +2918,81 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   route identity is not persisted. If both ledger publication and verified
   cleanup fail, the resource is retained for later cleanup; the double-failure
   path is not injected by the new regression.
+
+### 2026-10-05 - Runtime execution-authority increment (ADR 033)
+
+**Status:** PARTIAL / OFFLINE INCREMENT. Full Version 2 acceptance remains BLOCKED.
+Base HEAD is `a639ed5befdf232af4f4aa0f2d7d4dc55cf3c146`; source is uncommitted
+on `codex/remaining_runtime` in an owned integration worktree. The original
+37-scenario benchmark and historical evidence remain unchanged.
+
+**Implemented**
+- Independent read/search/edit/write/development-test grants, contract authority,
+  guarded fixture profiles and persisted effective dispatch/reviewer identity.
+- Bounded daemon AAG transport, fake-server permits and a candidate compiler using
+  existing deterministic admission. Durable model-call accounting includes the
+  pre-admission compiler charge; rejected/unknown results never authorize replay.
+- Native-controller/owned-adapter effects with fenced ownership and single-claim
+  input outboxes, plus writer-derived checkpoint foundations that refuse missing
+  active-job, message or artifact joins.
+- SQLite schema 6; historical attempt/receipt readability and fail-closed legacy
+  execution. Workflow status/export schema 2; Control remains v7.
+- Source/operator owned-path provenance, persisted nonpromotable negative-control
+  verifier receipts, operational optimizer validation and direct Windows bootstrap.
+
+**Validation and limits**
+- Exact executed commands, outcomes, platform coverage, requirement/test mapping
+  and resource state are recorded in [runtime enhancement evidence](docs/evidence/runtime_enhancement_increment.md)
+  and its [JSON record](docs/evidence/runtime_enhancement_increment.json).
+- Fixtures do not certify live vendor grants, AAG request-scoped route identity,
+  native Windows TUI sessions, browser containment or complete recovery.
+- Live model supervisor, production native Control/UI/backend, affirmative approval
+  delivery, standalone review, semantic prompt editing and full active workflow
+  checkpoint/reconciliation remain future increments.
+- No global context/compaction setting, live gateway default, account, deployment,
+  publication or original-checkout source was changed by this increment. No commit,
+  merge or push was performed for this follow-up.
+- Schema-6 rollback requires matching pre-upgrade database/private-state backups;
+  a source checkout does not downgrade state. See ADR 033.
+
+### 2026-10-06 - Model supervisor and Windows launch repair (ADR 034)
+
+**Status:** PARTIAL / OFFLINE INCREMENT. The model driver now executes genuine
+admitted workflow effects. Full Version 2 acceptance remains BLOCKED.
+Source continues on `codex/remaining_runtime`, based on `a639ed5`; the local main
+checkout and pre-existing `ui_check/` are preserved.
+
+**Implemented**
+- Explicit model/deterministic driver selection with one supervised run owner.
+- Writer-bound observations, durable model rounds and claimed action intents;
+  real worker/reviewer/verifier/integration effects retain existing gates.
+- Dependency-safe task eligibility, observed worker overlap, exact replay and
+  cross-round conflict handling, bounded malformed/rejected-response repair,
+  owned post-claim receipts and restart fencing for unknown outcomes.
+- Additive store schema 7 and Control v8 supervisor start/status. DSH keeps its
+  v7 minimum and old operations retain their previous protocol requirements.
+- Windows token preflight before acceptance tool children, process-scoped error
+  handling and explicit DLL-initialization status. Paired project Ruff probes
+  fail under the restricted token and succeed under normal host access; paired
+  Node probes succeed. The precise denied DLL/subsystem is unknown.
+
+**Validation and limits**
+- Store/workflow tests: 257 passed. Final daemon unit/supervisor regressions:
+  116 passed, including an actual two-worker timestamp-overlap assertion.
+- The complete Rust workspace run recorded 924 passed, 3 failed, 3 ignored.
+  The stale Control-version assertion was repaired and its whole 111-test unit
+  target passed. Two existing cooperative browser-verifier failures remain
+  under diagnosis at that stage; these counts are not a green workspace claim.
+- The final focused cooperative rerun records two acceptance failures with the
+  exact prerequisite `browser_page_unavailable:page_enable`, zero candidate
+  checks. Blank-page preflight tests pass (5); the unchanged good frontend passes
+  all 16 checks directly. Containment is preserved and the host gate stays blocked.
+- Python: 132 passed; Ruff formatting/lint and scoped mypy (32 source files)
+  passed. Workspace formatting and all-target/all-feature Clippy passed.
+- [Current evidence and remaining scope](docs/evidence/model_supervisor_increment.md)
+  separates these executions from historical records and scenario acceptance.
+- Production native backend/Control/UI, affirmative approval, standalone review,
+  semantic prompt edit, complete recovery joins and live route/vendor qualification
+  remain incomplete. Unsupported supervisor tools refuse with typed diagnostics.
+- No live inference, global configuration, deployment or unrelated process change
+  was performed. Rollback from schema 7 requires matching pre-upgrade backups.

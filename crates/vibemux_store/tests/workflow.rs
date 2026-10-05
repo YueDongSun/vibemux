@@ -1,4 +1,4 @@
-//! Store schema 5 workflow transactions (ADR 031): admission, contract
+//! Store schema 6 workflow transactions (ADRs 031/033): admission, contract
 //! generations, fenced leases, attempts, receipts and gates, messages,
 //! content index, policy versions, and restart reconciliation.
 
@@ -18,7 +18,7 @@ use vibemux_harness::{
 use vibemux_store::{
     AttemptPurpose, ClaimFence, ContentEntry, ContentKind, ContentState, HarnessDispatchAdmission,
     HarnessDispatchFinish, LeaseFence, LeaseRequest, MessageChange, SqliteStore, StoreError,
-    WorkflowAttemptAdmission, WorkflowAttemptRecord,
+    WorkflowAttemptAdmission, WorkflowAttemptRecord, WorkflowExecutionBinding,
 };
 use vibemux_types::{Run, RunSpec, Task, TaskSpec as CanonicalTaskSpec};
 use vibemux_workflow::{
@@ -41,6 +41,89 @@ use vibemux_workflow::{
     task_spec::WorkflowMode,
     workflow_record::{ContentStoreMode, TaskProgress, WorkflowRecord, WorkflowTask},
 };
+
+#[test]
+fn derived_negative_control_is_auditable_but_cannot_become_a_candidate() {
+    let (_file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let (_, _, candidate) = collected(
+        &mut store,
+        workflow.workflow_id,
+        "track_a",
+        "slot_a",
+        "derived_source",
+        "server v1",
+    );
+    let mut manifest = candidate.manifest.clone().expect("source manifest");
+    let mutated_bytes = b"throw new Error('negative control'); server v1";
+    manifest.entries[0].change = SnapshotChange::Write {
+        sha256: Sha256Digest::of(mutated_bytes),
+        byte_count: mutated_bytes.len() as u64,
+    };
+    let subject = manifest.digest().expect("derived manifest digest");
+    let mut derived = verification(
+        workflow.workflow_id,
+        Some("track_a"),
+        subject,
+        vec![candidate.candidate.contract_id],
+        SuiteStatus::Failed,
+        1,
+    );
+    derived.schema_version = 2;
+    derived.derived_subject = Some(vibemux_workflow::gates::DerivedVerifierSubject {
+        source_candidate_digest: candidate.candidate.candidate_digest,
+        mutation_id: "prepend_throw_v1".into(),
+        manifest,
+    });
+    store
+        .record_workflow_receipt(
+            workflow.workflow_id,
+            &WorkflowReceipt::Verification(derived.clone()),
+            None,
+            at(9),
+        )
+        .expect("derived receipt persists without candidate promotion");
+    let snapshot = store
+        .workflow_snapshot(workflow.workflow_id)
+        .expect("snapshot")
+        .expect("workflow");
+    assert!(snapshot.receipts.iter().any(
+        |receipt| matches!(receipt, WorkflowReceipt::Verification(value) if value == &derived)
+    ));
+    assert_eq!(
+        code(
+            store
+                .accept_workflow_candidate(
+                    workflow.workflow_id,
+                    current(&store, workflow.workflow_id).version,
+                    &id("track_a"),
+                    subject,
+                    at(10)
+                )
+                .expect_err("a derived verifier subject is not an admitted candidate")
+        ),
+        "store_workflow_gate_failed"
+    );
+
+    let mut forged = derived;
+    forged.receipt_id = Uuid::new_v4();
+    let subject = forged.derived_subject.as_mut().expect("derived subject");
+    subject.manifest.entries[0].path = "src/unowned.mjs".into();
+    forged.subject_digest = subject.manifest.digest().expect("forged digest");
+    assert_eq!(
+        code(
+            store
+                .record_workflow_receipt(
+                    workflow.workflow_id,
+                    &WorkflowReceipt::Verification(forged),
+                    None,
+                    at(11)
+                )
+                .expect_err("derived control cannot expand source paths")
+        ),
+        "store_workflow_derived_subject_invalid"
+    );
+}
 
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -75,6 +158,15 @@ fn open_store() -> (NamedTempFile, SqliteStore) {
     (file, store)
 }
 
+fn authority_spec(task: &str, version: u32) -> vibemux_workflow::task_spec::TaskSpec {
+    let mut spec = vibemux_workflow::task_spec::fixtures::track_a_spec();
+    spec.task_key = id(task);
+    spec.contract_version = version;
+    spec.base_commit = BASE.into();
+    spec.communication_policy.may_message.clear();
+    spec
+}
+
 fn contract(task: &str, version: u32, previous: Option<Sha256Digest>) -> ContractArtifact {
     ContractArtifact {
         schema_version: 1,
@@ -82,7 +174,7 @@ fn contract(task: &str, version: u32, previous: Option<Sha256Digest>) -> Contrac
         workflow_key: "taskboard_lite".into(),
         task_key: task.into(),
         contract_version: version,
-        task_spec_digest: Sha256Digest::of(format!("spec:{task}:{version}").as_bytes()),
+        task_spec_digest: authority_spec(task, version).digest().expect("spec digest"),
         policy_digest: Sha256Digest::of(b"policy"),
         template_digest: Sha256Digest::of(b"template"),
         template_version: "worker_v1".into(),
@@ -175,6 +267,15 @@ fn running_workflow(store: &mut SqliteStore, tasks: &[&str]) -> WorkflowRecord {
     store
         .prepare_workflow(&record, &contracts, at(0))
         .expect("prepare");
+    for contract in &contracts {
+        store
+            .bind_workflow_contract_authority(
+                contract.contract_id,
+                &authority_spec(&contract.task_key, contract.contract_version),
+                at(0),
+            )
+            .expect("authority");
+    }
     for slot_id in ["slot_a", "slot_b", "slot_r"] {
         store
             .upsert_workflow_slot(&slot(slot_id), at(0))
@@ -218,6 +319,94 @@ fn current(store: &SqliteStore, workflow_id: Uuid) -> WorkflowRecord {
         .expect("workflow")
 }
 
+#[test]
+fn launch_authority_is_exact_and_cannot_be_inflated_on_retry() {
+    let (_file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let owned = lease(&mut store, &workflow, "track_a", "slot_a", "tree");
+    let mut admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &owned,
+        "tree",
+        AttemptPurpose::Implement,
+    );
+    // The admitted fixture has no WriteFiles or SearchFiles authority.
+    admission
+        .execution
+        .effective_tools
+        .insert(vibemux_workflow::task_spec::ToolName::WriteFiles);
+    assert_eq!(
+        store
+            .admit_workflow_attempt(&admission)
+            .expect_err("inflation refused")
+            .code(),
+        "store_workflow_launch_grant_mismatch"
+    );
+    admission
+        .execution
+        .effective_tools
+        .remove(&vibemux_workflow::task_spec::ToolName::WriteFiles);
+    let committed = store
+        .admit_workflow_attempt(&admission)
+        .expect("exact authority");
+    assert_eq!(committed.attempt.schema_version, 2);
+    assert_eq!(
+        committed.attempt.execution.as_ref(),
+        Some(&admission.execution)
+    );
+    let mut retry = admission.clone();
+    retry.execution.effective_route.model_alias = Some("different_alias".into());
+    assert_eq!(
+        store
+            .admit_workflow_attempt(&retry)
+            .expect_err("changed retry")
+            .code(),
+        "store_workflow_attempt_conflict"
+    );
+    assert_eq!(current(&store, workflow.workflow_id).tasks[0].turns_used, 1);
+}
+
+#[test]
+fn legacy_contract_without_registered_authority_stays_readable_but_cannot_execute() {
+    let (_file, mut store) = open_store();
+    let workflow = record("legacy_authority", &["track_a"]);
+    store
+        .prepare_workflow(&workflow, &[contract("track_a", 1, None)], at(0))
+        .expect("legacy prepare");
+    store
+        .upsert_workflow_slot(&slot("slot_a"), at(0))
+        .expect("slot");
+    let workflow = store
+        .transition_workflow(workflow.workflow_id, 1, WorkflowPhase::Running, None, at(1))
+        .expect("start")
+        .record;
+    let owned = lease(&mut store, &workflow, "track_a", "slot_a", "tree");
+    let admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &owned,
+        "tree",
+        AttemptPurpose::Implement,
+    );
+    assert_eq!(
+        store
+            .workflow_contract(admission.contract_id)
+            .expect("read")
+            .expect("contract")
+            .task_key,
+        "track_a"
+    );
+    assert_eq!(
+        store
+            .admit_workflow_attempt(&admission)
+            .expect_err("legacy denied")
+            .code(),
+        "store_workflow_authority_legacy_unverified"
+    );
+    assert_eq!(current(&store, workflow.workflow_id).tasks[0].turns_used, 0);
+}
+
 fn attempt_admission(
     store: &SqliteStore,
     workflow_id: Uuid,
@@ -237,6 +426,43 @@ fn attempt_admission(
         contract_id: task.contract_id,
         purpose,
         session_id: Uuid::new_v4(),
+        execution: WorkflowExecutionBinding {
+            task_spec_digest: authority_spec(lease.task_key.as_str(), task.contract_version)
+                .digest()
+                .expect("digest"),
+            effective_tools: vibemux_workflow::execution_authority::ExecutionAuthority::from_spec(
+                &authority_spec(lease.task_key.as_str(), task.contract_version),
+            )
+            .expect("authority")
+            .effective_tools(matches!(
+                purpose,
+                AttemptPurpose::Answer | AttemptPurpose::Review
+            )),
+            harness_profile: "claude_fixture_writable_v1".into(),
+            route_config_digest: Sha256Digest::of(b"workflow config"),
+            evidence_class: EvidenceClass::Fixture,
+            route_label: if purpose == AttemptPurpose::Review {
+                "reviewer_alias"
+            } else {
+                "worker_a_alias"
+            }
+            .into(),
+            effective_route: vibemux_workflow::execution_authority::EffectiveRouteIdentity {
+                harness: AgentKind::Claude,
+                protocol: NativeProtocol::ClaudeStreamJson,
+                model_alias: Some(
+                    if purpose == AttemptPurpose::Review {
+                        "reviewer_model"
+                    } else {
+                        "worker_model"
+                    }
+                    .into(),
+                ),
+                endpoint: None,
+                config_digest: Sha256Digest::of(b"workflow config"),
+                profile: "claude_fixture_writable_v1".into(),
+            },
+        },
         dispatch: HarnessDispatchAdmission {
             request_id: Uuid::new_v4(),
             harness: AgentKind::Claude,
@@ -383,6 +609,7 @@ fn verification(
         task_key: task_key.map(id),
         contract_ids: contracts,
         subject_digest: subject,
+        derived_subject: None,
         suites: vec![suite(status, failed)],
         verifier_files_digest: Sha256Digest::of(b"verifier"),
         tool_versions: BTreeMap::new(),
@@ -472,6 +699,10 @@ fn reviewed(
         reviewer_run_id: run_id(store, attempt.request_id),
         reviewer_session_id: attempt.session_id,
         reviewer_route: "reviewer_alias".into(),
+        effective_route: attempt
+            .execution
+            .as_ref()
+            .map(|execution| execution.effective_route.clone()),
         reviewer_harness: AgentKind::Claude,
         verdict: ReviewVerdict::Pass,
         findings_count: 0,
@@ -1093,6 +1324,7 @@ fn the_gate_needs_an_independent_review_and_a_passing_verifier_on_the_same_candi
         reviewer_run_id: Uuid::new_v4(),
         reviewer_session_id: Uuid::new_v4(),
         reviewer_route: "reviewer_alias".into(),
+        effective_route: None,
         reviewer_harness: AgentKind::Codex,
         verdict: ReviewVerdict::Pass,
         findings_count: 0,
@@ -1283,6 +1515,10 @@ fn review_verdicts_require_appropriate_dispatch_phase() {
             reviewer_run_id: run_id(&store, attempt.request_id),
             reviewer_session_id: attempt.session_id,
             reviewer_route: "reviewer_alias".into(),
+            effective_route: attempt
+                .execution
+                .as_ref()
+                .map(|execution| execution.effective_route.clone()),
             reviewer_harness: AgentKind::Claude,
             verdict: ReviewVerdict::Pass,
             findings_count: 0,
@@ -2455,7 +2691,13 @@ fn policy_versions_promote_for_future_admissions_and_roll_back() {
         .expect("baseline");
     assert_eq!(first.version.version, 1);
     let mut candidate = OptimizablePolicy::baseline();
-    candidate.summary_budget_bytes = 4096;
+    candidate.template_overrides.insert(
+        "worker_v1".into(),
+        std::collections::BTreeMap::from([(
+            "worker_method".into(),
+            "Check the admitted requirements before reporting.".into(),
+        )]),
+    );
     let second = store
         .promote_prompt_policy(&candidate, at(2))
         .expect("candidate");

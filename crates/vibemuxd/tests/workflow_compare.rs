@@ -96,8 +96,8 @@ async fn the_trusted_suite_selects_the_correct_candidate_and_refuses_the_defect(
     // The negative control is a daemon-made mutation of an admitted
     // candidate: it is never a worker candidate, the trusted suite must fail
     // it, and the selector excludes it as a mutation artifact. Its verifier
-    // result survives only as the exclusion reasons of the selection
-    // receipt; the store refuses a verification of a non-candidate subject.
+    // result is persisted with explicit derived-subject provenance. It cannot
+    // become an admitted worker candidate or a comparison winner.
     let selection = &status["receipts"]["selection"];
     let worker_digests: Vec<&Value> = workers
         .iter()
@@ -112,6 +112,12 @@ async fn the_trusted_suite_selects_the_correct_candidate_and_refuses_the_defect(
     let reasons = control["reasons"].as_array().expect("reasons");
     assert!(reasons.contains(&json!("selection_mutation_artifact")));
     assert!(reasons.contains(&json!("gate_suite_failed")));
+    let verification = verification_of(&status, &control["candidate_digest"]);
+    assert!(verification["derived_subject"]["source_candidate_digest"].is_string());
+    assert_eq!(
+        verification["derived_subject"]["mutation_id"],
+        "prepend_throw_v1"
+    );
     let defective_exclusion = selection["excluded"]
         .as_array()
         .expect("excluded")

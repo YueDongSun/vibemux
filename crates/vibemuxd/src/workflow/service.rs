@@ -31,6 +31,7 @@ use vibemux_workflow::{
         EligibilityReport, EligibilityRequest, EvidenceLevel, InterfaceMode, ParallelismPlan,
         SlotCapability, SlotFacts, evaluate_eligibility, plan_parallelism,
     },
+    supervisor::{SupervisorExecution, SupervisorMode, SupervisorStatus},
 };
 use vibemux_workspace::WorkspaceManager;
 
@@ -222,6 +223,8 @@ struct ServiceInner {
     lifecycle_gate: tokio::sync::Semaphore,
     /// At most one prompt-policy evaluation runs at a time.
     evaluation: tokio::sync::Mutex<()>,
+    model_factory: Option<Arc<dyn super::model_compiler::WorkflowModelGatewayFactory>>,
+    compiler_gate: tokio::sync::Semaphore,
 }
 
 struct RunRegistry {
@@ -234,6 +237,7 @@ struct RunRegistry {
 struct ActiveRun {
     control: watch::Sender<Control>,
     start_request_id: Uuid,
+    mode: SupervisorMode,
 }
 
 impl ServiceInner {
@@ -255,6 +259,15 @@ impl ServiceInner {
 }
 
 impl WorkflowService {
+    #[cfg(feature = "test_helpers")]
+    pub(crate) fn with_model_factory(
+        mut self,
+        factory: Arc<dyn super::model_compiler::WorkflowModelGatewayFactory>,
+    ) -> Result<Self, WorkflowError> {
+        let inner = Arc::get_mut(&mut self.inner).ok_or(WorkflowError::Internal)?;
+        inner.model_factory = Some(factory);
+        Ok(self)
+    }
     /// Pins the config, records slot observations, and reconciles
     /// workflows a previous daemon left mid-run. Never fails: a missing or
     /// invalid config leaves the service unavailable with that code, while
@@ -310,6 +323,8 @@ impl WorkflowService {
                 }),
                 lifecycle_gate: tokio::sync::Semaphore::new(1),
                 evaluation: tokio::sync::Mutex::new(()),
+                model_factory: None,
+                compiler_gate: tokio::sync::Semaphore::new(1),
             }),
         }
     }
@@ -345,13 +360,30 @@ impl WorkflowService {
     ) -> Result<PrepareResponse, WorkflowError> {
         self.accepting()?;
         let setup = self.inner.setup()?;
-        let request = WorkflowRequest::parse(request)?;
+        let mut request = WorkflowRequest::parse(request)?;
         let policy_bytes = serde_json::to_vec(&policy).map_err(|_| WorkflowError::PolicyInvalid)?;
         if policy_bytes.len() > MAX_POLICY_BYTES {
             return Err(WorkflowError::PolicyInvalid);
         }
         let policy =
             OperatorPolicy::parse(&policy_bytes).map_err(|_| WorkflowError::PolicyInvalid)?;
+        if request.task_specs.is_empty() {
+            let _compiler = self
+                .inner
+                .compiler_gate
+                .acquire()
+                .await
+                .map_err(|_| WorkflowError::ShuttingDown)?;
+            self.accepting()?;
+            super::model_compiler::compile_missing_specs(
+                &self.inner.writer,
+                &setup,
+                self.inner.model_factory.as_ref(),
+                &mut request,
+                &policy,
+            )
+            .await?;
+        }
         let compile_setup = Arc::clone(&setup);
         let workflow_id = workflow_id_for(&request.request_key);
         let prepared = tokio::task::spawn_blocking(move || {
@@ -366,6 +398,7 @@ impl WorkflowService {
                     canonical_root: &compile_setup.canonical_root,
                     head_commit: &head,
                     slot_protocols: &compile_setup.slot_protocols,
+                    slot_profiles: &compile_setup.slot_profiles,
                     template_overrides: &overrides,
                     now_ms: now_ms(),
                 },
@@ -385,6 +418,45 @@ impl WorkflowService {
             "store_workflow_request_conflict" => WorkflowError::RequestConflict,
             _ => WorkflowError::from(error),
         })?;
+        // A crash between preparation and this authority admission leaves the
+        // workflow readable but unable to execute. Repeated binding is immutable.
+        for contract in &prepared.contracts {
+            let spec = prepared
+                .plan
+                .specs
+                .get(
+                    &SpecIdentifier::new(&contract.task_key)
+                        .map_err(|_| WorkflowError::Internal)?,
+                )
+                .ok_or(WorkflowError::Internal)?
+                .clone();
+            let writer = self.inner.writer.clone();
+            let contract_id = contract.contract_id;
+            call_writer(move || {
+                writer.bind_workflow_contract_authority(
+                    contract_id,
+                    spec.clone(),
+                    OffsetDateTime::now_utc(),
+                )
+            })
+            .await?;
+        }
+        let writer = self.inner.writer.clone();
+        let plan_value =
+            serde_json::to_value(&prepared.plan).map_err(|_| WorkflowError::Internal)?;
+        call_writer(move || {
+            writer.bind_recovery_plan(
+                workflow_id,
+                plan_value.clone(),
+                1,
+                vibemux_workflow::checkpoint::ContextSettingsIdentity {
+                    configured_context_tokens: None,
+                    compaction_settings_digest: None,
+                },
+                OffsetDateTime::now_utc(),
+            )
+        })
+        .await?;
         let state = setup.state.clone();
         let plan = prepared.plan.clone();
         tokio::task::spawn_blocking(move || state.write_plan(workflow_id, &plan))
@@ -416,11 +488,14 @@ impl WorkflowService {
     async fn active_template_overrides(&self) -> Result<TemplateOverrides, WorkflowError> {
         let writer = self.inner.writer.clone();
         let versions = call_writer(move || writer.prompt_policy_versions()).await?;
-        Ok(
-            active_policy(&versions).map_or_else(TemplateOverrides::new, |record| {
-                record.policy.template_overrides.clone()
-            }),
-        )
+        let Some(record) = active_policy(&versions) else {
+            return Ok(TemplateOverrides::new());
+        };
+        record
+            .policy
+            .validate_operational()
+            .map_err(|error| WorkflowError::Optimizer { code: error.code() })?;
+        Ok(record.policy.template_overrides.clone())
     }
 
     /// Starts (or resumes) the coordinator of the workflow whose start
@@ -430,6 +505,44 @@ impl WorkflowService {
         &self,
         contract: Sha256Digest,
         request_id: Uuid,
+    ) -> Result<StartResponse, WorkflowError> {
+        self.start_with_mode(contract, request_id, SupervisorMode::Deterministic)
+            .await
+    }
+
+    /// An explicit operator operation selects model supervision. Merely
+    /// configuring a supervisor route leaves the deterministic path unchanged.
+    pub async fn start_model_supervisor(
+        &self,
+        contract: Sha256Digest,
+        request_id: Uuid,
+    ) -> Result<StartResponse, WorkflowError> {
+        self.start_with_mode(contract, request_id, SupervisorMode::Model)
+            .await
+    }
+
+    pub async fn supervisor_status(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<SupervisorStatus, WorkflowError> {
+        let writer = self.inner.writer.clone();
+        let mut status = call_writer(move || writer.supervisor_status(workflow_id))
+            .await?
+            .ok_or(WorkflowError::NotFound)?;
+        // Keep the native Control response within its existing frame bound.
+        // Full durable rounds/actions remain available through the writer.
+        let first_round = status.rounds.len().saturating_sub(8);
+        status.rounds.drain(..first_round);
+        let first_action = status.actions.len().saturating_sub(8);
+        status.actions.drain(..first_action);
+        Ok(status)
+    }
+
+    async fn start_with_mode(
+        &self,
+        contract: Sha256Digest,
+        request_id: Uuid,
+        mode: SupervisorMode,
     ) -> Result<StartResponse, WorkflowError> {
         let _lifecycle_permit = self
             .inner
@@ -445,7 +558,7 @@ impl WorkflowService {
             let mut runs = self.inner.runs();
             while runs.tasks.try_join_next().is_some() {}
             if let Some(active) = runs.active.get(&workflow_id) {
-                return if active.start_request_id == request_id {
+                return if active.start_request_id == request_id && active.mode == mode {
                     Ok(StartResponse {
                         workflow_id,
                         phase: record.phase,
@@ -460,6 +573,27 @@ impl WorkflowService {
         if !resumable(record.phase) && record.phase != WorkflowPhase::Running {
             return Err(WorkflowError::InvalidPhase);
         }
+        let gateway = if mode == SupervisorMode::Model {
+            let config = setup
+                .config
+                .config
+                .gateway
+                .as_ref()
+                .ok_or(WorkflowError::Gateway)?;
+            config
+                .binding(vibemux_workflow::gateway::RouteRole::Supervisor)
+                .ok_or(WorkflowError::Gateway)?;
+            let factory =
+                self.inner
+                    .model_factory
+                    .as_ref()
+                    .ok_or_else(|| WorkflowError::Dispatch {
+                        code: "gateway_live_attestation_unavailable".into(),
+                    })?;
+            Some(factory.for_workflow(workflow_id, config, setup.config.digest)?)
+        } else {
+            None
+        };
         let verifier = Arc::clone(&setup);
         tokio::task::spawn_blocking(move || verifier.config.check_verifier_unchanged())
             .await
@@ -496,6 +630,26 @@ impl WorkflowService {
         let ledger = tokio::task::spawn_blocking(move || state.read_ledger(workflow_id))
             .await
             .map_err(|_| WorkflowError::Internal)??;
+        let current = self.record(workflow_id).await?;
+        let start = vibemux_store::SupervisorStart {
+            workflow_id,
+            start_request_id: request_id,
+            expected_version: current.version,
+            mode,
+            full_plan: serde_json::to_value(&plan).map_err(|_| WorkflowError::Internal)?,
+            config_digest: setup.config.digest,
+            slot_harnesses: setup
+                .config
+                .config
+                .slots
+                .iter()
+                .map(|slot| (slot.slot_id.clone(), slot.harness))
+                .collect(),
+            timestamp: OffsetDateTime::now_utc(),
+        };
+        let writer = self.inner.writer.clone();
+        let execution =
+            call_writer(move || writer.begin_supervisor_execution(start.clone())).await?;
         let (control, receiver) = watch::channel(Control::Run);
         let context = RunContext {
             writer: self.inner.writer.clone(),
@@ -523,10 +677,12 @@ impl WorkflowService {
                     ActiveRun {
                         control,
                         start_request_id: request_id,
+                        mode,
                     },
                 );
                 runs.reports.remove(&workflow_id);
-                runs.tasks.spawn(drive(weak, context, units, width));
+                runs.tasks
+                    .spawn(drive(weak, context, units, width, execution, gateway));
                 true
             }
         };
@@ -1253,9 +1409,28 @@ fn planned_sessions(
 
 /// Runs one coordinator and records how it ended. A cancellation committed
 /// while the coordinator was already ending is finished here.
-async fn drive(inner: Weak<ServiceInner>, context: RunContext, units: Vec<Unit>, width: usize) {
+async fn drive(
+    inner: Weak<ServiceInner>,
+    context: RunContext,
+    units: Vec<Unit>,
+    width: usize,
+    execution: SupervisorExecution,
+    gateway: Option<Arc<dyn super::model_runtime::ModelGateway>>,
+) {
     let workflow_id = context.workflow_id;
-    let report = coordinator::run(&context, units, width).await;
+    let report = match gateway {
+        Some(gateway) => {
+            super::model_supervisor::run(
+                &context,
+                units,
+                width,
+                execution.clone(),
+                gateway.as_ref(),
+            )
+            .await
+        }
+        None => coordinator::run(&context, units, width).await,
+    };
     if report.end != RunEnd::Cancelled {
         if let Ok(record) = context.record().await {
             if record.phase == WorkflowPhase::CancelRequested {
@@ -1268,6 +1443,20 @@ async fn drive(inner: Weak<ServiceInner>, context: RunContext, units: Vec<Unit>,
             }
         }
     }
+    let writer = context.writer.clone();
+    let generation = execution.generation;
+    let ended = call_writer(move || {
+        writer.end_supervisor_execution(workflow_id, generation, OffsetDateTime::now_utc())
+    })
+    .await;
+    let report = if let Err(error) = ended {
+        RunReport {
+            end: RunEnd::Blocked(error.code().into()),
+            cleanup: report.cleanup,
+        }
+    } else {
+        report
+    };
     if let Some(inner) = inner.upgrade() {
         let mut runs = inner.runs();
         runs.active.remove(&workflow_id);
