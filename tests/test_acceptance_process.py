@@ -101,17 +101,17 @@ def test_process_creation_preserves_argv_and_windows_noninteractive_flags(
 ) -> None:
     captured: dict[str, object] = {}
 
-    class FakeProcess:
+    class Fake_Process:
         pid = 123
 
         @staticmethod
         def wait(timeout: float) -> int:
             return 9
 
-    def fake_popen(argv: list[str], **kwargs: object) -> FakeProcess:
+    def fake_popen(argv: list[str], **kwargs: object) -> Fake_Process:
         captured["argv"] = argv
         captured.update(kwargs)
-        return FakeProcess()
+        return Fake_Process()
 
     monkeypatch.setattr(process_execution, "require_launch_context", lambda: None)
     monkeypatch.setattr(process_execution.subprocess, "Popen", fake_popen)
