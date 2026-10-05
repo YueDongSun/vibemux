@@ -3,6 +3,7 @@
 ## Scope
 
 - Task: approved continuation of the VibeMux runtime enhancement.
+- Implementation commit: `3a178852a57d6151fbfd135238eaab69940a228c`.
 - Base: `c8ad7e09c582370943754b87dcc342be4c690d09`, owned branch
   `codex/remaining_runtime`. Main and pre-existing `ui_check/` remain untouched.
 - Owned modules: supervisor context contracts, store commands, daemon effects,
@@ -145,3 +146,12 @@ does not make its observed browser failures pass. The older optimizer directory
 with unknown ownership remains excluded from cleanup. Temporary current worktrees,
 logs and build/test scratch are removed only after source preservation and terminal
 execution evidence, with compact repository receipts retained.
+
+
+Final cleanup verified no task-owned check process before removing four clean
+worker/reviewer checkouts normally. Complete writer and browser drafts remain
+recoverable on their snapshot branches (`308bed0`, `239e717`). Task-created build
+outputs, fixture scratch, raw logs, temporary reports and patch copies were removed.
+Compact repository evidence and the exact Codex-owned continuity checkpoint remain.
+Main remains `a639ed5` and `ui_check/` is preserved. No push, deployment or unknown
+resource deletion was performed.

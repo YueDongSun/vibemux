@@ -4,7 +4,7 @@
   "recorded_date": "2026-10-06",
   "base_head": "c8ad7e09c582370943754b87dcc342be4c690d09",
   "branch": "codex/remaining_runtime",
-  "source_delivery": "reviewed integration tree before local commit",
+  "source_delivery": "local integration commit; no main advancement or push",
   "store_schema": 8,
   "control_version": 9,
   "acceptance_verdict": "BLOCKED",
@@ -198,9 +198,16 @@
     "live AAG request-scoped identity and harness qualification"
   ],
   "resources": {
-    "cleanup": "pending after final source preservation",
-    "main": "a639ed5; pre-existing ui_check retained",
-    "unknown_optimizer_directory": "excluded",
-    "unrelated_processes_modified": false
-  }
+    "cleanup": "verified complete for four clean task-owned worker/reviewer checkouts and task-created build/test scratch",
+    "snapshot_branches_retained": {
+      "codex/supervisor_context": "308bed0af94062acff456b1fdea1169d122c9bfa",
+      "codex/browser_probe": "239e7179735c981a13296e6f6008451826b59c82"
+    },
+    "removal": "normal git worktree remove after branch/head/cleanliness checks",
+    "main": "a639ed5befdf232af4f4aa0f2d7d4dc55cf3c146; ui_check retained",
+    "unknown_optimizer_directory": "excluded and untouched",
+    "unrelated_processes_modified": false,
+    "ongoing_check_processes": "none before cleanup"
+  },
+  "implementation_commit": "3a178852a57d6151fbfd135238eaab69940a228c"
 }
