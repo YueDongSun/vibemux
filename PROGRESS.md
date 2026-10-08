@@ -2918,3 +2918,33 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   route identity is not persisted. If both ledger publication and verified
   cleanup fail, the resource is retained for later cleanup; the double-failure
   path is not injected by the new regression.
+
+---
+
+### 2026-10-06 — Mobile access research and phased design proposal
+
+**Scope and resulting contracts**
+- Research-and-design deliverable only, owned by this session: two new documents and this amended progress log. No code, store schema, control protocol, plugin contract, A2A surface, or CI change.
+- Files: [docs/mobile_access_design.md](docs/mobile_access_design.md) (new), [docs/adr/033_mobile_access_channels.md](docs/adr/033_mobile_access_channels.md) (new, `Proposed`), `PROGRESS.md` (this entry plus the §5.2 planned-additions tree).
+
+**Status change**
+- None. No milestone status moved. Mobile access is recorded as a proposed design, not accepted scope.
+
+**Implemented**
+- Documentation-only deliverable, no code: an industry survey of bot-class and remote-access patterns (Happy Coder, the OpenClaw gateway with its current release line and official iOS/Android companion apps, lightweight Telegram control bots, Vibe Kanban, the Tailscale serve exposure pattern, Feishu/DingTalk/WeCom bot APIs, the Rust bot crates, and Tauri 2 mobile), a current-state inventory of the existing control IPC and A2A surfaces, and a track-based mobile access design with threat-model notes.
+- Operator priority recorded in the design (2026-10-06): tailnet-exposed read-only mobile PWA first (proposed `crates/vibemux_web`), an OpenClaw gateway connector second (proposed `crates/vibemux_bot`), a direct Feishu adapter third, and an independent iOS/Android app via a Tauri 2 shell reusing the same frontend last.
+- All tracks stay within the accepted security posture: the only new listener is loopback and token-gated, connector channel traffic is outbound-only, every payload follows content-free defaults, and no git-mutation, prompt-relay, or auto-approval action exists at any phase.
+- An October 2026 community-alignment pass (Claude Code Remote Control and mobile apps, Cursor web agents, Omnara, Happy, claude-code-webui, agentapi, ccgram, OpenCode serve/share, OpenClaw webhook plus MCP seams, self-hosted Web Push feasibility, Tauri push plugin status, Feishu long-connection card callbacks) fixed three seams: Track A gains self-hosted web push and one-time QR enrollment with an OpenAPI-described JSON API; Track B uses the gateway's token-protected webhook plus MCP tool registration; Track C gets interactive cards over the Feishu long connection without a public callback URL.
+- A three-reviewer adversarial pass (red-team security, rules-compliance audit, consistency/feasibility) produced 35 findings, and the material ones are folded back into the two documents: the Track B MCP surface mandates bearer auth with constant-time comparison and bounded concurrency; the Track B relay payload is minimal-verbosity-only (never titles) against cross-tool prompt injection through the gateway LLM; the same-logon trust-boundary claim is restated as a deliberate bounded extension of the ADR 020 model (the phone is outside that boundary); the M5 "remote browser access" deferral is recorded as partially reopened; planned-crate labels are corrected from `PLANNED` to `PROPOSED`; enrollment redemption is POST-body-only with a failed-attempt limiter; push endpoints inherit webhook URL validation; daemon-restart generation semantics (`ControlClient::same_generation`) are specified for dedupe keys; and CI ownership of the future PWA build is flagged as an infrastructure change.
+
+**Evidence**
+- Documentation only. No build, test, or live validation was executed for this change; the design cites verified code paths (`ControlOperation` v7 table, dispatch/DSH `after_sequence` cursors, the GUI 5 s `POLL_INTERVAL` polling precedent) and public references listed in the design document.
+
+**Remaining**
+- Acceptance decision on ADR 033; PWA frontend stack and MCP transport dependency reviews under the §16 rules; the M9 security review before any release claim; the Tauri 2 app track requires its own ADR with signing and distribution decisions.
+
+**Known risks**
+- Publishing the Track A web surface to a tailnet is an operator action on the operator's trust boundary; VibeMux still binds loopback only, and no remote-readiness claim is made beyond that documented pattern.
+- Outbound delivery to IM or assistant platforms intentionally exposes task metadata (IDs, states, optionally titles); the design's content policy and allowlists bound but do not eliminate this egress.
+
+---
