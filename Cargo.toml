@@ -15,6 +15,7 @@ members = [
     "crates/vibemux_types",
     "crates/vibemux_workspace",
     "crates/vibemux_workflow",
+    "crates/vibemux_web",
     "crates/vibemux_terminal_observer",
     "crates/vibemuxd",
 ]
@@ -59,6 +60,12 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.11.0"
 subtle = "=2.6.1"
+include_dir = "=0.7.4"
+web-push = { version = "=0.11.0", default-features = false }
+openssl = { version = "=0.10.81", features = ["vendored"] }
+jwt-simple = { version = "=0.12.12", default-features = false, features = ["pure-rust"] }
+qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
+fs4 = { version = "=0.13.1", default-features = false, features = ["sync"] }
 sysinfo = { version = "=0.36.1", default-features = false, features = ["system"] }
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"

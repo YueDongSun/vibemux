@@ -1,0 +1,735 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "VibeMux Read Only Mobile API",
+    "version": "0.1.0",
+    "description": "Pre-alpha Track A. Canonical state is read-only; POST endpoints change web-local enrollment/subscription state only. Every route, including shell and enrollment, requires the instance bearer. Normal QR/browser bootstrap is unavailable without an operator-provided authenticated browser mechanism."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "security": [
+    {
+      "instance_bearer": []
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "operationId": "daemon_health",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "operationId": "task_board",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        },
+        "parameters": [
+          {
+            "name": "after_task_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32,
+              "default": 32
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks/{task_id}": {
+      "get": {
+        "operationId": "task_detail",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          },
+          "404": {
+            "description": "Task not in bounded snapshot"
+          }
+        },
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/push/public_key": {
+      "get": {
+        "operationId": "vapid_public_key",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        }
+      }
+    },
+    "/api/v1/push/subscriptions": {
+      "post": {
+        "operationId": "push_subscribe",
+        "responses": {
+          "204": {
+            "description": "Subscription stored"
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushSubscription"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/enrollment": {
+      "post": {
+        "operationId": "enrollment_redeem",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollmentRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/enrollment/create": {
+      "post": {
+        "operationId": "enrollment_create",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentInvitation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "instance_bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error_code"
+        ],
+        "additionalProperties": false
+      },
+      "LinkedStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "sequence"
+        ],
+        "additionalProperties": false
+      },
+      "Run": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "latest_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "run_id",
+          "harness",
+          "role",
+          "state",
+          "latest_sequence"
+        ],
+        "additionalProperties": false
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "kind": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "latest_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Run"
+            }
+          },
+          "dispatch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "task_id",
+          "kind",
+          "state",
+          "latest_sequence",
+          "runs",
+          "dispatch",
+          "workflow"
+        ],
+        "additionalProperties": false
+      },
+      "DshStatus": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "turns_started": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "completed_turns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed_turns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancelled_turns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "unverified_turns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "records": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "transport_open": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "phase",
+          "provider",
+          "model",
+          "turns_started",
+          "completed_turns",
+          "failed_turns",
+          "cancelled_turns",
+          "unverified_turns",
+          "records",
+          "transport_open"
+        ],
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "daemon": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "healthy": {
+                "type": "boolean"
+              },
+              "store_schema_version": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "healthy",
+              "store_schema_version"
+            ],
+            "additionalProperties": false
+          },
+          "dsh_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DshStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "generation",
+          "observed_at",
+          "stale",
+          "daemon",
+          "dsh_status"
+        ],
+        "additionalProperties": false
+      },
+      "TaskPage": {
+        "type": "object",
+        "properties": {
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            },
+            "maxItems": 32
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "generation",
+          "observed_at",
+          "stale",
+          "tasks",
+          "next_cursor",
+          "truncated"
+        ],
+        "additionalProperties": false
+      },
+      "TaskDetail": {
+        "type": "object",
+        "properties": {
+          "generation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "task": {
+            "$ref": "#/components/schemas/Task"
+          }
+        },
+        "required": [
+          "generation",
+          "observed_at",
+          "stale",
+          "task"
+        ],
+        "additionalProperties": false
+      },
+      "PublicKey": {
+        "type": "object",
+        "properties": {
+          "public_key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key"
+        ],
+        "additionalProperties": false
+      },
+      "PushSubscription": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048
+          },
+          "expirationTime": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "keys": {
+            "type": "object",
+            "properties": {
+              "p256dh": {
+                "type": "string"
+              },
+              "auth": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "p256dh",
+              "auth"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "endpoint",
+          "keys"
+        ],
+        "additionalProperties": false
+      },
+      "EnrollmentRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "EnrollmentResult": {
+        "type": "object",
+        "properties": {
+          "instance_token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_token"
+        ],
+        "additionalProperties": false
+      },
+      "EnrollmentInvitation": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "qr_svg": {
+            "type": "string"
+          },
+          "enrollment_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "token",
+          "expires_in_seconds",
+          "qr_svg",
+          "enrollment_url"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}
