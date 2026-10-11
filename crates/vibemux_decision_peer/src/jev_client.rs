@@ -122,7 +122,8 @@ impl JevClient {
 
     /// Asks one `harness_route` (or other `question_key`) choice question.
     /// Retries once on 429/529 within the total budget; everything else
-    /// (including transport errors and timeouts) returns immediately.
+    /// (including transport errors and timeouts) returns immediately. Every
+    /// attempt is also cut off when the total budget runs out.
     pub async fn ask(
         &self,
         request: &PeerRequest,
@@ -134,7 +135,12 @@ impl JevClient {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
-            match self.send_once(&body, credential, question_key).await {
+            let remaining = self.limits.total_budget.saturating_sub(started.elapsed());
+            let outcome =
+                tokio::time::timeout(remaining, self.send_once(&body, credential, question_key))
+                    .await
+                    .unwrap_or(Err(AttemptOutcome::Terminal(ExternalError::BackendTimeout)));
+            match outcome {
                 Ok(answer) => return Ok(answer),
                 Err(AttemptOutcome::Terminal(error)) => return Err(error),
                 Err(AttemptOutcome::Retryable) => {

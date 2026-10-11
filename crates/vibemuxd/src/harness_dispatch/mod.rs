@@ -310,7 +310,9 @@ impl HarnessDispatchService {
     /// [`Self::submit`] for a request a recorded decision chose (ADR 034
     /// §11). Every gate still runs; the store also checks the decision
     /// binding and consumes the decision in the admission transaction. The
-    /// request that consumed it may repeat.
+    /// request that consumed it may repeat, subject to the same gates and
+    /// request fingerprint as any replay. The receipt's `sequence` is the
+    /// dispatch admission event; the `decision_consumed` event follows it.
     pub async fn submit_decided(
         &self,
         decision_id: Uuid,

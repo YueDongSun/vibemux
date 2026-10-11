@@ -125,9 +125,11 @@ impl DecisionRecord {
         }
     }
 
+    /// A wall clock behind the creation time counts as expired too, so a
+    /// backward clock step cannot stretch the window past [`DECISION_TTL`].
     #[must_use]
     pub fn is_expired(&self, now: OffsetDateTime) -> bool {
-        now >= self.expires_at
+        now < self.created_at || now >= self.expires_at
     }
 
     /// Checks whether `request_id` may dispatch `prompt` under this decision
@@ -154,9 +156,9 @@ impl DecisionRecord {
             return Err(DecisionError::PromptMismatch);
         }
         if self.consumption.is_some() {
-            // A replay is answered by the dispatch admission's own
-            // idempotency even after the decision expired or the config
-            // was re-pinned.
+            // The decision side lets a replay through after expiry or a
+            // re-pin; the dispatch admission's own idempotency and request
+            // fingerprint then decide whether the original receipt returns.
             return Ok(DispatchBinding::Replay(harness));
         }
         if self.is_expired(now) {
@@ -271,13 +273,23 @@ pub(crate) mod tests {
             record.check_dispatchable(request, prompt(), digest(2), record.expires_at),
             Err(DecisionError::Expired)
         );
+        assert_eq!(
+            record.check_dispatchable(
+                request,
+                prompt(),
+                digest(2),
+                record.created_at - Duration::seconds(1)
+            ),
+            Err(DecisionError::Expired),
+            "a clock stepped behind the creation time does not extend the window"
+        );
 
         let mut consumed = record.clone();
         consumed.mark_consumed(request, now).unwrap();
         assert_eq!(
             consumed.check_dispatchable(request, prompt(), digest(8), record.expires_at),
             Ok(DispatchBinding::Replay(AgentKind::Codex)),
-            "a replay survives expiry and a re-pinned config"
+            "the decision side passes a replay after expiry and a re-pin"
         );
         assert_eq!(
             consumed.check_dispatchable(Uuid::new_v4(), prompt(), digest(2), now),

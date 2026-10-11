@@ -196,7 +196,21 @@ impl DecisionConfig {
     }
 }
 
-/// `[A-Z0-9_]{1,128}` without the reserved `VIBEMUX_` prefix.
+/// System variables that are never a credential. The peer environment
+/// already carries some of them, and a mistaken reference would send a
+/// local path to the backend as the bearer value.
+const RESERVED_CREDENTIAL_ENV_NAMES: [&str; 7] = [
+    "SYSTEMROOT",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "PATH",
+    "PATHEXT",
+    "COMSPEC",
+];
+
+/// `[A-Z0-9_]{1,128}` without the reserved `VIBEMUX_` prefix or a reserved
+/// system variable name.
 #[must_use]
 pub fn is_valid_credential_env(name: &str) -> bool {
     !name.is_empty()
@@ -205,6 +219,7 @@ pub fn is_valid_credential_env(name: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
         && !name.starts_with("VIBEMUX_")
+        && !RESERVED_CREDENTIAL_ENV_NAMES.contains(&name)
 }
 
 /// `[a-z0-9._-]{1,64}` starting with a letter or digit.
@@ -333,6 +348,14 @@ mod tests {
             ),
             (
                 r#"{"schema_version":1,"jev":{"credential_env":"VIBEMUX_KEY"}}"#,
+                DecisionConfigError::InvalidCredentialReference,
+            ),
+            (
+                r#"{"schema_version":1,"jev":{"credential_env":"PATH"}}"#,
+                DecisionConfigError::InvalidCredentialReference,
+            ),
+            (
+                r#"{"schema_version":1,"jev":{"credential_env":"SYSTEMROOT"}}"#,
                 DecisionConfigError::InvalidCredentialReference,
             ),
             (

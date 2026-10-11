@@ -82,6 +82,11 @@ pub async fn run_peer(
     credential: PeerCredential,
     deadline: Duration,
 ) -> Result<BackendAnswer, ExternalError> {
+    // A relative path would resolve against the daemon's working directory
+    // and the platform search rules.
+    if !executable.is_absolute() {
+        return Err(ExternalError::PeerUnavailable);
+    }
     let line = request.encode_line()?;
     let mut command = Command::new(executable);
     command

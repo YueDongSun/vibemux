@@ -17,6 +17,8 @@ use vibemux_decision::{
 
 const CREDENTIAL_SENTINEL: &str = "sk_test_sentinel_value_123";
 const CREDENTIAL_ENV_VAR: &str = "TYPESAFE_API_KEY";
+/// Mirrors `SYSTEM_ENVIRONMENT_NAMES` in `vibemuxd::decision::peer_process`.
+const DAEMON_SYSTEM_ENVIRONMENT_NAMES: [&str; 4] = ["SystemRoot", "WINDIR", "TEMP", "TMP"];
 
 fn request_line() -> Vec<u8> {
     let eligible = [AgentKind::Claude, AgentKind::Codex];
@@ -100,13 +102,11 @@ async fn run_peer_binary(endpoint: Option<&str>, stdin_bytes: Vec<u8>) -> Output
         let exe = env!("CARGO_BIN_EXE_vibemux_decision_peer");
         let mut command = Command::new(exe);
         command.env_clear();
-        #[cfg(windows)]
-        {
-            if let Ok(value) = std::env::var("SystemRoot") {
-                command.env("SystemRoot", value);
-            }
-            if let Ok(value) = std::env::var("PATH") {
-                command.env("PATH", value);
+        // Exactly the system variables `vibemuxd` passes to the peer: no
+        // `PATH`, so the binary must start without it.
+        for name in DAEMON_SYSTEM_ENVIRONMENT_NAMES {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
             }
         }
         command.env(CREDENTIAL_ENV_VAR, CREDENTIAL_SENTINEL);

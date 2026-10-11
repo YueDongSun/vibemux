@@ -100,17 +100,22 @@ off, no peer is spawned and the decision uses the local chain.
 request line of at most 16 KiB to stdin, reads one result line of at most
 16 KiB from stdout, and waits under a deadline. The child is killed on drop
 and on deadline. Its environment is cleared, apart from the platform's
-system variables and the one credential variable named by the config.
+system variables and the one credential variable named by the config. At
+most one external exchange runs at a time; a request that finds one in
+progress records `decision_peer_busy` and takes the local chain at once
+instead of queueing, so one advice never spends more than one peer deadline.
 
 The peer uses a fixed HTTPS endpoint, refuses redirects, bypasses proxies,
 caps the response body at 16 KiB, retries 429 and 529 at most once, and
-writes only fixed codes to stderr. A loopback endpoint override exists only
-behind the `test_endpoint` cargo feature.
+writes only fixed codes to stderr. Every attempt, including the retry, ends
+when the peer's total time budget runs out. A loopback endpoint override
+exists only behind the `test_endpoint` cargo feature.
 
 ### 7. Credential path
 
 The config names an environment variable (`jev.credential_env`, default
-`TYPESAFE_API_KEY`; `[A-Z0-9_]{1,128}`, no `VIBEMUX_` prefix). The daemon's
+`TYPESAFE_API_KEY`; `[A-Z0-9_]{1,128}`, no `VIBEMUX_` prefix, and not a
+system variable such as `PATH`, `TEMP`, or `SYSTEMROOT`). The daemon's
 environment is the one inherited by `vibemuxctl daemon start`. Only when both
 gates are on does the daemon read that variable and place it in the peer's
 cleared environment. The stdin request carries the variable's name, never its
@@ -118,6 +123,12 @@ value. The key never appears in argv, config files, logs, events, records, or
 Control IPC. A missing or empty variable yields
 `decision_credential_unavailable` and the local chain. Rotating the key needs a
 daemon restart.
+
+The decision config is therefore the control point for which daemon
+variable is sent to the fixed endpoint as a bearer token. It shares the trust
+level of `harness_dispatch.json`: anyone who can write the project's
+`.vibemux/` directory can already choose the executables the daemon starts.
+The name rules stop mistakes, not a hostile writer of that directory.
 
 ### 8. Answer validation and the confidence gate
 

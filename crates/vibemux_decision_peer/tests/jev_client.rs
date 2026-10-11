@@ -383,6 +383,44 @@ async fn a_slow_server_hits_the_per_attempt_timeout() {
 }
 
 #[tokio::test]
+async fn the_retry_is_cut_off_by_the_total_budget() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let counted = count.clone();
+    let app = Router::new().route(
+        "/v1/systemone",
+        post(move || {
+            let counted = counted.clone();
+            async move {
+                if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                    StatusCode::TOO_MANY_REQUESTS.into_response()
+                } else {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    Json(success_body()).into_response()
+                }
+            }
+        }),
+    );
+    let server = spawn(app).await;
+    let limits = ClientLimits {
+        per_attempt_timeout: Duration::from_secs(10),
+        total_budget: Duration::from_millis(500),
+        ..fast_limits()
+    };
+    let client = server.client(limits);
+    let started = std::time::Instant::now();
+    let result = client
+        .ask(&request(), &Credential::new("sk_test_value"))
+        .await;
+    assert_eq!(result, Err(ExternalError::BackendTimeout));
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the second attempt outlived the total budget"
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_response_model_passes_through_unchanged() {
     let app = Router::new().route(
         "/v1/systemone",

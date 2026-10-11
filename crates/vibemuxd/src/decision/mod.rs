@@ -20,7 +20,7 @@ use std::{
 
 use thiserror::Error;
 use time::OffsetDateTime;
-use tokio::{sync::Semaphore, time::timeout};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 use vibemux_decision::{
     DecisionError, DecisionKind, DecisionQuestion, DecisionRecord, DecisionStatus, ExternalError,
@@ -335,6 +335,9 @@ impl DecisionService {
 
     /// One external exchange: both consent gates already passed. The
     /// credential is read only here, and a missing one never spawns a peer.
+    /// A request that finds another exchange in progress falls back at once
+    /// instead of queueing, so one advice never spends more than one peer
+    /// deadline and never starts a paid call its client stopped waiting for.
     async fn consult(
         &self,
         setup: &DecisionSetup,
@@ -345,10 +348,11 @@ impl DecisionService {
         let credential = PeerCredential::from_environment(&jev.credential_env)?;
         let executable = setup.peer.as_ref().ok_or(ExternalError::PeerUnavailable)?;
         let request = PeerRequest::for_route(question, facts, jev);
-        let _permit = timeout(setup.peer_deadline, self.inner.external.acquire())
-            .await
-            .map_err(|_| ExternalError::PeerTimeout)?
-            .map_err(|_| ExternalError::PeerUnavailable)?;
+        let _permit = self
+            .inner
+            .external
+            .try_acquire()
+            .map_err(|_| ExternalError::PeerBusy)?;
         let answer = run_peer(executable, &request, credential, setup.peer_deadline).await?;
         answer.validate(question, &jev.pinned_model)
     }
@@ -362,7 +366,7 @@ fn prepare(settings: &DecisionServiceSettings) -> Result<DecisionSetup, Decision
     };
     Ok(DecisionSetup {
         config,
-        peer: peer.filter(|path| path.is_file()),
+        peer: peer.filter(|path| path.is_absolute() && path.is_file()),
         peer_deadline: settings.peer_deadline,
     })
 }

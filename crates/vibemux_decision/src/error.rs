@@ -64,6 +64,8 @@ pub enum ExternalError {
     CredentialUnavailable,
     #[error("the decision peer binary is unavailable")]
     PeerUnavailable,
+    #[error("another external decision is in progress")]
+    PeerBusy,
     #[error("the decision peer exceeded its deadline")]
     PeerTimeout,
     #[error("the decision peer broke its line protocol")]
@@ -110,6 +112,7 @@ impl ExternalError {
         match self {
             Self::CredentialUnavailable => "decision_credential_unavailable",
             Self::PeerUnavailable => "decision_peer_unavailable",
+            Self::PeerBusy => "decision_peer_busy",
             Self::PeerTimeout => "decision_peer_timeout",
             Self::PeerProtocol => "decision_peer_protocol",
             Self::RequestInvalid => "decision_backend_request_invalid",
@@ -148,10 +151,11 @@ impl ExternalError {
 
     /// Every variant, for exhaustive code tests.
     #[must_use]
-    pub const fn all() -> [Self; 20] {
+    pub const fn all() -> [Self; 21] {
         [
             Self::CredentialUnavailable,
             Self::PeerUnavailable,
+            Self::PeerBusy,
             Self::PeerTimeout,
             Self::PeerProtocol,
             Self::RequestInvalid,

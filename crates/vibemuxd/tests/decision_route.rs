@@ -40,9 +40,9 @@ const DATABASE_FILE_NAME: &str = "vibemux_rust.sqlite3";
 const DETACHED_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 const SNAPSHOT_TIME: &str = "2026-10-12T00:00:00Z";
 const PROMPT: &str = "synthetic routed prompt that must never reach canonical state";
-/// Present and non-empty in every test environment, so it can stand in for
-/// a credential without the test writing its own environment.
-const PRESENT_CREDENTIAL: &str = "PATH";
+/// Set by cargo for every test process, so it can stand in for a credential
+/// without the test writing its own environment.
+const PRESENT_CREDENTIAL: &str = "CARGO_PKG_NAME";
 const ABSENT_CREDENTIAL: &str = "DECISION_TEST_ABSENT_CREDENTIAL_1F2E";
 /// Long enough that a spawned hanging peer would exceed [`CALL_LIMIT`].
 const LONG_PEER_DEADLINE: Duration = Duration::from_secs(60);
@@ -555,6 +555,40 @@ async fn a_hung_peer_is_killed_at_the_deadline() {
         assert!(Instant::now() < deadline, "the hung peer is still running");
         sleep(Duration::from_millis(50)).await;
     }
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn a_second_external_request_falls_back_at_once_instead_of_queueing() {
+    let mut fixture = RouteFixture::start().await;
+    let config = decision_config(true, "fixture_hang", PRESENT_CREDENTIAL);
+    fixture
+        .configure(&config, Some(fixture.peer.clone()), SHORT_PEER_DEADLINE)
+        .await;
+    let service = fixture.service().clone();
+    let first = tokio::spawn(async move { service.advise(advise(&["rust"], true)).await });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while processes_running(&fixture.peer) == 0 {
+        assert!(Instant::now() < deadline, "the first peer never started");
+        sleep(POLL_INTERVAL).await;
+    }
+
+    let started = Instant::now();
+    let second = fixture.decide(&["rust"], true).await;
+    assert!(
+        started.elapsed() < SHORT_PEER_DEADLINE,
+        "the second request waited for the first exchange"
+    );
+    assert_eq!(external_error(&second), Some(ExternalError::PeerBusy));
+    assert_eq!(second.record.external.status, ExternalStatus::Failed);
+    assert_eq!(second.record.source, DecisionSource::LocalRule);
+    assert!(
+        processes_running(&fixture.peer) <= 1,
+        "a second peer started"
+    );
+
+    let first = first.await.expect("join").expect("first advice");
+    assert_eq!(external_error(&first), Some(ExternalError::PeerTimeout));
     fixture.close().await;
 }
 
