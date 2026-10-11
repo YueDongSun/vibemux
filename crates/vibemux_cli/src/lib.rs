@@ -1154,23 +1154,28 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn classify_daemon_exit_distinguishes_security_failures() {
+        // The marker below is deliberately loosened, so this test runs on a
+        // PRIVATE control root. The real `%LOCALAPPDATA%` marker is shared
+        // with every sibling test and live daemon, and each trusted start
+        // verifies its ACL in phase 1: loosening the shared one failed the
+        // concurrent `recovery::tests` daemon starts with
+        // `ControlRuntimeSecurityInvalid` (stage 7 on index 3, the marker).
         let temp = tempfile::tempdir().expect("temp project");
-        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
-        let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+        let control_base = tempfile::tempdir().expect("isolated control base");
+        let paths =
+            DaemonPaths::from_project_root_with_local_app_data(temp.path(), control_base.path())
+                .expect("daemon paths");
         paths.ensure_runtime_dir().expect("runtime directory");
         // Healthy ACLs: the daemon's exit cause stays the generic failure.
         assert_eq!(
             classify_daemon_exit(&paths).await,
             DaemonCliError::StartFailed
         );
-        // Loosen ONLY the shared `.acl_v1` marker: the daemon's phase-1
+        // Loosen ONLY the `.acl_v1` marker: the daemon's phase-1
         // verification rejects it, and the CLI re-check must classify the
         // security failure too (it used to check root+leaf only and
         // reported the generic `daemon_start_failed` for marker drift -
-        // the code-review V2 finding). The marker ACL is restored
-        // immediately so the shared runtime is healthy again for sibling
-        // tests (none of them verify the marker's ACL, only its contents,
-        // but the runtime stays tidy).
+        // the code-review V2 finding).
         let marker = paths.acl_marker_path();
         vibemux_platform::test_helpers::loosen_with_icacls(&marker, "*S-1-1-0:F");
         assert_eq!(
@@ -1179,9 +1184,21 @@ mod tests {
                 code: "daemon_control_runtime_security_invalid".to_string()
             }
         );
+        // Regression pin for the shared-marker race: while this test holds
+        // its marker loosened, a sibling project's surviving surface under
+        // the REAL shared control root must still verify. With the old
+        // shared-root setup this failed deterministically.
+        let sibling_temp = tempfile::tempdir().expect("sibling project");
+        let sibling = DaemonPaths::from_project_root(sibling_temp.path()).expect("sibling paths");
+        let _sibling_cleanup = ControlRuntimeCleanup::new(&sibling);
+        sibling
+            .ensure_runtime_dir()
+            .expect("sibling runtime directory");
+        sibling
+            .verify_control_surviving_acls()
+            .expect("sibling control surface is unaffected by this test");
         vibemux_platform::test_helpers::restore_with_icacls(&marker, "*S-1-1-0");
-        // Loosen the PROJECT-PRIVATE runtime leaf only (never the shared
-        // control root, so sibling tests are unaffected).
+        // Loosen the project-private runtime leaf only.
         vibemux_platform::test_helpers::loosen_with_icacls(
             paths.runtime_dir(),
             "*S-1-5-32-545:(OI)(CI)F",

@@ -46,3 +46,6 @@ base64.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }
+# Test-only `DaemonPaths::from_project_root_with_local_app_data`, so tests
+# that tamper with the ACL marker use a private control root.
+vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
