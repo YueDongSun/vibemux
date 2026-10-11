@@ -2,6 +2,7 @@ use serde_json::json;
 use vibemux_cli::{
     CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome, daemon_executable,
     daemon_health, daemon_paths,
+    decision_commands::run_decision,
     dispatch_commands::run_dispatch,
     dsh_commands::run_dsh,
     harness_list, harness_switch, parse_cli_arguments,
@@ -117,6 +118,13 @@ async fn run(command: CliCommand) -> Result<serde_json::Value, DaemonCliError> {
             let paths = daemon_paths(project_root.as_deref())?;
             run_dispatch(&paths, command).await
         }
+        CliCommand::Decision {
+            project_root,
+            command,
+        } => {
+            let paths = daemon_paths(project_root.as_deref())?;
+            run_decision(&paths, command).await
+        }
         CliCommand::Dsh {
             project_root,
             command,
@@ -163,9 +171,13 @@ fn print_help() {
   vibemuxctl dispatch catalog [--project-root <path>]
   vibemuxctl dispatch probe <harness> [--project-root <path>]
   vibemuxctl dispatch submit <harness> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
+  vibemuxctl dispatch submit --decision <decision_id> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
   vibemuxctl dispatch status <request_id> [--project-root <path>]
   vibemuxctl dispatch output <request_id> [--after-sequence <n>] [--project-root <path>]
   vibemuxctl dispatch cancel <request_id> [--project-root <path>]
+  vibemuxctl decide route --prompt-file <path|-> [--label <label>]... [--allow-external] [--project-root <path>]
+  vibemuxctl decisions list [--after-sequence <n>] [--limit <n>] [--project-root <path>]
+  vibemuxctl decisions show <decision_id> [--project-root <path>]
   vibemuxctl workflow prepare --request-file <path> --policy-file <path> [--project-root <path>]
   vibemuxctl workflow start --contract <sha256> --request-id <uuid> [--project-root <path>]
   vibemuxctl workflow status|pause|cancel|purge <workflow_id> [--project-root <path>]

@@ -173,12 +173,13 @@ impl DecisionConfig {
         Threshold::from_unit(self.thresholds.harness_route).ok_or(DecisionError::Internal)
     }
 
-    /// Parses request labels and checks each against the allowlist.
+    /// Parses request labels and checks each against the allowlist. The
+    /// result is sorted and deduplicated, so a record holds each label once.
     pub fn check_labels(&self, requested: &[String]) -> Result<Vec<Label>, DecisionError> {
         if requested.len() > crate::facts::MAX_REQUEST_LABELS {
             return Err(DecisionError::InvalidRequest);
         }
-        requested
+        let mut labels = requested
             .iter()
             .map(|value| {
                 let label = Label::new(value.clone())?;
@@ -188,7 +189,10 @@ impl DecisionConfig {
                     Err(DecisionError::UnknownLabel)
                 }
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        labels.sort();
+        labels.dedup();
+        Ok(labels)
     }
 }
 
@@ -350,10 +354,12 @@ mod tests {
         let config = DecisionConfig::parse(FULL.as_bytes()).unwrap();
         assert_eq!(
             config
-                .check_labels(&["rust".into(), "docs".into()])
-                .unwrap()
-                .len(),
-            2
+                .check_labels(&["rust".into(), "docs".into(), "rust".into()])
+                .unwrap(),
+            vec![
+                Label::new("docs".to_string()).unwrap(),
+                Label::new("rust".to_string()).unwrap()
+            ]
         );
         assert_eq!(
             config.check_labels(&["secret_project".into()]),
