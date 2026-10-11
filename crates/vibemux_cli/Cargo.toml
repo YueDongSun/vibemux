@@ -49,3 +49,6 @@ tempfile.workspace = true
 # the startup deadline on the hang fixture's started marker.
 tokio = { workspace = true, features = ["test-util"] }
 vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }
+# Test-only `DaemonPaths::from_project_root_with_local_app_data`, so tests
+# that tamper with the ACL marker use a private control root.
+vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
