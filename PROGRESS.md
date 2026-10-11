@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.0` |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), and DSH sessions (control protocol v7) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -120,7 +120,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Windows-first product path | `PARTIAL` | README, platform docs, Windows CI, protected control runtime | Native daemon lifecycle and the declared ACL boundary have evidence; live WezTerm/ConPTY multi-harness operation is not implemented |
 | Rust workspace and canonical domain/event core | `PARTIAL` | root `Cargo.toml`, `vibemux_types`, `vibemux_events` | Rust 2024/MSRV workspace, typed IDs, state machines, events, and property tests exist; tracing and public compatibility policy remain incomplete |
 | Rust SQLite store and single-writer daemon | `VERIFIED` | `vibemux_store`, `vibemuxd`, `vibemux_cli`, `vibemux_platform` | M3 is implemented within scope: migrations/WAL, atomic state+event, replay/idempotency, bounded writer, authenticated IPC, lifecycle, explicit recovery, and Windows protected runtime |
-| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, and `dispatch` | Lifecycle, harness registry, and one-shot harness dispatch commands exist; Task/Run/workspace/plugin command parity does not |
+| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, `dispatch`, `decide`, and `decisions` | Lifecycle, harness registry, one-shot harness dispatch, and advisory decision commands exist; Task/Run/workspace/plugin command parity does not |
 | Plugin protocol v1 foundation | `VERIFIED` | `vibemux_plugin_protocol`, checked-in Protobuf/TOML fixtures | M4.0 is verified as an isolated private pre-alpha wire/manifest/negotiation/lifecycle foundation; it does not spawn or mutate state |
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
@@ -130,6 +130,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; no live execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
+| Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -2918,3 +2919,83 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   route identity is not persisted. If both ledger publication and verified
   cleanup fail, the resource is retained for later cleanup; the double-failure
   path is not injected by the new regression.
+
+### 2026-10-12 - Decision port and advisory harness routing (ADR 034, `feat/decision_port`)
+
+**Scope and implementation**
+- Status: `PARTIAL — FIXTURE ONLY`. New pure crate `vibemux_decision`
+  (typed `harness_route` question, enumerated facts, answer validation,
+  local label rules, the fallback resolver, config schema 1, content-free
+  records and events, peer wire) and the one-shot `vibemux_decision_peer`
+  binary, the only decision-API network client (TypeSafe Jev System One,
+  pinned model `jev-1.13.0`, redirects refused, no proxy, 16 KiB caps, one
+  429/529 retry inside a total budget).
+- Store schema 6 adds `decision_records` with `decision_recorded` and
+  `decision_consumed` events written by the single `WriterWorker`.
+  `admit_decided_dispatch` checks the binding, admits the dispatch, and
+  consumes the decision in one Immediate transaction.
+- `vibemuxd` decision service: config pinned at start; options are the
+  detected harnesses with an enabled executing route plus `escalate`; the
+  peer gets a cleared environment plus one credential variable, only when
+  both `jev.enabled` and `--allow-external` are set; one external exchange
+  at a time, and a concurrent request records `decision_peer_busy` instead
+  of queueing. Control v8 adds `decision_advise`, `decision_list`,
+  `decision_show`, and `decision_dispatch_submit`; v1-v7 clients keep their
+  operations.
+- `vibemuxctl decide route`, `decisions list|show`, and
+  `dispatch submit --decision`. The roadmap for later decision-driven
+  features is [docs/decision_orchestration_roadmap.md](docs/decision_orchestration_roadmap.md).
+
+**Validation executed** (native Windows 11, pinned Rust 1.85.0)
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings`, and `git diff --check` passed.
+- `cargo test --workspace --all-features --no-fail-fast` after the review
+  repairs: 918 passed, 0 failed, 2 ignored in 103
+  result targets. Decision targets: `vibemux_decision` 45 unit tests;
+  `vibemux_decision_peer` 4 unit, 13 loopback-HTTP client tests, and 4
+  binary tests run under the daemon's exact environment without `PATH`;
+  store `decision` 7; `vibemuxd` `decision_route` 8.
+- Offline end to end against the real daemon and CLI built from `8f22024`,
+  in a scratch project outside the repository (schema 6 observed), with
+  `vibemux_native_fixture` vendors and `vibemux_decision_fixture` as the
+  peer. Passed: a local-rule decision; an unknown label refused; escalation
+  with no default; project-default fallback after `switch`;
+  `--allow-external` with Jev disabled recorded as `disabled`; `decisions
+  show` output held neither the prompt, its digest, nor a path; list
+  pagination; `--decision` with an explicit harness refused; another prompt
+  refused with `decision_prompt_mismatch`; an escalated decision refused; a
+  decided submit admitted and completed; the same request id replayed as a
+  duplicate; another request id refused with `decision_already_consumed`.
+  With Jev enabled and a dummy credential variable, the fixture answer was
+  accepted from the pinned model with gated confidence 0.955 and the dummy
+  value appeared in no output; without `--allow-external` the backend was
+  `not_requested`; a daemon started without the variable recorded
+  `decision_credential_unavailable` and used the local rule. This run
+  predates the review repairs below, which are covered by the targeted and
+  workspace tests instead.
+- Independent read-only review of `a639ed5..8f22024` found no critical or
+  high defect. Repaired with regressions: an advice could wait one peer
+  deadline for the external permit and then run a second, outliving the
+  client deadline and starting a paid call nobody received (now
+  `decision_peer_busy`); a relative peer path was not refused; system
+  variable names such as `PATH` were accepted as `credential_env`; a wall
+  clock stepped behind the creation time extended the 15-minute window; the
+  retry attempt could outlive the peer's total budget; and three doc claims
+  overstated the code.
+- Building `aws-lc-sys` with MSVC failed with `D8050` under the long
+  worktree target path; a short `CARGO_TARGET_DIR` outside the worktree
+  built cleanly. One workspace run failed to compile because the build
+  drive filled up; only the task's own incremental cache was removed before
+  the rerun, and that failed attempt is not counted.
+
+**Compatibility and remaining work**
+- Store schema 6 and Control v8; older clients and the daemon must upgrade
+  together for the decision operations. Decisions stay off unless
+  `.vibemux/decision_config.json` exists, and the default config never
+  calls the provider.
+- No live Jev call has run; it needs the user's explicit authorization (paid
+  API and key). The default threshold 0.9 is policy, not calibrated. HTTPS
+  from the peer under the cleared environment is unverified because tests
+  use loopback HTTP.
+- Not implemented: redacted task-summary forwarding, other decision kinds
+  and backends, per-repository threshold fitting, and roadmap items 3-10.
