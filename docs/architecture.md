@@ -48,7 +48,7 @@ Git worktree                  WezTerm / tmux / mock
         injected shell-free CommandRunner
 ```
 
-Git, WezTerm, and tmux share one injected `CommandRunner`; `agent_host` only receives controlled argv/environment and never executes a shell command string. The Rust daemon's structured harness dispatch (ADR 029, below) executes Codex and Claude one-shot turns; ACP is used only for initialize-only probes. ACP execution, MCP, and remote A2A deployment remain unimplemented. The local stateful A2A gateway and supervisor use the Rust daemon writer, independent model-peer processes and owned Run worktrees; see [ADR 024](adr/024_stateful_a2a_supervisor.md).
+Git, WezTerm, and tmux share one injected `CommandRunner`; `agent_host` only receives controlled argv/environment and never executes a shell command string. The Rust daemon's structured harness dispatch (ADR 029, below) executes Codex and Claude one-shot turns; ACP is used only for initialize-only probes. ACP execution and remote A2A deployment remain unimplemented. Native MCP exposes read-only daemon metadata through the separate frontend described below (ADR 034). The local stateful A2A gateway and supervisor use the Rust daemon writer, independent model-peer processes and owned Run worktrees; see [ADR 024](adr/024_stateful_a2a_supervisor.md).
 
 ## Process topology
 
@@ -88,7 +88,7 @@ PowerShell / shell / future GUI
 
 ## Current crate layout
 
-The root `Cargo.toml` is authoritative for workspace membership (`version = "0.2.0-alpha.0"`, Rust edition `2024`, `rust-version = "1.85"`).
+The root `Cargo.toml` is authoritative for workspace membership (`version = "0.2.0-alpha.1"`, Rust edition `2024`, `rust-version = "1.92"`).
 
 ```text
 crates/
@@ -107,11 +107,40 @@ crates/
 ├── vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache
 ├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
 ├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump
+├── vibemux_mcp/                # first-party MCP stdio frontend + contained metadata reader (ADR 034)
 ├── vibemuxd/                   # M3 daemon (writer worker + control IPC v7 + plugin registry + harness dispatch + workflow + DSH session service)
 └── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch + workflow/DSH client
 ```
 
 Outside `crates/`: `src/vibemux/` is the Python behavior-reference package, `tests/` holds Python tests and fixtures, `scripts/` holds smoke and benchmark scripts, and `docs/` holds architecture, ADRs, boundaries, and labs.
+
+### Native MCP frontend
+
+`vibemux_mcp` has a foreground protocol owner and one lazy, same-executable reader
+child. `config`, `protocol` and `tools` define launch grants, lifecycle and fixed
+argument schemas; `framing` bounds transport; `projection` selects metadata;
+`control_reader` uses the existing four read-only `ControlClient` methods; and
+`reader_owner` retains the synchronous launch thread and contained child;
+`supervisor`/`session` own lifecycle transitions, cancellation, deadlines and
+bounded restarts. No MCP module accesses the database or registers a new control
+operation.
+
+The explicit launch grant is required for metadata and client negotiation can
+reduce it. Discovery and host status are configuration-only. Reader failures
+unload daemon-backed tools while preserving the MCP session; a bounded backoff
+restores availability for a fresh explicit call, without replaying a read. The
+session permits the initial launch attempt and at most three restart attempts.
+Process-tree termination precedes leader reap. Pending launch cleanup keeps
+host-only requests responsive and fences replacement until terminal cleanup plus
+backoff. Final shutdown joins the retained launch owner; a stalled OS launch can
+delay exit rather than be abandoned. See the protocol's separate request and
+cleanup deadlines.
+
+This first-party frontend uses the existing daemon bearer boundary. It does not
+represent itself as a plugin permission registry: the existing plugin supervisor
+speaks VibeMux's Protobuf contract, not MCP. The Hub companion continues to own
+its multi-producer view. See [ADR 034](adr/034_native_mcp_read_host.md) and the
+[wire contract](native_mcp_protocol.md).
 
 ### Dependency direction
 

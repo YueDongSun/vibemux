@@ -137,7 +137,7 @@ fn current_user_sid() -> Option<CurrentUserSid> {
     }
     // `u64` slots guarantee the 8-byte alignment `TOKEN_USER`'s pointer
     // field requires; the length is rounded up and range-checked above.
-    let buffer_length = usize::try_from((needed + 7) / 8).ok()?;
+    let buffer_length = usize::try_from(needed.div_ceil(8)).ok()?;
     let mut buffer: Vec<u64> = vec![0; buffer_length];
     let mut returned: u32 = 0;
     // SAFETY: `buffer` is a valid, aligned, live allocation of at least

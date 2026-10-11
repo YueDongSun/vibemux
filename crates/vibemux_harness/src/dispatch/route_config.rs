@@ -403,10 +403,10 @@ fn validate_route(route: &DispatchRoute, policy: ExecutablePolicy) -> Result<(),
             if !executable_is_node_image(&route.executable, policy) {
                 return Err(DispatchError::ConfigExecutableInvalid);
             }
-            if let Some(profile) = &route.profile {
-                if !profile_is_valid(profile) {
-                    return Err(DispatchError::ConfigRouteInvalid);
-                }
+            if let Some(profile) = &route.profile
+                && !profile_is_valid(profile)
+            {
+                return Err(DispatchError::ConfigRouteInvalid);
             }
             // `initialize` names the provider and model, so both are required
             // and validated here rather than at launch time.

@@ -31,7 +31,7 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
     style
         .text_styles
         .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.0));
-    ctx.set_style(style);
+    ctx.set_global_style(style);
     // Let egui honor the OS display scale (do not pin pixels_per_point
     // to 1.0): on high-DPI monitors the UI would otherwise render far
     // too small.

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Add the pre-alpha `vibemux_mcp` first-party read-only stdio frontend (ADR 034),
+  with explicit descriptor/grant configuration, MCP 2025-06-18 negotiation,
+  bounded metadata projections, contained reader processes, retained launch
+  ownership, responsive cancellation, capability unloading and a session-wide
+  three-restart budget. Existing Control
+  IPC v7 and store schema 5 are unchanged; the Hub companion remains separate.
+- Raise the Rust workspace version to `0.2.0-alpha.1` and its MSRV/pinned CI target
+  to Rust 1.92. The approved frontend migration uses egui/eframe 0.34.3,
+  ratatui 0.30.2 and crossterm 0.29, removing the old unmaintained font/parser and
+  macro chains. Preserve the composer placeholder color and existing GUI/TUI
+  behavior while adopting the root-`Ui` API. Include time 0.3.47 and rustls
+  0.23.45 security updates plus the exact reviewed ten-license `deny.toml` policy;
+  advisory/source defaults remain enabled without exclusions or ignores.
+- Add a strict, optional frontend loopback-port override for TUI/dump probes so
+  CLI tests use owned ephemeral endpoints and disposable home/launcher settings.
+  Existing default behavior is retained; invalid overrides fail before I/O.
+
 - Integrate the DeepSeek Harness SDK session driver, daemon session service,
   `vibemuxctl dsh` commands, and `vibemux_dsh_tui` terminal surface with the
   dual-track workflow and current GUI (ADR 032). Control v7 adds the six DSH

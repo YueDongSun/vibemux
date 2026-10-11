@@ -199,15 +199,14 @@ fn task_row_contents(
                     .frame(false),
             )
             .clicked()
+            && let Some(run) = task.runs.first()
         {
-            if let Some(run) = task.runs.first() {
-                state.select_task(snapshot, &task.task_id);
-                state.details_selection_mut().tab = TaskDetailTab::Terminal;
-                actions.enqueue(SupervisorAction::InspectTerminal {
-                    task_id: task.task_id.clone(),
-                    run_id: run.run_id.clone(),
-                });
-            }
+            state.select_task(snapshot, &task.task_id);
+            state.details_selection_mut().tab = TaskDetailTab::Terminal;
+            actions.enqueue(SupervisorAction::InspectTerminal {
+                task_id: task.task_id.clone(),
+                run_id: run.run_id.clone(),
+            });
         }
     });
 }

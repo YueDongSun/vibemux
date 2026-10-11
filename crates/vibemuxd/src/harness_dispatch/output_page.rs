@@ -250,11 +250,11 @@ impl OutputReassembler {
             if partial.raw_json.len() > total {
                 return Err(OutputReassemblyError);
             }
-            if partial.raw_json.len() == total {
-                if let Some(record) = self.partial.take() {
-                    self.after_sequence = record.sequence;
-                    completed.push(record);
-                }
+            if partial.raw_json.len() == total
+                && let Some(record) = self.partial.take()
+            {
+                self.after_sequence = record.sequence;
+                completed.push(record);
             }
         }
         if page.next != self.cursor() {

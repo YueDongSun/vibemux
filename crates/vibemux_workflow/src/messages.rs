@@ -234,10 +234,10 @@ pub fn admit(
     sender: &Participant,
     facts: AdmissionFacts<'_>,
 ) -> Result<MessageEnvelope, MessageRejection> {
-    if let Some(claimed) = &draft.claimed_sender {
-        if *claimed != sender.label() {
-            return Err(MessageRejection::ForgedSender);
-        }
+    if let Some(claimed) = &draft.claimed_sender
+        && *claimed != sender.label()
+    {
+        return Err(MessageRejection::ForgedSender);
     }
     let sender_task = match sender {
         Participant::Worker { task_key, .. } => {

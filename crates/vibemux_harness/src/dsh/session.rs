@@ -475,10 +475,10 @@ impl DshSessionMachine {
                 if self.phase != DshPhase::Prompting {
                     return Err(self.violate(DshError::UnexpectedTurnEnd));
                 }
-                if let Ok(turn) = wire::event_turn_number(frame) {
-                    if let Some(current) = self.current_turn.as_mut() {
-                        current.turn = Some(turn);
-                    }
+                if let Ok(turn) = wire::event_turn_number(frame)
+                    && let Some(current) = self.current_turn.as_mut()
+                {
+                    current.turn = Some(turn);
                 }
                 Ok(Vec::new())
             }
@@ -527,12 +527,12 @@ impl DshSessionMachine {
                 self.unverified_turns = self.unverified_turns.saturating_add(1);
             }
         }
-        if let Some(current) = self.current_turn.as_mut() {
-            if current.outcome.is_none() {
-                current.outcome = Some(outcome);
-                if let Some(turn) = turn {
-                    current.turn = Some(turn);
-                }
+        if let Some(current) = self.current_turn.as_mut()
+            && current.outcome.is_none()
+        {
+            current.outcome = Some(outcome);
+            if let Some(turn) = turn {
+                current.turn = Some(turn);
             }
         }
     }

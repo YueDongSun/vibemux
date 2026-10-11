@@ -17,7 +17,7 @@
 | Current implementation branch | `main` (feature branches merge back via direct merge; PR #3 and the two-shell frontend branch land through `feat/3-two-shell-frontend-integration`); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
-| Rust workspace version | `0.2.0-alpha.0` |
+| Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
 | Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence) |
@@ -2918,3 +2918,123 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   route identity is not persisted. If both ledger publication and verified
   cleanup fail, the resource is retained for later cleanup; the double-failure
   path is not injected by the new regression.
+
+## 2026-10-12 — Native MCP frontend and dependency qualification (ADR 034)
+
+**Status: PARTIAL — required local gates passed on native Windows;
+independent programme acceptance and other platform qualification pending.**
+
+The additive `vibemux_mcp` crate implements MCP 2025-06-18 over newline-delimited
+stdio. Its foreground session keeps a default-denied metadata grant, validates
+fixed schemas before producer I/O, and supervises one contained same-executable
+reader using existing `ControlClient` read methods. Five tools expose host status,
+daemon health, task pages, task/run/event/artifact metadata and dispatch status.
+Explicit projections omit worktree/branch, prompt, source, capture, process and
+credential fields. Declared daemon status does not establish model completion.
+
+Reader errors, crash, malformed output and timeouts unload daemon-backed tools;
+cancellation suppresses the cancelled response and EOF joins owned cleanup.
+Generation/sequence checks fence stale completions. The session has four launch
+attempts total (initial plus three restarts), with no automatic replay or budget
+replenishment after a successful read. Initialization, discovery and host status
+have no descriptor, reader-spawn or producer side effect. Control IPC v7 and
+store schema 5 remain unchanged. The Hub companion retains its separate
+multi-producer responsibility.
+
+**Approved compatibility prerequisites.** Rust workspace `0.2.0-alpha.1` uses
+MSRV/pinned compiler/Windows-Ubuntu CI target 1.92. Egui/eframe 0.34.3 and ratatui
+0.30.2/crossterm 0.29 replace the old unmaintained dependency chains; time 0.3.47
+and rustls 0.23.45 retain the security fixes. Root `deny.toml` contains the exact
+ten-license policy; no advisory ignore, source exclusion or weakened lint was
+introduced. The frontend root-`Ui` migration preserves themes, action ownership,
+layout and the existing placeholder-color assertion. A strict frontend-only
+loopback port override isolates TUI/dump CLI fixtures without changing probe-core
+or default runtime behavior.
+
+**Focused verification completed on native Windows with Rust 1.92.0.**
+
+- `cargo test --locked --offline -p vibemux_mcp --all-features`: 27 tests passed,
+  zero failed or ignored. This includes real stdio, disposable daemon/control
+  IPC, legacy-v1 health and unsupported-version rejection, framing properties,
+  bounds, permission reduction, cancellation, busy responses, expired-backoff
+  fairness, restart exhaustion, stale generations, actual child/descendant
+  containment and retained-child terminal observations.
+- Subsequent reviews identified path-shaped artifact media labels and non-object
+  successful private-reader results. Each regression failed before repair and
+  passed afterward. The integrated focused suite then passed 29 tests. This
+  result precedes the additional launch-ownership repair described below.
+- `cargo test --locked --offline -p vibemux_frontend --all-features`: 122 tests
+  passed, zero failed, with one existing ignored golden-fixture generator. No
+  existing assertion or golden rendering fixture was removed or weakened.
+- `cargo fmt -p vibemux_mcp -p vibemux_frontend -- --check`: passed.
+- `cargo build --locked --offline -p vibemux_frontend --features gui_screenshot
+  --bin vibemux_frontend_preview`: passed. Eight synthetic native captures were
+  inspected across light/dark chat, minimum-size drawer/welcome/disconnected
+  views, collapsed sidebar at 1.5 scale, and independent task/terminal views.
+  These used demo data; they establish no live daemon or harness acceptance.
+- The dependency policy/audit gates passed on the migrated graph. Necessary
+  Rust 1.92 compatibility changes preserve condition order, assertions and
+  defaults; strict workspace/all-target/all-feature Clippy passed with
+  `-D warnings` unchanged. No warning was disabled.
+- The first workspace test run stopped after an existing plugin-supervisor
+  `HandshakeTimeout`; the unchanged exact case passed alone. A later
+  no-fail-fast run passed 853 tests across 82 completed binaries, with no
+  failures and two existing ignored test utilities, but reached its 30-minute
+  external limit before all targets and doc tests completed. It is an incomplete
+  gate. Compilation consumed 15m47s; final validation reuses the warm target.
+- Every Python gate passed in the isolated qualified development environment:
+  Ruff formatting/lint, mypy (43 source files), pytest (111 tests) and the
+  documented mock-workflow smoke. These do not establish native Rust acceptance.
+
+**Additional launch-ownership repair verified.** Independent source review
+found that synchronous OS launch could block the foreground's first read poll.
+A controlled slow-launch regression reproduced a 2.38-second ping delay and
+failed before implementation. The repair retains a dedicated launch thread and
+uses explicit lifecycle states: cancellation unloads tools promptly while any
+eventual child remains owned until tree termination and reap. Host-only requests
+remain available during cleanup; replacement waits for terminal cleanup and a
+complete backoff. A stalled OS launch may delay final exit, which must not be
+misreported as bounded or complete cleanup. The final focused suite passed
+39 tests, including 22 lifecycle cases; production-default compilation and
+strict scoped Clippy passed. Independent read-only review confirmed the
+launch-blocking finding closed. Parent workspace formatting and strict
+all-target/all-feature Clippy also passed on the final source.
+
+**Final workspace test result.** `cargo test --locked --offline --workspace
+--all-features --no-fail-fast -- --test-threads=2` completed with exit 0 on
+native Windows at 03:40 on 2026-10-12: 865 passed, zero failed, two existing
+test utilities ignored, no filtered tests. All 83 test binaries and 18
+doc-test phases completed within the 30-minute bound (9m36s elapsed,
+51.52s compilation). Earlier failed and incomplete runs remain recorded above.
+`cargo nextest run --locked --offline --workspace --all-features --test-threads
+2 --no-fail-fast` also completed with exit 0 at 03:47:31: 865 passed, two
+existing utilities skipped, two slow workflow tests passed, 395.235s test time.
+No tests were excluded or retried to obtain these passes.
+
+**Documentation and CI reconciliation.** The repository-root launch recipes now
+select the production binary through `cargo run --locked -p vibemux_mcp --bin
+vibemux_mcp -- ...`. CI retains both Windows/Ubuntu Rust jobs and now runs
+nextest with pinned 0.9.98; a separate Ubuntu job runs deny 0.20.2 and audit
+0.22.2. YAML parsing, gate-presence inspection and independent source review
+passed. Hosted installation and execution of these CI jobs remain unverified.
+
+**Failure chronology.** The first stdio test failed against the empty host before
+its denied initialization/status path passed. Subsequent contemporary reds
+covered granted discovery, bounded projections, real reader operation, restart
+exhaustion, owner denial, cancellation/EOF/idle exit, recovery scheduling, path
+bounds and standard `_meta` compatibility. The frontend migration first failed
+compilation, then exposed the actual placeholder-color regression before its
+unchanged assertion passed. The loopback-port adapter had its own behavioral red.
+Two fixture corrections are kept separate from product failures: A2A setup must
+use an empty task description, and a split duplex writer needs explicit shutdown
+to signal EOF. Additional property, compatibility and process-cleanup coverage
+that passed on its first run is recorded as coverage, not retrospectively claimed
+as test-first evidence.
+
+**Remaining acceptance.** Independent programme review and operator acceptance.
+Native Linux/WSL process behavior, the configured Ubuntu CI job, live
+MCP deployment and operator acceptance remain unverified. No live model call,
+daemon installation, publication, merge or deployment is implied by these tests.
+Rollback removes the additive host/client launch without a state migration;
+rolling back the dependency migration restores the previous compiler/frontend
+versions together. Historical evidence elsewhere in this document is unchanged.

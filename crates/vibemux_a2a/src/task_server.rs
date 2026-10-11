@@ -75,10 +75,10 @@ impl TaskHandler {
         if *self.stopped.borrow() {
             return Err(sdk_error(TaskGatewayError::Server));
         }
-        if let Some(version) = params.get("a2a-version") {
-            if version.len() != 1 || version[0] != "1.0" {
-                return Err(A2AError::version_not_supported("unsupported"));
-            }
+        if let Some(version) = params.get("a2a-version")
+            && (version.len() != 1 || version[0] != "1.0")
+        {
+            return Err(A2AError::version_not_supported("unsupported"));
         }
         let tokens = params
             .get("authorization")

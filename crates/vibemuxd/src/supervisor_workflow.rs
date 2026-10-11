@@ -166,11 +166,11 @@ impl SupervisorExecutor {
             .await
             .map_err(|_| TaskGatewayError::Internal)?
             .map_err(|_| TaskGatewayError::Internal)?;
-        if let Some(record) = records.first() {
-            if record.task.status() != vibemux_types::TaskStatus::Cancelled {
-                self.update(record, A2aRunAction::FinalizeCancellation)
-                    .await?;
-            }
+        if let Some(record) = records.first()
+            && record.task.status() != vibemux_types::TaskStatus::Cancelled
+        {
+            self.update(record, A2aRunAction::FinalizeCancellation)
+                .await?;
         }
         Ok(())
     }

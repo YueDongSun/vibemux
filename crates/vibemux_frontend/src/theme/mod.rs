@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 /// Which palette is currently selected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ThemeId {
     Claude,
     Github,
@@ -34,6 +35,7 @@ pub enum ThemeId {
     Nord,
     Gruvbox,
     Studio,
+    #[default]
     ClaudeLight,
 }
 
@@ -75,13 +77,6 @@ impl ThemeId {
             Self::Studio => "studio",
             Self::ClaudeLight => "claude_light",
         }
-    }
-}
-
-impl Default for ThemeId {
-    fn default() -> Self {
-        // New profiles use Claude light (ADR 030); saved theme IDs are preserved.
-        Self::ClaudeLight
     }
 }
 

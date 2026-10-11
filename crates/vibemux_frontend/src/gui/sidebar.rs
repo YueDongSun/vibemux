@@ -61,7 +61,7 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
         .inner_margin(egui::Margin::symmetric(12, 14))
         .show(ui, |ui| {
             ui.set_min_width(SIDEBAR_WIDTH - 24.0);
-            egui::TopBottomPanel::bottom("sidebar_workspace_panel")
+            egui::Panel::bottom("sidebar_workspace_panel")
                 .frame(egui::Frame::NONE)
                 .show_separator_line(false)
                 .show_inside(ui, |ui| {

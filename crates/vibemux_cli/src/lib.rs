@@ -732,10 +732,10 @@ async fn wait_for_health(
             }
         }
 
-        if let Some(spawned) = spawned.as_mut() {
-            if spawned.has_exited()? {
-                child_exited = true;
-            }
+        if let Some(spawned) = spawned.as_mut()
+            && spawned.has_exited()?
+        {
+            child_exited = true;
         }
         if child_exited && !select_runtime(&config.paths)?.has_artifacts {
             return Err(classify_daemon_exit(&config.paths).await);

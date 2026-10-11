@@ -68,19 +68,22 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
         // Long drafts scroll inside the composer instead of growing it past
         // the window, which would hide the send row, the caption, and the
         // conversation.
-        let max_text_height = (ui.ctx().screen_rect().height() * COMPOSER_TEXT_MAX_SHARE)
+        let max_text_height = (ui.ctx().content_rect().height() * COMPOSER_TEXT_MAX_SHARE)
             .clamp(COMPOSER_TEXT_MIN_HEIGHT, COMPOSER_TEXT_MAX_HEIGHT);
         let response = egui::ScrollArea::vertical()
             .id_salt("composer_text_scroll")
             .max_height(max_text_height)
             .show(ui, |ui| {
+                // egui 0.34 maps hint atoms through the local weak-text color.
+                // Keep the established palette value without changing other UI.
+                ui.visuals_mut().weak_text_color = Some(c.muted);
                 ui.add(
                     egui::TextEdit::multiline(&mut draft)
                         .id(egui::Id::new(COMPOSER_TEXT_ID))
                         .desired_width(f32::INFINITY)
                         .desired_rows(2)
                         .hint_text(RichText::new(COMPOSER_PLACEHOLDER).color(c.muted))
-                        .frame(false)
+                        .frame(egui::Frame::NONE)
                         .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
                         .font(egui::TextStyle::Body),
                 )

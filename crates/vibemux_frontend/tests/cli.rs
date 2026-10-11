@@ -3,18 +3,12 @@
 //! `vibemux_frontend_dump` binary (which superseded the removed `--once`
 //! flag). The egui GUI binary takes no flags.
 
-use std::process::Command;
+#[path = "support/cli_fixture.rs"]
+mod cli_fixture;
+use cli_fixture::CliFixture;
 
 fn run_tui(arguments: &[&str]) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_vibemux_frontend_tui"))
-        .args(arguments)
-        .output()
-        .expect("tui binary runs");
-    (
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
+    CliFixture::new().run(env!("CARGO_BIN_EXE_vibemux_frontend_tui"), arguments, &[])
 }
 
 #[test]
@@ -46,13 +40,12 @@ fn theme_flag_combines_with_json() {
 fn invalid_theme_environment_falls_back_to_classic() {
     // An unparsable VIBEMUX_FRONTEND_THEME must degrade to the default
     // theme instead of failing the run; only the CLI flag errors hard.
-    let output = Command::new(env!("CARGO_BIN_EXE_vibemux_frontend_tui"))
-        .args(["--json"])
-        .env("VIBEMUX_FRONTEND_THEME", "neon-does-not-exist")
-        .output()
-        .expect("tui binary runs");
-    assert!(output.status.success(), "invalid env theme must not fail");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (code, stdout, _) = CliFixture::new().run(
+        env!("CARGO_BIN_EXE_vibemux_frontend_tui"),
+        &["--json"],
+        &[("VIBEMUX_FRONTEND_THEME", "neon-does-not-exist")],
+    );
+    assert_eq!(code, 0, "invalid env theme must not fail");
     let value: serde_json::Value =
         serde_json::from_str(&stdout).expect("invalid env theme still emits JSON");
     assert_eq!(value["schema_version"], 1);
@@ -89,13 +82,39 @@ fn unknown_arguments_exit_with_code_four() {
 fn dump_emits_plain_theme_independent_snapshot() {
     // The dump binary replaces the removed --once flag: plain text, ASCII,
     // unaffected by theme selection.
-    let output = Command::new(env!("CARGO_BIN_EXE_vibemux_frontend_dump"))
-        .env("VIBEMUX_FRONTEND_THEME", "light")
-        .output()
-        .expect("dump binary runs");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (code, stdout, _) = CliFixture::new().run(
+        env!("CARGO_BIN_EXE_vibemux_frontend_dump"),
+        &[],
+        &[("VIBEMUX_FRONTEND_THEME", "light")],
+    );
+    assert_eq!(code, 0);
     assert!(stdout.contains("VibeMux Central Console"));
     assert!(stdout.contains("agents:"));
     assert!(stdout.is_ascii(), "dump output must stay ASCII");
+}
+
+#[test]
+fn invalid_probe_override_fails_before_observation() {
+    let fixture = CliFixture::new();
+    for binary in [
+        env!("CARGO_BIN_EXE_vibemux_frontend_tui"),
+        env!("CARGO_BIN_EXE_vibemux_frontend_dump"),
+    ] {
+        let (code, stdout, stderr) = fixture.run(
+            binary,
+            &["--json"],
+            &[(
+                vibemux_frontend::probe_env::FRONTEND_PROBE_PORT_ENV,
+                "65536",
+            )],
+        );
+        assert_eq!(code, 4);
+        assert!(stdout.is_empty());
+        assert_eq!(stderr.trim(), "frontend_probe_port_invalid");
+    }
+    assert_eq!(
+        fixture.connections(),
+        0,
+        "invalid override must not contact the fixture"
+    );
 }

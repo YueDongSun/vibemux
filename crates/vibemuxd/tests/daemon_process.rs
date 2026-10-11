@@ -266,12 +266,11 @@ fn spawn_daemon(paths: &DaemonPaths) -> Child {
 async fn wait_for_health(paths: &DaemonPaths, child: &mut Child) -> DaemonHealth {
     let deadline = Instant::now() + PROCESS_TEST_DEADLINE;
     loop {
-        if paths.descriptor_path().is_file() {
-            if let Ok(client) = ControlClient::from_descriptor(paths.descriptor_path()) {
-                if let Ok(health) = client.health_with_deadline(HEALTH_ATTEMPT_DEADLINE).await {
-                    return health;
-                }
-            }
+        if paths.descriptor_path().is_file()
+            && let Ok(client) = ControlClient::from_descriptor(paths.descriptor_path())
+            && let Ok(health) = client.health_with_deadline(HEALTH_ATTEMPT_DEADLINE).await
+        {
+            return health;
         }
         if let Some(status) = child.try_wait().expect("query daemon status") {
             panic!("daemon exited before health: {status}");
