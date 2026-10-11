@@ -1,6 +1,12 @@
 #![forbid(unsafe_code)]
-//! One-shot decision peer (ADR 034 §6). Placeholder until implemented.
+//! Entry point for the one-shot decision peer binary (ADR 034 §6).
+
+use std::io::{stderr, stdin, stdout};
+
+use vibemux_decision_peer::peer_main;
 
 fn main() {
-    std::process::exit(vibemux_decision::wire::PEER_FAILURE_EXIT_CODE);
+    let env_lookup = |name: &str| std::env::var(name).ok();
+    let code = peer_main::run(stdin(), stdout(), stderr(), &env_lookup);
+    std::process::exit(code);
 }
