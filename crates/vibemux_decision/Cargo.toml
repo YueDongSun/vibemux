@@ -1,0 +1,20 @@
+[package]
+name = "vibemux_decision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+vibemux_events = { path = "../vibemux_events" }
+vibemux_harness = { path = "../vibemux_harness" }
+vibemux_types = { path = "../vibemux_types" }
+
+[dev-dependencies]
+proptest.workspace = true
