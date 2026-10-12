@@ -204,6 +204,7 @@ impl SqliteStore {
             decision_id,
             request_id: admission.request_id,
             harness,
+            consumed_at: admission.timestamp,
         };
         let draft = decision_events::consumed(&context, &payload).map_err(StoreError::Decision)?;
         let (event, raw_sequence) = Self::insert_event(&transaction, draft)?;

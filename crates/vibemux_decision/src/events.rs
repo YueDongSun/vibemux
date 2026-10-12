@@ -1,9 +1,12 @@
 //! Content-free canonical event drafts for decisions (ADR 034 §10).
 //!
-//! Payloads carry identities, digests, sizes, counts, option ids,
-//! millionths, and fixed codes only. Idempotency keys are deterministic per
-//! decision and event kind, so a retried writer command cannot append a
-//! second copy.
+//! The two events hold the complete sanitized decision state, so the
+//! `decision_records` projection can be rebuilt from them or verified
+//! against them with [`rebuild_record`]. Payloads carry identities,
+//! digests, sizes, option ids, allowlisted labels, millionths, model ids,
+//! and fixed codes; the prompt appears only as its digest and size.
+//! Idempotency keys are deterministic per decision and event kind, so a
+//! retried writer command cannot append a second copy.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -13,63 +16,125 @@ use vibemux_harness::AgentKind;
 use vibemux_harness::dispatch::Sha256Digest;
 use vibemux_types::{EventId, ProjectId, RunId, TaskId};
 
-use crate::error::{DecisionError, ExternalError};
-use crate::identifiers::OptionId;
+use crate::error::DecisionError;
+use crate::facts::PromptSizeBucket;
+use crate::identifiers::{Label, OptionId};
 use crate::kind::DecisionKind;
-use crate::probability::{Millionths, Threshold};
+use crate::probability::Threshold;
 use crate::record::DecisionRecord;
-use crate::resolve::{DecisionSource, DecisionStatus, ExternalStatus};
+use crate::resolve::{DecisionSource, DecisionStatus, ExternalEvidence};
 
 pub const DECISION_RECORDED_EVENT: &str = "decision_recorded";
 pub const DECISION_CONSUMED_EVENT: &str = "decision_consumed";
 
 const EVENT_ACTOR: &str = "vibemuxd";
 
+/// Every field of a new, unconsumed [`DecisionRecord`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionRecordedPayload {
+    pub schema_version: u32,
     pub decision_id: Uuid,
     pub kind: DecisionKind,
     pub status: DecisionStatus,
     pub chosen_harness: Option<AgentKind>,
     pub source: DecisionSource,
     pub rule_index: Option<u32>,
-    pub option_count: u32,
-    pub label_count: u32,
+    pub options: Vec<OptionId>,
+    pub labels: Vec<Label>,
+    pub prompt_size: PromptSizeBucket,
     pub prompt_sha256: Sha256Digest,
     pub prompt_bytes: u64,
+    pub project_default: Option<AgentKind>,
     pub threshold_millionths: Threshold,
-    pub external_status: ExternalStatus,
-    pub external_error: Option<ExternalError>,
-    pub external_choice: Option<OptionId>,
-    pub gated_confidence_millionths: Option<Millionths>,
     pub dispatch_config_sha256: Sha256Digest,
     pub decision_config_sha256: Sha256Digest,
+    pub external: ExternalEvidence,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
 }
 
 impl DecisionRecordedPayload {
+    /// Only an unconsumed record is recorded; its consumption arrives in a
+    /// later [`DecisionConsumedPayload`].
     pub fn from_record(record: &DecisionRecord) -> Result<Self, DecisionError> {
-        let answer = record.external.answer.as_ref();
+        // Destructured so a new record field cannot be left out of the event.
+        let DecisionRecord {
+            schema_version,
+            decision_id,
+            kind,
+            status,
+            chosen_harness,
+            source,
+            rule_index,
+            options,
+            labels,
+            prompt_size,
+            prompt_sha256,
+            prompt_bytes,
+            project_default,
+            threshold_millionths,
+            dispatch_config_sha256,
+            decision_config_sha256,
+            external,
+            created_at,
+            expires_at,
+            consumption,
+        } = record.clone();
+        if consumption.is_some() {
+            return Err(DecisionError::Internal);
+        }
         Ok(Self {
-            decision_id: record.decision_id,
-            kind: record.kind,
-            status: record.status,
-            chosen_harness: record.chosen_harness,
-            source: record.source,
-            rule_index: record.rule_index,
-            option_count: u32::try_from(record.options.len())
-                .map_err(|_| DecisionError::Internal)?,
-            label_count: u32::try_from(record.labels.len()).map_err(|_| DecisionError::Internal)?,
-            prompt_sha256: record.prompt_sha256,
-            prompt_bytes: record.prompt_bytes,
-            threshold_millionths: record.threshold_millionths,
-            external_status: record.external.status,
-            external_error: record.external.error,
-            external_choice: answer.map(|answer| answer.choice.clone()),
-            gated_confidence_millionths: answer.map(|answer| answer.gated_confidence_millionths),
-            dispatch_config_sha256: record.dispatch_config_sha256,
-            decision_config_sha256: record.decision_config_sha256,
+            schema_version,
+            decision_id,
+            kind,
+            status,
+            chosen_harness,
+            source,
+            rule_index,
+            options,
+            labels,
+            prompt_size,
+            prompt_sha256,
+            prompt_bytes,
+            project_default,
+            threshold_millionths,
+            dispatch_config_sha256,
+            decision_config_sha256,
+            external,
+            created_at,
+            expires_at,
         })
+    }
+
+    /// The validated, unconsumed record this payload describes.
+    pub fn into_record(self) -> Result<DecisionRecord, DecisionError> {
+        let record = DecisionRecord {
+            schema_version: self.schema_version,
+            decision_id: self.decision_id,
+            kind: self.kind,
+            status: self.status,
+            chosen_harness: self.chosen_harness,
+            source: self.source,
+            rule_index: self.rule_index,
+            options: self.options,
+            labels: self.labels,
+            prompt_size: self.prompt_size,
+            prompt_sha256: self.prompt_sha256,
+            prompt_bytes: self.prompt_bytes,
+            project_default: self.project_default,
+            threshold_millionths: self.threshold_millionths,
+            dispatch_config_sha256: self.dispatch_config_sha256,
+            decision_config_sha256: self.decision_config_sha256,
+            external: self.external,
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+            consumption: None,
+        };
+        record.validate()?;
+        Ok(record)
     }
 }
 
@@ -79,6 +144,30 @@ pub struct DecisionConsumedPayload {
     pub decision_id: Uuid,
     pub request_id: Uuid,
     pub harness: AgentKind,
+    #[serde(with = "time::serde::rfc3339")]
+    pub consumed_at: OffsetDateTime,
+}
+
+/// Rebuilds a decision record from its `decision_recorded` payload and, when
+/// a dispatch consumed it, its `decision_consumed` payload. Payloads that
+/// disagree with each other or with the record rules are `decision_internal`.
+pub fn rebuild_record(
+    recorded: DecisionRecordedPayload,
+    consumed: Option<&DecisionConsumedPayload>,
+) -> Result<DecisionRecord, DecisionError> {
+    let mut record = recorded.into_record()?;
+    if let Some(consumed) = consumed {
+        if consumed.decision_id != record.decision_id
+            || Some(consumed.harness) != record.chosen_harness
+        {
+            return Err(DecisionError::Internal);
+        }
+        record
+            .mark_consumed(consumed.request_id, consumed.consumed_at)
+            .map_err(|_| DecisionError::Internal)?;
+        record.validate()?;
+    }
+    Ok(record)
 }
 
 /// Identities of the dispatch a decision was consumed by.
@@ -154,8 +243,147 @@ fn draft(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use time::Duration;
+
     use super::*;
-    use crate::record::tests::sample;
+    use crate::answer::BackendAnswer;
+    use crate::question::DecisionQuestion;
+    use crate::record::NewDecision;
+    use crate::record::tests::{digest, prompt, sample};
+    use crate::resolve::{ExternalResult, resolve_route};
+
+    const PINNED: &str = "jev-1.13.0";
+
+    /// A decision with full external evidence: the backend answered below
+    /// the threshold, so the project default applied.
+    fn answered_sample() -> DecisionRecord {
+        let eligible = [AgentKind::Claude, AgentKind::Codex];
+        let threshold = Threshold::from_unit(0.9).unwrap();
+        let question =
+            DecisionQuestion::harness_route(&eligible, &BTreeMap::new(), threshold).unwrap();
+        let answer = BackendAnswer {
+            model: PINNED.to_owned(),
+            choice: "codex".to_owned(),
+            probabilities: [("claude", 0.05), ("codex", 0.9), ("escalate", 0.05)]
+                .into_iter()
+                .map(|(option, probability)| (option.to_owned(), probability))
+                .collect(),
+            confidence: 0.85,
+        }
+        .validate(&question, PINNED)
+        .unwrap();
+        let labels = vec![Label::new("rust").unwrap()];
+        let resolution = resolve_route(
+            &question,
+            &eligible,
+            &labels,
+            Some(AgentKind::Claude),
+            &[],
+            ExternalResult::Answered(answer),
+        );
+        let record = DecisionRecord::new(
+            NewDecision {
+                decision_id: Uuid::new_v4(),
+                kind: DecisionKind::HarnessRoute,
+                options: question.option_ids(),
+                labels,
+                prompt: prompt(),
+                project_default: Some(AgentKind::Claude),
+                threshold,
+                dispatch_config_sha256: digest(2),
+                decision_config_sha256: digest(3),
+                created_at: OffsetDateTime::UNIX_EPOCH + Duration::days(20_000),
+            },
+            resolution,
+        );
+        assert!(record.external.answer.is_some());
+        record
+    }
+
+    fn consumption_of(record: &DecisionRecord) -> DecisionConsumedPayload {
+        DecisionConsumedPayload {
+            decision_id: record.decision_id,
+            request_id: Uuid::new_v4(),
+            harness: record.chosen_harness.expect("a resolved decision"),
+            consumed_at: record.created_at + Duration::minutes(1),
+        }
+    }
+
+    #[test]
+    fn the_events_rebuild_the_projection_record() {
+        for mut record in [
+            sample(Some(AgentKind::Codex)),
+            sample(None),
+            answered_sample(),
+        ] {
+            let draft = recorded(ProjectId::new(), &record).unwrap();
+            let payload: DecisionRecordedPayload =
+                serde_json::from_value(draft.payload.value().clone()).unwrap();
+            assert_eq!(rebuild_record(payload.clone(), None).unwrap(), record);
+            if record.chosen_harness.is_some() {
+                let consumption = consumption_of(&record);
+                let context = ConsumedContext {
+                    project_id: draft.project_id,
+                    task_id: TaskId::new(),
+                    run_id: RunId::new(),
+                    timestamp: consumption.consumed_at,
+                };
+                let draft = consumed(&context, &consumption).unwrap();
+                let consumption: DecisionConsumedPayload =
+                    serde_json::from_value(draft.payload.value().clone()).unwrap();
+                record
+                    .mark_consumed(consumption.request_id, consumption.consumed_at)
+                    .unwrap();
+                assert_eq!(rebuild_record(payload, Some(&consumption)).unwrap(), record);
+            }
+        }
+    }
+
+    #[test]
+    fn inconsistent_events_do_not_rebuild() {
+        let record = answered_sample();
+        let payload = DecisionRecordedPayload::from_record(&record).unwrap();
+
+        let mut other_decision = consumption_of(&record);
+        other_decision.decision_id = Uuid::new_v4();
+        let mut other_harness = consumption_of(&record);
+        other_harness.harness = AgentKind::Codex;
+        for consumption in [other_decision, other_harness] {
+            assert_eq!(
+                rebuild_record(payload.clone(), Some(&consumption)),
+                Err(DecisionError::Internal)
+            );
+        }
+
+        let escalated = sample(None);
+        let mut escalated_consumption = consumption_of(&record);
+        escalated_consumption.decision_id = escalated.decision_id;
+        assert_eq!(
+            rebuild_record(
+                DecisionRecordedPayload::from_record(&escalated).unwrap(),
+                Some(&escalated_consumption)
+            ),
+            Err(DecisionError::Internal)
+        );
+
+        let mut stretched = payload;
+        stretched.expires_at += Duration::minutes(1);
+        assert_eq!(
+            rebuild_record(stretched, None),
+            Err(DecisionError::Internal)
+        );
+
+        let mut consumed_record = record.clone();
+        consumed_record
+            .mark_consumed(Uuid::new_v4(), record.created_at)
+            .unwrap();
+        assert_eq!(
+            DecisionRecordedPayload::from_record(&consumed_record),
+            Err(DecisionError::Internal)
+        );
+    }
 
     #[test]
     fn recorded_event_is_valid_project_level_and_idempotent() {
@@ -173,7 +401,7 @@ mod tests {
         let payload: DecisionRecordedPayload =
             serde_json::from_value(draft.payload.value().clone()).unwrap();
         assert_eq!(payload.chosen_harness, Some(AgentKind::Codex));
-        assert_eq!(payload.option_count, 3);
+        assert_eq!(payload.options, record.options);
     }
 
     #[test]
@@ -191,6 +419,7 @@ mod tests {
                 decision_id: record.decision_id,
                 request_id: Uuid::new_v4(),
                 harness: AgentKind::Codex,
+                consumed_at: context.timestamp,
             },
         )
         .unwrap();

@@ -9,7 +9,12 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use vibemux_decision::{
     DECISION_TTL, DecisionError, DecisionKind, DecisionQuestion, DecisionRecord, ExternalResult,
-    Label, NewDecision, SkipReason, Threshold, resolve_route,
+    Label, NewDecision, SkipReason, Threshold,
+    events::{
+        DECISION_CONSUMED_EVENT, DECISION_RECORDED_EVENT, DecisionConsumedPayload,
+        DecisionRecordedPayload, rebuild_record,
+    },
+    resolve_route,
 };
 use vibemux_harness::{
     AgentKind, HarnessDetection,
@@ -123,6 +128,36 @@ fn admission(
 
 fn event_count(store: &SqliteStore) -> usize {
     store.events().expect("events").len()
+}
+
+/// Every decision rebuilt from the event log alone.
+fn decisions_from_events(store: &SqliteStore) -> BTreeMap<Uuid, DecisionRecord> {
+    let mut recorded = BTreeMap::new();
+    let mut consumed = BTreeMap::new();
+    for event in store.events().expect("events") {
+        let payload = event.payload().value().clone();
+        match event.event_type().as_str() {
+            DECISION_RECORDED_EVENT => {
+                let payload: DecisionRecordedPayload =
+                    serde_json::from_value(payload).expect("recorded payload");
+                assert!(recorded.insert(payload.decision_id, payload).is_none());
+            }
+            DECISION_CONSUMED_EVENT => {
+                let payload: DecisionConsumedPayload =
+                    serde_json::from_value(payload).expect("consumed payload");
+                assert!(consumed.insert(payload.decision_id, payload).is_none());
+            }
+            _ => {}
+        }
+    }
+    recorded
+        .into_iter()
+        .map(|(decision_id, payload)| {
+            let record =
+                rebuild_record(payload, consumed.remove(&decision_id).as_ref()).expect("rebuild");
+            (decision_id, record)
+        })
+        .collect()
 }
 
 fn assert_no_forbidden_keys(value: &Value) {
@@ -409,4 +444,31 @@ fn a_tampered_row_fails_closed() {
         store.decisions_after(0, 10),
         Err(StoreError::DecisionProjectionMismatch)
     ));
+}
+
+#[test]
+fn the_projection_rebuilds_from_its_events() {
+    let (_file, mut store) = open_store(&["codex", "claude"]);
+    let consumed = decision(Some(AgentKind::Codex));
+    let unconsumed = decision(Some(AgentKind::Codex));
+    let escalated = decision(None);
+    for record in [&consumed, &unconsumed, &escalated] {
+        store.record_decision(record).expect("record");
+    }
+    store
+        .admit_decided_dispatch(
+            consumed.decision_id,
+            &admission(AgentKind::Codex, "/work/a", at(60)),
+        )
+        .expect("decided dispatch");
+
+    let projection: BTreeMap<Uuid, DecisionRecord> = store
+        .decisions_after(0, MAX_DECISION_PAGE)
+        .expect("page")
+        .into_iter()
+        .map(|stored| (stored.record.decision_id, stored.record))
+        .collect();
+    assert_eq!(projection.len(), 3);
+    assert!(projection[&consumed.decision_id].consumption.is_some());
+    assert_eq!(decisions_from_events(&store), projection);
 }
