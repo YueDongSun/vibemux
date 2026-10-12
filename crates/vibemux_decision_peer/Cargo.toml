@@ -1,0 +1,27 @@
+[package]
+name = "vibemux_decision_peer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vibemux_decision_peer"
+path = "src/main.rs"
+
+[features]
+# Allows a loopback-only endpoint override for tests. Never enabled in
+# release builds of the shipped peer.
+test_endpoint = []
+
+[dependencies]
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+vibemux_decision = { path = "../vibemux_decision" }
+
+[dev-dependencies]
+axum.workspace = true

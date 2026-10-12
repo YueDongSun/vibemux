@@ -13,10 +13,12 @@ use vibemux_harness::{
 use vibemux_types::{ProjectId, Run, Task};
 
 mod a2a;
+mod decision;
 mod frontend;
 mod harness_dispatch;
 mod workflow;
 pub use a2a::A2aCommitOutcome;
+pub use decision::{DecidedDispatchCommit, DecisionCommit, MAX_DECISION_PAGE, StoredDecision};
 pub use harness_dispatch::{
     ClaimFence, HARNESS_DISPATCH_RECORD_SCHEMA_VERSION, HarnessDispatchAdmission,
     HarnessDispatchClaim, HarnessDispatchCommit, HarnessDispatchFinish, HarnessDispatchRecord,
@@ -29,7 +31,7 @@ pub use workflow::{
     WorkflowAttemptRecord, WorkflowCommit, WorkflowRecovery, WorkflowSnapshot,
 };
 
-pub const STORE_SCHEMA_VERSION: u32 = 5;
+pub const STORE_SCHEMA_VERSION: u32 = 6;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -99,6 +101,12 @@ pub enum StoreError {
     HarnessDispatchBoundProjection,
     #[error("workflow operation was rejected: {0}")]
     Workflow(&'static str),
+    #[error("decision operation was rejected")]
+    Decision(#[source] vibemux_decision::DecisionError),
+    #[error("a different decision was already recorded under this id")]
+    DecisionConflict,
+    #[error("decision projection integrity check failed")]
+    DecisionProjectionMismatch,
     #[error("SQLite store operation failed")]
     Database(#[source] rusqlite::Error),
     #[error("canonical JSON operation failed")]
@@ -142,6 +150,10 @@ impl StoreError {
             Self::HarnessDispatchBoundProjection => "store_harness_dispatch_bound_projection",
             // The pure-crate or store code itself, so it reaches Control IPC unchanged.
             Self::Workflow(code) => code,
+            // The decision code itself, so it reaches Control IPC unchanged.
+            Self::Decision(error) => error.code(),
+            Self::DecisionConflict => "store_decision_conflict",
+            Self::DecisionProjectionMismatch => "store_decision_projection_mismatch",
             Self::Database(_) => "store_database_error",
             Self::Json(_) => "store_json_error",
             Self::Event(_) => "store_event_error",
@@ -700,6 +712,13 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V5)?;
             transaction.commit()?;
         }
+        if found < 6 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(decision::MIGRATION_V6)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -1157,6 +1176,7 @@ mod tests {
             ("table", "workflow_messages"),
             ("table", "content_store_entries"),
             ("index", "prompt_policy_versions_one_active"),
+            ("table", "decision_records"),
         ] {
             let exists: bool = connection
                 .query_row(
@@ -1250,6 +1270,46 @@ mod tests {
                     .expect("schema object query");
                 assert!(!exists, "{attempt}: {table} must roll back");
             }
+        }
+    }
+
+    /// A MIGRATION_V6 that fails rolls back `decision_records` and the
+    /// marker, so the database stays at schema 5 across reopen.
+    #[test]
+    fn failed_schema_6_migration_stays_at_schema_5_across_reopen() {
+        let temporary = tempfile::NamedTempFile::new().expect("temporary database");
+        schema_3_database(temporary.path());
+        {
+            let mut connection = Connection::open(temporary.path()).expect("open raw database");
+            for migration in [harness_dispatch::MIGRATION_V4, workflow::MIGRATION_V5] {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .expect("migration transaction");
+                transaction.execute_batch(migration).expect("migration");
+                transaction.commit().expect("migration commit");
+            }
+            connection
+                .execute_batch("CREATE VIEW decision_records AS SELECT 1 AS value;")
+                .expect("conflicting object name");
+        }
+        let history = event_log(temporary.path());
+        for attempt in ["open", "reopen"] {
+            match SqliteStore::open(temporary.path()) {
+                Err(StoreError::Database(_)) => {}
+                Err(other) => panic!("{attempt}: unexpected error {other:?}"),
+                Ok(_) => panic!("{attempt}: a failed migration must not open"),
+            }
+            assert_eq!(schema_version(temporary.path()), 5, "{attempt}");
+            assert_eq!(event_log(temporary.path()), history, "{attempt}");
+            let table_exists: bool = Connection::open(temporary.path())
+                .expect("open raw database")
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'decision_records')",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("schema object query");
+            assert!(!table_exists, "{attempt}: the table must roll back");
         }
     }
 

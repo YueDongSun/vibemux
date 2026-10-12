@@ -38,6 +38,12 @@ name = "vibemux_worker_fixture"
 path = "src/bin/vibemux_worker_fixture.rs"
 required-features = ["test_helpers"]
 
+# Synthetic decision peer for the decision routing tests (ADR 034).
+[[bin]]
+name = "vibemux_decision_fixture"
+path = "src/bin/vibemux_decision_fixture.rs"
+required-features = ["test_helpers"]
+
 [dependencies]
 prost.workspace = true
 async-trait.workspace = true
@@ -55,6 +61,7 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+vibemux_decision = { path = "../vibemux_decision" }
 vibemux_events = { path = "../vibemux_events" }
 vibemux_dsh = { path = "../vibemux_dsh" }
 vibemux_harness = { path = "../vibemux_harness" }

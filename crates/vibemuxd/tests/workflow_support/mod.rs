@@ -412,6 +412,7 @@ impl ProjectPaths {
                 &self.project_root,
                 &self.state_dir,
             )),
+            decision: None,
         };
         let server = DaemonControlServer::start_with_execution(
             &self.database(),

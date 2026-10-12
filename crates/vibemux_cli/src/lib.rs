@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Thin lifecycle client and controlled bootstrap for the Rust daemon.
 
+pub mod decision_commands;
 pub mod dispatch_commands;
 pub mod dsh_commands;
 pub mod recovery;
@@ -274,6 +275,11 @@ pub enum CliCommand {
         project_root: Option<PathBuf>,
         command: dispatch_commands::DispatchCommand,
     },
+    /// The `decide` and `decisions` verbs (ADR 034).
+    Decision {
+        project_root: Option<PathBuf>,
+        command: decision_commands::DecisionCommand,
+    },
     Dsh {
         project_root: Option<PathBuf>,
         command: dsh_commands::DshCommand,
@@ -505,6 +511,9 @@ pub fn parse_cli_arguments(
     }
     if verb == "dispatch" {
         return dispatch_commands::parse_dispatch_arguments(&arguments[1..]);
+    }
+    if verb == "decide" || verb == "decisions" {
+        return decision_commands::parse_decision_arguments(verb, &arguments[1..]);
     }
     if verb == "dsh" {
         return match dsh_commands::parse_dsh_arguments(&arguments[1..])? {
