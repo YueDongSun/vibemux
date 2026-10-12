@@ -68,6 +68,8 @@ pub enum ExternalError {
     PeerBusy,
     #[error("the decision peer exceeded its deadline")]
     PeerTimeout,
+    #[error("the daemon is shutting down and cancelled the decision peer")]
+    PeerCancelled,
     #[error("the decision peer broke its line protocol")]
     PeerProtocol,
     // Backend transport failures reported by the peer.
@@ -114,6 +116,7 @@ impl ExternalError {
             Self::PeerUnavailable => "decision_peer_unavailable",
             Self::PeerBusy => "decision_peer_busy",
             Self::PeerTimeout => "decision_peer_timeout",
+            Self::PeerCancelled => "decision_peer_cancelled",
             Self::PeerProtocol => "decision_peer_protocol",
             Self::RequestInvalid => "decision_backend_request_invalid",
             Self::Transport => "decision_backend_transport",
@@ -151,12 +154,13 @@ impl ExternalError {
 
     /// Every variant, for exhaustive code tests.
     #[must_use]
-    pub const fn all() -> [Self; 21] {
+    pub const fn all() -> [Self; 22] {
         [
             Self::CredentialUnavailable,
             Self::PeerUnavailable,
             Self::PeerBusy,
             Self::PeerTimeout,
+            Self::PeerCancelled,
             Self::PeerProtocol,
             Self::RequestInvalid,
             Self::Transport,

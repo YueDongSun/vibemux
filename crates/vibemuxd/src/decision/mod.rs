@@ -20,7 +20,10 @@ use std::{
 
 use thiserror::Error;
 use time::OffsetDateTime;
-use tokio::sync::Semaphore;
+use tokio::{
+    sync::{Semaphore, watch},
+    time::timeout,
+};
 use uuid::Uuid;
 use vibemux_decision::{
     DecisionError, DecisionKind, DecisionQuestion, DecisionRecord, DecisionStatus, ExternalError,
@@ -43,7 +46,9 @@ pub use config_loader::{
     DecisionConfigLoadError, LoadedDecisionConfig, decision_config_path, load_decision_config,
 };
 pub use facts_builder::{eligible_harnesses, project_default};
-pub use peer_process::{DECISION_PEER_NAME, PEER_DEADLINE, PeerCredential, bundled_peer, run_peer};
+pub use peer_process::{
+    DECISION_PEER_NAME, PEER_DEADLINE, PeerCredential, SHUTDOWN_DEADLINE, bundled_peer, run_peer,
+};
 
 /// Where the service finds its inputs.
 #[derive(Clone)]
@@ -159,8 +164,11 @@ struct ServiceInner {
     writer: WriterHandle,
     dispatch: HarnessDispatchService,
     setup: Result<DecisionSetup, DecisionConfigLoadError>,
-    /// One external exchange at a time.
+    /// One external exchange at a time; held until its peer is reaped.
     external: Semaphore,
+    /// `true` once the daemon shuts down: no peer starts after that, and a
+    /// running one is killed and reaped.
+    shutdown: watch::Sender<bool>,
 }
 
 /// Inputs fixed at startup.
@@ -211,6 +219,7 @@ impl DecisionService {
                 dispatch,
                 setup,
                 external: Semaphore::new(1),
+                shutdown: watch::channel(false).0,
             }),
         }
     }
@@ -344,6 +353,9 @@ impl DecisionService {
         question: &DecisionQuestion,
         facts: &RouteFacts,
     ) -> Result<vibemux_decision::ValidatedAnswer, ExternalError> {
+        if *self.inner.shutdown.borrow() {
+            return Err(ExternalError::PeerCancelled);
+        }
         let jev = &setup.config.config.jev;
         let credential = PeerCredential::from_environment(&jev.credential_env)?;
         let executable = setup.peer.as_ref().ok_or(ExternalError::PeerUnavailable)?;
@@ -353,8 +365,32 @@ impl DecisionService {
             .external
             .try_acquire()
             .map_err(|_| ExternalError::PeerBusy)?;
-        let answer = run_peer(executable, &request, credential, setup.peer_deadline).await?;
+        let answer = run_peer(
+            executable,
+            &request,
+            credential,
+            setup.peer_deadline,
+            self.inner.shutdown.subscribe(),
+        )
+        .await?;
         answer.validate(question, &jev.pinned_model)
+    }
+
+    /// Cancels the active external exchange and refuses new ones, without
+    /// waiting. Advice still falls back to the local chain.
+    pub fn begin_shutdown(&self) {
+        self.inner.shutdown.send_replace(true);
+    }
+
+    /// Cancels the active external exchange and waits, up to
+    /// [`SHUTDOWN_DEADLINE`], until its peer is killed and reaped. Runs
+    /// before the writer shuts down, while the connection that started the
+    /// exchange still runs.
+    pub async fn shutdown(&self) {
+        self.begin_shutdown();
+        // The exchange holds the permit from before its peer starts until
+        // after the peer is reaped.
+        let _ = timeout(SHUTDOWN_DEADLINE, self.inner.external.acquire()).await;
     }
 }
 

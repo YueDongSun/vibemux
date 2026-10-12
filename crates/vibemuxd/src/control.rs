@@ -1342,11 +1342,17 @@ async fn serve_owned(
     mut stop: tokio::sync::watch::Receiver<bool>,
     supervisor: Option<SupervisorService>,
 ) -> Result<(), ControlError> {
+    let mut server = Box::pin(server);
     let result = tokio::select! {
         biased;
         _ = stop.changed() => Ok(()),
-        result = server => result,
+        result = &mut server => result,
     };
+    // An external decision peer is killed and reaped while the connection
+    // task that started it still runs; dropping the server afterwards aborts
+    // the remaining connection tasks.
+    state.decision.shutdown().await;
+    drop(server);
     // Workflow coordinators stop first, then dispatch attempts end: both
     // finish through the writer. Cancellation of running turns starts
     // before the coordinators are awaited so none waits out a long turn.
@@ -1785,11 +1791,13 @@ where
             }
         }
         // Acceptance only. The owner joins plugins before releasing the writer.
-        // Dispatch cancellation starts now, so a connection waiting on a
-        // probe ends before the server drains connections.
+        // Dispatch and decision-peer cancellation start now, so a connection
+        // waiting on a probe or an external decision ends before the server
+        // drains connections.
         ControlOperation::Shutdown => {
             state.workflow.begin_shutdown();
             state.dispatch.begin_shutdown();
+            state.decision.begin_shutdown();
             (
                 ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
                 true,

@@ -23,9 +23,13 @@ use vibemux_harness::{
 use vibemux_store::StoredDecision;
 use vibemuxd::{
     WriterHandle, WriterWorker,
+    control::{
+        ControlClient, ControlError, DaemonControlServer, DecisionAdviseArgument, DecisionView,
+        ExecutionSettings,
+    },
     decision::{
         AdviseRequest, DecisionService, DecisionServiceError, DecisionServiceSettings,
-        decision_config_path,
+        SHUTDOWN_DEADLINE, decision_config_path,
     },
     harness_dispatch::{
         DISPATCH_CONFIG_FILE_NAME, DispatchServiceSettings, HarnessDispatchService,
@@ -119,6 +123,24 @@ fn processes_running(executable: &Path) -> usize {
         .filter(|process| process.exe() == Some(executable))
         .filter(|process| process.status() != sysinfo::ProcessStatus::Zombie)
         .count()
+}
+
+async fn wait_for_peer(executable: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while processes_running(executable) == 0 {
+        assert!(Instant::now() < deadline, "the peer never started");
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// The peer was reaped before shutdown returned; the bound only absorbs the
+/// process table catching up.
+async fn assert_peer_gone(executable: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while processes_running(executable) > 0 {
+        assert!(Instant::now() < deadline, "the peer outlived shutdown");
+        sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// A project with Claude and Codex dispatch routes on the native fixture,
@@ -329,7 +351,9 @@ impl RouteFixture {
     }
 
     async fn close(&mut self) {
-        self.decision.take();
+        if let Some(decision) = self.decision.take() {
+            decision.shutdown().await;
+        }
         if let Some(dispatch) = self.dispatch.take() {
             dispatch.shutdown().await;
         }
@@ -590,6 +614,144 @@ async fn a_second_external_request_falls_back_at_once_instead_of_queueing() {
     let first = first.await.expect("join").expect("first advice");
     assert_eq!(external_error(&first), Some(ExternalError::PeerTimeout));
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn shutdown_kills_and_reaps_a_hung_peer_and_refuses_new_exchanges() {
+    let mut fixture = RouteFixture::start().await;
+    let config = decision_config(true, "fixture_hang", PRESENT_CREDENTIAL);
+    fixture
+        .configure(&config, Some(fixture.peer.clone()), LONG_PEER_DEADLINE)
+        .await;
+    let service = fixture.service().clone();
+    let pending = tokio::spawn(async move { service.advise(advise(&["rust"], true)).await });
+    wait_for_peer(&fixture.peer).await;
+
+    let started = Instant::now();
+    fixture.service().shutdown().await;
+    assert!(
+        started.elapsed() < SHUTDOWN_DEADLINE,
+        "shutdown waited for the peer deadline"
+    );
+    assert_peer_gone(&fixture.peer).await;
+    let cancelled = timeout(CALL_LIMIT, pending)
+        .await
+        .expect("advice returned in time")
+        .expect("join")
+        .expect("advice");
+    assert_eq!(
+        external_error(&cancelled),
+        Some(ExternalError::PeerCancelled)
+    );
+    assert_eq!(cancelled.record.external.status, ExternalStatus::Failed);
+    assert_eq!(cancelled.record.source, DecisionSource::LocalRule);
+
+    // After shutdown an external request falls back without a peer.
+    let refused = fixture.decide(&["rust"], true).await;
+    assert_eq!(external_error(&refused), Some(ExternalError::PeerCancelled));
+    assert_eq!(refused.record.source, DecisionSource::LocalRule);
+    assert_eq!(processes_running(&fixture.peer), 0);
+    fixture.close().await;
+    fixture.assert_content_free();
+}
+
+/// Hands the fixture's database to a control server whose decision config
+/// enables the hanging peer; the fixture's own writer is released first.
+async fn hanging_control_server(
+    fixture: &mut RouteFixture,
+    runtime: &str,
+) -> (DaemonControlServer, ControlClient) {
+    let config_path = decision_config_path(&fixture.state_dir);
+    write_json(
+        &config_path,
+        &decision_config(true, "fixture_hang", PRESENT_CREDENTIAL),
+    );
+    fixture.close().await;
+    let runtime_dir = fixture.temp.path().join(runtime);
+    std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+    let settings = ExecutionSettings {
+        dispatch: DispatchServiceSettings {
+            project_root: fixture
+                .state_dir
+                .parent()
+                .expect("project root")
+                .to_path_buf(),
+            config_path: fixture.state_dir.join(DISPATCH_CONFIG_FILE_NAME),
+            trampoline: Some(PathBuf::from(TRAMPOLINE)),
+        },
+        workflow: None,
+        decision: Some(DecisionServiceSettings {
+            config_path,
+            peer: Some(fixture.peer.clone()),
+            peer_deadline: LONG_PEER_DEADLINE,
+        }),
+    };
+    let server =
+        DaemonControlServer::start_with_execution(&fixture.database, &runtime_dir, settings)
+            .await
+            .expect("control server");
+    let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+    (server, client)
+}
+
+/// Starts an external advice over control IPC and waits for its peer.
+async fn advise_over_control(
+    client: &ControlClient,
+    peer: &Path,
+) -> tokio::task::JoinHandle<Result<DecisionView, ControlError>> {
+    let client = client.clone();
+    let advising = tokio::spawn(async move {
+        client
+            .decision_advise(&DecisionAdviseArgument {
+                prompt: PROMPT.to_string(),
+                labels: vec!["rust".to_string()],
+                allow_external: true,
+            })
+            .await
+    });
+    wait_for_peer(peer).await;
+    advising
+}
+
+#[tokio::test]
+async fn daemon_shutdown_cancels_an_external_decision_in_flight() {
+    let mut fixture = RouteFixture::start().await;
+
+    // A control shutdown cancels the peer, so the drained advice falls back
+    // instead of holding the shutdown for the peer deadline.
+    let (server, client) = hanging_control_server(&mut fixture, "runtime_control").await;
+    let advising = advise_over_control(&client, &fixture.peer).await;
+    let started = Instant::now();
+    client.shutdown().await.expect("shutdown accepted");
+    let view = timeout(CALL_LIMIT, advising)
+        .await
+        .expect("advice returned in time")
+        .expect("join")
+        .expect("advice");
+    server.wait().await.expect("server stopped");
+    assert!(
+        started.elapsed() < CALL_LIMIT,
+        "shutdown waited for the peer deadline"
+    );
+    assert_eq!(view.external.error, Some(ExternalError::PeerCancelled));
+    assert_eq!(view.source, DecisionSource::LocalRule);
+    assert_peer_gone(&fixture.peer).await;
+
+    // Stopping the daemon reaps the peer before it aborts the connection.
+    let (server, client) = hanging_control_server(&mut fixture, "runtime_stop").await;
+    let advising = advise_over_control(&client, &fixture.peer).await;
+    let started = Instant::now();
+    server.shutdown().await.expect("server stopped");
+    assert!(
+        started.elapsed() < CALL_LIMIT,
+        "the stop waited for the peer deadline"
+    );
+    assert_peer_gone(&fixture.peer).await;
+    // The aborted connection ends the client call either way.
+    let _ = timeout(CALL_LIMIT, advising)
+        .await
+        .expect("the client call ended");
+    fixture.assert_content_free();
 }
 
 #[tokio::test]

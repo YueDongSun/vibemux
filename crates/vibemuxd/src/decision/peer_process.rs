@@ -6,18 +6,20 @@
 //! credential variable, writes one request line, reads one bounded result
 //! line, and waits for the exit, all under one deadline. The request names
 //! the credential variable; its value travels only in the child environment.
+//! Daemon shutdown cancels the exchange: the peer is killed and reaped.
 
 use std::{
     ffi::OsString,
     fmt,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{ExitStatus, Stdio},
     time::Duration,
 };
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
+    sync::watch,
     time::timeout,
 };
 use vibemux_decision::{
@@ -31,6 +33,8 @@ pub const DECISION_PEER_NAME: &str = "vibemux_decision_peer";
 pub const PEER_DEADLINE: Duration = Duration::from_secs(50);
 /// Bound on reaping the peer once it was killed.
 const REAP_DEADLINE: Duration = Duration::from_secs(2);
+/// Bound on shutdown waiting for a cancelled exchange to reap its peer.
+pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(REAP_DEADLINE.as_secs() + 1);
 /// Passed through when present; nothing else from the daemon environment
 /// reaches the peer except the credential variable.
 const SYSTEM_ENVIRONMENT_NAMES: [&str; 4] = ["SystemRoot", "WINDIR", "TEMP", "TMP"];
@@ -74,18 +78,30 @@ impl PeerCredential {
     }
 }
 
+/// How one exchange ended before its result line is decoded.
+enum Ending {
+    Finished(Result<(Vec<u8>, ExitStatus), ExternalError>),
+    TimedOut,
+    Cancelled,
+}
+
 /// Runs one peer exchange. The answer is returned unvalidated; the caller
-/// validates it against the question (ADR 034 §8).
+/// validates it against the question (ADR 034 §8). Once `cancelled` holds
+/// `true`, no peer starts, and a running one is killed and reaped.
 pub async fn run_peer(
     executable: &Path,
     request: &PeerRequest,
     credential: PeerCredential,
     deadline: Duration,
+    mut cancelled: watch::Receiver<bool>,
 ) -> Result<BackendAnswer, ExternalError> {
     // A relative path would resolve against the daemon's working directory
     // and the platform search rules.
     if !executable.is_absolute() {
         return Err(ExternalError::PeerUnavailable);
+    }
+    if *cancelled.borrow() {
+        return Err(ExternalError::PeerCancelled);
     }
     let line = request.encode_line()?;
     let mut command = Command::new(executable);
@@ -137,16 +153,29 @@ pub async fn run_peer(
             .map_err(|_| ExternalError::PeerProtocol)?;
         Ok((output, status))
     };
-    let outcome = timeout(deadline, exchange).await;
-    let (output, status) = match outcome {
-        Ok(Ok(finished)) => finished,
-        Ok(Err(error)) => {
+    // A cancellation sent after the check above, even before the spawn,
+    // is seen here at once.
+    let ending = tokio::select! {
+        biased;
+        () = wait_cancelled(&mut cancelled) => Ending::Cancelled,
+        outcome = timeout(deadline, exchange) => match outcome {
+            Ok(finished) => Ending::Finished(finished),
+            Err(_) => Ending::TimedOut,
+        },
+    };
+    let (output, status) = match ending {
+        Ending::Finished(Ok(finished)) => finished,
+        Ending::Finished(Err(error)) => {
             reap(&mut child).await;
             return Err(error);
         }
-        Err(_) => {
+        Ending::TimedOut => {
             reap(&mut child).await;
             return Err(ExternalError::PeerTimeout);
+        }
+        Ending::Cancelled => {
+            reap(&mut child).await;
+            return Err(ExternalError::PeerCancelled);
         }
     };
     let result = PeerResult::decode_line(&output)?;
@@ -154,6 +183,13 @@ pub async fn run_peer(
         return Err(ExternalError::PeerProtocol);
     }
     result
+}
+
+/// Resolves once cancellation is requested; never if its sender is gone.
+async fn wait_cancelled(cancelled: &mut watch::Receiver<bool>) {
+    if cancelled.wait_for(|requested| *requested).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn reap(child: &mut tokio::process::Child) {
