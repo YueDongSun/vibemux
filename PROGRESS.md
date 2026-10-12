@@ -2939,9 +2939,10 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   peer gets a cleared environment plus one credential variable, only when
   both `jev.enabled` and `--allow-external` are set; one external exchange
   at a time, and a concurrent request records `decision_peer_busy` instead
-  of queueing. Control v8 adds `decision_advise`, `decision_list`,
-  `decision_show`, and `decision_dispatch_submit`; v1-v7 clients keep their
-  operations.
+  of queueing; daemon shutdown cancels the exchange and reaps its peer
+  before the writer is released. Control v8 adds `decision_advise`,
+  `decision_list`, `decision_show`, and `decision_dispatch_submit`; v1-v7
+  clients keep their operations.
 - `vibemuxctl decide route`, `decisions list|show`, and
   `dispatch submit --decision`. The roadmap for later decision-driven
   features is [docs/decision_orchestration_roadmap.md](docs/decision_orchestration_roadmap.md).
@@ -2949,12 +2950,14 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Validation executed** (native Windows 11, pinned Rust 1.85.0)
 - `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   --all-features -- -D warnings`, and `git diff --check` passed.
-- `cargo test --workspace --all-features --no-fail-fast` after the review
-  repairs: 918 passed, 0 failed, 2 ignored in 103
-  result targets. Decision targets: `vibemux_decision` 45 unit tests;
+- `cargo test --workspace --all-features --no-fail-fast` after the pull
+  request review repairs: 923 passed, 0 failed, 2 ignored in 103
+  result targets. Decision targets: `vibemux_decision` 47 unit tests;
   `vibemux_decision_peer` 4 unit, 13 loopback-HTTP client tests, and 4
   binary tests run under the daemon's exact environment without `PATH`;
-  store `decision` 7; `vibemuxd` `decision_route` 8.
+  store `decision` 8; `vibemuxd` `decision_route` 10. With the control
+  shutdown's peer cancellation removed, the new daemon shutdown test failed
+  because the advice did not return within its limit.
 - Offline end to end against the real daemon and CLI built from `8f22024`,
   in a scratch project outside the repository (schema 6 observed), with
   `vibemux_native_fixture` vendors and `vibemux_decision_fixture` as the
@@ -2982,6 +2985,18 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   clock stepped behind the creation time extended the 15-minute window; the
   retry attempt could outlive the peer's total budget; and three doc claims
   overstated the code.
+- The pull request review of `571152d` raised two more defects, both
+  repaired with regressions:
+  - The decision events could not rebuild `decision_records`. Now
+    `decision_recorded` holds the complete sanitized record and
+    `decision_consumed` holds its consumption time. A store test rebuilds
+    the projection from the event log alone.
+  - Daemon shutdown neither cancelled nor reaped an active peer, and a
+    control shutdown drained the connection for up to the 50-second peer
+    deadline. Now the peer is cancelled at once and reaped before the
+    writer is released, and the advice records `decision_peer_cancelled`.
+    This is covered at the service level and through both daemon shutdown
+    paths.
 - Building `aws-lc-sys` with MSVC failed with `D8050` under the long
   worktree target path; a short `CARGO_TARGET_DIR` outside the worktree
   built cleanly. One workspace run failed to compile because the build

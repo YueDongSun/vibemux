@@ -105,6 +105,13 @@ most one external exchange runs at a time; a request that finds one in
 progress records `decision_peer_busy` and takes the local chain at once
 instead of queueing, so one advice never spends more than one peer deadline.
 
+Daemon shutdown cancels the exchange. A control `shutdown` request cancels
+it on acceptance, so draining connections does not wait for the peer
+deadline. The daemon's shutdown path then waits until the peer is killed
+and reaped, before it aborts the remaining connections and releases the
+writer. The cancelled advice records `decision_peer_cancelled` and takes
+the local chain. After shutdown starts, no peer is spawned.
+
 The peer uses a fixed HTTPS endpoint, refuses redirects, bypasses proxies,
 caps the response body at 16 KiB, retries 429 and 529 at most once, and
 writes only fixed codes to stderr. Every attempt, including the retry, ends
@@ -174,9 +181,18 @@ Store schema 6 adds the `decision_records` projection with `updated_sequence
 REFERENCES events(sequence)`. The `decision_recorded` and `decision_consumed`
 events are appended in the same `IMMEDIATE` transaction as the projection
 change, by the single `WriterWorker`. Records and events hold identities,
-digests, byte counts, option ids, millionths, model ids, config digests, and
-fixed codes. The prompt, the facts' free text, the provider's `usage`, and
-the key are never stored. A decision expires 15 minutes after creation.
+digests, byte counts, option ids, allowlisted labels, millionths, model ids,
+config digests, and fixed codes. The prompt, the facts' free text, the
+provider's `usage`, and the key are never stored. A decision expires 15
+minutes after creation.
+
+The events are sufficient to rebuild the projection. `decision_recorded`
+carries the complete sanitized creation state: options, labels, prompt
+digest, size, and size bucket, project default, threshold, config digests,
+source, rule index, choice, status, the external evidence, and both
+timestamps. `decision_consumed` carries the consuming request and its time.
+`vibemux_decision::events::rebuild_record` rebuilds a record from the two
+payloads. A test checks that the rebuilt records equal the projection.
 
 ### 11. Binding a decision to a dispatch
 
