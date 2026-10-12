@@ -478,7 +478,7 @@ fn recovery_confirmation(
     hex(&digest)
 }
 
-fn process_is_present(process_id: u32) -> bool {
+pub(crate) fn process_is_present(process_id: u32) -> bool {
     let pid = Pid::from_u32(process_id);
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);

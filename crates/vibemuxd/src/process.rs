@@ -43,18 +43,6 @@ pub struct DaemonPaths {
     legacy_writer_lock_path: PathBuf,
 }
 
-/// What [`DaemonPaths::release_runtime_dir`] did with the per-project
-/// runtime leaf. Only `Removed` deleted anything.
-#[cfg(windows)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RuntimeDirRelease {
-    Removed,
-    Absent,
-    NotEmpty,
-    Unsafe,
-    Failed,
-}
-
 /// Canonical probe-cache location for a state directory. This is the SINGLE
 /// owner of `<state_dir>/probe_cache.json`: `DaemonPaths::probe_cache_path`
 /// and the explicit trusted-startup constructors (`ServerState::start` and
@@ -218,39 +206,35 @@ impl DaemonPaths {
     /// crashes never call this: the leaf then stays for `daemon inspect`,
     /// `recover`, and the CLI's ACL post-mortem
     /// ([`Self::verify_control_surviving_acls`]).
+    ///
+    /// The release is best-effort and reports nothing. A kept leaf only
+    /// costs one directory that the next start reuses, so it must never
+    /// fail a clean shutdown. The daemon has no channel to report it
+    /// either: the writer is already joined, and a CLI-started daemon's
+    /// stderr is discarded.
     #[cfg(windows)]
-    pub(crate) fn release_runtime_dir(&self) -> RuntimeDirRelease {
+    pub(crate) fn release_runtime_dir(&self) {
         use std::os::windows::fs::MetadataExt;
 
-        let metadata = match std::fs::symlink_metadata(&self.runtime_dir) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return RuntimeDirRelease::Absent;
-            }
-            Err(_) => return RuntimeDirRelease::Failed,
+        let Ok(metadata) = std::fs::symlink_metadata(&self.runtime_dir) else {
+            return;
         };
         if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return RuntimeDirRelease::Unsafe;
+            return;
         }
         if std::fs::canonicalize(&self.runtime_dir).ok().as_deref()
             != Some(self.runtime_dir.as_path())
         {
-            return RuntimeDirRelease::Unsafe;
+            return;
         }
         let empty = match std::fs::read_dir(&self.runtime_dir) {
             Ok(mut entries) => entries.next().is_none(),
-            Err(_) => return RuntimeDirRelease::Failed,
+            Err(_) => false,
         };
-        if !empty {
-            return RuntimeDirRelease::NotEmpty;
-        }
-        match std::fs::remove_dir(&self.runtime_dir) {
-            Ok(()) => RuntimeDirRelease::Removed,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeDirRelease::Absent,
-            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-                RuntimeDirRelease::NotEmpty
-            }
-            Err(_) => RuntimeDirRelease::Failed,
+        if empty {
+            // `RemoveDirectoryW` refuses a leaf that gained an entry since
+            // the check; the leaf is then simply kept.
+            let _ = std::fs::remove_dir(&self.runtime_dir);
         }
     }
 
@@ -410,6 +394,18 @@ impl DaemonPaths {
             marker.as_path(),
         ];
         self.verify_control_acls(&paths)
+    }
+
+    /// The project-independent part of the surviving surface: the
+    /// protected control root and the ACL marker. Both must exist. The
+    /// CLI's post-mortem verifies only these when the per-project leaf is
+    /// absent, because a clean shutdown releases the empty leaf
+    /// ([`Self::release_runtime_dir`]) and a missing directory is not a
+    /// loosened ACL.
+    #[cfg(windows)]
+    pub fn verify_control_root_acls(&self) -> Result<(), DaemonPathError> {
+        let marker = self.acl_marker_path();
+        self.verify_control_acls(&[self.control_runtime_root.as_path(), marker.as_path()])
     }
 
     /// Phase 2 of the two-phase trusted-start verification (ADR 025,
@@ -1006,17 +1002,20 @@ mod tests {
         std::fs::create_dir_all(paths.runtime_dir()).expect("runtime leaf");
         let foreign = paths.runtime_dir().join("foreign.txt");
         std::fs::write(&foreign, b"foreign").expect("foreign entry");
-        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::NotEmpty);
+        paths.release_runtime_dir();
         assert_eq!(
             std::fs::read(&foreign).expect("foreign entry survives"),
             b"foreign"
         );
 
         std::fs::remove_file(&foreign).expect("remove foreign entry");
-        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Removed);
+        paths.release_runtime_dir();
         assert!(!paths.runtime_dir().exists());
         assert!(paths.control_runtime_root().is_dir());
-        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Absent);
+        // An already released leaf is a no-op.
+        paths.release_runtime_dir();
+        assert!(!paths.runtime_dir().exists());
+        assert!(paths.control_runtime_root().is_dir());
     }
 
     #[cfg(windows)]
@@ -1037,7 +1036,7 @@ mod tests {
         // reparse-point check keeps the junction.
         std::fs::create_dir_all(&root).expect("control root");
         create_junction(&leaf, outside.path());
-        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Unsafe);
+        paths.release_runtime_dir();
         assert!(std::fs::symlink_metadata(&leaf).is_ok(), "junction kept");
         assert!(outside.path().is_dir());
         std::fs::remove_dir(&leaf).expect("remove leaf junction fixture");
@@ -1047,7 +1046,7 @@ mod tests {
         create_junction(&root, outside.path());
         let redirected_leaf = outside.path().join(paths.runtime_key());
         std::fs::create_dir(&redirected_leaf).expect("leaf behind the junction");
-        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Unsafe);
+        paths.release_runtime_dir();
         assert!(redirected_leaf.is_dir());
         std::fs::remove_dir(&root).expect("remove root junction fixture");
     }

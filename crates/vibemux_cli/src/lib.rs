@@ -422,6 +422,24 @@ pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliE
         }
         sleep(DEFAULT_POLL_INTERVAL).await;
     }
+    // The artifacts vanish before the daemon has finished: a clean trusted
+    // Windows daemon still releases its empty runtime leaf afterwards. A
+    // `start` racing that release loses the leaf under its new writer lock,
+    // so `stop` returns only once the process itself is gone, under the
+    // same deadline. An in-process server (tests) shares this PID and never
+    // exits, so only a separate daemon process is awaited.
+    if health.process_id != std::process::id() {
+        let process_id = health.process_id;
+        while tokio::task::spawn_blocking(move || recovery::process_is_present(process_id))
+            .await
+            .unwrap_or(true)
+        {
+            if Instant::now() >= deadline {
+                return Err(DaemonCliError::ShutdownTimeout);
+            }
+            sleep(DEFAULT_POLL_INTERVAL).await;
+        }
+    }
     Ok(health)
 }
 
@@ -675,14 +693,18 @@ pub fn daemon_executable(explicit: Option<&Path>) -> Result<PathBuf, DaemonCliEr
 /// with ONE read-only native verification pass (~ms, no helper process -
 /// ADR 025). The descriptor and writer lock are absent by definition on
 /// this path (every daemon-side failure removes them), so they are not
-/// part of the re-check. The happy path performs no security work at all.
+/// part of the re-check. A missing runtime leaf is not a loosened ACL
+/// either: a clean shutdown releases the empty leaf, and a start racing
+/// that release fails on its writer lock. Then only the root and marker
+/// are re-checked, and each path that exists still fails closed. The
+/// happy path performs no security work at all.
 #[cfg(windows)]
 async fn classify_daemon_exit(paths: &DaemonPaths) -> DaemonCliError {
     // Clone for the `'static` closure; the re-check runs through
     // spawn_blocking because it performs blocking LSA/filesystem reads.
     let paths = paths.clone();
     let security_invalid =
-        tokio::task::spawn_blocking(move || paths.verify_control_surviving_acls().is_err())
+        tokio::task::spawn_blocking(move || surviving_control_acls_invalid(&paths))
             .await
             // A verification pass that could not even run leaves the cause
             // undetermined; report the honest generic failure instead of
@@ -693,6 +715,17 @@ async fn classify_daemon_exit(paths: &DaemonPaths) -> DaemonCliError {
     } else {
         DaemonCliError::StartFailed
     }
+}
+
+#[cfg(windows)]
+fn surviving_control_acls_invalid(paths: &DaemonPaths) -> bool {
+    let verified = match std::fs::symlink_metadata(paths.runtime_dir()) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            paths.verify_control_root_acls()
+        }
+        _ => paths.verify_control_surviving_acls(),
+    };
+    verified.is_err()
 }
 
 #[cfg(unix)]
@@ -1238,6 +1271,23 @@ mod tests {
             paths.runtime_dir(),
             "*S-1-5-32-545:(OI)(CI)F",
         );
+        assert_eq!(
+            classify_daemon_exit(&paths).await,
+            DaemonCliError::Control {
+                code: "daemon_control_runtime_security_invalid".to_string()
+            }
+        );
+        // An ABSENT leaf under a healthy root and marker is what a start
+        // sees when it races the previous daemon's clean-shutdown release:
+        // the plain failure, not a loosened ACL (it used to require the
+        // leaf to exist and reported `security_invalid`).
+        std::fs::remove_dir(paths.runtime_dir()).expect("release the empty leaf");
+        assert_eq!(
+            classify_daemon_exit(&paths).await,
+            DaemonCliError::StartFailed
+        );
+        // Every path that still exists stays fail-closed.
+        vibemux_platform::test_helpers::loosen_with_icacls(&marker, "*S-1-1-0:F");
         assert_eq!(
             classify_daemon_exit(&paths).await,
             DaemonCliError::Control {

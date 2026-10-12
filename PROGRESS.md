@@ -3033,7 +3033,11 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   symlink, junction, or other reparse point is never followed or removed,
   and neither is a path reached through one. A non-empty leaf is left
   untouched. `RemoveDirectoryW` refuses a leaf that became non-empty after
-  the check.
+  the check. The release is best-effort and returns nothing. A kept leaf
+  costs one directory that the next start reuses, and the daemon has no
+  channel left to report it: the writer is joined, and a CLI-started
+  daemon's stderr is discarded. A panic in the blocking task is contained
+  and never turns a clean shutdown into an error.
 - `crates/vibemuxd/src/control.rs`: the trusted Windows start (`security`
   is `Some`) calls it after `serve_owned` returns Ok, once the descriptor
   guard is dropped. The call runs through `spawn_blocking`. By then
@@ -3050,6 +3054,17 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
     instead of removing it themselves.
   - One recovery test recreates the leaf before simulating a crashed
     daemon's stale descriptor.
+- Review follow-up for the restart race (see Known risks):
+  - `crates/vibemux_cli/src/lib.rs`: `stop_daemon` now also waits, under the
+    same `DEFAULT_SHUTDOWN_TIMEOUT` deadline, until the daemon PID from the
+    health response has exited. It reuses `recovery::process_is_present`,
+    which is now `pub(crate)`. An in-process server sharing the CLI's PID
+    (tests) is not awaited.
+  - `classify_daemon_exit` (Windows) treats an absent runtime leaf as the
+    plain `daemon_start_failed`. Only the root and the `.acl_v1` marker are
+    then verified, through the new strict
+    `DaemonPaths::verify_control_root_acls()`. Every path that exists stays
+    fail-closed, including a missing control root.
 - Docs: `docs/architecture.md` (Windows control metadata paragraph) and
   `CHANGELOG.md`.
 
@@ -3081,23 +3096,53 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 - After the fix, run with `LOCALAPPDATA` set to a private empty directory:
   828 passed, 0 failed, 2 ignored in 93 targets. The private runtime root
   afterwards held only `.acl_v1` and zero leaves.
+- Review follow-up, run after merging `origin/main` (decision port):
+  - The new absent-leaf case in
+    `classify_daemon_exit_distinguishes_security_failures` failed against
+    the old classification. It reported
+    `Control { code: "daemon_control_runtime_security_invalid" }` where
+    `StartFailed` was expected. It passes with the fix.
+  - `abrupt_process_recovery_preserves_database_and_allows_restart` now
+    asserts that the daemon PID is gone as soon as `stop_daemon` returns.
+  - `cargo fmt --all -- --check` and
+    `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+    passed.
+  - `cargo test -p vibemux_cli`: 30 + 3 passed. `bootstrap_process` is gated
+    on `test_helpers`, so it reports 0 there. With `--all-features --test
+    bootstrap_process` it gave 3 passed.
+  - `cargo test -p vibemuxd --all-features --test daemon_process --test
+    decision_route`: 6 and 10 passed.
+  - `cargo test --workspace --all-features` with a private `LOCALAPPDATA`:
+    927 passed, 0 failed, 2 ignored in 103 targets. Afterwards the private
+    runtime root again held only `.acl_v1` and zero leaves.
 
 **Compatibility / remaining work / Known risks**
-- There are no wire, schema, or CLI changes.
+- There are no wire, schema, or CLI argument changes. `vibemuxctl daemon
+  stop` now returns only after the daemon process has exited, so it can take
+  slightly longer.
 - Leaves left by crashes, `daemon recover`, failed starts, or earlier
   versions are not pruned. That includes the existing leaves on the
   observed machine, about 76 of which still hold stale artifacts. An
   explicit, confirmation-bound pruning of orphaned leaves is possible
   follow-up work.
-- `vibemuxctl daemon stop` returns when the descriptor and writer lock are
-  gone. It does not wait for the leaf, which disappears milliseconds later,
-  before the daemon process exits.
-- A narrow race remains. A new start can run between an old daemon's
-  descriptor removal and its leaf removal. If the new start has not yet
-  created its writer lock, the old daemon removes the leaf it just
-  recreated. The new start then fails closed (`daemon_control_runtime_unavailable`
-  or a writer-lock I/O error) and can be retried. A start that already
-  created its lock keeps the leaf, because the leaf is no longer empty.
+- The restart race:
+  - The window is between an old daemon's descriptor removal and its leaf
+    removal. A new start in that window that has not yet created its writer
+    lock gets its recreated leaf removed by the old daemon. The new daemon
+    then exits, usually with `writer_lock_io`. Its stderr is discarded, so
+    the CLI reports `daemon_start_failed`, and a retry succeeds.
+  - Before the review follow-up, the CLI's post-mortem required the leaf to
+    exist. It therefore misreported this as
+    `daemon_control_runtime_security_invalid`, blaming the ACLs.
+  - A start that already created its lock keeps the leaf, because the leaf
+    is no longer empty.
+  - Since `stop` waits for the process to exit, a `stop` followed by a
+    `start` can no longer hit the window. Only a start that runs
+    concurrently with another client's `stop` can still hit it.
+  - A `stop` that returns `daemon_shutdown_timeout` after the artifacts are
+    gone still leaves the window open. So would reuse of the daemon PID by
+    an unrelated process within the deadline, which also makes that `stop`
+    report a timeout.
 - Same-user replacement of the leaf by a junction between the check and
   the removal would at most delete that junction itself, never its target.
   Same-SID processes are trusted by ADR 020.

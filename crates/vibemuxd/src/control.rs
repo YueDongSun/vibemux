@@ -1181,7 +1181,10 @@ impl DaemonControlServer {
                 // The descriptor goes first (owner-matched), then the leaf it
                 // lived in. `serve_owned` has already joined the writer, which
                 // removed the writer lock. Any shutdown error keeps the leaf
-                // for diagnosis.
+                // for diagnosis. The release is best-effort and reports
+                // nothing (see `release_runtime_dir`). A join error (a panic,
+                // or cancellation by a shutting-down runtime) is contained
+                // here: it must not turn a clean shutdown into an error.
                 drop(descriptor_guard);
                 if let Some(paths) = runtime_owner.filter(|_| result.is_ok()) {
                     let _ = tokio::task::spawn_blocking(move || paths.release_runtime_dir()).await;

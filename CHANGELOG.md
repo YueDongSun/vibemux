@@ -10,6 +10,10 @@
   leaf is an empty real directory at its canonical path. Links, junctions,
   and non-empty leaves are left alone. Failed starts and crashes still keep
   the leaf for diagnosis and recovery. Existing leaves are not pruned.
+  `vibemuxctl daemon stop` now returns only after the daemon process has
+  exited, so a following `start` no longer races the release. A start that
+  still loses its leaf to a concurrent stop reports `daemon_start_failed`
+  instead of `daemon_control_runtime_security_invalid`.
 - Add the decision port and advisory per-task harness routing (ADR 034).
   `vibemuxctl decide route` records a content-free decision naming the
   harness that should run a prompt, using the first of these that applies:
