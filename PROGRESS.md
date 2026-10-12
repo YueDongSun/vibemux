@@ -2918,3 +2918,92 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   route identity is not persisted. If both ledger publication and verified
   cleanup fail, the resource is retained for later cleanup; the double-failure
   path is not injected by the new regression.
+
+### 2026-10-12 - Release the empty Windows runtime leaf on clean daemon shutdown
+
+**Scope and implementation**
+- Problem: on Windows, every daemon start creates the per-project leaf
+  `%LOCALAPPDATA%\VibeMux\runtime\<project hash>` (`ensure_runtime_dir` and
+  `start_with_writer_locks`). Nothing removed it. The owner-matched guards
+  remove only the descriptor and the writer lock. Every clean start/stop
+  cycle therefore left one empty leaf. One machine held about 580 of them,
+  and each workspace test run added more.
+- Keeping the empty leaf was not intentional. ADR 020 puts the DACL and the
+  `.acl_v1` marker on the shared root, and leaves only inherit them. The
+  leaf holds no state of its own, and the next start recreates it.
+- `crates/vibemuxd/src/process.rs`: new
+  `DaemonPaths::release_runtime_dir()` (Windows). It removes the leaf only
+  when the leaf is an empty real directory at its canonical path. A
+  symlink, junction, or other reparse point is never followed or removed,
+  and neither is a path reached through one. A non-empty leaf is left
+  untouched. `RemoveDirectoryW` refuses a leaf that became non-empty after
+  the check.
+- `crates/vibemuxd/src/control.rs`: the trusted Windows start (`security`
+  is `Some`) calls it after `serve_owned` returns Ok, once the descriptor
+  guard is dropped. The call runs through `spawn_blocking`. By then
+  `serve_owned` has joined the writer, which removed the nonce-matched
+  writer lock. The following keep the leaf as before:
+  - a shutdown error;
+  - a failed start, whose leaf the CLI's `verify_control_surviving_acls`
+    post-mortem needs;
+  - a crash;
+  - raw-path constructors, whose runtime directory is arbitrary;
+  - POSIX, where the runtime directory is the project state directory.
+- Test fixtures:
+  - The two supervisor fixtures now assert that the leaf was released
+    instead of removing it themselves.
+  - One recovery test recreates the leaf before simulating a crashed
+    daemon's stale descriptor.
+- Docs: `docs/architecture.md` (Windows control metadata paragraph) and
+  `CHANGELOG.md`.
+
+**Validation executed** (native Windows 11, pinned Rust 1.85.0/MSVC, short
+`CARGO_TARGET_DIR` outside the worktree)
+- Regression tests, run before the fix:
+  `cargo test -p vibemuxd --all-features --test daemon_process` gave
+  4 passed and 2 failed. `clean_shutdown_releases_the_empty_runtime_leaf`
+  failed with "cycle 0: the empty runtime leaf must be released", and
+  `standalone_daemon_owns_rust_database_and_shuts_down_cleanly` failed on
+  `!paths.runtime_dir().exists()`. After the fix both pass, together with
+  the new `clean_shutdown_keeps_a_runtime_leaf_with_foreign_content` and
+  the unit tests `release_runtime_dir_removes_only_an_empty_leaf` and
+  `release_runtime_dir_never_follows_or_removes_a_junction`. The junction
+  test covers a junction at the leaf and a junctioned control root.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed.
+- `cargo test --workspace --all-features` before the fix: 824 passed,
+  0 failed, 2 ignored in 93 targets. The shared runtime root grew from 582
+  to 583 entries, one new empty leaf. Its timing is consistent with the
+  `vibemux_frontend` unit tests, whose `supervisor_client` test starts and
+  stops a trusted daemon without a cleanup guard.
+- After the fix, run in the shared root: 828 passed, 0 failed, 2 ignored in
+  93 targets. One new empty leaf still appeared, but another session was
+  concurrently running `cargo test --workspace` from a different target
+  directory without this fix. The shared-root count therefore cannot
+  attribute that leaf.
+- After the fix, run with `LOCALAPPDATA` set to a private empty directory:
+  828 passed, 0 failed, 2 ignored in 93 targets. The private runtime root
+  afterwards held only `.acl_v1` and zero leaves.
+
+**Compatibility / remaining work / Known risks**
+- There are no wire, schema, or CLI changes.
+- Leaves left by crashes, `daemon recover`, failed starts, or earlier
+  versions are not pruned. That includes the existing leaves on the
+  observed machine, about 76 of which still hold stale artifacts. An
+  explicit, confirmation-bound pruning of orphaned leaves is possible
+  follow-up work.
+- `vibemuxctl daemon stop` returns when the descriptor and writer lock are
+  gone. It does not wait for the leaf, which disappears milliseconds later,
+  before the daemon process exits.
+- A narrow race remains. A new start can run between an old daemon's
+  descriptor removal and its leaf removal. If the new start has not yet
+  created its writer lock, the old daemon removes the leaf it just
+  recreated. The new start then fails closed (`daemon_control_runtime_unavailable`
+  or a writer-lock I/O error) and can be retried. A start that already
+  created its lock keeps the leaf, because the leaf is no longer empty.
+- Same-user replacement of the leaf by a junction between the check and
+  the removal would at most delete that junction itself, never its target.
+  Same-SID processes are trusted by ADR 020.
+- Linux/WSL was not run. The POSIX path is unchanged by construction: the
+  release code is Windows-only.

@@ -24,6 +24,10 @@ const CONTROL_ACL_MARKER_CONTENTS: &[u8] = b"vibemux_control_acl_v1";
 /// run elevated; a same-user attacker can already write user-writable files).
 #[cfg(windows)]
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: set on symlinks, junctions, and every
+/// other reparse point, which the runtime-leaf release never removes.
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaemonPaths {
@@ -37,6 +41,18 @@ pub struct DaemonPaths {
     writer_lock_path: PathBuf,
     legacy_descriptor_path: PathBuf,
     legacy_writer_lock_path: PathBuf,
+}
+
+/// What [`DaemonPaths::release_runtime_dir`] did with the per-project
+/// runtime leaf. Only `Removed` deleted anything.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeDirRelease {
+    Removed,
+    Absent,
+    NotEmpty,
+    Unsafe,
+    Failed,
 }
 
 /// Canonical probe-cache location for a state directory. This is the SINGLE
@@ -187,6 +203,55 @@ impl DaemonPaths {
             }
         }
         Ok(())
+    }
+
+    /// Remove the per-project runtime leaf after a CLEAN shutdown of a
+    /// trusted daemon start, once its owner-matched guards have removed the
+    /// descriptor and the writer lock. The leaf holds no state of its own:
+    /// the DACL is inherited from the protected root, which keeps the
+    /// `.acl_v1` marker (ADR 020), and [`Self::ensure_runtime_dir`]
+    /// recreates the leaf on the next start. Only an empty real directory
+    /// at its canonical path is removed. Links, junctions, and other
+    /// reparse points, a path reached through one, and a leaf with any
+    /// remaining entry are left untouched. `RemoveDirectoryW` itself refuses
+    /// a directory that became non-empty after the check. Failed starts and
+    /// crashes never call this: the leaf then stays for `daemon inspect`,
+    /// `recover`, and the CLI's ACL post-mortem
+    /// ([`Self::verify_control_surviving_acls`]).
+    #[cfg(windows)]
+    pub(crate) fn release_runtime_dir(&self) -> RuntimeDirRelease {
+        use std::os::windows::fs::MetadataExt;
+
+        let metadata = match std::fs::symlink_metadata(&self.runtime_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return RuntimeDirRelease::Absent;
+            }
+            Err(_) => return RuntimeDirRelease::Failed,
+        };
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return RuntimeDirRelease::Unsafe;
+        }
+        if std::fs::canonicalize(&self.runtime_dir).ok().as_deref()
+            != Some(self.runtime_dir.as_path())
+        {
+            return RuntimeDirRelease::Unsafe;
+        }
+        let empty = match std::fs::read_dir(&self.runtime_dir) {
+            Ok(mut entries) => entries.next().is_none(),
+            Err(_) => return RuntimeDirRelease::Failed,
+        };
+        if !empty {
+            return RuntimeDirRelease::NotEmpty;
+        }
+        match std::fs::remove_dir(&self.runtime_dir) {
+            Ok(()) => RuntimeDirRelease::Removed,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeDirRelease::Absent,
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                RuntimeDirRelease::NotEmpty
+            }
+            Err(_) => RuntimeDirRelease::Failed,
+        }
     }
 
     #[must_use]
@@ -900,6 +965,91 @@ mod tests {
                 .expect_err("loosened leaf must fail closed before publication"),
             DaemonPathError::ControlRuntimeSecurityInvalid
         );
+    }
+
+    /// Create a directory junction through the fixed system PowerShell (the
+    /// workspace safety tests' idiom: paths cross only through environment
+    /// variables).
+    #[cfg(windows)]
+    fn create_junction(link: &Path, target: &Path) {
+        use std::os::windows::process::CommandExt;
+
+        let powershell = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let status = std::process::Command::new(powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:VIBEMUX_TEST_LINK -Target $env:VIBEMUX_TEST_TARGET | Out-Null",
+            ])
+            .env("VIBEMUX_TEST_LINK", link)
+            .env("VIBEMUX_TEST_TARGET", target)
+            .creation_flags(0x0800_0000)
+            .status()
+            .expect("junction fixture");
+        assert!(
+            status.success(),
+            "junction fixture must exist for a meaningful test"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn release_runtime_dir_removes_only_an_empty_leaf() {
+        // A private control root: the release is never exercised against
+        // the user's shared runtime here.
+        let temp = tempfile::tempdir().expect("temp directory");
+        let base = tempfile::tempdir().expect("isolated control base");
+        let paths = DaemonPaths::from_project_root_with_local_app_data(temp.path(), base.path())
+            .expect("daemon paths");
+        std::fs::create_dir_all(paths.runtime_dir()).expect("runtime leaf");
+        let foreign = paths.runtime_dir().join("foreign.txt");
+        std::fs::write(&foreign, b"foreign").expect("foreign entry");
+        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::NotEmpty);
+        assert_eq!(
+            std::fs::read(&foreign).expect("foreign entry survives"),
+            b"foreign"
+        );
+
+        std::fs::remove_file(&foreign).expect("remove foreign entry");
+        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Removed);
+        assert!(!paths.runtime_dir().exists());
+        assert!(paths.control_runtime_root().is_dir());
+        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Absent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn release_runtime_dir_never_follows_or_removes_a_junction() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let base = tempfile::tempdir().expect("isolated control base");
+        let outside = tempfile::tempdir().expect("junction target");
+        let paths = DaemonPaths::from_project_root_with_local_app_data(temp.path(), base.path())
+            .expect("daemon paths");
+        // Plain spellings of the directories `paths` holds as canonical
+        // verbatim paths, for the PowerShell fixture.
+        let root = base.path().join("VibeMux").join("runtime");
+        let leaf = root.join(paths.runtime_key());
+
+        // The leaf itself is a junction to an EMPTY directory, so an
+        // emptiness check through the link would pass: only the
+        // reparse-point check keeps the junction.
+        std::fs::create_dir_all(&root).expect("control root");
+        create_junction(&leaf, outside.path());
+        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Unsafe);
+        assert!(std::fs::symlink_metadata(&leaf).is_ok(), "junction kept");
+        assert!(outside.path().is_dir());
+        std::fs::remove_dir(&leaf).expect("remove leaf junction fixture");
+
+        // A real empty leaf reached through a junctioned control root.
+        std::fs::remove_dir(&root).expect("remove plain control root");
+        create_junction(&root, outside.path());
+        let redirected_leaf = outside.path().join(paths.runtime_key());
+        std::fs::create_dir(&redirected_leaf).expect("leaf behind the junction");
+        assert_eq!(paths.release_runtime_dir(), RuntimeDirRelease::Unsafe);
+        assert!(redirected_leaf.is_dir());
+        std::fs::remove_dir(&root).expect("remove root junction fixture");
     }
 
     #[cfg(unix)]

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix the leak of empty per-project directories under
+  `%LOCALAPPDATA%\VibeMux\runtime` on Windows. Every clean daemon start/stop
+  cycle, including each test run that started a daemon, left one empty
+  hashed leaf behind. A clean shutdown of a trusted start now removes the
+  leaf after its descriptor and writer lock are gone, but only when the
+  leaf is an empty real directory at its canonical path. Links, junctions,
+  and non-empty leaves are left alone. Failed starts and crashes still keep
+  the leaf for diagnosis and recovery. Existing leaves are not pruned.
 - Integrate the DeepSeek Harness SDK session driver, daemon session service,
   `vibemuxctl dsh` commands, and `vibemux_dsh_tui` terminal surface with the
   dual-track workflow and current GUI (ADR 032). Control v7 adds the six DSH

@@ -1118,16 +1118,27 @@ impl DaemonControlServer {
                 token: descriptor.token,
                 probe_cache_path: probe_cache_path.clone(),
             });
+            // Only a trusted start owns the protected per-project leaf;
+            // raw-path constructors run in arbitrary directories.
+            let runtime_owner = security.cloned();
             let task = tokio::spawn(async move {
-                let _descriptor_guard = descriptor_guard;
-                serve_owned(
+                let result = serve_owned(
                     run_server(listener, endpoint, state.clone()),
                     state,
                     registry,
                     stop_receiver,
                     supervisor,
                 )
-                .await
+                .await;
+                // The descriptor goes first (owner-matched), then the leaf it
+                // lived in. `serve_owned` has already joined the writer, which
+                // removed the writer lock. Any shutdown error keeps the leaf
+                // for diagnosis.
+                drop(descriptor_guard);
+                if let Some(paths) = runtime_owner.filter(|_| result.is_ok()) {
+                    let _ = tokio::task::spawn_blocking(move || paths.release_runtime_dir()).await;
+                }
+                result
             });
             return Ok(Self {
                 descriptor_path,

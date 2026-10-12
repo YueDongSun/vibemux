@@ -627,6 +627,10 @@ mod tests {
             .expect("control server");
         let descriptor_bytes = std::fs::read(paths.descriptor_path()).expect("live descriptor");
         server.shutdown().await.expect("shutdown server");
+        // A clean shutdown releases the empty Windows runtime leaf, whereas a
+        // crashed daemon leaves it behind with its descriptor: recreate it
+        // before simulating that stale descriptor.
+        paths.ensure_runtime_dir().expect("runtime directory");
 
         let mut descriptor: serde_json::Value =
             serde_json::from_slice(&descriptor_bytes).expect("decode descriptor");

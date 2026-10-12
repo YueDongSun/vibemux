@@ -86,6 +86,13 @@ async fn standalone_daemon_owns_rust_database_and_shuts_down_cleanly() {
     assert!(!paths.descriptor_path().exists());
     assert!(!paths.writer_lock_path().exists());
     assert!(!paths.legacy_writer_lock_path().exists());
+    // Windows: the emptied per-project leaf under the shared control root is
+    // released by the clean shutdown. Unix: the "runtime dir" IS the
+    // project state dir holding the database, so it must survive.
+    #[cfg(windows)]
+    assert!(!paths.runtime_dir().exists());
+    #[cfg(unix)]
+    assert!(paths.runtime_dir().is_dir());
     assert_eq!(
         std::fs::read(paths.python_database_path()).expect("read Python sentinel after shutdown"),
         python_sentinel
@@ -191,6 +198,59 @@ async fn trusted_start_verifies_the_full_control_runtime_surface() {
     assert!(!paths.legacy_writer_lock_path().exists());
 }
 
+/// A clean shutdown releases the per-project runtime leaf once its owned
+/// artifacts are gone, while the shared control root and its ACL marker stay;
+/// the next start recreates the leaf. Before this was fixed, every clean
+/// start/stop cycle leaked one empty leaf under the user's real
+/// `%LOCALAPPDATA%\VibeMux\runtime`.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_shutdown_releases_the_empty_runtime_leaf() {
+    let temp = tempfile::tempdir().expect("temp project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    for cycle in 0..2 {
+        paths.ensure_runtime_dir().expect("runtime directory");
+        let server = DaemonControlServer::start_for_paths(&paths)
+            .await
+            .expect("trusted start");
+        assert!(paths.runtime_dir().is_dir());
+        server.shutdown().await.expect("clean shutdown");
+        assert!(
+            !paths.runtime_dir().exists(),
+            "cycle {cycle}: the empty runtime leaf must be released"
+        );
+        assert!(paths.control_runtime_root().is_dir());
+        assert!(paths.acl_marker_path().is_file());
+        assert!(paths.database_path().is_file());
+    }
+}
+
+/// The release is limited to an EMPTY leaf: content the daemon does not own
+/// keeps the leaf, and that content, untouched.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_shutdown_keeps_a_runtime_leaf_with_foreign_content() {
+    let temp = tempfile::tempdir().expect("temp project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    paths.ensure_runtime_dir().expect("runtime directory");
+    let foreign = paths.runtime_dir().join("foreign.txt");
+    std::fs::write(&foreign, b"not owned by the daemon").expect("foreign file");
+
+    let server = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .expect("trusted start");
+    server.shutdown().await.expect("clean shutdown");
+    assert!(!paths.descriptor_path().exists());
+    assert!(!paths.writer_lock_path().exists());
+    assert!(paths.runtime_dir().is_dir());
+    assert_eq!(
+        std::fs::read(&foreign).expect("foreign file survives"),
+        b"not owned by the daemon"
+    );
+}
+
 /// With the runtime leaf's ACL loosened, the trusted constructor fails
 /// closed with `daemon_control_runtime_security_invalid`, leaves NO
 /// runtime artifacts behind (descriptor removed by its guard, both
@@ -222,6 +282,9 @@ async fn trusted_start_fails_closed_when_the_runtime_acl_is_loosened() {
     assert!(!paths.writer_lock_path().exists());
     assert!(!paths.legacy_writer_lock_path().exists());
     assert!(paths.database_path().is_file());
+    // A failed start keeps the leaf: the CLI's post-mortem classification
+    // re-verifies its ACL (`verify_control_surviving_acls`).
+    assert!(paths.runtime_dir().is_dir());
 
     // A retry must fail identically - the failure is deterministic, not a
     // one-shot race.

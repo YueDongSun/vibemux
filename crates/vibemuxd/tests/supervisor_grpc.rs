@@ -142,8 +142,13 @@ impl Project {
             std::fs::read(self.root.join("seed.txt")).expect("seed survives"),
             b"unchanged seed\n"
         );
+        // Every caller shut its daemon down cleanly, and a clean shutdown
+        // releases the emptied per-project runtime leaf itself.
         #[cfg(windows)]
-        std::fs::remove_dir(self.paths.runtime_dir()).expect("remove empty test runtime leaf");
+        assert!(
+            !self.paths.runtime_dir().exists(),
+            "clean shutdown must release the empty runtime leaf"
+        );
         self.temp
             .take()
             .expect("temp ownership")

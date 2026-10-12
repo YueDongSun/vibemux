@@ -183,6 +183,10 @@ async fn abrupt_process_recovery_preserves_database_and_allows_restart() {
     guard.disarm();
     assert!(!paths.descriptor_path().exists());
     assert!(!paths.writer_lock_path().exists());
+    // The clean `stop` also released the emptied per-project runtime leaf
+    // before the daemon exited (on unix that directory is the state dir).
+    #[cfg(windows)]
+    assert!(!paths.runtime_dir().exists());
 }
 
 struct FixtureProcessGuard {
