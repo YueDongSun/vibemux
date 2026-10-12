@@ -1,5 +1,6 @@
 //! `vibemuxctl dispatch` (ADR 029 §7): a thin Control v5 client for the
-//! daemon's harness request dispatch.
+//! daemon's harness request dispatch. `dispatch submit --decision` runs a
+//! recorded decision (ADR 034) over Control v8.
 //!
 //! A prompt is read from a file or stdin, never from argv, so it stays out
 //! of process listings and shell history, and it is bounded before any
@@ -18,7 +19,7 @@ use vibemux_harness::{
     },
 };
 use vibemuxd::{
-    control::{ControlClient, ControlError, HarnessDispatchOutputQuery},
+    control::{ControlClient, ControlError, DecisionDispatchArgument, HarnessDispatchOutputQuery},
     harness_dispatch::OutputReassembler,
     process::DaemonPaths,
 };
@@ -49,6 +50,13 @@ pub enum DispatchCommand {
         /// Reusing an id makes a retry idempotent.
         request_id: Option<Uuid>,
     },
+    /// Runs the harness a recorded decision chose. The daemon re-runs every
+    /// dispatch gate; the prompt must be the one the decision was made for.
+    SubmitDecided {
+        decision_id: Uuid,
+        prompt: PromptSource,
+        request_id: Option<Uuid>,
+    },
     Status {
         request_id: Uuid,
     },
@@ -72,6 +80,7 @@ pub(crate) fn parse_dispatch_arguments(
     let mut project_root = None;
     let mut prompt = None;
     let mut request_id = None;
+    let mut decision_id = None;
     let mut after_sequence = None;
     let mut positional: Option<&str> = None;
     let mut index = 0;
@@ -88,16 +97,15 @@ pub(crate) fn parse_dispatch_arguments(
                 index += 2;
             }
             "--prompt-file" if action == "submit" && prompt.is_none() => {
-                let value = value.ok_or(DaemonCliError::InvalidArguments)?;
-                prompt = Some(if value.as_os_str() == STDIN_PROMPT_SOURCE {
-                    PromptSource::Stdin
-                } else {
-                    PromptSource::File(PathBuf::from(value))
-                });
+                prompt = Some(prompt_source(value)?);
                 index += 2;
             }
             "--request-id" if action == "submit" && request_id.is_none() => {
-                request_id = Some(parse_request_id(text_value(value)?)?);
+                request_id = Some(parse_id(text_value(value)?)?);
+                index += 2;
+            }
+            "--decision" if action == "submit" && decision_id.is_none() => {
+                decision_id = Some(parse_id(text_value(value)?)?);
                 index += 2;
             }
             "--after-sequence" if action == "output" && after_sequence.is_none() => {
@@ -121,20 +129,34 @@ pub(crate) fn parse_dispatch_arguments(
         "probe" => DispatchCommand::Probe {
             harness: parse_harness(target()?)?,
         },
-        "submit" => DispatchCommand::Submit {
-            harness: parse_harness(target()?)?,
-            prompt: prompt.ok_or(DaemonCliError::InvalidArguments)?,
-            request_id,
-        },
+        // The decision names the harness, so an explicit one is refused.
+        "submit" if decision_id.is_some() && positional.is_some() => {
+            return Err(DaemonCliError::InvalidArguments);
+        }
+        "submit" => {
+            let prompt = prompt.ok_or(DaemonCliError::InvalidArguments)?;
+            match decision_id {
+                Some(decision_id) => DispatchCommand::SubmitDecided {
+                    decision_id,
+                    prompt,
+                    request_id,
+                },
+                None => DispatchCommand::Submit {
+                    harness: parse_harness(target()?)?,
+                    prompt,
+                    request_id,
+                },
+            }
+        }
         "status" => DispatchCommand::Status {
-            request_id: parse_request_id(target()?)?,
+            request_id: parse_id(target()?)?,
         },
         "output" => DispatchCommand::Output {
-            request_id: parse_request_id(target()?)?,
+            request_id: parse_id(target()?)?,
             after_sequence: after_sequence.unwrap_or(0),
         },
         "cancel" => DispatchCommand::Cancel {
-            request_id: parse_request_id(target()?)?,
+            request_id: parse_id(target()?)?,
         },
         _ => return Err(DaemonCliError::InvalidArguments),
     };
@@ -158,6 +180,18 @@ pub async fn run_dispatch(
         } => Some(read_request(*harness, prompt.clone(), *request_id).await?),
         _ => None,
     };
+    let decided = match &command {
+        DispatchCommand::SubmitDecided {
+            decision_id,
+            prompt,
+            request_id,
+        } => Some(DecisionDispatchArgument {
+            decision_id: *decision_id,
+            request_id: request_id.unwrap_or_else(Uuid::new_v4),
+            prompt: read_valid_prompt(prompt.clone()).await?,
+        }),
+        _ => None,
+    };
     let client = harness_client(paths).await?;
     match command {
         DispatchCommand::Catalog => {
@@ -178,6 +212,14 @@ pub async fn run_dispatch(
             let request = request.ok_or(DaemonCliError::InvalidArguments)?;
             let receipt = client
                 .harness_dispatch_submit(&request)
+                .await
+                .map_err(map_dispatch_error)?;
+            Ok(json!({"ok": true, "receipt": receipt}))
+        }
+        DispatchCommand::SubmitDecided { .. } => {
+            let argument = decided.ok_or(DaemonCliError::InvalidArguments)?;
+            let receipt = client
+                .decision_dispatch_submit(&argument)
                 .await
                 .map_err(map_dispatch_error)?;
             Ok(json!({"ok": true, "receipt": receipt}))
@@ -252,9 +294,7 @@ async fn read_request(
     source: PromptSource,
     request_id: Option<Uuid>,
 ) -> Result<DispatchRequest, DaemonCliError> {
-    let prompt = tokio::task::spawn_blocking(move || read_prompt(&source))
-        .await
-        .map_err(|_| DaemonCliError::PromptUnavailable)??;
+    let prompt = read_valid_prompt(source).await?;
     let request = DispatchRequest {
         schema_version: DISPATCH_REQUEST_SCHEMA_VERSION,
         request_id: request_id.unwrap_or_else(Uuid::new_v4),
@@ -265,6 +305,28 @@ async fn read_request(
         .validate()
         .map_err(|_| DaemonCliError::InvalidPrompt)?;
     Ok(request)
+}
+
+/// Reads a prompt off the async runtime and refuses a blank one, before
+/// any byte reaches the daemon. Decision commands read theirs here too.
+pub(crate) async fn read_valid_prompt(source: PromptSource) -> Result<String, DaemonCliError> {
+    let prompt = tokio::task::spawn_blocking(move || read_prompt(&source))
+        .await
+        .map_err(|_| DaemonCliError::PromptUnavailable)??;
+    if prompt.trim().is_empty() {
+        return Err(DaemonCliError::InvalidPrompt);
+    }
+    Ok(prompt)
+}
+
+/// A `--prompt-file` value: a path, or `-` for stdin.
+pub(crate) fn prompt_source(value: Option<&OsString>) -> Result<PromptSource, DaemonCliError> {
+    let value = value.ok_or(DaemonCliError::InvalidArguments)?;
+    Ok(if value.as_os_str() == STDIN_PROMPT_SOURCE {
+        PromptSource::Stdin
+    } else {
+        PromptSource::File(PathBuf::from(value))
+    })
 }
 
 /// Reads at most one byte beyond the prompt bound, so an oversized source
@@ -285,9 +347,9 @@ fn read_prompt(source: &PromptSource) -> Result<String, DaemonCliError> {
     String::from_utf8(bytes).map_err(|_| DaemonCliError::InvalidPrompt)
 }
 
-/// A daemon older than Control v5 lacks the operations; say so instead of
-/// reporting stale runtime state.
-fn map_dispatch_error(error: ControlError) -> DaemonCliError {
+/// A daemon older than the control version an operation needs lacks it;
+/// say so instead of reporting stale runtime state.
+pub(crate) fn map_dispatch_error(error: ControlError) -> DaemonCliError {
     match error {
         ControlError::UnsupportedVersion => DaemonCliError::Control {
             code: error.code().to_string(),
@@ -305,14 +367,15 @@ fn parse_harness(text: &str) -> Result<AgentKind, DaemonCliError> {
         .ok_or_else(|| DaemonCliError::UnknownHarness(text.to_string()))
 }
 
-fn parse_request_id(text: &str) -> Result<Uuid, DaemonCliError> {
+/// A request or decision id: any UUID but the nil one.
+pub(crate) fn parse_id(text: &str) -> Result<Uuid, DaemonCliError> {
     Uuid::parse_str(text)
         .ok()
         .filter(|request_id| !request_id.is_nil())
         .ok_or(DaemonCliError::InvalidArguments)
 }
 
-fn text_value(value: Option<&OsString>) -> Result<&str, DaemonCliError> {
+pub(crate) fn text_value(value: Option<&OsString>) -> Result<&str, DaemonCliError> {
     value
         .and_then(|value| value.to_str())
         .ok_or(DaemonCliError::InvalidArguments)
@@ -365,6 +428,23 @@ mod tests {
                 harness: AgentKind::Claude,
                 prompt: PromptSource::File(PathBuf::from("C:\\prompts\\a b.txt")),
                 request_id: None,
+            }
+        );
+        let decision_id = Uuid::new_v4();
+        assert_eq!(
+            dispatch(&[
+                "submit",
+                "--decision",
+                &decision_id.to_string(),
+                "--prompt-file",
+                "-",
+                "--request-id",
+                &id,
+            ]),
+            DispatchCommand::SubmitDecided {
+                decision_id,
+                prompt: PromptSource::Stdin,
+                request_id: Some(request_id),
             }
         );
         assert_eq!(
@@ -422,6 +502,20 @@ mod tests {
             &["output", &id, "--after-sequence", "-1"][..],
             &["cancel", &id, "extra"][..],
             &["catalog", "--prompt", "inline prompt"][..],
+            // A decided submission takes its harness from the decision.
+            &["submit", "codex", "--decision", &id, "--prompt-file", "-"][..],
+            &["submit", "--decision", &id][..],
+            &["submit", "--decision", &nil, "--prompt-file", "-"][..],
+            &[
+                "submit",
+                "--decision",
+                &id,
+                "--decision",
+                &id,
+                "--prompt-file",
+                "-",
+            ][..],
+            &["status", &id, "--decision", &id][..],
         ] {
             assert_eq!(
                 parse(arguments),
@@ -463,9 +557,13 @@ mod tests {
         let path = temp.path().join("blank.txt");
         std::fs::write(&path, " \n\t").expect("write prompt");
         assert_eq!(
-            read_request(AgentKind::Codex, PromptSource::File(path), None)
+            read_request(AgentKind::Codex, PromptSource::File(path.clone()), None)
                 .await
                 .map(|request| request.request_id),
+            Err(DaemonCliError::InvalidPrompt)
+        );
+        assert_eq!(
+            read_valid_prompt(PromptSource::File(path)).await,
             Err(DaemonCliError::InvalidPrompt)
         );
     }

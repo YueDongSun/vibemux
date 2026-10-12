@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add the decision port and advisory per-task harness routing (ADR 034).
+  `vibemuxctl decide route` records a content-free decision naming the
+  harness that should run a prompt, using the first of these that applies:
+  an external TypeSafe Jev answer, a local label rule, the project default,
+  or escalation. `vibemuxctl dispatch submit --decision` runs that decision
+  once, through every ADR 029 dispatch gate. The pure logic lives in the new
+  `vibemux_decision` crate. The only decision-API network client is the new
+  one-shot `vibemux_decision_peer` process, which runs only when the operator
+  config enables it and the request passes `--allow-external`; it receives
+  enumerated facts, never the prompt. **Store schema 6** adds
+  `decision_records`. **Control v8** adds the four `decision_*` operations;
+  older clients and the daemon must upgrade together. Evidence is fixture
+  peers and a loopback test server only; no live Jev call has run.
 - Integrate the DeepSeek Harness SDK session driver, daemon session service,
   `vibemuxctl dsh` commands, and `vibemux_dsh_tui` terminal surface with the
   dual-track workflow and current GUI (ADR 032). Control v7 adds the six DSH

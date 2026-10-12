@@ -288,6 +288,14 @@ impl HarnessDispatchService {
         Ok(self.inner.setup()?.config.config().catalog())
     }
 
+    /// Digest of the pinned route config; a decision records it so a
+    /// decided dispatch is refused after a config change (ADR 034 §11).
+    pub fn config_digest(
+        &self,
+    ) -> Result<vibemux_harness::dispatch::Sha256Digest, DispatchServiceError> {
+        Ok(self.inner.setup()?.config.digest())
+    }
+
     /// Admits a request and starts its attempt. Gates run before any state
     /// changes; the store re-checks detection and the working-directory
     /// reservation inside the admission transaction. Repeating a request id
@@ -295,6 +303,28 @@ impl HarnessDispatchService {
     pub async fn submit(
         &self,
         request: DispatchRequest,
+    ) -> Result<DispatchReceipt, DispatchServiceError> {
+        self.submit_bound(request, None).await
+    }
+
+    /// [`Self::submit`] for a request a recorded decision chose (ADR 034
+    /// §11). Every gate still runs; the store also checks the decision
+    /// binding and consumes the decision in the admission transaction. The
+    /// request that consumed it may repeat, subject to the same gates and
+    /// request fingerprint as any replay. The receipt's `sequence` is the
+    /// dispatch admission event; the `decision_consumed` event follows it.
+    pub async fn submit_decided(
+        &self,
+        decision_id: Uuid,
+        request: DispatchRequest,
+    ) -> Result<DispatchReceipt, DispatchServiceError> {
+        self.submit_bound(request, Some(decision_id)).await
+    }
+
+    async fn submit_bound(
+        &self,
+        request: DispatchRequest,
+        decision_id: Option<Uuid>,
     ) -> Result<DispatchReceipt, DispatchServiceError> {
         request.validate()?;
         let setup = self.inner.setup()?;
@@ -324,8 +354,19 @@ impl HarnessDispatchService {
             timestamp: OffsetDateTime::now_utc(),
         };
         let writer = self.inner.writer.clone();
-        // Safe to repeat: a repeated admission is an idempotent duplicate.
-        let commit = call_writer(move || writer.admit_harness_dispatch(admission.clone())).await?;
+        // Safe to repeat: a repeated admission is an idempotent duplicate,
+        // and a decided admission replays for the request that consumed it.
+        let commit = match decision_id {
+            None => call_writer(move || writer.admit_harness_dispatch(admission.clone())).await?,
+            Some(decision_id) => {
+                call_writer(move || {
+                    writer
+                        .admit_decided_dispatch(decision_id, admission.clone())
+                        .map(|commit| commit.dispatch)
+                })
+                .await?
+            }
+        };
         let receipt = DispatchReceipt {
             duplicate: commit.event.is_none(),
             record: commit.record,

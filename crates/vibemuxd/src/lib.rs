@@ -52,6 +52,8 @@ pub const DEFAULT_WRITER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 
 pub mod control;
+pub mod decision;
+pub mod decision_writer;
 pub mod dsh_session;
 pub mod harness_dispatch;
 pub mod model_peer_process;

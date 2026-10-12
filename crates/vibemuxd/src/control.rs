@@ -23,6 +23,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use tokio::time::{Instant, sleep};
 
+use crate::decision::{DecisionService, DecisionServiceSettings};
 use crate::dsh_session::DshSessionService;
 use crate::harness_dispatch::{
     DispatchOutputPage, DispatchServiceSettings, HarnessDispatchService, ProbeReport,
@@ -38,6 +39,8 @@ use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapsh
 use crate::workflow::{WorkflowService, WorkflowServiceSettings};
 use crate::{WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
+#[path = "control_decision.rs"]
+mod decision_ops;
 #[path = "control_dsh_session.rs"]
 mod dsh_session_ops;
 #[path = "control_harness_dispatch.rs"]
@@ -50,6 +53,10 @@ pub use crate::dsh_session::{
 };
 #[path = "control_workflow.rs"]
 mod workflow_ops;
+pub use decision_ops::{
+    DECISION_ADVISE_DEADLINE, DecisionAdviseArgument, DecisionDispatchArgument, DecisionListQuery,
+    DecisionLookup, DecisionPage, DecisionView,
+};
 pub use harness_dispatch_ops::{
     HARNESS_DISPATCH_PROBE_DEADLINE, HarnessDispatchLookup, HarnessDispatchOutputQuery,
     HarnessDispatchReceipt, HarnessDispatchStatus, HarnessDispatchTarget,
@@ -67,7 +74,9 @@ pub use workflow_ops::{
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V7;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V8;
+/// V8 adds the advisory decision operations (ADR 034 §11).
+pub const CONTROL_PROTOCOL_V8: u32 = 8;
 /// V7 adds DSH session operations (ADR 032); workflow operations retain V6.
 pub const CONTROL_PROTOCOL_V7: u32 = 7;
 /// V6 adds the dual-track workflow operations (ADR 031 §8).
@@ -133,6 +142,10 @@ pub enum ControlOperation {
     WorkflowPolicyRollback,
     WorkflowPolicyEvaluate,
     WorkflowPurgeContent,
+    DecisionAdvise,
+    DecisionList,
+    DecisionShow,
+    DecisionDispatchSubmit,
     Shutdown,
 }
 
@@ -181,6 +194,10 @@ impl ControlOperation {
             | Self::WorkflowPolicyRollback
             | Self::WorkflowPolicyEvaluate
             | Self::WorkflowPurgeContent => CONTROL_PROTOCOL_V6,
+            Self::DecisionAdvise
+            | Self::DecisionList
+            | Self::DecisionShow
+            | Self::DecisionDispatchSubmit => CONTROL_PROTOCOL_V8,
         }
     }
 }
@@ -270,6 +287,10 @@ pub enum ControlPayload {
     DshSessionPoll(DshSessionPollPage),
     /// Answer to every workflow operation: the service's serialized view.
     Workflow(Box<serde_json::Value>),
+    /// Answer to advise and show: the allowlisted decision view. A decided
+    /// submission answers with `HarnessDispatchReceipt`.
+    Decision(Box<DecisionView>),
+    DecisionPage(DecisionPage),
     ShutdownAccepted,
 }
 
@@ -618,6 +639,9 @@ struct ServerState {
     /// The dual-track workflow service (ADR 031), reached by the Control
     /// v6 operations; its coordinators stop before dispatch shuts down.
     workflow: WorkflowService,
+    /// Advisory decisions (ADR 034), reached by the Control v8 operations.
+    /// Owns no background work: a peer exchange belongs to its request.
+    decision: DecisionService,
     writer: Mutex<Option<WriterWorker>>,
     plugins: PluginStatusReader,
     process_id: u32,
@@ -770,6 +794,7 @@ impl DaemonControlServer {
             Some(ExecutionSettings {
                 dispatch: settings,
                 workflow: None,
+                decision: None,
             }),
             None,
         )
@@ -870,6 +895,8 @@ pub struct ExecutionSettings {
     pub dispatch: DispatchServiceSettings,
     /// `None` leaves the workflow service unconfigured.
     pub workflow: Option<WorkflowServiceSettings>,
+    /// `None` leaves decisions unconfigured.
+    pub decision: Option<DecisionServiceSettings>,
 }
 
 /// Production execution inputs: the operator route and workflow configs
@@ -881,31 +908,51 @@ fn execution_settings_for(paths: &crate::process::DaemonPaths) -> ExecutionSetti
             paths.project_root(),
             paths.state_dir(),
         )),
+        decision: Some(DecisionServiceSettings::for_project(paths.state_dir())),
     }
 }
 
-/// Harness dispatch (ADR 029) and the workflow service (ADR 031) for one
-/// daemon start. Without settings (the raw constructors) both are
-/// unconfigured. The workflow service starts after dispatch: it pins the
-/// dispatch routes it executes through.
+/// The execution services one daemon start owns.
+struct ExecutionServices {
+    dispatch: HarnessDispatchService,
+    workflow: WorkflowService,
+    decision: DecisionService,
+}
+
+/// Harness dispatch (ADR 029), the workflow service (ADR 031), and the
+/// decision service (ADR 034) for one daemon start. Without settings (the
+/// raw constructors) all are unconfigured. The workflow and decision
+/// services start after dispatch: they pin the dispatch routes they use.
 async fn start_execution(
     writer: &WriterWorker,
     settings: Option<ExecutionSettings>,
-) -> Result<(HarnessDispatchService, WorkflowService), WriterError> {
+) -> Result<ExecutionServices, WriterError> {
     let handle = writer.handle()?;
-    let (dispatch_settings, workflow_settings) = match settings {
-        Some(settings) => (Some(settings.dispatch), settings.workflow),
-        None => (None, None),
+    let (dispatch_settings, workflow_settings, decision_settings) = match settings {
+        Some(settings) => (
+            Some(settings.dispatch),
+            settings.workflow,
+            settings.decision,
+        ),
+        None => (None, None, None),
     };
     let dispatch = match dispatch_settings {
         Some(settings) => HarnessDispatchService::start(handle.clone(), settings).await,
         None => HarnessDispatchService::unconfigured(handle.clone()),
     };
     let workflow = match workflow_settings {
-        Some(settings) => WorkflowService::start(handle, dispatch.clone(), settings).await,
-        None => WorkflowService::unconfigured(handle, dispatch.clone()),
+        Some(settings) => WorkflowService::start(handle.clone(), dispatch.clone(), settings).await,
+        None => WorkflowService::unconfigured(handle.clone(), dispatch.clone()),
     };
-    Ok((dispatch, workflow))
+    let decision = match decision_settings {
+        Some(settings) => DecisionService::start(handle, dispatch.clone(), settings).await,
+        None => DecisionService::unconfigured(handle, dispatch.clone()),
+    };
+    Ok(ExecutionServices {
+        dispatch,
+        workflow,
+        decision,
+    })
 }
 
 /// Join the writer worker so the lifecycle locks are removed
@@ -1063,7 +1110,7 @@ impl DaemonControlServer {
                 // writer returns early, so a healthy start still owns it.
                 return Err(ControlError::ServerTerminated);
             };
-            let (dispatch, workflow) = match start_execution(&writer, execution).await {
+            let services = match start_execution(&writer, execution).await {
                 Ok(services) => services,
                 Err(error) => {
                     let _ = registry.shutdown().await;
@@ -1109,9 +1156,10 @@ impl DaemonControlServer {
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
-                dispatch,
+                dispatch: services.dispatch,
                 dsh: dsh_service,
-                workflow,
+                workflow: services.workflow,
+                decision: services.decision,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1172,7 +1220,7 @@ impl DaemonControlServer {
                     return Err(error.into());
                 }
             }
-            let (dispatch, workflow) = match start_execution(&writer, execution).await {
+            let services = match start_execution(&writer, execution).await {
                 Ok(services) => services,
                 Err(error) => {
                     let _ = registry.shutdown().await;
@@ -1206,9 +1254,10 @@ impl DaemonControlServer {
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
-                dispatch,
+                dispatch: services.dispatch,
                 dsh: dsh_service,
-                workflow,
+                workflow: services.workflow,
+                decision: services.decision,
                 writer: Mutex::new(Some(writer)),
                 plugins: registry.status_reader(),
                 process_id: descriptor.process_id,
@@ -1293,11 +1342,17 @@ async fn serve_owned(
     mut stop: tokio::sync::watch::Receiver<bool>,
     supervisor: Option<SupervisorService>,
 ) -> Result<(), ControlError> {
+    let mut server = Box::pin(server);
     let result = tokio::select! {
         biased;
         _ = stop.changed() => Ok(()),
-        result = server => result,
+        result = &mut server => result,
     };
+    // An external decision peer is killed and reaped while the connection
+    // task that started it still runs; dropping the server afterwards aborts
+    // the remaining connection tasks.
+    state.decision.shutdown().await;
+    drop(server);
     // Workflow coordinators stop first, then dispatch attempts end: both
     // finish through the writer. Cancellation of running turns starts
     // before the coordinators are awaited so none waits out a long turn.
@@ -1638,6 +1693,19 @@ where
                 false,
             )
         }
+        operation @ (ControlOperation::DecisionAdvise
+        | ControlOperation::DecisionList
+        | ControlOperation::DecisionShow
+        | ControlOperation::DecisionDispatchSubmit) => {
+            let result = decision_ops::dispatch(&state.decision, operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
         ControlOperation::Health => match writer_health(state).await {
             Ok(health) => (
                 ControlResponse::success(request_id, ControlPayload::Health(health)),
@@ -1723,11 +1791,13 @@ where
             }
         }
         // Acceptance only. The owner joins plugins before releasing the writer.
-        // Dispatch cancellation starts now, so a connection waiting on a
-        // probe ends before the server drains connections.
+        // Dispatch and decision-peer cancellation start now, so a connection
+        // waiting on a probe or an external decision ends before the server
+        // drains connections.
         ControlOperation::Shutdown => {
             state.workflow.begin_shutdown();
             state.dispatch.begin_shutdown();
+            state.decision.begin_shutdown();
             (
                 ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
                 true,
@@ -2190,6 +2260,7 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V5
             | CONTROL_PROTOCOL_V6
             | CONTROL_PROTOCOL_V7
+            | CONTROL_PROTOCOL_V8
     )
 }
 
@@ -2278,6 +2349,7 @@ fn remote_error(code: String) -> ControlError {
             || code.starts_with("control_")
             || code.starts_with("a2a_")
             || code.starts_with("dsh_")
+            || code.starts_with("decision_")
             || code.starts_with("plugin_") =>
         {
             ControlError::Remote { code }
@@ -2687,7 +2759,7 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_through_v7() {
+    fn control_contract_accepts_v1_through_v8() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
@@ -2698,7 +2770,8 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V5));
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V7);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V8));
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V8);
         assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(!supported_control_version(0));
         // The minimum-version table is the single source of truth that

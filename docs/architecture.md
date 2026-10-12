@@ -96,7 +96,9 @@ crates/
 ├── vibemux_events/             # canonical envelopes, idempotency, payload invariants
 ├── vibemux_harness/            # AgentKind/LauncherKind/ProbeState, harness registry/profiles/rows, dispatch + DSH session state machines (pure logic, no I/O)
 ├── vibemux_workflow/           # dual-track workflow contracts, gates, broker rules, optimizer (pure logic, no I/O; ADR 031)
-├── vibemux_store/              # SQLite migrations (schema 5) and repositories (bundled)
+├── vibemux_decision/           # decision port: questions, facts, answer validation, local rules, fallback resolver, config, records, peer wire (pure logic, no I/O; ADR 034)
+├── vibemux_decision_peer/      # one-shot out-of-process decision peer: the only decision-API network client (TypeSafe Jev; ADR 034)
+├── vibemux_store/              # SQLite migrations (schema 6) and repositories (bundled)
 ├── vibemux_platform/           # Windows/POSIX process, IPC, process-tree containment, and launch trampoline primitives
 ├── vibemux_a2a/                # official A2A Rust SDK adapter (loopback verified)
 ├── vibemux_model_peer/         # optional, out-of-process model-provider peer
@@ -107,15 +109,15 @@ crates/
 ├── vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache
 ├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
 ├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump
-├── vibemuxd/                   # M3 daemon (writer worker + control IPC v7 + plugin registry + harness dispatch + workflow + DSH session service)
-└── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch + workflow/DSH client
+├── vibemuxd/                   # M3 daemon (writer worker + control IPC v8 + plugin registry + harness dispatch + workflow + DSH session + decision service)
+└── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch + workflow/DSH/decision client
 ```
 
 Outside `crates/`: `src/vibemux/` is the Python behavior-reference package, `tests/` holds Python tests and fixtures, `scripts/` holds smoke and benchmark scripts, and `docs/` holds architecture, ADRs, boundaries, and labs.
 
 ### Dependency direction
 
-Domain crates must not depend on platform, database, terminal, or network implementations (ADR 013). `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it. The harness dispatch request, route config, launch argv, protocol session machines, framer, capture budget, and attempt phases are also pure `vibemux_harness` logic; `vibemuxd` performs every effect (ADR 029). The dual-track workflow contracts in `vibemux_workflow` depend only on `vibemux_harness`; `vibemux_store` applies them inside writer transactions, and `vibemuxd` performs every effect (ADR 031). The normative layering from `AGENTS.md` §4.2:
+Domain crates must not depend on platform, database, terminal, or network implementations (ADR 013). `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it. The harness dispatch request, route config, launch argv, protocol session machines, framer, capture budget, and attempt phases are also pure `vibemux_harness` logic; `vibemuxd` performs every effect (ADR 029). The dual-track workflow contracts in `vibemux_workflow` depend only on `vibemux_harness`; `vibemux_store` applies them inside writer transactions, and `vibemuxd` performs every effect (ADR 031). The decision port in `vibemux_decision` depends only on `vibemux_types`, `vibemux_events`, and `vibemux_harness`; `vibemux_store`, `vibemuxd`, and `vibemux_decision_peer` depend on it, and `vibemuxd` does not depend on the peer crate (ADR 034). The normative layering from `AGENTS.md` §4.2:
 
 ```text
 types
@@ -131,7 +133,7 @@ vibemuxd
 vibemux-cli
 ```
 
-With the current crates placed in that layering: `types → events → harness → workflow → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli`.
+With the current crates placed in that layering: `types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli`. `vibemux_decision_peer` sits beside `vibemuxd` at the process level and depends only on `vibemux_decision`.
 
 ## Core versus plugin boundary
 
@@ -184,9 +186,9 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 
 `vibemuxd::WriterWorker` constructs and exclusively owns `SqliteStore` inside a dedicated blocking thread. Callers only hold a bounded queue handle; when the queue is full, an explicit backpressure error is returned. The nonce-bearing lock next to the database is established through an atomic `create_new`; a second writer fails closed. After shutdown, the holder verifies the nonce before deletion.
 
-`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v7 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 added the six `harness_dispatch_*` operations, and v6 added the 15 `workflow_*` operations, and v7 adds the six `dsh_session_*` operations (see below); v1 `health`/`shutdown` and v2–v6 requests remain accepted for their operations. A client that predates the daemon's version refuses its descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
+`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v8 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 added the six `harness_dispatch_*` operations, v6 added the 15 `workflow_*` operations, v7 added the six `dsh_session_*` operations (see below), and v8 adds the four `decision_*` operations (ADR 034); v1 `health`/`shutdown` and v2–v7 requests remain accepted for their operations. A client that predates the daemon's version refuses its descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
 
-DSH session operations require Control v7; established workflow operations retain v6.
+DSH session operations require Control v7, decision operations require Control v8, and established workflow operations retain v6.
 
 The `vibemuxd` binary is an unprivileged foreground process owner; `vibemuxctl daemon start|health|stop` is responsible for the on-demand lifecycle. Readiness must come from authenticated health; the PID is only used to compare this spawn's identity. Windows uses a fixed, non-user-code-interpolated system PowerShell companion that holds the exact process handle and severs captured-stdout inheritance; POSIX uses direct argv spawn with a separate process group. During migration the path layer is fixed to `.vibemux/vibemux_rust.sqlite3`, and runtime symlinks and symlink/hardlink aliases that point at the Python database are refused.
 
@@ -220,6 +222,20 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 - **Control.** `harness_dispatch_{catalog, probe, submit, status, output, cancel}` require Control v5; `vibemuxctl dispatch` is the thin client.
 
 Live vendor CLIs have been exercised only through initialize-only probes on native Windows ([Stage 7 evidence](evidence/harness_dispatch_validation.md)); no live execution turn has run. See [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the remaining gates.
+
+## Decision port and harness routing (ADR 034)
+
+`vibemuxd` can record an advisory decision about which harness should run a prompt. The pure question, facts, answer validation, local rules, fallback resolver, config schema, record, event drafts, and peer wire live in `vibemux_decision`; the daemon's decision service owns config loading, facts assembly, the peer process, and every writer call. Store schema 6 adds the `decision_records` projection, written only by `WriterWorker` in the same transaction as its `decision_recorded` or `decision_consumed` event.
+
+- **Opt-in.** Decisions are disabled unless the operator creates `.vibemux/decision_config.json` (schema 1). The daemon reads it once at startup and pins its SHA-256; a missing or invalid file makes `decide route` fail with a fixed code without blocking startup, while listing, showing, and dispatching recorded decisions still work.
+- **Options.** The harnesses with an enabled, executing ADR 029 route that the probe detected, plus `escalate`. Zero eligible harnesses is an error; one is decided locally.
+- **Advice only.** A decision runs nothing. `decision_dispatch_submit` builds an ordinary `DispatchRequest`, runs every ADR 029 gate, and in one writer transaction checks that the decision is resolved, unconsumed, unexpired (15 minutes), and matches the harness, prompt digest, and dispatch-config digest before it admits the dispatch and marks the decision consumed.
+- **Fallback.** An accepted external answer at or above the threshold, else the highest-priority local rule, else the eligible project default, else `escalated`.
+- **External backend.** A decision-API call needs both `jev.enabled` in the config and `allow_external` on the request. The daemon then spawns the one-shot `vibemux_decision_peer` next to its own executable with a cleared environment plus the system variables and the one credential variable the config names, writes one request line of at most 16 KiB, and reads one result line of at most 16 KiB under a deadline; the child is killed on drop, and daemon shutdown kills and reaps it before the writer is released. Only enumerated facts (option ids, operator option descriptions, allowlisted labels, a prompt size bucket, the project default) leave the machine. The peer is the only decision-API network client: fixed HTTPS endpoint, no redirects, no proxy, a 16 KiB response cap, and at most one retry of 429 or 529.
+- **Content.** Records and the `decision_recorded` event carry identities, the prompt SHA-256 and byte count, the dispatch- and decision-config SHA-256 digests, option ids, allowlisted labels, probabilities and confidences in integer millionths, model ids, and fixed codes. The `decision_recorded` and `decision_consumed` events hold the complete record, so the projection can be rebuilt from them. Views returned by `decisions list|show` omit the prompt and config digests. The prompt, the credential, and provider usage are never stored.
+- **Control.** `decision_{advise, list, show, dispatch_submit}` require Control v8; `vibemuxctl decide|decisions` and `vibemuxctl dispatch submit --decision` are the thin client.
+
+The external path is verified only against fixture peers and a loopback test server; no live decision-API call has run. See [ADR 034](adr/034_decision_port.md) and the [decision orchestration roadmap](decision_orchestration_roadmap.md).
 
 ## DSH session substrate (ADR 032)
 

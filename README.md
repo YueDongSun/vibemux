@@ -151,6 +151,52 @@ cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemu
 - `status` is content-free. `output` is the only command that prints vendor content: whole raw JSON records, plus `next_after_sequence` for a later `--after-sequence`. Every command prints one JSON object; errors print `ok: false` with an `error_code`.
 - Limits: Codex and Claude execution only; at most one active dispatch per project; vendor processes run in the project root with read-only protocol profiles, which are **not** an OS sandbox; transcripts live in daemon memory and are lost on restart. If the daemon stops during a run, the attempt becomes `recovery_pending` and blocks new dispatches until you `dispatch cancel` it. Live validation covers initialize-only probes on native Windows, and no live `submit` has run; see [ADR 029](docs/adr/029_daemon_harness_dispatch.md) and the [Stage 7 evidence](docs/evidence/harness_dispatch_validation.md).
 
+## Decision routing (pre-alpha, ADR 034, fixture-verified only)
+
+The daemon can recommend which harness should run a prompt and record that choice as a content-free decision. A decision is advice: it runs nothing, and `dispatch submit --decision` re-runs every dispatch gate before anything executes. Routing is off until you create `.vibemux/decision_config.json`. The daemon reads it once at startup, so restart the daemon after editing it. Example:
+
+```json
+{
+  "schema_version": 1,
+  "thresholds": { "harness_route": 0.9 },
+  "labels": ["rust", "docs", "refactor"],
+  "local_rules": [
+    { "label": "rust", "harness": "claude", "priority": 10 },
+    { "label": "docs", "harness": "codex", "priority": 5 }
+  ],
+  "option_descriptions": {
+    "claude": "Multi-file refactors and Rust changes",
+    "codex": "Small focused edits and documentation",
+    "escalate": "None of the harnesses fits; the operator decides"
+  },
+  "jev": {
+    "enabled": false,
+    "request_model": "jev-latest",
+    "pinned_model": "jev-1.13.0",
+    "credential_env": "TYPESAFE_API_KEY"
+  }
+}
+```
+
+- The options are the harnesses with an enabled `allow_execution` route in `harness_dispatch.json` that the probe detected, plus `escalate`. Option ids are harness command names (`opencode`, not `open_code`). With no eligible harness, `decide route` fails with `decision_no_eligible_harness`; with exactly one, it picks that one locally.
+- Resolution order: an accepted external answer whose confidence reaches the threshold; otherwise the highest-priority `local_rules` entry whose label the request carries; otherwise the project default from `vibemuxctl switch`, if eligible; otherwise the decision is `escalated` and you pick a harness yourself. The threshold must be in [0.5, 1.0].
+- Labels are an allowlist: a request may carry only labels listed in the config.
+- **External backend (TypeSafe Jev).** No call is made unless `jev.enabled` is `true` **and** the request passes `--allow-external`. The daemon then reads the API key from the environment variable named by `credential_env` (uppercase, no `VIBEMUX_` prefix, not a system variable such as `PATH` or `TEMP`), in the environment inherited from the shell that ran `daemon start` (rotating the key needs a daemon restart), and passes it only to a one-shot `vibemux_decision_peer` process, which must sit next to `vibemuxd`. The provider receives only the option ids, your `option_descriptions`, the request labels, a prompt size bucket, and the project default. It never receives the prompt or its digest. Keep descriptions and labels free of secrets. Answers are accepted only from `pinned_model`, and the confidence used is the lower of the reported value and VibeMux's own normalized-peak computation. One external call runs at a time; a request made while another is in flight records `decision_peer_busy` instead of waiting. Stopping the daemon cancels an in-flight call and records `decision_peer_cancelled`. A failed, rejected, or low-confidence answer falls back to the local order above.
+
+```powershell
+cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemux_cli --bin vibemuxctl -p vibemux_decision_peer --bin vibemux_decision_peer
+.\target\debug\vibemuxctl.exe daemon start --project-root .
+.\target\debug\vibemuxctl.exe decide route --prompt-file prompt.txt --label rust --project-root .
+.\target\debug\vibemuxctl.exe decide route --prompt-file prompt.txt --label docs --allow-external --project-root .
+.\target\debug\vibemuxctl.exe decisions list --project-root .
+.\target\debug\vibemuxctl.exe decisions show <decision_id> --project-root .
+.\target\debug\vibemuxctl.exe dispatch submit --decision <decision_id> --prompt-file prompt.txt --project-root .
+```
+
+- `decide route` reads the prompt like `dispatch submit` (a file, or stdin for `-`) and prints the decision: status (`resolved` or `escalated`), chosen harness, source (`single_option`, `external`, `local_rule`, `project_default`, or `none`), and the external evidence. Views never carry the prompt or a digest. `decisions list` pages with `--after-sequence` and `--limit`.
+- `dispatch submit --decision` takes the harness from the decision; naming one as well is refused. The prompt must be the same text the decision was made for, the decision must be used within 15 minutes, the dispatch config must be unchanged, and a decision runs at most once. Repeating it with the same `--request-id` and prompt is an idempotent replay: it returns the original receipt as long as the ordinary dispatch gates still pass (the harness is detected, its route and the dispatch config are unchanged). Like any `submit`, it sends a real prompt to the vendor CLI and may use paid model inference.
+- Status: verified with fixture peers and fixture harnesses only. No live Jev call has run. See [ADR 034](docs/adr/034_decision_port.md) and the [decision orchestration roadmap](docs/decision_orchestration_roadmap.md).
+
 ## Dual-track workflows (pre-alpha, ADR 031, offline only)
 
 The daemon can run a supervised two-worker workflow on one repository.
