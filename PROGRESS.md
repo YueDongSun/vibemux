@@ -2791,7 +2791,7 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 ### 2026-09-29 - Deterministic startup-timeout bootstrap test (`fix/startup_timeout_fixture_race`)
 
 **Status change**
-- None. Test-only change: no production code changed. It removes the known load-sensitive flake in `bootstrap_process::startup_timeout_terminates_only_the_spawned_fixture` recorded in the 2026-09-15 (5) and (9) entries.
+- None. Test-only change: no production code changed. It removes the known load-sensitive flake in `bootstrap_process::startup_timeout_terminates_only_the_spawned_fixture` recorded in the 2026-09-15 (5) and (9) entries, and again in the 2026-09-28 (3) entry.
 
 **Root cause**
 - The test gave `start_daemon` a real-time 150 ms startup deadline and then required the hang fixture's started marker. The deadline starts once the fixture's PID is known (on Windows, after the PowerShell launcher helper reports it), so it raced only the fixture's own launch. Temporary instrumentation on a loaded Windows host (not committed) showed the marker 50-590 ms after the PID was known. In every failing run, the deadline fired 150-161 ms after the PID with no marker, and the fixture was killed before it ran. Unmodified, the test failed 15 of 20 runs on that host at `started.is_file()`.
