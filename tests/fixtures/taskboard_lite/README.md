@@ -97,6 +97,15 @@ Accessible names and roles come from `Accessibility.getPartialAXTree`. Every
 check uses a fresh data file and a fresh server, seeds state through the API,
 and polls the UI every 40 ms with a 5 s bound.
 
+A launch can fail before DevTools answers: the browser exits, never writes
+`DevToolsActivePort`, or refuses the WebSocket. Such a launch is an
+environment failure. It is retried with a fresh process and profile, up to
+three attempts in total, while at least 60 s of the suite budget remain.
+The launch precedes every check, so no candidate code has run, and a retry
+cannot hide a candidate defect. Earlier failures stay in the result as
+`browser.launch_failures`. If every attempt fails, the suite is `blocked`
+and the reason lists every attempt.
+
 Checks: `ui_hooks_present`, `add_via_button`, `add_via_enter_key`,
 `toggle_complete_and_back`, `delete_task`, `filter_all_active_completed`,
 `total_and_completed_counts`, `accessible_labels`,
