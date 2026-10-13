@@ -3265,3 +3265,80 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   processes.
 - Linux/WSL was not run. The release and the test hook are Windows-only.
   On POSIX no compatibility lock is taken.
+
+### 2026-10-13 - Take a DSH poll page's status from its records' snapshot
+
+**Scope and implementation**
+- Found while diagnosing the flaky DSH integration test fixed on the test
+  side in PR #19. `DshSessionService::poll` read the page's records with
+  `DshDriver::poll`, then called `refresh()`. That read `summary()` and
+  `transport_open()` under two more acquisitions of the driver's state lock.
+  The runtime reader appends each record and advances the session machine
+  under that lock, so it could run between the reads. A page could then
+  carry a status that counted records the page did not reach, including a
+  settled turn without its `TurnEnd`.
+- `DshDriver::poll` already took its `summary` under the same lock as the
+  records. The service discarded it.
+- `crates/vibemux_dsh/src/driver.rs`: `DshPoll` gains `transport_open`, read
+  under the same lock. Its doc states the invariant: when `more` is false,
+  `next` equals `summary.records`.
+- `crates/vibemuxd/src/dsh_session.rs`: `poll` builds the page status from
+  `poll.summary` and `poll.transport_open`. `apply_summary` now takes a
+  summary and a transport flag instead of the driver. The other operations
+  return no records and still refresh from the driver.
+- Consumers checked:
+  - `vibemuxctl dsh poll` (`poll_to_tail`) stops on `more == false`, not on
+    the status. It prints the last page's status beside the records, so
+    before the fix it could print a settled turn whose `TurnEnd` it had not
+    printed. No CLI change.
+  - `vibemux_dsh_tui` drives the driver directly and already used
+    `poll.summary`. Unchanged.
+  - No other caller of `dsh_session_poll` exists outside tests.
+- Test fixture: `vibemux_dsh_fixture` gains a `flood` mode. It streams 400
+  text chunks in one buffered burst before each turn ends.
+- Docs: `docs/dsh_session_protocol.md` (Control IPC v7 snapshot contract and
+  stop rule; CLI), `docs/architecture.md`, `CHANGELOG.md`.
+
+**Validation executed** (native Windows 11, pinned Rust 1.85.0/MSVC, short
+`CARGO_TARGET_DIR` outside the worktree)
+- New test `a_poll_page_status_never_runs_ahead_of_its_records` in
+  `crates/vibemuxd/tests/dsh_session.rs`. It runs 20 `flood` turns and polls
+  without sleeping. On every page with `more == false` it asserts that
+  `next == status.records` and that `status.completed_turns` equals the
+  `TurnEnd` records read so far.
+  - Against the unfixed service, with only the fixture and the test added:
+    10 of 10 runs failed, each within turns 1-4, with the status one record
+    ahead of the page (for example 185 against 186). An earlier variant,
+    with 3 turns of 4,000 chunks, failed 7 of 10 runs. The final test
+    failed 5 more of 5 runs against the old `dsh_session.rs`.
+  - With the fix: 20 of 20 runs passed, 1.3-2.1 s each.
+- Driver tests now assert `next == summary.records` on a drained page, and
+  check `DshPoll.transport_open` for a live runtime and an exited one.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed.
+- `cargo test -p vibemuxd --all-features --test dsh_session`: 10 runs, each
+  10 passed.
+- `cargo test -p vibemuxd --all-features --lib`: 123 passed.
+- `cargo test -p vibemux_dsh --all-features`: 6 + 12 passed.
+- `cargo test -p vibemux_cli --all-features`: 30 + 3 + 3 passed.
+- `cargo test -p vibemux_frontend --all-features`: all passed, 1 ignored.
+
+**Compatibility / remaining work / Known risks**
+- No wire change: `DshSessionPollPage` keeps its fields. The contract is
+  stronger, because a page's status now agrees with its records.
+  `DshPoll`, a `vibemux_dsh` Rust type that is not on the wire, gains a
+  public field. Its only constructor is the driver.
+- The new test detects the old ordering only when the reader runs on
+  another thread while a poll is served. That is likely but not certain on a
+  small runner.
+- `status`, `prompt`, `cancel`, and `close` still read `summary()` and
+  `transport_open()` under separate acquisitions. They return no records, so
+  they cannot run ahead of records, but one could briefly show
+  `transport_open: false` with a non-terminal phase.
+- The PR #19 test helper's comment says a page reads its status after its
+  records. That is no longer true. The helper still drains until
+  `more == false`, which stays correct.
+- Observed and not changed: `fit_page` re-encodes a page once per trimmed
+  record. A full page of small records took about 250 ms in a debug build.
+- Linux/WSL was not run.

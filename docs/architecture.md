@@ -287,7 +287,9 @@ project and exposes it through Control v7
 (`dsh_session_{open,prompt,poll,status,cancel,close}`). It performs no framing,
 containment, or record bookkeeping itself — those come from `vibemux_dsh` — and
 owns only the control-frame page budget, because a poll page must fit the
-64 KiB IPC frame even when the driver's own page bound is larger. The daemon
+64 KiB IPC frame even when the driver's own page bound is larger. A page's
+status is built from the driver snapshot that produced its records, never
+from a second read, so it cannot run ahead of them. The daemon
 joins the session at shutdown, so no vendor process outlives it.
 `vibemuxctl dsh` is the thin Control v7 client; a prompt comes from a file or
 stdin, never from argv.

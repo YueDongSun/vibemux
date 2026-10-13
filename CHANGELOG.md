@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix a DSH poll page whose status could run ahead of its records. The
+  daemon read a page's records and then read the session status again, so
+  the runtime reader could append records in between. A page could then
+  report a settled turn without carrying its `TurnEnd` record, and
+  `vibemuxctl dsh poll` could print such a status beside records that stop
+  short of it. The page status now comes from the same driver snapshot as
+  its records, so a page with `more: false` has `next` equal to
+  `status.records`. The control wire format is unchanged.
 - Fix the leak of empty per-project directories under
   `%LOCALAPPDATA%\VibeMux\runtime` on Windows. Every clean daemon start/stop
   cycle, including each test run that started a daemon, left one empty

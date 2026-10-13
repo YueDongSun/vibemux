@@ -21,6 +21,7 @@
 //! | `foreign` | emits another session's `turn/end` before this session's |
 //! | `garbage` | writes a non-JSON line to stdout |
 //! | `no-turn-end` | streams text but never ends the turn |
+//! | `flood` | streams [`FLOOD_CHUNKS`] text chunks in one burst before each turn ends |
 //! | `exit-early` | exits before answering anything |
 
 use std::io::{self, BufRead, Write};
@@ -30,6 +31,10 @@ const SERVER_NAME: &str = "deepseek-harness-sdk-runtime";
 /// The protocol's own hardcoded version literal; clients must treat it as
 /// opaque.
 const SERVER_VERSION: &str = "0.0.1";
+/// Text chunks one `flood` turn streams. Enough to keep the client's reader
+/// appending records for many poll round trips, and few enough to stay well
+/// inside the default record bounds.
+const FLOOD_CHUNKS: u64 = 400;
 
 /// The mode this run serves: `--profile <value>` when the launcher pair
 /// supplies one, else the first positional argument.
@@ -118,6 +123,9 @@ fn main() {
                                 "type": "text-delta", "index": 0,
                                 "text": "fixture reply"}}}}),
                 );
+                if mode == "flood" {
+                    flood(&session_id, turn);
+                }
                 notify(
                     "session.status",
                     &serde_json::json!({"sessionId": session_id, "status": "idle"}),
@@ -165,6 +173,25 @@ fn reply(id: serde_json::Value, result: &serde_json::Value) {
         "{}",
         serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
     );
+    let _ = stdout.flush();
+}
+
+/// Writes [`FLOOD_CHUNKS`] text chunks through one buffer, so they reach the
+/// client in large reads and its reader appends records back to back.
+fn flood(session_id: &str, turn: u64) {
+    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    for index in 0..FLOOD_CHUNKS {
+        let _ = writeln!(
+            stdout,
+            "{}",
+            serde_json::json!({"jsonrpc": "2.0", "method": "session.event",
+                "params": {"sessionId": session_id,
+                    "event": {"type": "assistant/chunk", "seq": 3, "time": 2,
+                        "data": {"turn": turn, "step": 1, "chunk": {
+                            "type": "text-delta", "index": index,
+                            "text": "flood"}}}}})
+        );
+    }
     let _ = stdout.flush();
 }
 
