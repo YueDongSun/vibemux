@@ -338,7 +338,10 @@ impl Drop for LifecycleLock {
 /// reference drops. File and contents are those of the upgrade gate that
 /// keeps an old binary from racing a new one for the same database.
 #[derive(Clone)]
-pub(crate) struct CompatibilityLock(Arc<LifecycleLock>);
+pub(crate) struct CompatibilityLock(
+    // Off Windows nothing reads the lock; the field only holds it until drop.
+    #[cfg_attr(not(windows), allow(dead_code))] Arc<LifecycleLock>,
+);
 
 impl CompatibilityLock {
     pub(crate) fn acquire(path: &Path) -> Result<Self, WriterError> {
