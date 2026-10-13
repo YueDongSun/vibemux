@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use vibemux_harness::dsh::{DshPhase, DshRecordKind, DshTurnOutcome};
 use vibemuxd::control::{
     ControlClient, ControlError, DaemonControlServer, DshSessionOpenRequest, DshSessionPollQuery,
-    DshSessionPromptRequest,
+    DshSessionPromptRequest, DshSessionRecord, DshSessionStatus,
 };
 
 const FIXTURE: &str = env!("CARGO_BIN_EXE_vibemux_dsh_service_fixture");
@@ -130,29 +130,56 @@ async fn configured_server(label: &str) -> (DaemonControlServer, ControlClient, 
     (server, client, layout)
 }
 
-/// Polls until the turn settles or the deadline expires, returning the last
-/// page seen.
-async fn poll_until_settled(client: &ControlClient, cursor: u64) -> Value {
+/// Every record after a starting cursor, and the status once the turn settled.
+struct SettledTurn {
+    records: Vec<DshSessionRecord>,
+    status: DshSessionStatus,
+}
+
+fn settled(status: &DshSessionStatus) -> bool {
+    let finished = status.completed_turns
+        + status.failed_turns
+        + status.cancelled_turns
+        + status.unverified_turns;
+    finished > 0 && status.phase == DshPhase::Ready
+}
+
+/// Polls until the turn settles or the deadline expires, collecting every
+/// record after `cursor`. Each poll advances the cursor, so a record an
+/// early poll returned never reappears on a later page. A page reads its
+/// status after its records, so a settled status can arrive before the
+/// last records do. The helper therefore polls again after the first settled
+/// page and stops at the first later page that has nothing more.
+async fn poll_until_settled(client: &ControlClient, cursor: u64) -> SettledTurn {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let mut cursor = cursor;
-    let mut last = json!({});
+    let mut records = Vec::new();
+    let mut seen_settled = false;
+    let mut last_status = None;
     while std::time::Instant::now() < deadline {
         let page = client
             .dsh_session_poll(DshSessionPollQuery { cursor })
             .await
             .expect("poll");
+        assert!(!page.truncated, "the retained window dropped records");
         cursor = page.next;
-        last = serde_json::to_value(&page).expect("encode page");
-        let completed = page.status.completed_turns
-            + page.status.failed_turns
-            + page.status.cancelled_turns
-            + page.status.unverified_turns;
-        if completed > 0 && page.status.phase == DshPhase::Ready {
-            return last;
+        records.extend(page.records);
+        if seen_settled && !page.more {
+            return SettledTurn {
+                records,
+                status: page.status,
+            };
         }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        seen_settled |= settled(&page.status);
+        if !page.more {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        last_status = Some(page.status);
     }
-    panic!("the turn never settled: {last}");
+    panic!(
+        "the turn never settled: {last_status:?} after {} records",
+        records.len()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -190,35 +217,39 @@ async fn a_full_turn_runs_through_the_control_surface() {
             .contains("must never appear")
     );
 
-    let page = poll_until_settled(&client, 0).await;
-    let page: vibemuxd::control::DshSessionPollPage =
-        serde_json::from_value(page).expect("decode page");
-    assert_eq!(page.status.completed_turns, 1);
-    assert_eq!(page.status.last_outcome, Some(DshTurnOutcome::Completed));
+    let turn = poll_until_settled(&client, 0).await;
+    assert_eq!(turn.status.completed_turns, 1);
+    assert_eq!(turn.status.last_outcome, Some(DshTurnOutcome::Completed));
+    // Sequences are strictly increasing: no record was read twice.
     assert!(
-        page.records
+        turn.records
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    assert!(
+        turn.records
             .iter()
             .any(|record| record.kind == DshRecordKind::Handshake)
     );
     assert!(
-        page.records
+        turn.records
             .iter()
             .any(|record| record.kind == DshRecordKind::TurnStart)
     );
     assert!(
-        page.records
+        turn.records
             .iter()
             .any(|record| record.kind == DshRecordKind::TurnEnd)
     );
     // Idle status is captured as a diagnostic, never as the outcome.
     assert!(
-        page.records
+        turn.records
             .iter()
             .any(|record| record.kind == DshRecordKind::Status)
     );
     // Raw runtime content is byte-exact and only reachable through the poll.
     assert!(
-        page.records
+        turn.records
             .iter()
             .any(|record| record.raw_json.contains("fixture reply"))
     );
