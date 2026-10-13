@@ -19,7 +19,6 @@ import {
   create_temp_dir,
   describe_start_error,
   is_process_alive,
-  kill_process_tree,
   remove_temp_dir,
   resolve_candidate_layout,
   spawn_tracked,
@@ -28,6 +27,7 @@ import {
   stop_tracked_process,
   wait_for_exit,
 } from "./candidate_paths.mjs";
+import { kill_confirmed_processes, read_process_clock_ms } from "./process_identity.mjs";
 
 export const browser_suite_config = Object.freeze({
   default_suite_timeout_ms: 120_000,
@@ -114,14 +114,19 @@ async function launch_browser(browser_executable, temp_root) {
     ...browser_suite_config.network_isolation_flags,
     browser_suite_config.initial_url,
   ];
+  // Read before the spawn: no browser process can have started earlier.
+  const launched_at_ms = await read_process_clock_ms();
   const browser = {
     user_data_dir,
     command: [browser_executable, ...args],
     tracked: spawn_tracked(browser_executable, args, {}),
+    launched_at_ms,
     connection: null,
     executable_name: path.basename(browser_executable),
     version: null,
-    child_pids: [],
+    // Child pid -> process clock reading taken just before the first
+    // SystemInfo.getProcessInfo call that reported it.
+    child_sampled_at_ms: new Map(),
   };
   try {
     const websocket_url = await read_devtools_endpoint(user_data_dir, browser.tracked);
@@ -139,11 +144,17 @@ async function launch_browser(browser_executable, temp_root) {
 }
 
 // Records the browser-reported child processes (renderers, GPU, utilities) so
-// close_browser can prove they exit.
+// close_browser can prove they exit. The clock is read before the request: a
+// process that later reuses a reported id can only start after that reading.
 async function record_child_pids(browser) {
+  const sampled_at_ms = await read_process_clock_ms();
   const info = await browser.connection.send("SystemInfo.getProcessInfo").catch(() => null);
   const pids = (info?.processInfo ?? []).map((entry) => entry.id).filter((pid) => Number.isInteger(pid) && pid !== browser.tracked.pid);
-  browser.child_pids = [...new Set([...browser.child_pids, ...pids])];
+  for (const pid of pids) {
+    if (!browser.child_sampled_at_ms.has(pid)) {
+      browser.child_sampled_at_ms.set(pid, sampled_at_ms);
+    }
+  }
 }
 
 async function wait_for_children_exit(child_pids) {
@@ -154,6 +165,34 @@ async function wait_for_children_exit(child_pids) {
     alive_pids = alive_pids.filter(is_process_alive);
   }
   return alive_pids;
+}
+
+// A pid that still looks alive may belong to a process that reused it after
+// the child exited, so a survivor is killed only when its start time proves
+// it is the reported child (process_identity.mjs). Only that process is
+// killed, never a tree: Windows finds a tree by parent ids, which it does not
+// update when a parent exits or its id is reused.
+async function kill_surviving_children(browser, surviving_pids) {
+  const candidates = surviving_pids.map((pid) => ({
+    pid,
+    launched_at_ms: browser.launched_at_ms,
+    sampled_at_ms: browser.child_sampled_at_ms.get(pid),
+  }));
+  let outcome;
+  try {
+    outcome = await kill_confirmed_processes(candidates);
+  } catch (error) {
+    return [`browser child processes survived the browser and were not killed (identity check failed: ${error.message}): ${surviving_pids.join(", ")}`];
+  }
+  const problems = [];
+  if (outcome.killed.length > 0) {
+    problems.push(`browser child processes survived the browser and were killed: ${outcome.killed.join(", ")}`);
+  }
+  if (outcome.unconfirmed.length > 0) {
+    const described = outcome.unconfirmed.map(({ pid, reason }) => `${pid} (${reason})`);
+    problems.push(`browser child pids still in use and not killed, identity not confirmed: ${described.join(", ")}`);
+  }
+  return problems;
 }
 
 // Closes the browser gracefully, escalates to a tree kill, verifies that every
@@ -173,12 +212,9 @@ async function close_browser(browser) {
     }
   }
   browser.connection?.close();
-  const surviving_pids = await wait_for_children_exit(browser.child_pids);
+  const surviving_pids = await wait_for_children_exit([...browser.child_sampled_at_ms.keys()]);
   if (surviving_pids.length > 0) {
-    problems.push(`browser child processes survived the browser and were killed: ${surviving_pids.join(", ")}`);
-    for (const pid of surviving_pids) {
-      await kill_process_tree(pid);
-    }
+    problems.push(...(await kill_surviving_children(browser, surviving_pids)));
   }
   try {
     await remove_temp_dir(browser.user_data_dir);
