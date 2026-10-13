@@ -207,6 +207,11 @@ impl DaemonPaths {
     /// `recover`, and the CLI's ACL post-mortem
     /// ([`Self::verify_control_surviving_acls`]).
     ///
+    /// The caller must still hold this generation's compatibility lock
+    /// (`legacy_writer_lock_path`). A start acquires that lock before it
+    /// creates the leaf, so the lock makes the caller the leaf's only owner
+    /// and no concurrent start can be using it.
+    ///
     /// The release is best-effort and reports nothing. A kept leaf only
     /// costs one directory that the next start reuses, so it must never
     /// fail a clean shutdown. The daemon has no channel to report it

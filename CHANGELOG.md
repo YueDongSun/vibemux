@@ -11,9 +11,14 @@
   and non-empty leaves are left alone. Failed starts and crashes still keep
   the leaf for diagnosis and recovery. Existing leaves are not pruned.
   `vibemuxctl daemon stop` now returns only after the daemon process has
-  exited, so a following `start` no longer races the release. A start that
-  still loses its leaf to a concurrent stop reports `daemon_start_failed`
-  instead of `daemon_control_runtime_security_invalid`.
+  exited. Leaf ownership is bound to one daemon generation by the
+  project-local compatibility lock. A start acquires that lock before it
+  creates the leaf, and a clean shutdown releases the leaf before it removes
+  the lock, and only while the lock is still its own. A start that runs
+  concurrently with a stop fails closed and can be retried, usually with
+  `writer_lock_held`. It never has the leaf it uses removed under it. A
+  failed start without a leaf reports `daemon_start_failed` instead of
+  `daemon_control_runtime_security_invalid`.
 - Add the decision port and advisory per-task harness routing (ADR 034).
   `vibemuxctl decide route` records a content-free decision naming the
   harness that should run a prompt, using the first of these that applies:

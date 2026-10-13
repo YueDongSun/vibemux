@@ -310,16 +310,48 @@ impl LifecycleLock {
             _file: file,
         })
     }
+
+    /// Whether the lock file still carries this holder's nonce.
+    fn is_held(&self) -> bool {
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .is_some_and(|value| value.trim() == self.nonce)
+    }
 }
 
 impl Drop for LifecycleLock {
     fn drop(&mut self) {
-        let matches = std::fs::read_to_string(&self.path)
-            .ok()
-            .is_some_and(|value| value.trim() == self.nonce);
-        if matches {
+        if self.is_held() {
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+/// The project-local compatibility lifecycle lock (the legacy writer-lock
+/// path). A daemon start with a distinct compatibility lock acquires it
+/// BEFORE it creates the per-project runtime leaf. Only the holder may
+/// create, validate, or remove that leaf, which binds the leaf to one
+/// daemon generation. The lock is shared: the writer thread holds one
+/// reference for its whole life, so it never opens the database without
+/// both locks. The control start holds another reference until after the
+/// leaf release. The file is removed, nonce-matched, once the last
+/// reference drops. File and contents are those of the upgrade gate that
+/// keeps an old binary from racing a new one for the same database.
+#[derive(Clone)]
+pub(crate) struct CompatibilityLock(Arc<LifecycleLock>);
+
+impl CompatibilityLock {
+    pub(crate) fn acquire(path: &Path) -> Result<Self, WriterError> {
+        LifecycleLock::acquire_path(path).map(|lock| Self(Arc::new(lock)))
+    }
+
+    /// Whether the lock file still carries this generation's nonce. While
+    /// it does, no other generation can hold the lock: acquisition is
+    /// `create_new`, and only the last reference removes the file. Only
+    /// the Windows leaf release asks.
+    #[cfg(windows)]
+    pub(crate) fn is_held(&self) -> bool {
+        self.0.is_held()
     }
 }
 
@@ -600,6 +632,7 @@ impl WriterWorker {
             response_timeout,
             DEFAULT_WRITER_STARTUP_TIMEOUT,
             vec![lifecycle_lock],
+            None,
         )
     }
 
@@ -631,6 +664,7 @@ impl WriterWorker {
             response_timeout,
             DEFAULT_WRITER_STARTUP_TIMEOUT,
             vec![lifecycle_lock],
+            None,
         )
     }
 
@@ -650,6 +684,26 @@ impl WriterWorker {
             DEFAULT_RESPONSE_TIMEOUT,
             DEFAULT_WRITER_STARTUP_TIMEOUT,
             lifecycle_locks,
+            None,
+        )
+    }
+
+    /// Start the writer under a compatibility lock the caller already
+    /// holds (see [`CompatibilityLock`]), acquiring the primary lock here.
+    /// The writer thread keeps its reference until it exits.
+    pub(crate) fn start_with_held_compatibility_lock(
+        database_path: &Path,
+        primary_lock_path: &Path,
+        compatibility_lock: CompatibilityLock,
+    ) -> Result<Self, WriterError> {
+        let primary_lock = LifecycleLock::acquire_path(primary_lock_path)?;
+        Self::start_with_lifecycle_locks(
+            database_path,
+            DEFAULT_WRITER_QUEUE_CAPACITY,
+            DEFAULT_RESPONSE_TIMEOUT,
+            DEFAULT_WRITER_STARTUP_TIMEOUT,
+            vec![primary_lock],
+            Some(compatibility_lock),
         )
     }
 
@@ -659,6 +713,7 @@ impl WriterWorker {
         response_timeout: Duration,
         startup_timeout: Duration,
         lifecycle_locks: Vec<LifecycleLock>,
+        compatibility_lock: Option<CompatibilityLock>,
     ) -> Result<Self, WriterError> {
         let lock_path = lifecycle_locks
             .last()
@@ -681,6 +736,8 @@ impl WriterWorker {
                     lifecycle_locks,
                     worker_shared,
                 );
+                // Released only after the primary lock and the database.
+                drop(compatibility_lock);
             })
             .map_err(|_| WriterError::ThreadTerminated)?;
         match ready_receiver.recv_timeout(startup_timeout) {
@@ -1467,6 +1524,7 @@ mod tests {
             DEFAULT_RESPONSE_TIMEOUT,
             Duration::from_nanos(1),
             vec![lifecycle_lock],
+            None,
         );
         assert!(matches!(result, Err(WriterError::StartupTimeout)));
         assert_eq!(WriterError::StartupTimeout.code(), "writer_startup_timeout");

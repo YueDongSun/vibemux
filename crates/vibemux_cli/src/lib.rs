@@ -422,12 +422,13 @@ pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliE
         }
         sleep(DEFAULT_POLL_INTERVAL).await;
     }
-    // The artifacts vanish before the daemon has finished: a clean trusted
-    // Windows daemon still releases its empty runtime leaf afterwards. A
-    // `start` racing that release loses the leaf under its new writer lock,
-    // so `stop` returns only once the process itself is gone, under the
-    // same deadline. An in-process server (tests) shares this PID and never
-    // exits, so only a separate daemon process is awaited.
+    // The compatibility lock is the last artifact to go: a clean trusted
+    // Windows daemon removes it only after releasing its empty runtime leaf,
+    // so the loop above already outlasts the release. The daemon can still
+    // be exiting then, so `stop` returns only once the process itself is
+    // gone, under the same deadline. An in-process server (tests) shares
+    // this PID and never exits, so only a separate daemon process is
+    // awaited.
     if health.process_id != std::process::id() {
         let process_id = health.process_id;
         while tokio::task::spawn_blocking(move || recovery::process_is_present(process_id))
