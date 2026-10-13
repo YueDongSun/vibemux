@@ -478,7 +478,7 @@ fn recovery_confirmation(
     hex(&digest)
 }
 
-fn process_is_present(process_id: u32) -> bool {
+pub(crate) fn process_is_present(process_id: u32) -> bool {
     let pid = Pid::from_u32(process_id);
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
@@ -627,6 +627,10 @@ mod tests {
             .expect("control server");
         let descriptor_bytes = std::fs::read(paths.descriptor_path()).expect("live descriptor");
         server.shutdown().await.expect("shutdown server");
+        // A clean shutdown releases the empty Windows runtime leaf, whereas a
+        // crashed daemon leaves it behind with its descriptor: recreate it
+        // before simulating that stale descriptor.
+        paths.ensure_runtime_dir().expect("runtime directory");
 
         let mut descriptor: serde_json::Value =
             serde_json::from_slice(&descriptor_bytes).expect("decode descriptor");

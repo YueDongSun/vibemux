@@ -24,6 +24,10 @@ const CONTROL_ACL_MARKER_CONTENTS: &[u8] = b"vibemux_control_acl_v1";
 /// run elevated; a same-user attacker can already write user-writable files).
 #[cfg(windows)]
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: set on symlinks, junctions, and every
+/// other reparse point, which the runtime-leaf release never removes.
+#[cfg(windows)]
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DaemonPaths {
@@ -189,6 +193,56 @@ impl DaemonPaths {
         Ok(())
     }
 
+    /// Remove the per-project runtime leaf after a CLEAN shutdown of a
+    /// trusted daemon start, once its owner-matched guards have removed the
+    /// descriptor and the writer lock. The leaf holds no state of its own:
+    /// the DACL is inherited from the protected root, which keeps the
+    /// `.acl_v1` marker (ADR 020), and [`Self::ensure_runtime_dir`]
+    /// recreates the leaf on the next start. Only an empty real directory
+    /// at its canonical path is removed. Links, junctions, and other
+    /// reparse points, a path reached through one, and a leaf with any
+    /// remaining entry are left untouched. `RemoveDirectoryW` itself refuses
+    /// a directory that became non-empty after the check. Failed starts and
+    /// crashes never call this: the leaf then stays for `daemon inspect`,
+    /// `recover`, and the CLI's ACL post-mortem
+    /// ([`Self::verify_control_surviving_acls`]).
+    ///
+    /// The caller must still hold this generation's compatibility lock
+    /// (`legacy_writer_lock_path`). A start acquires that lock before it
+    /// creates the leaf, so the lock makes the caller the leaf's only owner
+    /// and no concurrent start can be using it.
+    ///
+    /// The release is best-effort and reports nothing. A kept leaf only
+    /// costs one directory that the next start reuses, so it must never
+    /// fail a clean shutdown. The daemon has no channel to report it
+    /// either: the writer is already joined, and a CLI-started daemon's
+    /// stderr is discarded.
+    #[cfg(windows)]
+    pub(crate) fn release_runtime_dir(&self) {
+        use std::os::windows::fs::MetadataExt;
+
+        let Ok(metadata) = std::fs::symlink_metadata(&self.runtime_dir) else {
+            return;
+        };
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return;
+        }
+        if std::fs::canonicalize(&self.runtime_dir).ok().as_deref()
+            != Some(self.runtime_dir.as_path())
+        {
+            return;
+        }
+        let empty = match std::fs::read_dir(&self.runtime_dir) {
+            Ok(mut entries) => entries.next().is_none(),
+            Err(_) => false,
+        };
+        if empty {
+            // `RemoveDirectoryW` refuses a leaf that gained an entry since
+            // the check; the leaf is then simply kept.
+            let _ = std::fs::remove_dir(&self.runtime_dir);
+        }
+    }
+
     #[must_use]
     pub fn project_root(&self) -> &Path {
         &self.project_root
@@ -345,6 +399,18 @@ impl DaemonPaths {
             marker.as_path(),
         ];
         self.verify_control_acls(&paths)
+    }
+
+    /// The project-independent part of the surviving surface: the
+    /// protected control root and the ACL marker. Both must exist. The
+    /// CLI's post-mortem verifies only these when the per-project leaf is
+    /// absent, because a clean shutdown releases the empty leaf
+    /// ([`Self::release_runtime_dir`]) and a missing directory is not a
+    /// loosened ACL.
+    #[cfg(windows)]
+    pub fn verify_control_root_acls(&self) -> Result<(), DaemonPathError> {
+        let marker = self.acl_marker_path();
+        self.verify_control_acls(&[self.control_runtime_root.as_path(), marker.as_path()])
     }
 
     /// Phase 2 of the two-phase trusted-start verification (ADR 025,
@@ -900,6 +966,94 @@ mod tests {
                 .expect_err("loosened leaf must fail closed before publication"),
             DaemonPathError::ControlRuntimeSecurityInvalid
         );
+    }
+
+    /// Create a directory junction through the fixed system PowerShell (the
+    /// workspace safety tests' idiom: paths cross only through environment
+    /// variables).
+    #[cfg(windows)]
+    fn create_junction(link: &Path, target: &Path) {
+        use std::os::windows::process::CommandExt;
+
+        let powershell = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let status = std::process::Command::new(powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:VIBEMUX_TEST_LINK -Target $env:VIBEMUX_TEST_TARGET | Out-Null",
+            ])
+            .env("VIBEMUX_TEST_LINK", link)
+            .env("VIBEMUX_TEST_TARGET", target)
+            .creation_flags(0x0800_0000)
+            .status()
+            .expect("junction fixture");
+        assert!(
+            status.success(),
+            "junction fixture must exist for a meaningful test"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn release_runtime_dir_removes_only_an_empty_leaf() {
+        // A private control root: the release is never exercised against
+        // the user's shared runtime here.
+        let temp = tempfile::tempdir().expect("temp directory");
+        let base = tempfile::tempdir().expect("isolated control base");
+        let paths = DaemonPaths::from_project_root_with_local_app_data(temp.path(), base.path())
+            .expect("daemon paths");
+        std::fs::create_dir_all(paths.runtime_dir()).expect("runtime leaf");
+        let foreign = paths.runtime_dir().join("foreign.txt");
+        std::fs::write(&foreign, b"foreign").expect("foreign entry");
+        paths.release_runtime_dir();
+        assert_eq!(
+            std::fs::read(&foreign).expect("foreign entry survives"),
+            b"foreign"
+        );
+
+        std::fs::remove_file(&foreign).expect("remove foreign entry");
+        paths.release_runtime_dir();
+        assert!(!paths.runtime_dir().exists());
+        assert!(paths.control_runtime_root().is_dir());
+        // An already released leaf is a no-op.
+        paths.release_runtime_dir();
+        assert!(!paths.runtime_dir().exists());
+        assert!(paths.control_runtime_root().is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn release_runtime_dir_never_follows_or_removes_a_junction() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let base = tempfile::tempdir().expect("isolated control base");
+        let outside = tempfile::tempdir().expect("junction target");
+        let paths = DaemonPaths::from_project_root_with_local_app_data(temp.path(), base.path())
+            .expect("daemon paths");
+        // Plain spellings of the directories `paths` holds as canonical
+        // verbatim paths, for the PowerShell fixture.
+        let root = base.path().join("VibeMux").join("runtime");
+        let leaf = root.join(paths.runtime_key());
+
+        // The leaf itself is a junction to an EMPTY directory, so an
+        // emptiness check through the link would pass: only the
+        // reparse-point check keeps the junction.
+        std::fs::create_dir_all(&root).expect("control root");
+        create_junction(&leaf, outside.path());
+        paths.release_runtime_dir();
+        assert!(std::fs::symlink_metadata(&leaf).is_ok(), "junction kept");
+        assert!(outside.path().is_dir());
+        std::fs::remove_dir(&leaf).expect("remove leaf junction fixture");
+
+        // A real empty leaf reached through a junctioned control root.
+        std::fs::remove_dir(&root).expect("remove plain control root");
+        create_junction(&root, outside.path());
+        let redirected_leaf = outside.path().join(paths.runtime_key());
+        std::fs::create_dir(&redirected_leaf).expect("leaf behind the junction");
+        paths.release_runtime_dir();
+        assert!(redirected_leaf.is_dir());
+        std::fs::remove_dir(&root).expect("remove root junction fixture");
     }
 
     #[cfg(unix)]

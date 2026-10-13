@@ -3014,3 +3014,254 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   use loopback HTTP.
 - Not implemented: redacted task-summary forwarding, other decision kinds
   and backends, per-repository threshold fitting, and roadmap items 3-10.
+
+### 2026-10-12 - Release the empty Windows runtime leaf on clean daemon shutdown
+
+**Scope and implementation**
+- Problem: on Windows, every daemon start creates the per-project leaf
+  `%LOCALAPPDATA%\VibeMux\runtime\<project hash>` (`ensure_runtime_dir` and
+  `start_with_writer_locks`). Nothing removed it. The owner-matched guards
+  remove only the descriptor and the writer lock. Every clean start/stop
+  cycle therefore left one empty leaf. One machine held about 580 of them,
+  and each workspace test run added more.
+- Keeping the empty leaf was not intentional. ADR 020 puts the DACL and the
+  `.acl_v1` marker on the shared root, and leaves only inherit them. The
+  leaf holds no state of its own, and the next start recreates it.
+- `crates/vibemuxd/src/process.rs`: new
+  `DaemonPaths::release_runtime_dir()` (Windows). It removes the leaf only
+  when the leaf is an empty real directory at its canonical path. A
+  symlink, junction, or other reparse point is never followed or removed,
+  and neither is a path reached through one. A non-empty leaf is left
+  untouched. `RemoveDirectoryW` refuses a leaf that became non-empty after
+  the check. The release is best-effort and returns nothing. A kept leaf
+  costs one directory that the next start reuses, and the daemon has no
+  channel left to report it: the writer is joined, and a CLI-started
+  daemon's stderr is discarded. A panic in the blocking task is contained
+  and never turns a clean shutdown into an error.
+- `crates/vibemuxd/src/control.rs`: the trusted Windows start (`security`
+  is `Some`) calls it after `serve_owned` returns Ok, once the descriptor
+  guard is dropped. The call runs through `spawn_blocking`. By then
+  `serve_owned` has joined the writer, which removed the nonce-matched
+  writer lock. The following keep the leaf as before:
+  - a shutdown error;
+  - a failed start, whose leaf the CLI's `verify_control_surviving_acls`
+    post-mortem needs;
+  - a crash;
+  - raw-path constructors, whose runtime directory is arbitrary;
+  - POSIX, where the runtime directory is the project state directory.
+- Test fixtures:
+  - The two supervisor fixtures now assert that the leaf was released
+    instead of removing it themselves.
+  - One recovery test recreates the leaf before simulating a crashed
+    daemon's stale descriptor.
+- Review follow-up for the restart race (see Known risks):
+  - `crates/vibemux_cli/src/lib.rs`: `stop_daemon` now also waits, under the
+    same `DEFAULT_SHUTDOWN_TIMEOUT` deadline, until the daemon PID from the
+    health response has exited. It reuses `recovery::process_is_present`,
+    which is now `pub(crate)`. An in-process server sharing the CLI's PID
+    (tests) is not awaited.
+  - `classify_daemon_exit` (Windows) treats an absent runtime leaf as the
+    plain `daemon_start_failed`. Only the root and the `.acl_v1` marker are
+    then verified, through the new strict
+    `DaemonPaths::verify_control_root_acls()`. Every path that exists stays
+    fail-closed, including a missing control root.
+- Docs: `docs/architecture.md` (Windows control metadata paragraph) and
+  `CHANGELOG.md`.
+
+**Validation executed** (native Windows 11, pinned Rust 1.85.0/MSVC, short
+`CARGO_TARGET_DIR` outside the worktree)
+- Regression tests, run before the fix:
+  `cargo test -p vibemuxd --all-features --test daemon_process` gave
+  4 passed and 2 failed. `clean_shutdown_releases_the_empty_runtime_leaf`
+  failed with "cycle 0: the empty runtime leaf must be released", and
+  `standalone_daemon_owns_rust_database_and_shuts_down_cleanly` failed on
+  `!paths.runtime_dir().exists()`. After the fix both pass, together with
+  the new `clean_shutdown_keeps_a_runtime_leaf_with_foreign_content` and
+  the unit tests `release_runtime_dir_removes_only_an_empty_leaf` and
+  `release_runtime_dir_never_follows_or_removes_a_junction`. The junction
+  test covers a junction at the leaf and a junctioned control root.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed.
+- `cargo test --workspace --all-features` before the fix: 824 passed,
+  0 failed, 2 ignored in 93 targets. The shared runtime root grew from 582
+  to 583 entries, one new empty leaf. Its timing is consistent with the
+  `vibemux_frontend` unit tests, whose `supervisor_client` test starts and
+  stops a trusted daemon without a cleanup guard.
+- After the fix, run in the shared root: 828 passed, 0 failed, 2 ignored in
+  93 targets. One new empty leaf still appeared, but another session was
+  concurrently running `cargo test --workspace` from a different target
+  directory without this fix. The shared-root count therefore cannot
+  attribute that leaf.
+- After the fix, run with `LOCALAPPDATA` set to a private empty directory:
+  828 passed, 0 failed, 2 ignored in 93 targets. The private runtime root
+  afterwards held only `.acl_v1` and zero leaves.
+- Review follow-up, run after merging `origin/main` (decision port):
+  - The new absent-leaf case in
+    `classify_daemon_exit_distinguishes_security_failures` failed against
+    the old classification. It reported
+    `Control { code: "daemon_control_runtime_security_invalid" }` where
+    `StartFailed` was expected. It passes with the fix.
+  - `abrupt_process_recovery_preserves_database_and_allows_restart` now
+    asserts that the daemon PID is gone as soon as `stop_daemon` returns.
+  - `cargo fmt --all -- --check` and
+    `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+    passed.
+  - `cargo test -p vibemux_cli`: 30 + 3 passed. `bootstrap_process` is gated
+    on `test_helpers`, so it reports 0 there. With `--all-features --test
+    bootstrap_process` it gave 3 passed.
+  - `cargo test -p vibemuxd --all-features --test daemon_process --test
+    decision_route`: 6 and 10 passed.
+  - `cargo test --workspace --all-features` with a private `LOCALAPPDATA`:
+    927 passed, 0 failed, 2 ignored in 103 targets. Afterwards the private
+    runtime root again held only `.acl_v1` and zero leaves.
+
+**Compatibility / remaining work / Known risks**
+- There are no wire, schema, or CLI argument changes. `vibemuxctl daemon
+  stop` now returns only after the daemon process has exited, so it can take
+  slightly longer.
+- Leaves left by crashes, `daemon recover`, failed starts, or earlier
+  versions are not pruned. That includes the existing leaves on the
+  observed machine, about 76 of which still hold stale artifacts. An
+  explicit, confirmation-bound pruning of orphaned leaves is possible
+  follow-up work.
+- The restart race is closed by the 2026-10-13 follow-up below. Leaf
+  ownership is now bound to the generation that holds the compatibility
+  lock, so a stopping daemon can no longer remove a leaf that a concurrent
+  start is using. Before that follow-up, a start between an old daemon's
+  descriptor removal and its leaf removal could lose its recreated leaf.
+  It then failed with `daemon_start_failed`, which the CLI's post-mortem
+  had first misreported as `daemon_control_runtime_security_invalid`.
+- Same-user replacement of the leaf by a junction between the check and
+  the removal would at most delete that junction itself, never its target.
+  Same-SID processes are trusted by ADR 020.
+- Linux/WSL was not run. The POSIX path is unchanged by construction: the
+  release code is Windows-only.
+
+### 2026-10-13 - Bind the Windows runtime leaf to its compatibility-lock generation
+
+**Scope and implementation**
+- Codex review on PR #17 (P2, `crates/vibemuxd/src/process.rs`): the
+  2026-10-12 leaf release could remove the leaf of a start that ran
+  concurrently with a stop. AGENTS.md invariant 13 forbids removing a
+  resource the caller does not own, so a known-limit note was not enough.
+- Ownership rule: only the holder of the project's compatibility lock may
+  create, validate, or remove the per-project runtime leaf. That lock is
+  `legacy_writer_lock_path()`, the existing upgrade gate, with the same
+  file and contents. A trusted Windows start always has one. It is held
+  for the daemon's whole life, as before.
+- `crates/vibemuxd/src/lib.rs`:
+  - New `pub(crate)` `CompatibilityLock`, an `Arc`-shared `LifecycleLock`.
+  - `WriterWorker::start_with_held_compatibility_lock` takes a lock the
+    caller already holds and acquires only the primary lock. The writer
+    thread keeps its reference until it has closed the database and
+    dropped the primary lock. The writer therefore never opens the
+    database without both locks, even when a failed start detaches it.
+  - `Drop` and the release now share the nonce check
+    (`LifecycleLock::is_held`).
+- `crates/vibemuxd/src/control.rs` (`start_with_writer_locks`), start order:
+  1. A read-only check for an existing descriptor. It keeps a live or
+     crashed daemon reported as `control_descriptor_exists` ahead of its
+     locks.
+  2. The compatibility lock, when it is distinct from the primary lock,
+     acquired before the leaf is created. A held lock fails the start with
+     the existing `writer_lock_held`.
+  3. Leaf creation, canonicalization, and the authoritative descriptor
+     check.
+  4. The writer, which acquires the primary `writer.lock` inside the leaf.
+- Shutdown order of a clean trusted Windows start:
+  1. The writer is joined, which removes the primary lock.
+  2. The descriptor guard is dropped.
+  3. `release_runtime_dir()` runs, still for an empty real leaf only. It
+     runs only while the compatibility lock carries this generation's
+     nonce (new `release_owned_runtime_dir`).
+  4. The compatibility lock is dropped.
+  The lock moves into the shutdown task and then into the blocking release
+  closure. A shutdown error, a join error, or a cancelled release therefore
+  still drops it, after everything else. On failed starts the writer is
+  joined first and the lock is dropped when the start returns. The leaf is
+  kept, as before.
+- Unchanged: POSIX, where `has_distinct_legacy_runtime()` is false and no
+  compatibility lock is taken, and raw-path constructors without a
+  compatibility lock. `start_with_writer_and_compatibility_lock`, the one
+  raw-path constructor with a compatibility lock, has no callers. It now
+  also takes that lock first, and it never releases a leaf.
+- Test hook: `vibemuxd::control::test_hooks` exists on Windows with
+  `test_helpers` only. It pauses a clean shutdown right before the leaf
+  release. It is keyed by the leaf path, so parallel tests never share a
+  gate, and it lets the shutdown continue by itself after 30 s.
+- `crates/vibemux_cli/src/lib.rs`: comment only. `stop_daemon`'s artifact
+  loop already waits for the compatibility lock, because `select_runtime`
+  reports artifacts while it exists. The lock now goes only after the
+  release. The PID wait from the 2026-10-12 follow-up stays.
+- Docs: `docs/architecture.md` (Windows control metadata paragraph),
+  `CHANGELOG.md`, and the 2026-10-12 Known risks above. ADR 020 and ADR 025
+  do not describe the lock order and are unchanged.
+
+**Validation executed** (native Windows 11, pinned Rust 1.85.0/MSVC, short
+`CARGO_TARGET_DIR` outside the worktree, private `LOCALAPPDATA`)
+- New tests in `crates/vibemuxd/tests/daemon_process.rs`. Each was run
+  against 414c317's `control.rs` and `lib.rs` with only the test hook added:
+  3 failed and 6 passed. All pass after the fix. They synchronize through
+  channels with deadlines and use no sleep-based race.
+  - `a_start_inside_the_leaf_release_window_is_refused_while_the_leaf_is_owned`
+    (`test_helpers`). It pauses a clean shutdown between its descriptor
+    removal and its leaf release. It then runs `ensure_runtime_dir` and
+    `start_for_paths`, as the daemon binary does. Before the fix the second
+    start succeeded inside the window ("a start inside the release window
+    must be refused"). After the fix it gets `writer_lock_held` while the
+    compatibility lock still exists. The release then completes, and a
+    retry starts and releases its own leaf.
+  - `a_start_refused_by_a_held_compatibility_lock_never_touches_the_leaf`.
+    Before the fix the refused start created the missing leaf ("a start
+    that does not own the compatibility lock must not create the leaf").
+    After the fix it gets `writer_lock_held` without creating the leaf.
+    A leaf that already exists is kept, empty. The database is never
+    opened, and the held lock file is unchanged.
+  - `clean_shutdown_keeps_the_leaf_once_the_compatibility_lock_is_not_its_own`.
+    Before the fix the shutdown removed the leaf. After the fix the leaf
+    and the foreign lock are both kept.
+- The first run after the fix failed
+  `abrupt_exit_leaves_owned_artifacts_for_fail_closed_diagnosis`. A
+  replacement start after a crash reported `writer_lock_held` instead of
+  `control_descriptor_exists`, because the stale compatibility lock was now
+  checked first. The read-only descriptor check in start step 1 fixes this,
+  and the test passes unchanged.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed.
+- `cargo test -p vibemux_cli`: 30 + 3 passed. With `--all-features --test
+  bootstrap_process` it gave 3 passed, including the PID-gone assertion.
+- `cargo test -p vibemuxd --all-features --lib --test daemon_process --test
+  decision_route`: 123, 9, and 10 passed.
+- `cargo test --workspace --all-features`, with `LOCALAPPDATA` set to a new
+  empty private directory and no other build running: 930 passed, 0 failed,
+  2 ignored in 103 targets. That is the earlier 927 plus the 3 new tests.
+  Afterwards the private runtime root held only `.acl_v1` and zero leaves.
+- The workflow test `a_restart_stops_the_workflow_and_the_resumed_run_repeats_no_completed_turn`
+  has been seen failing under load on another host. It passed here.
+
+**Compatibility / remaining work / Known risks**
+- There are no wire, schema, CLI argument, or lock-file format changes. A
+  stale or live descriptor is still reported first. A held compatibility
+  lock now fails the start before the leaf is created, not after.
+- A start that runs concurrently with a stop fails closed and can be
+  retried. While the stopping generation holds the lock, it fails with
+  `writer_lock_held`. It fails with `daemon_control_runtime_unavailable`
+  when the release removes the leaf while the new process's pre-lock
+  `ensure_runtime_dir` is still validating it. That pre-lock call stays
+  because it bootstraps the shared root and its ACL marker. Neither case
+  loses state.
+- Only the compatibility lock exists in two short windows: at start,
+  before the writer takes the primary lock, and at shutdown, during the
+  release. `select_runtime` reports artifacts in both. `stop` waits through
+  them, and a CLI `start` waits for health instead of spawning, as before.
+- If an external same-user process deletes the compatibility lock while a
+  daemon runs, another start can acquire it. The running daemon then keeps
+  its leaf on shutdown, as pinned by
+  `clean_shutdown_keeps_the_leaf_once_the_compatibility_lock_is_not_its_own`.
+  The nonce check and the removal are not atomic against a process that
+  deletes and recreates the lock in between. ADR 020 trusts same-SID
+  processes.
+- Linux/WSL was not run. The release and the test hook are Windows-only.
+  On POSIX no compatibility lock is taken.

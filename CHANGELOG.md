@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fix the leak of empty per-project directories under
+  `%LOCALAPPDATA%\VibeMux\runtime` on Windows. Every clean daemon start/stop
+  cycle, including each test run that started a daemon, left one empty
+  hashed leaf behind. A clean shutdown of a trusted start now removes the
+  leaf after its descriptor and writer lock are gone, but only when the
+  leaf is an empty real directory at its canonical path. Links, junctions,
+  and non-empty leaves are left alone. Failed starts and crashes still keep
+  the leaf for diagnosis and recovery. Existing leaves are not pruned.
+  `vibemuxctl daemon stop` now returns only after the daemon process has
+  exited. Leaf ownership is bound to one daemon generation by the
+  project-local compatibility lock. A start acquires that lock before it
+  creates the leaf, and a clean shutdown releases the leaf before it removes
+  the lock, and only while the lock is still its own. A start that runs
+  concurrently with a stop fails closed and can be retried, usually with
+  `writer_lock_held`. It never has the leaf it uses removed under it. A
+  failed start without a leaf reports `daemon_start_failed` instead of
+  `daemon_control_runtime_security_invalid`.
 - Add the decision port and advisory per-task harness routing (ADR 034).
   `vibemuxctl decide route` records a content-free decision naming the
   harness that should run a prompt, using the first of these that applies:

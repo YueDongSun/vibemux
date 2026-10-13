@@ -37,7 +37,7 @@ use crate::process::DaemonPaths;
 use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapshot};
 use crate::workflow::{WorkflowService, WorkflowServiceSettings};
-use crate::{WriterError, WriterHealth, WriterWorker};
+use crate::{CompatibilityLock, WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
 #[path = "control_decision.rs"]
 mod decision_ops;
@@ -955,6 +955,98 @@ async fn start_execution(
     })
 }
 
+/// The last step of a clean trusted Windows shutdown, after the writer is
+/// joined and the descriptor removed: release the empty runtime leaf, THEN
+/// the compatibility lock that made this generation the leaf's only owner.
+/// The leaf is released only while that lock still carries this
+/// generation's nonce, so no other generation can have created or be using
+/// it. Without a held compatibility lock nothing is released.
+#[cfg(windows)]
+fn release_owned_runtime_dir(
+    paths: Option<&DaemonPaths>,
+    compatibility_lock: Option<CompatibilityLock>,
+) {
+    #[cfg(feature = "test_helpers")]
+    if let Some(paths) = paths {
+        test_hooks::wait_at_leaf_release(paths.runtime_dir());
+    }
+    let owned = compatibility_lock
+        .as_ref()
+        .is_some_and(CompatibilityLock::is_held);
+    if let Some(paths) = paths.filter(|_| owned) {
+        paths.release_runtime_dir();
+    }
+    drop(compatibility_lock);
+}
+
+/// Test-only pause point in a clean trusted Windows shutdown, right before
+/// the leaf release (after the writer join and the descriptor removal), so
+/// a test can run a concurrent start inside that window deterministically.
+/// A gate is keyed by its runtime leaf, so parallel tests never share one.
+#[cfg(all(windows, feature = "test_helpers"))]
+pub mod test_hooks {
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Mutex, PoisonError, mpsc},
+        time::Duration,
+    };
+
+    /// A paused shutdown continues on its own after this, so a broken
+    /// test cannot hang the runtime.
+    const PAUSE_DEADLINE: Duration = Duration::from_secs(30);
+
+    type ArmedGate = (PathBuf, mpsc::Sender<()>, mpsc::Receiver<()>);
+
+    static ARMED_GATES: Mutex<Vec<ArmedGate>> = Mutex::new(Vec::new());
+
+    /// Held by the test. Dropping it (or [`Self::proceed`]) lets the
+    /// paused shutdown continue.
+    pub struct LeafReleaseGate {
+        reached: mpsc::Receiver<()>,
+        proceed: mpsc::Sender<()>,
+    }
+
+    impl LeafReleaseGate {
+        /// Blocks until the shutdown of the gated leaf reaches the pause
+        /// point; `false` when it does not within `deadline`.
+        #[must_use]
+        pub fn wait_until_reached(&self, deadline: Duration) -> bool {
+            self.reached.recv_timeout(deadline).is_ok()
+        }
+
+        pub fn proceed(self) {
+            let _ = self.proceed.send(());
+        }
+    }
+
+    /// Arm a one-shot pause for the next clean shutdown that releases
+    /// `runtime_dir`.
+    #[must_use]
+    pub fn pause_before_leaf_release(runtime_dir: &Path) -> LeafReleaseGate {
+        let (reached_sender, reached) = mpsc::channel();
+        let (proceed, proceed_receiver) = mpsc::channel();
+        ARMED_GATES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((runtime_dir.to_path_buf(), reached_sender, proceed_receiver));
+        LeafReleaseGate { reached, proceed }
+    }
+
+    pub(super) fn wait_at_leaf_release(runtime_dir: &Path) {
+        let armed = {
+            let mut gates = ARMED_GATES.lock().unwrap_or_else(PoisonError::into_inner);
+            gates
+                .iter()
+                .position(|(gated, _, _)| gated == runtime_dir)
+                .map(|index| gates.swap_remove(index))
+        };
+        if let Some((_, reached, proceed)) = armed {
+            let _ = reached.send(());
+            let _ = proceed.recv_timeout(PAUSE_DEADLINE);
+        }
+    }
+}
+
 /// Join the writer worker so the lifecycle locks are removed
 /// deterministically before a failed start returns; `WriterWorker::Drop`
 /// would only try_send a signal and detach, leaving stale locks behind.
@@ -978,6 +1070,12 @@ impl DaemonControlServer {
     /// publication). Raw-path constructors pass `None` because their
     /// runtime directories (often plain test tempdirs) are not part of the
     /// protected surface.
+    ///
+    /// Lock order: a distinct compatibility lock is acquired first, then the
+    /// runtime leaf is created and canonicalized, then the writer acquires
+    /// the primary lock inside it. Shutdown reverses that: writer joined
+    /// (primary lock removed), descriptor removed, leaf released (trusted
+    /// Windows starts only), compatibility lock removed.
     #[allow(clippy::too_many_arguments)] // nine params is the honest signature of a trusted start
     async fn start_with_writer_locks(
         database_path: &Path,
@@ -1003,6 +1101,29 @@ impl DaemonControlServer {
             .map(|paths| paths.project_root().to_path_buf())
             .or_else(|| state_dir.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| state_dir.clone());
+        // A live or crashed daemon's descriptor is still reported ahead of
+        // its locks. This read-only probe creates and removes nothing; the
+        // check under the compatibility lock below is authoritative.
+        if runtime_dir.join(DESCRIPTOR_FILE_NAME).exists() {
+            return Err(ControlError::DescriptorExists);
+        }
+        // Leaf ownership is generation-bound: only the holder of the
+        // project's compatibility lock may create, validate, or remove the
+        // runtime leaf, so a shutting-down generation can never remove a
+        // leaf this start is using. A held lock fails the start with
+        // `writer_lock_held` before the leaf is touched.
+        let compatibility_lock =
+            match compatibility_lock_path.filter(|path| *path != writer_lock_path) {
+                Some(path) => {
+                    let path = path.to_path_buf();
+                    Some(
+                        tokio::task::spawn_blocking(move || CompatibilityLock::acquire(&path))
+                            .await
+                            .map_err(|_| ControlError::ServerTerminated)??,
+                    )
+                }
+                None => None,
+            };
         std::fs::create_dir_all(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
         let runtime_dir =
             std::fs::canonicalize(runtime_dir).map_err(|_| ControlError::EndpointUnavailable)?;
@@ -1012,7 +1133,6 @@ impl DaemonControlServer {
         }
         let database_path = database_path.to_path_buf();
         let writer_lock_path = writer_lock_path.to_path_buf();
-        let compatibility_lock_path = compatibility_lock_path.map(Path::to_path_buf);
         let endpoint = endpoint_name(&runtime_dir);
         // Generate the token BEFORE starting the writer: this keeps the
         // fallible step outside the writer-ownership window, so a failure
@@ -1020,11 +1140,12 @@ impl DaemonControlServer {
         // (`WriterWorker::Drop` detaches instead of joining and would leave
         // the lifecycle locks behind).
         let token = control_token()?;
-        let writer = tokio::task::spawn_blocking(move || match compatibility_lock_path {
-            Some(compatibility_lock_path) => WriterWorker::start_with_compatibility_lock_path(
+        let writer_compatibility_lock = compatibility_lock.clone();
+        let writer = tokio::task::spawn_blocking(move || match writer_compatibility_lock {
+            Some(lock) => WriterWorker::start_with_held_compatibility_lock(
                 &database_path,
                 &writer_lock_path,
-                &compatibility_lock_path,
+                lock,
             ),
             None => WriterWorker::start_with_lock_path(&database_path, &writer_lock_path),
         })
@@ -1166,16 +1287,34 @@ impl DaemonControlServer {
                 token: descriptor.token,
                 probe_cache_path: probe_cache_path.clone(),
             });
+            // Only a trusted start owns the protected per-project leaf;
+            // raw-path constructors run in arbitrary directories.
+            let runtime_owner = security.cloned();
             let task = tokio::spawn(async move {
-                let _descriptor_guard = descriptor_guard;
-                serve_owned(
+                let result = serve_owned(
                     run_server(listener, endpoint, state.clone()),
                     state,
                     registry,
                     stop_receiver,
                     supervisor,
                 )
-                .await
+                .await;
+                // The descriptor goes first (owner-matched), then the leaf it
+                // lived in, then the compatibility lock that owned the leaf.
+                // `serve_owned` has already joined the writer, which removed
+                // the writer lock. Any shutdown error keeps the leaf for
+                // diagnosis. The release is best-effort and reports nothing
+                // (see `release_runtime_dir`). A join error (a panic, or
+                // cancellation by a shutting-down runtime) is contained here:
+                // it must not turn a clean shutdown into an error. Either way
+                // the closure drops the compatibility lock last.
+                drop(descriptor_guard);
+                let release_owner = runtime_owner.filter(|_| result.is_ok());
+                let _ = tokio::task::spawn_blocking(move || {
+                    release_owned_runtime_dir(release_owner.as_ref(), compatibility_lock);
+                })
+                .await;
+                result
             });
             return Ok(Self {
                 descriptor_path,
@@ -1265,6 +1404,8 @@ impl DaemonControlServer {
                 probe_cache_path: probe_cache_path.clone(),
             });
             let task = tokio::spawn(async move {
+                // Declared first, so it is dropped last.
+                let _compatibility_lock = compatibility_lock;
                 let _descriptor_guard = descriptor_guard;
                 let _socket_guard = socket_guard;
                 serve_owned(

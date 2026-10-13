@@ -179,10 +179,19 @@ async fn abrupt_process_recovery_preserves_database_and_allows_restart() {
     let restarted_process_id = restarted.health().process_id;
     guard = FixtureProcessGuard::new(restarted_process_id);
     stop_daemon(&paths).await.expect("stop recovered fixture");
-    wait_for_process_exit(restarted_process_id).await;
+    // `stop` returns only once the daemon process has exited, so a `start`
+    // that follows it cannot race the daemon's runtime-leaf release.
+    assert!(
+        !process_is_present(restarted_process_id),
+        "stop returned before the daemon process exited"
+    );
     guard.disarm();
     assert!(!paths.descriptor_path().exists());
     assert!(!paths.writer_lock_path().exists());
+    // The clean `stop` also released the emptied per-project runtime leaf
+    // before the daemon exited (on unix that directory is the state dir).
+    #[cfg(windows)]
+    assert!(!paths.runtime_dir().exists());
 }
 
 struct FixtureProcessGuard {
@@ -216,13 +225,17 @@ fn kill_process(process_id: u32) -> bool {
     system.process(pid).is_some_and(sysinfo::Process::kill)
 }
 
+fn process_is_present(process_id: u32) -> bool {
+    let pid = Pid::from_u32(process_id);
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).is_some()
+}
+
 async fn wait_for_process_exit(process_id: u32) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let pid = Pid::from_u32(process_id);
-        let mut system = System::new();
-        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        if system.process(pid).is_none() {
+        if !process_is_present(process_id) {
             return;
         }
         assert!(
