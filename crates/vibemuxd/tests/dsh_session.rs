@@ -20,6 +20,8 @@ use vibemuxd::control::{
 const FIXTURE: &str = env!("CARGO_BIN_EXE_vibemux_dsh_service_fixture");
 /// The SDK session id the tests use; the protocol lets the client choose it.
 const SESSION_ID: &str = "vibemux_test_session";
+/// Turns the page-snapshot test streams; each is one `flood` burst.
+const FLOOD_TURNS: u64 = 20;
 
 fn remote(code: &str) -> ControlError {
     ControlError::Remote {
@@ -461,5 +463,79 @@ async fn the_daemon_shuts_a_live_session_down_with_itself() {
     // Shutting the daemon down must join the session, so the vendor process
     // cannot outlive it. A leaked process would keep this test binary's
     // stdout pipe open and the fixture would leak past the run.
+    server.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poll_page_status_never_runs_ahead_of_its_records() {
+    // The `flood` profile streams hundreds of records per turn, so the
+    // runtime reader appends records while the polls below are served. A page
+    // whose status were read after its records could report a head, or a
+    // settled turn, that those records do not reach yet.
+    let layout = Layout::new("page-snapshot");
+    let (node, script) = layout.install_launcher_pair();
+    layout.write_config(&node, &script, json!({"profile": "flood"}));
+    let server = layout.server().await;
+    let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+    client
+        .dsh_session_open(&DshSessionOpenRequest {
+            session_id: Some(SESSION_ID.to_string()),
+        })
+        .await
+        .expect("open");
+
+    let mut cursor = 0;
+    let mut turn_ends_read = 0_u64;
+    let mut drained_pages = 0_u64;
+    for turn in 1..=FLOOD_TURNS {
+        client
+            .dsh_session_prompt(&DshSessionPromptRequest {
+                prompt: format!("flood turn {turn}"),
+            })
+            .await
+            .expect("prompt");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turn {turn} never drained"
+            );
+            // No sleep: the next poll should land while the burst is running.
+            let page = client
+                .dsh_session_poll(DshSessionPollQuery { cursor })
+                .await
+                .expect("poll");
+            assert!(!page.truncated, "the retained window dropped records");
+            turn_ends_read += page
+                .records
+                .iter()
+                .filter(|record| record.kind == DshRecordKind::TurnEnd)
+                .count() as u64;
+            cursor = page.next;
+            if page.more {
+                continue;
+            }
+            drained_pages += 1;
+            // With nothing more to read, the client holds every record up to
+            // the head the page's status reports...
+            assert_eq!(
+                page.next, page.status.records,
+                "turn {turn}: the page status counts records its page does not reach"
+            );
+            // ...so every turn the status counts as completed has its
+            // `TurnEnd` record in the client's hands.
+            assert_eq!(
+                page.status.completed_turns, turn_ends_read,
+                "turn {turn}: the page status settled a turn whose TurnEnd was not returned"
+            );
+            if page.status.completed_turns == turn && page.status.phase == DshPhase::Ready {
+                break;
+            }
+        }
+    }
+    // Every drained page was checked, including those served mid-burst.
+    assert!(drained_pages >= FLOOD_TURNS);
+
+    client.dsh_session_close().await.expect("close");
     server.shutdown().await.expect("shutdown");
 }

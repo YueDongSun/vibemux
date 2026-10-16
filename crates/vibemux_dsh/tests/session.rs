@@ -96,6 +96,11 @@ async fn a_full_turn_completes_and_exposes_its_records() {
     assert_eq!(poll.summary.completed_turns, 1);
     assert_eq!(poll.summary.last_outcome, Some(DshTurnOutcome::Completed));
     assert!(!poll.truncated);
+    // The page and its summary are one snapshot: nothing more to read means
+    // the summary counts exactly the records this page reached.
+    assert!(!poll.more);
+    assert_eq!(poll.next, poll.summary.records);
+    assert!(poll.transport_open);
 
     driver.close().await.expect("close");
     assert_eq!(driver.phase(), DshPhase::Closed);
@@ -139,6 +144,7 @@ async fn a_runtime_that_exits_early_is_reported_as_a_transport_failure() {
     let error = driver.await_ready().await.expect_err("closed transport");
     assert_eq!(error, DshDriverError::TransportClosed);
     assert!(!driver.transport_open());
+    assert!(!driver.poll(0).expect("poll").transport_open);
     let _ = driver.close().await;
 }
 

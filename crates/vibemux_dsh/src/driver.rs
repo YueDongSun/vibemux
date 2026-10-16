@@ -66,6 +66,11 @@ pub struct DshPollRecord {
 }
 
 /// One poll answer: records after the caller's cursor, plus the summary.
+///
+/// Every field is read under one acquisition of the state lock, and the
+/// reader appends a record and advances the machine under that same lock. The
+/// summary therefore describes exactly the records the buffer held: when
+/// `more` is false, `next` equals `summary.records`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DshPoll {
@@ -77,6 +82,8 @@ pub struct DshPoll {
     /// evicted by the bounds before it could read them.
     pub truncated: bool,
     pub summary: DshSessionSummary,
+    /// Whether the runtime's stdout was still open when the page was taken.
+    pub transport_open: bool,
 }
 
 struct DriverState {
@@ -247,6 +254,7 @@ impl DshDriver {
             more: batch.more,
             truncated: batch.truncated,
             summary: Self::summary_locked(state),
+            transport_open: state.transport_open,
         })
     }
 

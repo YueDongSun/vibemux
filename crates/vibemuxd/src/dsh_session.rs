@@ -24,7 +24,8 @@ use vibemux_dsh::{
     DshSessionConfig, DshSessionConfigSummary, load_session_config,
 };
 use vibemux_harness::dsh::{
-    DshPhase, DshRecordKind, DshSessionLimits, DshSessionSettings, DshTurnOutcome,
+    DshPhase, DshRecordKind, DshSessionLimits, DshSessionSettings, DshSessionSummary,
+    DshTurnOutcome,
 };
 
 /// Control frame budget for one poll page, below the payload ceiling.
@@ -304,6 +305,11 @@ impl DshSessionService {
     }
 
     /// Reads records after `cursor`, sized to fit one control frame.
+    ///
+    /// The page's status comes from the driver snapshot that produced its
+    /// records. The runtime reader keeps appending records and advancing the
+    /// session machine, so a status read after the records could run ahead of
+    /// them: a page could count a settled turn without carrying its `TurnEnd`.
     pub async fn poll(
         &self,
         query: DshSessionPollQuery,
@@ -316,7 +322,7 @@ impl DshSessionService {
             .driver
             .poll(query.cursor)
             .map_err(|_| DshServiceError::Refused)?;
-        live.status = refresh(&live.driver, &live.status);
+        apply_summary(&mut live.status, &poll.summary, poll.transport_open);
         let status = live.status.clone();
         fit_page(poll, status)
     }
@@ -372,16 +378,15 @@ impl DshSessionService {
 /// Copies live counters onto a status snapshot.
 fn refresh(driver: &DshDriver, previous: &DshSessionStatus) -> DshSessionStatus {
     let mut status = previous.clone();
-    apply_summary(driver, &mut status);
+    apply_summary(&mut status, &driver.summary(), driver.transport_open());
     status
 }
 
-fn apply_summary(driver: &DshDriver, status: &mut DshSessionStatus) {
-    let summary = driver.summary();
+fn apply_summary(status: &mut DshSessionStatus, summary: &DshSessionSummary, transport_open: bool) {
     status.phase = summary.phase;
-    status.provider = summary.provider;
-    status.model = summary.model;
-    status.server_version = summary.server_version;
+    status.provider.clone_from(&summary.provider);
+    status.model.clone_from(&summary.model);
+    status.server_version.clone_from(&summary.server_version);
     status.turns_started = summary.turns_started;
     status.completed_turns = summary.completed_turns;
     status.failed_turns = summary.failed_turns;
@@ -392,7 +397,7 @@ fn apply_summary(driver: &DshDriver, status: &mut DshSessionStatus) {
     status.record_bytes = summary.record_bytes;
     status.foreign_notifications = summary.foreign_notifications;
     status.prompt_bytes_total = summary.prompt_bytes_total;
-    status.transport_open = driver.transport_open();
+    status.transport_open = transport_open;
 }
 
 fn status_of(
@@ -420,7 +425,7 @@ fn status_of(
         created_at,
         config,
     };
-    apply_summary(driver, &mut status);
+    apply_summary(&mut status, &driver.summary(), driver.transport_open());
     status
 }
 

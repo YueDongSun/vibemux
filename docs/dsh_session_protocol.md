@@ -276,6 +276,16 @@ Only `dsh_session_poll` returns runtime content. Every status view is
 allowlisted and carries no path, no digest, and no prompt text. A pre-v7 client
 refuses a v7 descriptor, so `vibemuxctl` and `vibemuxd` upgrade together.
 
+A poll page and its `status` come from one driver snapshot. The runtime reader
+appends each record and advances the session under the lock that the poll
+reads, so a page's status never counts a record the page cannot reach. When a
+page has `more: false`, its `next` equals `status.records`. A consumer that has
+read every page up to that one therefore holds the `TurnEnd` record of every
+turn that status counts as settled. A page with `more: true` can still report a
+settled turn whose `TurnEnd` is on a later page. That happens, for example,
+when the page was trimmed to fit the control frame. A consumer therefore stops
+at the first page that both reports the turn settled and has `more: false`.
+
 Service codes: `dsh_session_unconfigured` (no configuration; DSH is off),
 `dsh_session_config_invalid` (malformed or untrusted), `dsh_session_busy` (a
 session is already live), `dsh_session_not_found` (configured, but no live
@@ -297,7 +307,8 @@ vibemuxctl dsh close  [--project-root <path>]
 A prompt comes from a file or stdin, never from argv, so it stays out of
 process listings and shell history. `dsh prompt`, `status`, `cancel`, and
 `close` print a content-free status projection; `dsh poll` prints byte-exact
-records and the cursor to resume from.
+records and the cursor to resume from. It follows pages until one has nothing
+more, and the session status it prints comes from that last page.
 
 The terminal surface writes no canonical state. The daemon path also writes no
 canonical state today: a DSH session has no persisted record, so a daemon
