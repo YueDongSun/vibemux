@@ -20,7 +20,7 @@
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041) |
 | Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
@@ -120,7 +120,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Windows-first product path | `PARTIAL` | README, platform docs, Windows CI, protected control runtime | Native daemon lifecycle and the declared ACL boundary have evidence; live WezTerm/ConPTY multi-harness operation is not implemented |
 | Rust workspace and canonical domain/event core | `PARTIAL` | root `Cargo.toml`, `vibemux_types`, `vibemux_events` | Rust 2024/MSRV workspace, typed IDs, state machines, events, and property tests exist; tracing and public compatibility policy remain incomplete |
 | Rust SQLite store and single-writer daemon | `VERIFIED` | `vibemux_store`, `vibemuxd`, `vibemux_cli`, `vibemux_platform` | M3 is implemented within scope: migrations/WAL, atomic state+event, replay/idempotency, bounded writer, authenticated IPC, lifecycle, explicit recovery, and Windows protected runtime |
-| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, `dispatch`, `decide`, and `decisions` | Lifecycle, harness registry, one-shot harness dispatch, and advisory decision commands exist; Task/Run/workspace/plugin command parity does not |
+| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, `dispatch`, `decide`, and `decisions`; the unified `status`, `workspace status`, `probe`, `ui`, and standalone `harness` commands with `--format auto|text|json` (ADR 041) | Lifecycle, harness registry, one-shot harness dispatch, advisory decision commands, and the read-only workspace/probe/dashboard views exist; Task/Run/plugin command parity does not |
 | Plugin protocol v1 foundation | `VERIFIED` | `vibemux_plugin_protocol`, checked-in Protobuf/TOML fixtures | M4.0 is verified as an isolated private pre-alpha wire/manifest/negotiation/lifecycle foundation; it does not spawn or mutate state |
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
@@ -129,6 +129,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
+| Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; no live execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
@@ -2476,7 +2477,7 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 **Branch dispositions** (checked against `origin/main` at `b577c11`)
 - Fully contained in `origin/main` (0 commits ahead, nothing to merge): `a2a_basic_share`, `codex/supervisor_chat_ui`, `codex/supervisor_state_api`, `daemon_local_ipc`, `daemon_process_cli`, `daemon_stale_recovery`, `daemon_windows_security`, `daemon_writer_worker`, `feat/gui-theme-nord-gruvbox`, `integration_core`, `main` (local ref is 34 behind `origin/main`), `plugin_protocol_core`, `plugin_supervisor_core`, `probe_unified_frontend`, `python_reference_p0`, `python_source_reference`, `rust_core_refactor`, `rust_store_daemon`, and every `origin/*`/`linux/*` remote branch except the one below.
 - `feat/scheduling-and-visual-optimizations`: its PR (#3) was closed as superseded after head `4d96fc2` landed on main as a content-equivalent squash. The only unlanded commit, `a698f64` (architecture docs consolidation), is ported here as a curated merge: newer main content it would have dropped (CLAUDE.md command reference, README supervisor workflow commands, Control v4/terminal observer/Supervisor Chat text) is kept, and the architecture reference is brought up to date. A stray conflict marker committed to this file on main is removed.
-- `codex/harness_request_dispatch` and `codex/harness_request_dispatch_latest` (same commit `a955484`, 40 behind): **not merged**. A trial merge conflicts in 12 files (including add/add on `crates/vibemux_harness`), the branch puts process/session I/O inside `vibemux_harness` against the "pure logic, no I/O" boundary, and main's issue #4 harness port supersedes its registry. Its uncommitted worktree ADR draft also reuses number 025. Harness dispatch/capture should be re-ported onto the daemon-owned architecture as a separate task.
+- `codex/harness_request_dispatch` and `codex/harness_request_dispatch_latest` (same commit `a955484`, 40 behind): **not merged at the time** (merged later; see the 2026-10-17 entry, ADR 040/041). A trial merge conflicted in 12 files (including add/add on `crates/vibemux_harness`), the branch puts process/session I/O inside `vibemux_harness` against the "pure logic, no I/O" boundary, and main's issue #4 harness port supersedes its registry. Its uncommitted worktree ADR draft also reuses number 025. Harness dispatch/capture should be re-ported onto the daemon-owned architecture as a separate task.
 - A detached Codex worktree held uncommitted "Document role" headers in five docs; they are superseded by the `a698f64` cross-references and not included.
 
 **Integrated in this branch**
@@ -3768,3 +3769,125 @@ versions together. Historical evidence elsewhere in this document is unchanged.
 - Observed and not changed: `fit_page` re-encodes a page once per trimmed
   record. A full page of small records took about 250 ms in a debug build.
 - Linux/WSL was not run.
+
+### 2026-10-17 - Native harness dispatch and unified CLI integrated (ADR 040/041)
+
+**Scope**
+- Integrates `codex/harness_request_dispatch` (identical to `codex/harness_request_dispatch_latest`, commit `a955484`, base `6498e6a`) into `main` after the 2026-09-27 audit left it unmerged. The user asked for all of the branch's functions to be kept, so this is a port, not a record-only merge.
+- The branch's crate name collided with main's pure-logic registry crate, so it is renamed before merging: crate `vibemux_harness_native`; binaries `vibemux_harness_native`, `vibemux_harness_native_plugin`, `vibemux_harness_native_fixture`. Main's `vibemux_harness` (registry, ADR 029 dispatch protocols, DSH substrate) is unchanged.
+- The branch's ADR 023 and ADR 024 are renumbered to [ADR 040](docs/adr/040_native_harness_request_dispatch.md) and [ADR 041](docs/adr/041_unified_cli_and_workspace_layout.md), because main's ADR 023/024 are the daemon plugin registry and the stateful A2A supervisor. The branch's "M4.2"/"M4.3" labels are not main milestones; the records below keep them as historical names only.
+
+**Integration decisions**
+- Two dispatch paths now coexist and are independent. `vibemuxctl dispatch` (ADR 029) is daemon-owned, admitted, and recorded in the single-writer store (schema 9). `vibemuxctl harness` (ADR 040) runs bounded request dispatch in the CLI process from `.vibemux/` configuration with SHA-256 pinning; it writes no canonical state, takes no daemon admission, and is not a Task/Run.
+- `vibemuxctl` keeps main's lifecycle client and control-verb contracts (`daemon`, `harnesses`, `switch`, `dispatch`, `decide`, `decisions`, `dsh`, `workflow`, `slots`, `context`, `session`, `prompt`) and gains the branch's `status`, `workspace status`, `probe`, `ui`, and `harness` commands plus `--format auto|text|json`. The branch's `daemon_client.rs`, `error.rs`, and `parser.rs` were an extraction of code main already has in a richer form and are not carried over. Control verbs keep their JSON output and their actionable `error` text; `daemon` prints text on a terminal and JSON when piped.
+- The branch carried its own Windows Job Object FFI and a POSIX `kill` call. `main` confines `unsafe` to reviewed `vibemux_platform` modules and requires `#![forbid(unsafe_code)]` in every other library crate (pinned by a test), so the native process now uses `vibemux_platform::ProcessTree` (ADR 029 section 6) and the crate forbids unsafe code. Behavior is unchanged: kill-on-close Job Object on Windows, process group on POSIX. Three `harness_job_*` error codes become `harness_containment_failed`.
+- The branch's CI step `scripts/check_public_artifacts.py` reported 13 findings on `main`'s own content. All were synthetic (fake credentials in rejection and redaction tests, RFC 1918 and CGNAT samples in address-policy tests, one elided `C:\Users\...` path in this ledger). The script's single-entry exception table now holds 14 exact-line hashes; no detection rule was changed.
+- The branch dashboard is namespaced as `vibemux_frontend::dashboard` with its own `vibemux_dashboard` binary. Main's egui `vibemux_frontend` GUI, `vibemux_frontend_tui`, and `vibemux_dsh_tui` are untouched.
+
+**Evidence labels**
+- Live-vendor evidence for the native slice is the branch's own 2026-08-27 record (initialize plus clean exit for Codex, Claude, OpenCode, and Copilot; Grok shutdown unverified; no model generation). It was not re-run during this integration, and no vendor CLI, Jev, or paid API was invoked.
+- The branch's Windows counts below predate the merge and are not evidence for the merged tree.
+
+#### Branch record: unified CLI and workspace layout (labelled M4.3 on the branch, 2026-08-28)
+
+- `vibemuxctl` now groups daemon, harness, probe, status, workspace, and UI
+  commands. Legacy daemon exports/JSON and standalone binaries are retained.
+- CLI parsing, lifecycle I/O, application orchestration, Git inventory, and
+  output formatting are separate modules. Frontend model, navigation,
+  rendering, and terminal ownership are also separate.
+- The CLI and frontend share a bounded saved-report validation/redaction
+  boundary in `vibemux_probe::snapshot`. Saved data is labeled, endpoint details
+  are omitted, and control characters cannot become terminal instructions.
+- The UI has Overview, Harnesses, and Workspace sections with bounded
+  selection, help, and offline snapshots. It does not launch native TUIs,
+  approve tools, start daemons, or invoke models through key presses.
+- Guides, workflow policy, dated reports, and harness examples have distinct
+  directories. Existing worktree locations and historical branches are
+  preserved; build caches are ignored rather than deleted.
+- Rust package version advances to `0.2.0-alpha.1`; no database, A2A, or plugin
+  wire version changes. See [ADR 041](docs/adr/041_unified_cli_and_workspace_layout.md)
+  and the [unified CLI guide](docs/guides/unified_cli_guide.md).
+- Branch-time Windows validation: 160 Rust tests, 30 Python tests, Clippy, formatting,
+  Mypy, mock smoke, and the public-artifact scan passed. Actual offline terminal
+  sessions covered navigation, 80 x 24 layout, source labels, and normal exit.
+  Git filter side effects are disabled and explicitly qualified in the output.
+  [Current evidence](docs/reports/workspace_cli_validation_20260828.md) records
+  the environment corrections, independent review, Git state, and limits.
+- Nextest, cargo-deny, and cargo-audit are not installed locally; their declared
+  additional gates remain unverified. Secondary-remote synchronization could
+  not be refreshed. These limits are not release-gate waivers.
+
+The native harness slice evidence below is a historical snapshot. New local
+checks and any unavailable tooling gates are recorded separately for the
+unified CLI; neither slice claims Linux qualification, production deployment,
+or model-generation success.
+
+#### Branch record: local native harness slice (labelled M4.2 on the branch, 2026-08-27)
+
+- Added typed text requests, complete JSON record retention, native protocol
+  sessions, clean environment launch, and a bounded dispatcher using M4.1.
+- Added independent terminal-evidence checks, configuration-digest binding,
+  duplicate/resource admission, cancellation-aware backpressure, and default
+  content-free reports. No canonical database contract changed.
+- Focused Windows verification: 37 Rust tests passed, including five synthetic
+  native routes and malformed/forged/blocked/cancelled cases.
+- Live initialization plus clean exit passed: Codex 0.149.1, Claude 2.1.224,
+  OpenCode 1.18.21, and Copilot 1.0.75. Grok 0.2.114 received two JSON records but
+  failed the shutdown deadline; that route remains live-unverified.
+- Real model generation was not authorized or executed. No Linux run, remote
+  A2A task, deployment, commit, or publication is claimed for this slice.
+- The public `origin/main` and secondary `linux/main` differ; feature-ref and
+  language evidence is in [the branch inventory](docs/reports/branch_inventory_20260827.md).
+
+The branch named a loopback A2A task through daemon-owned admission and the
+single writer as its next boundary. This slice does not implement it; main's
+daemon-owned ADR 029 dispatch is the separate path that exists. Details and
+non-goals are in
+[ADR 040](docs/adr/040_native_harness_request_dispatch.md). The separate
+[learning path](docs/guides/a2a_implementation_learning_path.md) is not an automatic
+execution or deployment plan.
+
+Branch-time local regression: 140 Rust workspace tests and 30 Python tests passed,
+along with Clippy, formatting, mock smoke, and the public-artifact gate.
+Exact commands and live qualification boundaries are recorded in the
+[validation record](docs/reports/harness_validation_20260827.md).
+
+#### Merge-time validation (2026-10-17, native Windows, Rust 1.92.0)
+
+Run on the integrated tree before it was committed; `CARGO_TARGET_DIR` was a
+scratch directory outside the repository.
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --locked --workspace --exclude vibemux_web --all-targets --all-features -- -D warnings`:
+  clean after fixing four findings in the merged code (two `collapsible_if` and
+  two `cmp_owned`).
+- `cargo test --locked --workspace --exclude vibemux_web --all-features --no-fail-fast`,
+  final run on an otherwise idle machine: 1156 passed, 2 failed, 3 ignored.
+  - `vibemuxd` `workflow_cooperate::two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration`
+    fails on the unmodified main checkout with the same assertion
+    (`workflow_cooperate.rs:172`, overlap of the two tracks), so it predates
+    this integration and is not a regression of it.
+  - `vibemuxd` `plugin_registry::periodic_heartbeats_survive_multiple_deadlines_and_silence_exhausts_budget`
+    is a wall-clock test in main's code. It failed once in that run and passed
+    twice when rerun alone; treat it as timing-sensitive, not as proven stable.
+- Defect found by the gates and fixed: two dashboard tests asserted the
+  branch's five-agent registry; they now follow `AgentKind::all()`, which has
+  eleven entries on main.
+- An earlier full run overlapped other heavy work and reported 21 failures in
+  seven targets (native dispatch, DSH session, MCP lifecycle, `vibemuxd` runtime
+  ACL tests, one `vibemux_cli` test, and the two items above). Everything except
+  `workflow_cooperate` passed when rerun alone and in the idle full run, so
+  those were load effects, but they show that several suites have tight
+  deadlines.
+- Python: `pytest` exits 0 on the whole suite, `ruff check` and
+  `ruff format --check` are clean, mypy is clean on the changed Python files,
+  and `scripts/check_public_artifacts.py` reports 0 findings over 589 files
+  with the 14 exact reviewed fixtures. The project virtual environment's
+  interpreter could not create files during this run, so Python used the base
+  3.12 interpreter with the environment's site-packages; a whole-repository mypy
+  run in that setup reports errors in six files this merge did not touch and is
+  not claimed clean.
+- Not run: any real vendor CLI, `live_codex_smoke`, a live Jev call, Linux,
+  nextest, cargo-deny, or cargo-audit. The native dispatch's live evidence above
+  is the branch-time record and was not repeated. `vibemux_web` is outside these
+  workspace gates.

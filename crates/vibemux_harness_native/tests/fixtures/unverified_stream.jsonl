@@ -1,0 +1,3 @@
+{"type":"message","content":"synthetic vendor record; not a verified CLI schema","extension":{"preserve":[1,true,null]}}
+{"type":"completed","success":true,"result":"synthetic completion claim; remains opaque"}
+{"type":"error","message":"synthetic failure claim; remains opaque"}

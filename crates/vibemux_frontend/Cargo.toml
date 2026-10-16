@@ -38,6 +38,10 @@ path = "src/bin/vibemux_frontend_dump.rs"
 name = "vibemux_dsh_tui"
 path = "src/bin/vibemux_dsh_tui.rs"
 
+[[bin]]
+name = "vibemux_dashboard"
+path = "src/bin/vibemux_dashboard.rs"
+
 [dependencies]
 crossterm.workspace = true
 ratatui.workspace = true

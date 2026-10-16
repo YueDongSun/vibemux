@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `vibemux_harness_native` (ADR 040): bounded native harness request dispatch for Codex app-server, Claude stream-json, and ACP (OpenCode, Copilot, Grok) with private full JSON capture, safe public summaries, process-tree containment through `vibemux_platform::ProcessTree` (the crate forbids unsafe code), configuration SHA-256 pinning, and the standalone `vibemux_harness_native`, `vibemux_harness_native_plugin`, and (test-only) `vibemux_harness_native_fixture` binaries. It coexists with the daemon-owned dispatch (ADR 029) and never writes canonical state.
+- Unify the daemon-free commands under `vibemuxctl` (ADR 041): `status`, `workspace status`, `probe`, `ui`, and `harness catalog|replay|probe|dispatch`, with `--format auto|text|json` (terminal text, JSON when redirected). The daemon lifecycle and the daemon-backed verbs (`harnesses`, `switch`, `dispatch`, `decide`, `decisions`, `workflow`, `slots`, `context`, `session`, `prompt`, `dsh`) are routed through the same command tree and keep their JSON contract; `daemon` now prints text in a terminal.
+- Add `vibemux_frontend::dashboard` and the `vibemux_dashboard` binary: a navigable, responsive read-only dashboard with deterministic offline snapshots (`vibemuxctl ui --once`), backed by `vibemux_probe::snapshot` (saved report or fixed local probe). The egui console stays `vibemux_frontend`.
+- Add a read-only local Git inventory (`vibemuxctl workspace status`) that disables external filter drivers and reports cached refs only.
+- Group guides, workflow documentation, historical reports, and harness examples; add current-tree privacy checks (`scripts/check_public_artifacts.py`, run in CI). Synthetic test inputs already on `main` (fake credentials, RFC 1918 samples, one elided home path) are reviewed as exact-line exceptions; no detection rule is loosened.
 - Fix a DSH poll page whose status could run ahead of its records. The
   daemon read a page's records and then read the session status again, so
   the runtime reader could append records in between. A page could then

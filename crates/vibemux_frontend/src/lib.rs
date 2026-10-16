@@ -2,6 +2,8 @@
 //! VibeMux unified frontend crate.
 //!
 //! - Read-only TUI debug view (legacy, ASCII-only).
+//! - Navigable read-only dashboard (`dashboard`, the `vibemux_dashboard`
+//!   binary and `vibemuxctl ui`): probe report plus local workspace inventory.
 //! - DSH terminal surface (`dsh_tui`, the `vibemux_dsh_tui` binary): a live
 //!   DeepSeek Harness SDK session with an input loop of its own.
 //! - egui-based GUI central console (preferred entry point for
@@ -12,6 +14,7 @@
 //! session driver instead, because it owns a runtime process rather than a
 //! read-only probe report.
 
+pub mod dashboard;
 pub mod dsh_tui;
 pub mod gui;
 mod live_app;

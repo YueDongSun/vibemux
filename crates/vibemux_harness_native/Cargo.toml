@@ -1,0 +1,36 @@
+[package]
+name = "vibemux_harness_native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+test_helpers = []
+
+[[bin]]
+name = "vibemux_harness_native"
+path = "src/bin/vibemux_harness_native.rs"
+
+[[bin]]
+name = "vibemux_harness_native_plugin"
+path = "src/bin/vibemux_harness_native_plugin.rs"
+
+[[bin]]
+name = "vibemux_harness_native_fixture"
+path = "src/bin/vibemux_harness_native_fixture.rs"
+required-features = ["test_helpers"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+vibemux_platform = { path = "../vibemux_platform" }
+vibemux_plugin_protocol = { path = "../vibemux_plugin_protocol" }
+vibemux_plugin_supervisor = { path = "../vibemux_plugin_supervisor" }
+
+[dev-dependencies]
+tempfile.workspace = true

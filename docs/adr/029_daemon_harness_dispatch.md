@@ -41,6 +41,13 @@ merged (PROGRESS.md 2026-09-27 (2)) because:
 These branches are the behavior reference for this port. They stay as they
 are; this ADR does not adopt their numbering or schema.
 
+Update 2026-10-17: the stream adapters and standalone CLI of
+`codex/harness_request_dispatch` were later merged as the separate
+`vibemux_harness_native` crate ([ADR 040](040_native_harness_request_dispatch.md)),
+renamed so it does not collide with `vibemux_harness`, with process ownership
+moved onto this ADR's `ProcessTree`. It stays CLI-process local and does not
+replace the daemon-owned path decided here.
+
 ### Capability that main lacks
 
 | Capability in `a955484` | Main today |

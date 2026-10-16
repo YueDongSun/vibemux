@@ -1,0 +1,6 @@
+{"type":"step_start","sessionID":"synthetic_session","part":{"type":"step-start"}}
+{"type":"text","sessionID":"synthetic_session","part":{"type":"text","text":"first chunk"}}
+{"type":"tool_use","sessionID":"synthetic_session","part":{"type":"tool","tool":"synthetic_tool","state":{"status":"completed","output":"synthetic output"}}}
+{"type":"step_finish","sessionID":"synthetic_session","part":{"type":"step-finish","reason":"stop","tokens":{"input":10,"output":2},"cost":0}}
+{"type":"text","sessionID":"synthetic_session","part":{"type":"text","text":"later step output"}}
+{"type":"step_finish","sessionID":"synthetic_session","part":{"type":"step-finish","reason":"stop"}}

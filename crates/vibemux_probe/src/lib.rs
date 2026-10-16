@@ -4,6 +4,8 @@
 
 pub mod cache;
 
+pub mod snapshot;
+
 use std::{
     collections::BTreeSet,
     env,

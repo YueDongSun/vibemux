@@ -95,6 +95,7 @@ crates/
 ├── vibemux_types/              # opaque IDs, domain objects, state machines, frontend query types
 ├── vibemux_events/             # canonical envelopes, idempotency, payload invariants
 ├── vibemux_harness/            # AgentKind/LauncherKind/ProbeState, harness registry/profiles/rows, dispatch + DSH session state machines (pure logic, no I/O)
+├── vibemux_harness_native/     # standalone native vendor stream adapters and bounded request dispatcher over the plugin supervisor (ADR 040)
 ├── vibemux_workflow/           # dual-track workflow contracts, gates, broker rules, optimizer (pure logic, no I/O; ADR 031)
 ├── vibemux_decision/           # decision port: questions, facts, answer validation, local rules, fallback resolver, config, records, peer wire (pure logic, no I/O; ADR 034)
 ├── vibemux_decision_peer/      # one-shot out-of-process decision peer: the only decision-API network client (TypeSafe Jev; ADR 034)
@@ -108,10 +109,10 @@ crates/
 ├── vibemux_workspace/          # Git worktree lifecycle and cleanup
 ├── vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache
 ├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
-├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump
+├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + navigable read-only dashboard + DSH terminal surface + ASCII dump
 ├── vibemux_mcp/                # first-party MCP stdio frontend + contained metadata reader (ADR 035)
 ├── vibemuxd/                   # M3 daemon (writer worker + control IPC v10 + plugin registry + harness dispatch + workflow + DSH session + decision service)
-└── vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch + dispatch + workflow/DSH/decision client
+└── vibemux_cli/                # pre-alpha vibemuxctl: unified command tree (status/workspace/probe/ui/harness, --format), daemon lifecycle, harnesses/switch + dispatch + workflow/DSH/decision client (ADR 041)
 ```
 
 Outside `crates/`: `src/vibemux/` is the Python behavior-reference package, `tests/` holds Python tests and fixtures, `scripts/` holds smoke and benchmark scripts, and `docs/` holds architecture, ADRs, boundaries, and labs.
@@ -252,6 +253,22 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 
 Live vendor CLIs have been exercised only through initialize-only probes on native Windows ([Stage 7 evidence](evidence/harness_dispatch_validation.md)); no live execution turn has run. See [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the remaining gates.
 
+## Native harness request dispatch (ADR 040)
+
+`vibemux_harness_native` is a second, independent dispatch path next to the daemon-owned one (ADR 029). It is a standalone vendor plugin and dispatcher over `vibemux_plugin_supervisor`: native JSON framing, conservative observations, protocol correlation, and OS process ownership are separate modules, and it supports Codex app-server and exec JSONL, Claude stream-json, and ACP (OpenCode, Copilot, Grok). Complete vendor stdout records stay in bounded private memory; public reports contain only metadata. The dispatcher revalidates terminal evidence and configuration identity (SHA-256 pinning) without writing canonical Task/Run state, and it never talks to `vibemuxd`.
+
+The two paths differ on purpose:
+
+| | `vibemuxctl dispatch` (ADR 029) | `vibemuxctl harness` (ADR 040) |
+|---|---|---|
+| Owner | `vibemuxd` | the CLI process or a standalone binary |
+| Canonical state | records Run outcome via the single writer | none |
+| Config | `.vibemux/harness_dispatch.json` | `.vibemux/harness_config.json` (`examples/harness/`) |
+| ACP | probe only | probe and dispatch |
+| Crate | `vibemux_harness::dispatch` (pure logic) plus daemon I/O | `vibemux_harness_native` (I/O) |
+
+Their configuration files, error namespaces, and protocol versions are separate; do not conflate them with each other or with the A2A wire version `1.0` or the internal plugin envelope version. See [ADR 040](adr/040_native_harness_request_dispatch.md) for the trust boundary and [the core guide](guides/harness_core_guide.md) for commands and live limits.
+
 ## Decision port and harness routing (ADR 034)
 
 `vibemuxd` can record an advisory decision about which harness should run a prompt. The pure question, facts, answer validation, local rules, fallback resolver, config schema, record, event drafts, and peer wire live in `vibemux_decision`; the daemon's decision service owns config loading, facts assembly, the peer process, and every writer call. Store schema 6 adds the `decision_records` projection, written only by `WriterWorker` in the same transaction as its `decision_recorded` or `decision_consumed` event.
@@ -368,6 +385,8 @@ The acceptance CLI and owned command/version-probe helpers check `TokenRestricte
 ## Probe and unified frontend boundary
 
 `vibemux_probe` only produces versioned, content-free, read-only diagnostics: launcher/version, explicit provider endpoint, CC Switch health/aggregate telemetry, and the A2A self-test. Launcher verification is not the same as authentication/inference verification.
+
+`vibemux_probe::snapshot` loads either a bounded, validated, redacted saved report or the fixed local probe, and the `vibemux_frontend::dashboard` module renders it (with an optional read-only local Git inventory from `vibemuxctl workspace status`) as a navigable dashboard behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It starts no daemon, harness, or model turn. See [ADR 041](adr/041_unified_cli_and_workspace_layout.md).
 
 `vibemux_frontend` consumes probe reports and authenticated Control v4 snapshots; it never opens the core SQLite database. Its native Supervisor Chat workspace (ADR 028) has one main conversation, real task activity, secondary Agents/Settings/Diagnostics, and docked or independent task windows. The Claude light theme is the default for new profiles (ADR 030); Studio and the five dark themes remain available. Task queries run through the daemon writer channel and return bounded metadata, not prompt bodies. A separately configured WezTerm observation plugin may list matching native panes and focus an explicitly linked pane after identity validation. Native TUI content stays in WezTerm. There is no continuous coordinator chat adapter, harness launch/input forwarding, embedded terminal renderer, or terminal-text completion inference. Ratatui remains the diagnostic surface, with existing classic/high-contrast/mono/light/nord/gruvbox themes. Shared palette export and terminal theme generation remain governed by ADR 026. The `vibemux_dsh_tui` surface independently owns an SDK runtime through `vibemux_dsh`; it writes no canonical state.
 

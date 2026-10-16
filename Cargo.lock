@@ -5734,7 +5734,9 @@ dependencies = [
  "tokio",
  "uuid",
  "vibemux_dsh",
+ "vibemux_frontend",
  "vibemux_harness",
+ "vibemux_harness_native",
  "vibemux_platform",
  "vibemux_probe",
  "vibemuxd",
@@ -5827,6 +5829,21 @@ dependencies = [
  "uuid",
  "vibemux_events",
  "vibemux_types",
+]
+
+[[package]]
+name = "vibemux_harness_native"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "uuid",
+ "vibemux_platform",
+ "vibemux_plugin_protocol",
+ "vibemux_plugin_supervisor",
 ]
 
 [[package]]

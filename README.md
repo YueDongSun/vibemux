@@ -13,6 +13,8 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Plugin protocol / supervisor | `PARTIAL` overall M4 | Wire foundation, shell-free supervision, daemon registry, bounded restart/quarantine and read-only status | Writable plugin control, operator recovery, real vendor CLI plugins and SDKs |
 | A2A / supervisor | `PARTIAL — LOCAL STATEFUL` | Authenticated HTTP+JSON/JSONRPC/gRPC; canonical bindings, artifacts, cancellation, subscriptions, independent review/verifier gates and local model-peer workflow | Remote/TLS deployment, full official ITK, message history, automatic restart recovery and unrestricted coding-harness integration |
 | Harness dispatch (ADR 029) | `PARTIAL` | Opt-in daemon-owned one-shot Codex and Claude turns, ACP initialize-only probes, contained vendor process trees, schema-4 dispatch records, Control v5, and `vibemuxctl dispatch`; verified with fixture binaries on Windows and Linux and by live initialize-only probes of five vendor CLIs on native Windows | Live execution turns, ACP execution, writable or concurrent dispatch, durable transcripts, and frontend Send |
+| Native harness dispatch (ADR 040) | `PARTIAL — FIXTURE ONLY` | Standalone `vibemux_harness_native` crate and `vibemuxctl harness`: bounded Codex app-server/exec, Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch in the CLI process, with Windows Job Object containment, configuration SHA-256 pinning, and content-free reports; verified against fixture binaries | Daemon admission, canonical Task/Run records, and A2A binding (ADR 029 is the daemon-owned path); no model generation executed; the Grok shutdown check did not pass; no Linux qualification |
+| Unified CLI and dashboard (ADR 041) | `PARTIAL` | `vibemuxctl` `status`, `workspace status`, `probe`, `ui`, and `--format auto\|text\|json`; a read-only Git workspace inventory; the navigable `vibemux_dashboard` inspector | Native-TUI attach, tool approval, and starting a daemon from the UI |
 | Dual-track workflow (ADR 031) | `PARTIAL — OFFLINE ONLY` | Daemon-owned `cooperate`/`compare` workflows over two owned worktrees, TaskSpec source validation, fenced leases, context broker and shares, independent review, trusted verifier and integration gates, bounded prompt-policy optimizer, schema-5 records, Control v6, `vibemuxctl workflow`, and an offline acceptance runner; verified with fixture workers on native Windows | AAG gateway client, live supervisor/compiler/workers, native TUI sessions and handoff, paused-prompt editing, and any live acceptance |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
 | Native MCP frontend (ADR 035) | `PARTIAL — PRE-ALPHA` | Rust stdio metadata tools over the existing daemon client, explicit default-denied grant, bounded projections and contained reader lifecycle; native Windows fixture coverage | Live deployment, Linux qualification and operator acceptance |
@@ -173,6 +175,27 @@ cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemu
 - `status` is content-free. `output` is the only command that prints vendor content: whole raw JSON records, plus `next_after_sequence` for a later `--after-sequence`. Every command prints one JSON object; errors print `ok: false` with an `error_code`.
 - Limits: Codex and Claude execution only; at most one active dispatch per project; vendor processes run in the project root with read-only protocol profiles, which are **not** an OS sandbox; transcripts live in daemon memory and are lost on restart. If the daemon stops during a run, the attempt becomes `recovery_pending` and blocks new dispatches until you `dispatch cancel` it. Live validation covers initialize-only probes on native Windows, and no live `submit` has run; see [ADR 029](docs/adr/029_daemon_harness_dispatch.md) and the [Stage 7 evidence](docs/evidence/harness_dispatch_validation.md).
 
+## Native harness request dispatch (pre-alpha, ADR 040)
+
+`vibemuxctl harness` runs bounded request dispatch **in the CLI process** through the standalone `vibemux_harness_native` crate. It is separate from the daemon-owned dispatch above: it reads no `.vibemux/harness_dispatch.json`, takes no daemon admission, and writes no canonical Task/Run record or store row. Use it to replay captured vendor streams, probe a configured route, or run a bounded request from a private configuration.
+
+| | ADR 029 `vibemuxctl dispatch` | ADR 040 `vibemuxctl harness` |
+|---|---|---|
+| Owner | `vibemuxd` (needs a running daemon) | the CLI process |
+| Records | canonical Task/Run, schema-4 dispatch records | none; content-free JSON report |
+| Routes | Codex and Claude execute; ACP is probe-only | Codex app-server/exec, Claude stream-json, ACP for OpenCode, Copilot, and Grok |
+| Configuration | `.vibemux/harness_dispatch.json` | a private `--config` file, pinned by SHA-256 |
+
+```powershell
+.\target\debug\vibemuxctl.exe harness catalog --config examples/harness/harness_config.json
+.\target\debug\vibemuxctl.exe harness replay --protocol codex_app_server --input crates/vibemux_harness_native/tests/fixtures/codex_app_server.jsonl
+.\target\debug\vibemuxctl.exe help harness
+```
+
+Public example configurations disable execution. Real model requests need explicit local configuration and authorization and may consume account usage. Unknown vendor fields are retained; oversized, malformed, uncorrelated, and incomplete streams fail explicitly. Public output omits prompts, vendor bodies, endpoint details, and local configuration.
+
+The last qualified native initialization checks passed for Codex, Claude, OpenCode, and Copilot; Grok's shutdown check did not pass. Do not read synthetic tests or those initialization checks as model-generation evidence. Windows Job Objects control owned process lifetime; they are not a security sandbox, and worktrees isolate concurrent file changes, not filesystem or network authority. See [ADR 040](docs/adr/040_native_harness_request_dispatch.md) and the [harness core guide](docs/guides/harness_core_guide.md).
+
 ## Decision routing (pre-alpha, ADR 034, fixture-verified only)
 
 The daemon can recommend which harness should run a prompt and record that choice as a content-free decision. A decision is advice: it runs nothing, and `dispatch submit --decision` re-runs every dispatch gate before anything executes. Routing is off until you create `.vibemux/decision_config.json`. The daemon reads it once at startup, so restart the daemon after editing it. Example:
@@ -300,13 +323,34 @@ $run2 = vibemux spawn $task --harness iflow   # one-off override to iflow (must 
 
 Run roles are persisted as well: `spawn --role worker|reviewer|orchestrator` stores the role on the Run and in `run_prepared`/`run_started` events, and accumulates it into the harness snapshot's `roles` field (visible via `vibemux harnesses`); `vibemux status` shows each run's role. Unknown roles are rejected.
 
+## Unified CLI and read-only dashboard (ADR 041)
+
+```powershell
+cargo build --locked --workspace --bins
+.\target\debug\vibemuxctl.exe --help
+.\target\debug\vibemuxctl.exe --format text status
+.\target\debug\vibemuxctl.exe --format text workspace status
+```
+
+These commands do not install a global command, start a daemon, or invoke a model. `status` combines the local Git inventory with an existing daemon's health when one is already running. `workspace status` disables Git filter drivers, so its change counts can differ from normal `git status`; it never fetches, merges, or deletes anything.
+
+Use `--format text`, `--format json`, or `--json` before the command. Auto mode prints readable text in a terminal and JSON when redirected; `help` and `version` stay text. The daemon-backed verbs (`daemon`, `harnesses`, `switch`, `dispatch`, `decide`, `decisions`, `dsh`, `workflow`, and the rest) keep their JSON contracts and their actionable `error` text in every mode; `daemon` prints text in a terminal and JSON when piped.
+
+```powershell
+.\target\debug\vibemuxctl.exe ui --report crates/vibemux_probe/tests/fixtures/probe_report_v1.json
+.\target\debug\vibemuxctl.exe --format text ui --once --report crates/vibemux_probe/tests/fixtures/probe_report_v1.json --width 80 --height 24
+```
+
+`ui` is the navigable read-only inspector (also built as `vibemux_dashboard`). These examples use a synthetic saved report and invoke no harness. Navigate with Tab or 1/2/3, select with j/k or arrows, open harness details with Enter, show help with ?, and exit with q/Esc. Native CLI TUI slots stay reserved; there is no ConPTY attachment or tool approval action. Without `--report`, the fixed read-only probe runs once. Launcher, authentication, inference, and task completion are separate evidence levels, and saved reports are validated, labeled, and projected to safe metadata. See [ADR 041](docs/adr/041_unified_cli_and_workspace_layout.md) and the [unified CLI guide](docs/guides/unified_cli_guide.md).
+
 ## Frontend binaries, dashboard themes, and machine-readable output
 
-The frontend crate builds four binaries:
+The frontend crate builds five binaries:
 
 - `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps Agents/Settings/Diagnostics secondary, and preserves all five appearance palettes. The composer retains a local draft but Send is unavailable until a continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
+- `vibemux_dashboard` — the navigable read-only inspector behind `vibemuxctl ui` (ADR 041): Overview, Harnesses, and Workspace views over a probe report and the local Git inventory. It is separate from `vibemux_frontend_tui` and shares neither its themes nor its keys.
 - `vibemux_dsh_tui` — the DeepSeek Harness terminal surface: one live DSH SDK session with a prompt editor, a scrolling record view, and a status line. Flags: `--project-root <path>`, `--config <path>`, `--theme <name>`, `--print-config` (with `--json`). Keys: `Enter` sends, `Esc` cancels the running turn or clears the input, `Ctrl-C` / `Ctrl-Q` quit, `Up`/`Down`/`PageUp`/`PageDown` scroll. It is the only frontend surface that owns a runtime process, it writes no canonical state, and it never opens the core database. Setup and the wire contract are in [docs/dsh_session_protocol.md](docs/dsh_session_protocol.md) and [ADR 032](docs/adr/032_dsh_harness_adapter.md).
 
 The GUI defaults to **Claude light**: a cream canvas, terracotta accent, serif
@@ -359,6 +403,7 @@ python -m ruff check .
 python -m mypy .
 python -m pytest
 python scripts/smoke_test.py
+python scripts/check_public_artifacts.py
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -436,4 +481,6 @@ terminal evidence.
 - [docs/protocol_boundaries.md](docs/protocol_boundaries.md) — wire contracts and what is/isn't supported
 - [docs/adr/](docs/adr/) — accepted architecture decisions
 - [AGENTS.md](AGENTS.md) — engineering rules for contributors and agents
+- [docs/index.md](docs/index.md) — documentation map; [guides](docs/guides/), [branch workflow](docs/workflow/branch_workflow.md), and dated [reports](docs/reports/)
+- [docs/adr/040_native_harness_request_dispatch.md](docs/adr/040_native_harness_request_dispatch.md) and [docs/adr/041_unified_cli_and_workspace_layout.md](docs/adr/041_unified_cli_and_workspace_layout.md) — standalone native dispatch and the unified CLI
 - [PROGRESS.md](PROGRESS.md) — milestones, evidence, and release plan

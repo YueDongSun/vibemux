@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "limits": {
+    "frame_bytes": 131072,
+    "capture_bytes": 16777216,
+    "record_count": 16384,
+    "queue_capacity": 16,
+    "maximum_in_flight": 4,
+    "request_history": 4096,
+    "timeout_ms": 60000,
+    "shutdown_ms": 2000
+  },
+  "harnesses": [
+    {
+      "harness": "codex",
+      "protocol": "codex_app_server",
+      "executable": "./native_bin/codex.exe",
+      "arguments": [],
+      "working_directory": "./workspace",
+      "environment_names": [],
+      "enabled": false,
+      "allow_execution": false,
+      "model": null
+    },
+    {
+      "harness": "claude",
+      "protocol": "claude_stream_json",
+      "executable": "./native_bin/claude.exe",
+      "arguments": [],
+      "working_directory": "./workspace",
+      "environment_names": [],
+      "enabled": false,
+      "allow_execution": false,
+      "model": null
+    },
+    {
+      "harness": "opencode",
+      "protocol": "acp",
+      "executable": "./native_bin/opencode.exe",
+      "arguments": [],
+      "working_directory": "./workspace",
+      "environment_names": [],
+      "enabled": false,
+      "allow_execution": false,
+      "model": null
+    },
+    {
+      "harness": "copilot",
+      "protocol": "acp",
+      "executable": "./native_bin/copilot.exe",
+      "arguments": [],
+      "working_directory": "./workspace",
+      "environment_names": [],
+      "enabled": false,
+      "allow_execution": false,
+      "model": null
+    },
+    {
+      "harness": "grok",
+      "protocol": "acp",
+      "executable": "./native_bin/grok.exe",
+      "arguments": [],
+      "working_directory": "./workspace",
+      "environment_names": [],
+      "enabled": false,
+      "allow_execution": false,
+      "model": null
+    }
+  ]
+}

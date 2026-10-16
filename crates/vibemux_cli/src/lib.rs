@@ -1,11 +1,19 @@
 #![forbid(unsafe_code)]
-//! Thin lifecycle client and controlled bootstrap for the Rust daemon.
+//! Unified local CLI: the daemon lifecycle client and controlled bootstrap,
+//! the daemon-backed control verbs, and the daemon-free inspection and native
+//! harness commands that share one command tree and output contract.
 
+pub mod application;
+pub mod command;
 pub mod decision_commands;
 pub mod dispatch_commands;
 pub mod dsh_commands;
+pub mod failure;
+pub mod output;
+pub use vibemux_probe::snapshot as probe;
 pub mod recovery;
 pub mod workflow_commands;
+pub mod workspace;
 
 use std::{
     ffi::OsString,
