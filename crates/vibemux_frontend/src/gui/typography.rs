@@ -13,11 +13,17 @@ const SANS_CANDIDATES: [&str; 1] = ["segoeui.ttf"];
 const SERIF_CANDIDATES: [&str; 2] = ["georgia.ttf", "cambria.ttc"];
 const CJK_CANDIDATES: [&str; 4] = ["msyh.ttc", "simhei.ttf", "meiryo.ttc", "YuGothM.ttc"];
 
-pub const GREETING_SIZE: f32 = 30.0;
-pub const TITLE_SIZE: f32 = 22.0;
-pub const TASK_TITLE_SIZE: f32 = 17.0;
-pub const PROSE_SIZE: f32 = 16.0;
-pub const PROSE_LINE_HEIGHT: f32 = 24.0;
+pub const GREETING_SIZE: f32 = 24.0;
+pub const TITLE_SIZE: f32 = 18.0;
+pub const TASK_TITLE_SIZE: f32 = 15.0;
+pub const BODY_SIZE: f32 = 13.0;
+pub const CONTROL_SIZE: f32 = 12.0;
+pub const SMALL_SIZE: f32 = 11.0;
+pub const BODY_LINE_HEIGHT: f32 = 19.0;
+const COMPACT_REGION_WIDTH: f32 = 380.0;
+const COMPACT_BODY_SIZE: f32 = 12.0;
+const COMPACT_HEADING_REDUCTION: f32 = 2.0;
+const COMPACT_HEADING_MINIMUM: f32 = 13.0;
 
 #[must_use]
 pub fn serif_family() -> FontFamily {
@@ -35,6 +41,34 @@ pub fn display_font(ctx: &egui::Context, size: f32) -> FontId {
     } else {
         FontId::proportional(size)
     }
+}
+
+/// Size display text for its actual panel, independently of monitor scaling.
+/// Chinese headings use the same sans family as interface text to avoid
+/// mixing serif Latin glyphs with unrelated fallback glyph weights.
+pub fn region_font(
+    ui: &egui::Ui,
+    language: crate::localization::Language,
+    preferred: f32,
+) -> FontId {
+    let size = if ui.available_width() < COMPACT_REGION_WIDTH {
+        (preferred - COMPACT_HEADING_REDUCTION).max(COMPACT_HEADING_MINIMUM)
+    } else {
+        preferred
+    };
+    if language == crate::localization::Language::Chinese {
+        FontId::proportional(size)
+    } else {
+        display_font(ui.ctx(), size)
+    }
+}
+
+pub fn body_font(ui: &egui::Ui) -> FontId {
+    FontId::proportional(if ui.available_width() < COMPACT_REGION_WIDTH {
+        COMPACT_BODY_SIZE
+    } else {
+        BODY_SIZE
+    })
 }
 
 /// Build font definitions from whichever candidate faces `read_font` returns.
@@ -133,6 +167,32 @@ mod tests {
     fn cambria_is_the_serif_fallback() {
         let definitions = build_font_definitions(fake_fonts(&["cambria.ttc"]));
         assert!(definitions.font_data.contains_key("vibemux_serif_face"));
+    }
+
+    #[test]
+    fn compact_regions_reduce_headings_and_chinese_uses_sans() {
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let compact_ui = ui.new_child(egui::UiBuilder::new().max_rect(
+                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(320.0, 200.0)),
+                ));
+                let compact = region_font(
+                    &compact_ui,
+                    crate::localization::Language::Chinese,
+                    TITLE_SIZE,
+                );
+                assert_eq!(compact.size, 16.0);
+                assert_eq!(compact.family, FontFamily::Proportional);
+                assert_eq!(body_font(&compact_ui).size, 12.0);
+                ui.set_width(720.0);
+                assert_eq!(
+                    region_font(ui, crate::localization::Language::English, TITLE_SIZE).size,
+                    TITLE_SIZE
+                );
+                assert_eq!(body_font(ui).size, 13.0);
+            });
+        });
     }
 
     #[test]

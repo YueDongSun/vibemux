@@ -6,7 +6,7 @@ use super::{
     supervisor_state::{SupervisorUiState, TaskDetailTab, UiActionQueue},
     typography,
 };
-use crate::supervisor_model::{SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView};
+use crate::supervisor_model::{SupervisorAction, SupervisorSnapshot, TaskView};
 use egui::{self, RichText, Ui, ViewportCommand, ViewportId};
 
 pub const CONTENT_WIDTH: f32 = 720.0;
@@ -27,36 +27,41 @@ pub fn render_conversation(
         .show(ui, |ui| {
             content_column(ui, |ui| {
                 ui.add_space(28.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     design::spark(ui, c.accent, 26.0, 0.0);
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
+                        ui.set_max_width((ui.available_width() - 8.0).max(120.0));
                         ui.label(
-                            RichText::new("Workspace updates")
-                                .size(15.0)
+                            RichText::new(c.tr("Workspace updates"))
+                                .size(typography::BODY_SIZE)
                                 .strong()
                                 .color(c.txt),
                         );
                         ui.label(
-                            RichText::new("Task activity · reported by the daemon")
+                            RichText::new(c.tr("Task activity · reported by the daemon"))
                                 .size(12.0)
                                 .color(c.muted),
                         );
                     });
-                    if snapshot.mode == SnapshotMode::Demo {
-                        demo_badge(ui, c);
-                    }
                 });
                 ui.add_space(22.0);
                 ui.label(
-                    RichText::new(format!("{} tasks in this workspace", snapshot.tasks.len()))
-                        .font(typography::display_font(ui.ctx(), typography::TITLE_SIZE))
-                        .color(c.txt),
+                    RichText::new(c.format(
+                        "{count} tasks in this workspace",
+                        &[("count", &snapshot.tasks.len().to_string())],
+                    ))
+                    .font(typography::region_font(
+                        ui,
+                        c.language,
+                        typography::TITLE_SIZE,
+                    ))
+                    .color(c.txt),
                 );
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(
-                        "Open a task to follow its execution. The conversation stays here.",
+                        c.tr("Open a task to follow its execution. The conversation stays here."),
                     )
                     .size(13.0)
                     .color(c.muted),
@@ -127,7 +132,7 @@ fn task_row_contents(
         ui.label(RichText::new("/").size(12.0).color(c.muted));
         ui.label(
             RichText::new(if task.executor.is_empty() {
-                "Unassigned"
+                c.tr("Unassigned")
             } else {
                 &task.executor
             })
@@ -137,7 +142,7 @@ fn task_row_contents(
     });
     ui.add_space(3.0);
     let title = if task.title.is_empty() {
-        "Untitled task"
+        c.tr("Untitled task")
     } else {
         &task.title
     };
@@ -145,8 +150,9 @@ fn task_row_contents(
         .add(
             egui::Button::new(
                 RichText::new(title)
-                    .font(typography::display_font(
-                        ui.ctx(),
+                    .font(typography::region_font(
+                        ui,
+                        c.language,
                         typography::TASK_TITLE_SIZE,
                     ))
                     .color(c.txt),
@@ -154,7 +160,7 @@ fn task_row_contents(
             .frame(false)
             .wrap(),
         )
-        .on_hover_text("Open task details")
+        .on_hover_text(c.tr("Open task details"))
         .clicked()
     {
         state.select_task(snapshot, &task.task_id);
@@ -165,8 +171,8 @@ fn task_row_contents(
     wrapped_label(
         ui,
         RichText::new(&task.latest_update)
-            .font(typography::display_font(ui.ctx(), typography::PROSE_SIZE))
-            .line_height(Some(typography::PROSE_LINE_HEIGHT))
+            .font(typography::body_font(ui))
+            .line_height(Some(typography::BODY_LINE_HEIGHT))
             .color(c.muted),
     );
     ui.add_space(5.0);
@@ -195,8 +201,13 @@ fn task_row_contents(
         if ui
             .add_enabled(
                 !task.runs.is_empty(),
-                egui::Button::new(RichText::new("Native terminal").size(13.0).color(c.muted))
-                    .frame(false),
+                egui::Button::new(
+                    RichText::new(c.tr("Native terminal"))
+                        .size(13.0)
+                        .color(c.muted),
+                )
+                .frame(true)
+                .corner_radius(u8::MAX),
             )
             .clicked()
         {
@@ -216,7 +227,12 @@ pub(crate) fn task_viewport_id(task_id: &str) -> ViewportId {
     ViewportId::from_hash_of(("vibemux_task", task_id))
 }
 pub(crate) fn demo_badge(ui: &mut Ui, c: &C) {
-    ui.label(RichText::new("DEMO").size(10.0).strong().color(c.warn));
+    ui.label(
+        RichText::new(c.tr("DEMO"))
+            .size(10.0)
+            .strong()
+            .color(c.warn),
+    );
 }
 pub fn wrapped_label(ui: &mut Ui, text: RichText) -> egui::Response {
     ui.add(egui::Label::new(text).wrap())

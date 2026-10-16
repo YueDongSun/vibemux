@@ -35,6 +35,8 @@ pub struct SidebarActions {
     pub task_id: Option<String>,
     pub new_task: bool,
     pub toggle_collapsed: bool,
+    pub open_search: bool,
+    pub open_shortcuts: bool,
 }
 
 #[must_use]
@@ -49,7 +51,7 @@ pub const fn width_for(collapsed: bool) -> f32 {
 pub fn render(ui: &mut Ui, c: &C, view: &SidebarView<'_>) -> SidebarActions {
     let mut actions = SidebarActions::default();
     if view.collapsed {
-        render_rail(ui, c, &mut actions);
+        render_rail(ui, c, view, &mut actions);
     } else {
         render_expanded(ui, c, view, &mut actions);
     }
@@ -73,7 +75,7 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new("VibeMux")
-                        .font(typography::display_font(ui.ctx(), 19.0))
+                        .font(typography::display_font(ui.ctx(), 17.0))
                         .color(c.txt),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -94,6 +96,9 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
                 actions.new_task = true;
             }
             ui.add_space(4.0);
+            if design::nav_row(ui, c, "Search anything   Ctrl+K", Icon::Search, false) {
+                actions.open_search = true;
+            }
             let conversation = view.page == MainPage::CoordinatorChat && !view.welcome_active;
             if design::nav_row(ui, c, "Conversation", Icon::Chat, conversation) {
                 actions.page = Some(MainPage::CoordinatorChat);
@@ -101,8 +106,17 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
             if design::nav_row(ui, c, "Agents", Icon::Grid, view.page == MainPage::Agents) {
                 actions.page = Some(MainPage::Agents);
             }
+            if design::nav_row(
+                ui,
+                c,
+                "Claude terminal",
+                Icon::Terminal,
+                view.page == MainPage::ClaudeTerminal,
+            ) {
+                actions.page = Some(MainPage::ClaudeTerminal);
+            }
             ui.add_space(18.0);
-            ui.label(RichText::new("Recents").size(12.0).color(c.muted));
+            ui.label(RichText::new(c.tr("Recents")).size(12.0).color(c.muted));
             ui.add_space(4.0);
             egui::ScrollArea::vertical()
                 .id_salt("sidebar_recents")
@@ -110,7 +124,7 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
                 .show(ui, |ui| {
                     if view.snapshot.tasks.is_empty() {
                         ui.label(
-                            RichText::new("Tasks appear here when assigned.")
+                            RichText::new(c.tr("Tasks appear here when assigned."))
                                 .size(12.0)
                                 .color(c.muted),
                         );
@@ -125,7 +139,7 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
         });
 }
 
-fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
+fn render_rail(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut SidebarActions) {
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(0, 14))
         .show(ui, |ui| {
@@ -134,17 +148,48 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                 let buttons = [
                     (Icon::SidebarToggle, "Expand sidebar", TOGGLE_BUTTON_ID),
                     (Icon::Plus, "New task", NEW_TASK_BUTTON_ID),
+                    (
+                        Icon::Search,
+                        "Search anything (Ctrl+K)",
+                        "sidebar_rail_search",
+                    ),
                     (Icon::Chat, "Conversation", "sidebar_rail_conversation"),
                     (Icon::Grid, "Agents", "sidebar_rail_agents"),
+                    (
+                        Icon::Terminal,
+                        "Claude terminal",
+                        "sidebar_rail_claude_terminal",
+                    ),
                     (Icon::Settings, "Settings", "sidebar_rail_settings"),
+                    (Icon::Terminal, "Diagnostics", "sidebar_rail_diagnostics"),
                 ];
                 for (kind, tooltip, id) in buttons {
-                    if design::icon_button(ui, c, kind, tooltip, egui::Id::new(id)).clicked() {
+                    let response = design::icon_button(ui, c, kind, tooltip, egui::Id::new(id));
+                    let selected = matches!(kind, Icon::Chat)
+                        && view.page == MainPage::CoordinatorChat
+                        && !view.welcome_active
+                        || matches!(kind, Icon::Grid) && view.page == MainPage::Agents;
+                    if selected {
+                        ui.painter().line_segment(
+                            [
+                                response.rect.left_top() - vec2(5.0, -5.0),
+                                response.rect.left_bottom() - vec2(5.0, 5.0),
+                            ],
+                            egui::Stroke::new(3.0, c.accent),
+                        );
+                    }
+                    if response.clicked() {
+                        if id == "sidebar_rail_claude_terminal" {
+                            actions.page = Some(MainPage::ClaudeTerminal);
+                            continue;
+                        }
                         match kind {
                             Icon::SidebarToggle => actions.toggle_collapsed = true,
                             Icon::Plus => actions.new_task = true,
                             Icon::Chat => actions.page = Some(MainPage::CoordinatorChat),
                             Icon::Grid => actions.page = Some(MainPage::Agents),
+                            Icon::Search => actions.open_search = true,
+                            Icon::Terminal => actions.open_diagnostics = true,
                             _ => actions.open_settings = true,
                         }
                     }
@@ -157,10 +202,18 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
 fn new_task_row(ui: &mut Ui, c: &C) -> bool {
     let (_, rect) = ui.allocate_space(vec2(ui.available_width(), ROW_HEIGHT));
     let response = ui.interact(rect, egui::Id::new(NEW_TASK_BUTTON_ID), Sense::click());
-    if response.hovered() || response.has_focus() {
-        ui.painter()
-            .rect_filled(rect, design::BUTTON_RADIUS, c.raised);
-    }
+    let fill = if response.hovered() || response.has_focus() {
+        c.accent_bg
+    } else {
+        super::mix(&c.surf, &c.accent, 0.08)
+    };
+    ui.painter().rect_filled(rect, u8::MAX, fill);
+    ui.painter().rect_stroke(
+        rect,
+        u8::MAX,
+        egui::Stroke::new(1.0, c.border),
+        egui::StrokeKind::Inside,
+    );
     let circle = egui::pos2(rect.left() + 18.0, rect.center().y);
     ui.painter().circle_filled(circle, 10.0, c.accent);
     let plus_color = if c.light { egui::Color32::WHITE } else { c.bg };
@@ -172,18 +225,20 @@ fn new_task_row(ui: &mut Ui, c: &C) -> bool {
     ui.painter().text(
         egui::pos2(rect.left() + 38.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        "New task",
-        egui::FontId::proportional(14.0),
+        c.tr("New task"),
+        egui::FontId::proportional(typography::CONTROL_SIZE),
         c.txt,
     );
     design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New task"));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, c.tr("New task"))
+    });
     response.clicked()
 }
 
 fn recent_row(ui: &mut Ui, c: &C, title: &str, state: &str, selected: bool) -> egui::Response {
     let title = if title.trim().is_empty() {
-        "Untitled task"
+        c.tr("Untitled task")
     } else {
         title
     };
@@ -237,7 +292,7 @@ fn workspace_button(
     actions: &mut SidebarActions,
 ) {
     let name = if snapshot.project_name.trim().is_empty() {
-        "Local workspace"
+        c.tr("Local workspace")
     } else {
         snapshot.project_name.as_str()
     };
@@ -271,21 +326,25 @@ fn workspace_button(
     ui.painter().text(
         egui::pos2(text_left, rect.center().y + 9.0),
         egui::Align2::LEFT_CENTER,
-        "Local workspace",
+        c.tr("Local workspace"),
         egui::FontId::proportional(11.0),
         c.muted,
     );
     design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Workspace menu")
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, c.tr("Workspace menu"))
     });
     egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(200.0);
-        if ui.button("Settings").clicked() {
+        if ui.button(c.tr("Settings")).clicked() {
             actions.open_settings = true;
         }
-        if ui.button("Diagnostics").clicked() {
+        if ui.button(c.tr("Diagnostics")).clicked() {
             actions.open_diagnostics = true;
+        }
+        ui.separator();
+        if ui.button(c.tr("Keyboard shortcuts    Ctrl+/")).clicked() {
+            actions.open_shortcuts = true;
         }
     });
 }

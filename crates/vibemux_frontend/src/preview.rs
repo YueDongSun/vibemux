@@ -51,7 +51,7 @@ pub fn supervisor_snapshot(disconnected: bool) -> SupervisorSnapshot {
     let tasks = [
         (
             "task_ui",
-            "Build the supervisor workspace · 主控工作台",
+            "Build the supervisor workspace",
             "in_progress",
             "Claude Code",
             "Worker started; waiting for a structured result",
@@ -91,8 +91,7 @@ pub fn supervisor_snapshot(disconnected: bool) -> SupervisorSnapshot {
                 } else {
                     "running".into()
                 },
-                worktree: "C:\\Projects\\VibeMux\\.vibemux\\worktrees\\supervisor_chat_多语言测试"
-                    .into(),
+                worktree: "C:\\Projects\\VibeMux\\.vibemux\\worktrees\\supervisor_chat".into(),
                 branch: "codex/supervisor_chat".into(),
                 artifacts: vec![ArtifactView {
                     artifact_id: "artifact_preview".into(),

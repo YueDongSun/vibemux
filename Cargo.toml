@@ -18,6 +18,7 @@ members = [
     "crates/vibemux_workspace",
     "crates/vibemux_workflow",
     "crates/vibemux_terminal_observer",
+    "crates/vibemux_terminal",
     "crates/vibemuxd",
 ]
 resolver = "3"

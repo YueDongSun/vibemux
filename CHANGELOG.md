@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Embed Claude Code's real interactive TUI in a dedicated GUI page (ADR 036).
+  A contained first-party host owns Windows ConPTY/POSIX PTY and a bounded
+  generic VT engine; the GUI forwards focused input, paste, resize, and scroll.
+  Each explicit Start allocates an independent Git worktree and branch, retained
+  on exit. Native permission prompts remain under Claude's control. No core
+  database or existing Control/plugin protocol migration; no task success is
+  inferred from terminal text or process exit. Initial verification is Windows;
+  live inference and Linux/WSL validation remain separate gates.
+
+- Reduce GUI typography: 18 px page headings, 15 px task titles, 13 px body
+  text, and 12 px controls. Compact panels use 16 px headings and 12 px body
+  text. Centralized defaults also apply to the composer and secondary panels.
+
+- Add an English-default native GUI with an optional saved Simplified Chinese
+  interface (ADR 035). The header and Settings expose the language choice;
+  labels, tooltips, empty states, search actions, and task windows follow it.
+  Existing settings retain their theme/layout and missing or unknown language
+  values fall back to English. Raw task data and drafts are preserved.
+  Use English demo content and refine controls with rounded action pills,
+  softer cards/popups, and a 24 px composer; palette exports are unchanged.
+
+- Improve native GUI navigation (ADR 030 phase 2, navigation slice): a local
+  task/agent/action switcher with ranked search and keyboard selection, a
+  shared shortcut table and help overlay, and explicit clipboard buttons in
+  task details. Preserve drafts, pause shortcuts during IME composition, and
+  keep Escape scoped to the active overlay. Add search and diagnostics to the
+  collapsed rail, clear stale Recents highlights, and reserve more conversation
+  width beside the docked drawer at small sizes. No protocol, database, theme
+  schema, or execution-permission change; appearance following and motion
+  controls remain planned.
+
 - Add the decision port and advisory per-task harness routing (ADR 034).
   `vibemuxctl decide route` records a content-free decision naming the
   harness that should run a prompt, using the first of these that applies:

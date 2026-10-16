@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "9e738f12c6dae4d97a5a567a0d261427c4c6fb86",
+  "branch": "codex/ui_navigation",
+  "files": [
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend_preview.rs",
+      "sha256": "2f55f3a7c2186681d8741f567644d0b95e6757bf77164828d303b4a5940a0465"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/agents.rs",
+      "sha256": "a898c9781050c932268989723b5e7b4ef4711586d6c8d4cec0575a2246f0f129"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/chat.rs",
+      "sha256": "bdc96f009eafe13d494d92b60a7294e21f6ae48bd91d5bc884e5a2e0108b6c16"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/composer.rs",
+      "sha256": "0e4f39f9a5041260d1510af7ac4e398d7010a05e892cb2b332957c060f457786"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/design.rs",
+      "sha256": "99043d068eac1bdb2c22758af4fe9d6abbddeeff60bbd19c8d6e128c2fefa506"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/diagnostics.rs",
+      "sha256": "4e7bf23c4d343c6806d08e5c1bb700b95e58a3e44fc39bfffc520515e9f150d7"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/mod.rs",
+      "sha256": "517104033ee08f4237f34e3b82833682c583bb4ac6c8313572516de5468e0d1f"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/quick_switcher.rs",
+      "sha256": "47c52c9f70cded964ac02904cc2ce9354e69216416cd12d37c4be4661c5cba04"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/settings.rs",
+      "sha256": "de5d0d7093c95292173262eb032a65417229c531b14f9332b790b6ed6fc02688"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/shortcuts.rs",
+      "sha256": "3a36f185d08edec26ba80771af276558f85973e150fa002c4421fb40ee2949fa"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/sidebar.rs",
+      "sha256": "0b5701d413a0d9624fb884ec5e38076bc26502b55483cc82b4e8323fc01afeca"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/supervisor_app.rs",
+      "sha256": "41e75bce54825f7d4101b96f9287c20f490f29819fb2fecc7c98cebe0a86be62"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/task_detail.rs",
+      "sha256": "297033ec67903d832503f4ee954edf3a257de1d662bd00d54aab462fa4fb2cf3"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/theme.rs",
+      "sha256": "37b21e980e1c40fa26923899e52491dea63376ace199aacaf49d6cb5ec7569fc"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/typography.rs",
+      "sha256": "605d2ef5e14c0070f971ff7adf84940ea902e56ca306abf6b486c90434412f4f"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/welcome.rs",
+      "sha256": "2e5d1642ff6f6517aac1009103fac3c4325ad69e732ca6e1e12c0b02df39d8f6"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/lib.rs",
+      "sha256": "f1bddcb6e6ba293904b662b2adbb64003c40ffaa59f06eaede2130c2d5a1691a"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/localization.rs",
+      "sha256": "2f3ce98c09cf5767ce2fb02c7638c0ffd2c3d7d4c676f7034bfdb7a7de1a1f70"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/preview.rs",
+      "sha256": "f08b638c26d2251741c0f0dc3c03ee7cdda67894ae0210d48d26061bfcd16aa6"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/quick_search.rs",
+      "sha256": "edfb44e7d8759f1743034020f2abfc11580b6129d67857d7012d1ff0382a6e10"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/theme/serialize.rs",
+      "sha256": "75d3ec70b7e9053351ddc81a8b83bb7d187c0f5c1ba15803da28490db8f2cf03"
+    }
+  ],
+  "previews": [
+    {
+      "path": "docs/frontend_previews/ui_language_english.png",
+      "sha256": "cd6f7fdc7facbea3c76f3c83e40af72bef58d9de7640f5387d8033ba5c2cdd36"
+    },
+    {
+      "path": "docs/frontend_previews/ui_language_chinese.png",
+      "sha256": "cc5b99e635fe6e256ed2072026bbed37a377bd8d9a72bbf7746fed2edeec3215"
+    },
+    {
+      "path": "docs/frontend_previews/ui_language_shortcuts.png",
+      "sha256": "42a040d2868796435f36cb6aa78ac584c7947d09ef393897872a36644041a346"
+    }
+  ],
+  "preview_binary_sha256": "aa74e451a6ef8c35655d0cec92dc1c377d6e0986c66d77dfc4b470214897ff35"
+}

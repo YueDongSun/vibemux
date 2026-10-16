@@ -43,9 +43,10 @@ pub fn render(
             if title == TitleDisplay::Shown {
                 wrapped_label(
                     ui,
-                    RichText::new(task_title(task))
-                        .font(super::typography::display_font(
-                            ui.ctx(),
+                    RichText::new(task_title(colors, task))
+                        .font(super::typography::region_font(
+                            ui,
+                            colors.language,
                             super::typography::TITLE_SIZE,
                         ))
                         .color(colors.txt),
@@ -55,10 +56,13 @@ pub fn render(
             ui.horizontal_wrapped(|ui| {
                 design::status(ui, colors, task_state(task));
                 ui.label(
-                    RichText::new(executor_label(task))
+                    RichText::new(executor_label(colors, task))
                         .size(13.0)
                         .color(colors.muted),
                 );
+                if !task.title.trim().is_empty() {
+                    design::copy_button(ui, colors, "task title", &task.title);
+                }
             });
             ui.add_space(12.0);
             select_run(ui, colors, task, selection);
@@ -72,20 +76,16 @@ pub fn render(
                 ] {
                     let selected = selection.tab == tab;
                     let response = ui.add(
-                        egui::Button::new(RichText::new(label).size(13.0).color(if selected {
-                            colors.accent_text
-                        } else {
-                            colors.muted
-                        }))
-                        .frame(false),
+                        egui::Button::new(RichText::new(colors.tr(label)).size(13.0).color(
+                            if selected {
+                                colors.accent_text
+                            } else {
+                                colors.muted
+                            },
+                        ))
+                        .selected(selected)
+                        .corner_radius(u8::MAX),
                     );
-                    if selected {
-                        ui.painter().hline(
-                            response.rect.x_range(),
-                            response.rect.bottom() + 3.0,
-                            egui::Stroke::new(2.0, colors.accent),
-                        );
-                    }
                     if response.clicked() {
                         selection.tab = tab;
                     }
@@ -108,7 +108,7 @@ fn select_run(ui: &mut Ui, colors: &C, task: &TaskView, selection: &mut TaskDeta
     match task.runs.as_slice() {
         [] => {
             ui.label(
-                RichText::new("No Run is recorded for this task.")
+                RichText::new(colors.tr("No Run is recorded for this task."))
                     .size(12.0)
                     .color(colors.muted),
             );
@@ -116,9 +116,12 @@ fn select_run(ui: &mut Ui, colors: &C, task: &TaskView, selection: &mut TaskDeta
         [run] => {
             wrapped_label(
                 ui,
-                RichText::new(format!("Run · {} · {}", run.harness, run.run_id))
-                    .size(12.0)
-                    .color(colors.muted),
+                RichText::new(colors.format(
+                    "Run · {harness} · {id}",
+                    &[("harness", &run.harness), ("id", &run.run_id)],
+                ))
+                .size(12.0)
+                .color(colors.muted),
             );
             selection.selected_run_id = Some(run.run_id.clone());
         }
@@ -133,14 +136,17 @@ fn select_run(ui: &mut Ui, colors: &C, task: &TaskView, selection: &mut TaskDeta
             let selected_label = runs
                 .iter()
                 .find(|run| run.run_id == selected_id)
-                .map_or_else(|| "Select Run".to_string(), run_label);
+                .map_or_else(
+                    || colors.tr("Select Run").to_string(),
+                    |run| run_label(colors, run),
+                );
             egui::ComboBox::from_id_salt(("task_run", task.task_id.as_str()))
                 .selected_text(selected_label)
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
                     for run in runs {
                         if ui
-                            .selectable_label(run.run_id == selected_id, run_label(run))
+                            .selectable_label(run.run_id == selected_id, run_label(colors, run))
                             .clicked()
                         {
                             selection.selected_run_id = Some(run.run_id.clone());
@@ -157,7 +163,7 @@ fn render_overview(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
         ui,
         RichText::new(nonempty(
             &task.latest_update,
-            "No event summary is available yet.",
+            colors.tr("No event summary is available yet."),
         ))
         .size(13.0)
         .color(colors.txt),
@@ -170,39 +176,53 @@ fn render_overview(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
             colors,
             "run_details_grid",
             &[
-                ("Harness", nonempty(&run.harness, "Unknown").to_string()),
-                ("Role", nonempty(&run.role, "Not recorded").to_string()),
-                ("Run state", design::state_text(&run.state)),
-                ("Branch", nonempty(&run.branch, "Not recorded").to_string()),
+                (
+                    "Harness",
+                    nonempty(&run.harness, colors.tr("Unknown")).to_string(),
+                ),
+                (
+                    "Role",
+                    nonempty(&run.role, colors.tr("Not recorded")).to_string(),
+                ),
+                (
+                    "Run state",
+                    colors.tr(&design::state_text(&run.state)).to_string(),
+                ),
+                (
+                    "Branch",
+                    nonempty(&run.branch, colors.tr("Not recorded")).to_string(),
+                ),
                 (
                     "Worktree",
-                    nonempty(&run.worktree, "Not recorded").to_string(),
+                    nonempty(&run.worktree, colors.tr("Not recorded")).to_string(),
                 ),
             ],
         );
     } else {
         wrapped_label(
             ui,
-            RichText::new("Run details will appear when a Run is recorded.")
+            RichText::new(colors.tr("Run details will appear when a Run is recorded."))
                 .size(12.0)
                 .color(colors.muted),
         );
     }
     ui.add_space(16.0);
-    egui::CollapsingHeader::new("Identity & references").show(ui, |ui| {
-        let mut rows = vec![("Task", task.task_id.clone())];
-        if let Some(run) = run {
-            rows.push(("Run", run.run_id.clone()));
-        }
-        detail_grid(ui, colors, "identity_grid", &rows);
-    });
+    egui::CollapsingHeader::new(colors.tr("Identity & references"))
+        .id_salt("task_identity_references")
+        .show(ui, |ui| {
+            let mut rows = vec![("Task", task.task_id.clone())];
+            if let Some(run) = run {
+                rows.push(("Run", run.run_id.clone()));
+            }
+            detail_grid(ui, colors, "identity_grid", &rows);
+        });
     ui.add_space(24.0);
     render_activity(ui, colors, task, run);
     if task.has_more_runs {
         ui.add_space(12.0);
         wrapped_label(
             ui,
-            RichText::new("Showing the 12 most recent Runs.")
+            RichText::new(colors.tr("Showing the 12 most recent Runs."))
                 .size(12.0)
                 .color(colors.faint),
         );
@@ -213,7 +233,7 @@ fn render_activity(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
     section_label(ui, colors, "RECENT ACTIVITY");
     if task.recent_events.is_empty() {
         ui.label(
-            RichText::new("No activity events are available.")
+            RichText::new(colors.tr("No activity events are available."))
                 .size(12.0)
                 .color(colors.muted),
         );
@@ -225,7 +245,7 @@ fn render_activity(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
         egui::Frame::new()
             .fill(colors.raised)
             .stroke(egui::Stroke::NONE)
-            .corner_radius(egui::CornerRadius::same(6))
+            .corner_radius(egui::CornerRadius::same(super::design::CARD_RADIUS))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -247,9 +267,12 @@ fn render_activity(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
                 ui.add_space(4.0);
                 wrapped_label(
                     ui,
-                    RichText::new(nonempty(&event.summary, "No event summary was supplied."))
-                        .size(13.0)
-                        .color(colors.txt),
+                    RichText::new(nonempty(
+                        &event.summary,
+                        colors.tr("No event summary was supplied."),
+                    ))
+                    .size(13.0)
+                    .color(colors.txt),
                 );
             });
         ui.add_space(7.0);
@@ -258,7 +281,7 @@ fn render_activity(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
         ui.add_space(6.0);
         wrapped_label(
             ui,
-            RichText::new("Showing the 24 most recent events.")
+            RichText::new(colors.tr("Showing the 24 most recent events."))
                 .size(12.0)
                 .color(colors.faint),
         );
@@ -269,7 +292,7 @@ fn render_artifacts(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVi
     section_label(ui, colors, "ARTIFACTS");
     let Some(run) = run else {
         ui.label(
-            RichText::new("Select a Run to inspect its artifacts.")
+            RichText::new(colors.tr("Select a Run to inspect its artifacts."))
                 .size(12.0)
                 .color(colors.muted),
         );
@@ -277,7 +300,7 @@ fn render_artifacts(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVi
     };
     if run.artifacts.is_empty() {
         ui.label(
-            RichText::new("No artifacts are recorded for this Run.")
+            RichText::new(colors.tr("No artifacts are recorded for this Run."))
                 .size(12.0)
                 .color(colors.muted),
         );
@@ -287,24 +310,24 @@ fn render_artifacts(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVi
         egui::Frame::group(ui.style())
             .fill(colors.surf)
             .stroke(egui::Stroke::new(1.0, colors.border))
-            .corner_radius(egui::CornerRadius::same(6))
+            .corner_radius(egui::CornerRadius::same(super::design::CARD_RADIUS))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 wrapped_label(
                     ui,
-                    RichText::new(nonempty(&artifact.name, "Unnamed artifact"))
+                    RichText::new(nonempty(&artifact.name, colors.tr("Unnamed artifact")))
                         .size(13.0)
                         .strong()
                         .color(colors.txt),
                 );
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new(nonempty(&artifact.kind, "Unknown type"))
+                        RichText::new(nonempty(&artifact.kind, colors.tr("Unknown type")))
                             .size(12.0)
                             .color(colors.muted),
                     );
                     ui.label(
-                        RichText::new(nonempty(&artifact.state, "Unknown state"))
+                        RichText::new(nonempty(&artifact.state, colors.tr("Unknown state")))
                             .size(12.0)
                             .color(colors.faint),
                     );
@@ -316,7 +339,7 @@ fn render_artifacts(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVi
         ui.add_space(6.0);
         wrapped_label(
             ui,
-            RichText::new("Task artifact list is limited to 24 references.")
+            RichText::new(colors.tr("Task artifact list is limited to 24 references."))
                 .size(12.0)
                 .color(colors.faint),
         );
@@ -333,7 +356,7 @@ fn render_terminal(
     section_label(ui, colors, "NATIVE TERMINAL BINDING");
     let Some(run) = run else {
         ui.label(
-            RichText::new("Select a Run before inspecting a terminal.")
+            RichText::new(colors.tr("Select a Run before inspecting a terminal."))
                 .size(12.0)
                 .color(colors.muted),
         );
@@ -344,17 +367,17 @@ fn render_terminal(
         ui,
         colors,
         "Status",
-        nonempty(&terminal.status, "Not inspected"),
+        nonempty(&terminal.status, colors.tr("Not inspected")),
     );
     if let Some(binding_id) = terminal.binding_id.as_deref() {
         detail_row(ui, colors, "Binding", binding_id);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Focus terminal").clicked() {
+            if ui.button(colors.tr("Focus terminal")).clicked() {
                 actions.enqueue(SupervisorAction::FocusTerminal {
                     binding_id: binding_id.to_string(),
                 });
             }
-            if ui.button("Unlink terminal").clicked() {
+            if ui.button(colors.tr("Unlink terminal")).clicked() {
                 actions.enqueue(SupervisorAction::UnlinkTerminal {
                     binding_id: binding_id.to_string(),
                 });
@@ -366,7 +389,7 @@ fn render_terminal(
     }
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Inspect terminal").clicked() {
+        if ui.button(colors.tr("Inspect terminal")).clicked() {
             actions.enqueue(SupervisorAction::InspectTerminal {
                 task_id: task.task_id.clone(),
                 run_id: run.run_id.clone(),
@@ -377,7 +400,7 @@ fn render_terminal(
     section_label(ui, colors, "AVAILABLE TERMINALS");
     if terminal.candidates.is_empty() {
         ui.label(
-            RichText::new("No terminal candidates are reported.")
+            RichText::new(colors.tr("No terminal candidates are reported."))
                 .size(12.0)
                 .color(colors.muted),
         );
@@ -389,7 +412,7 @@ fn render_terminal(
     ui.add_space(8.0);
     wrapped_label(
         ui,
-        RichText::new("Terminal contents stay in the native terminal surface; this view shows binding metadata only.")
+        RichText::new(colors.tr("Terminal contents stay in the native terminal surface; this view shows binding metadata only."))
             .size(12.0)
             .color(colors.faint),
     );
@@ -406,15 +429,18 @@ fn terminal_candidate(
     egui::Frame::group(ui.style())
         .fill(colors.surf)
         .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(egui::CornerRadius::same(6))
+        .corner_radius(egui::CornerRadius::same(super::design::CARD_RADIUS))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             wrapped_label(
                 ui,
-                RichText::new(nonempty(&candidate.display_name, "Terminal candidate"))
-                    .size(13.0)
-                    .strong()
-                    .color(colors.txt),
+                RichText::new(nonempty(
+                    &candidate.display_name,
+                    colors.tr("Terminal candidate"),
+                ))
+                .size(13.0)
+                .strong()
+                .color(colors.txt),
             );
             detail_row(ui, colors, "Plugin", &candidate.plugin_id);
             detail_row(ui, colors, "Pane", &candidate.pane_id);
@@ -423,8 +449,10 @@ fn terminal_candidate(
                 && !candidate.pane_id.is_empty()
                 && !candidate.instance_id.is_empty();
             let link = ui
-                .add_enabled(can_link, egui::Button::new("Link terminal"))
-                .on_hover_text("Link this exact reported terminal candidate to the selected Run.");
+                .add_enabled(can_link, egui::Button::new(colors.tr("Link terminal")))
+                .on_hover_text(
+                    colors.tr("Link this exact reported terminal candidate to the selected Run."),
+                );
             if link.clicked() {
                 actions.enqueue(SupervisorAction::LinkTerminal {
                     task_id: task_id.to_string(),
@@ -439,22 +467,41 @@ fn terminal_candidate(
 }
 
 fn detail_grid(ui: &mut Ui, colors: &C, id: &str, rows: &[(&str, String)]) {
-    let value_width = (ui.available_width() - DETAIL_LABEL_WIDTH - 16.0).max(80.0);
+    let value_width =
+        (ui.available_width() - DETAIL_LABEL_WIDTH - design::COPY_BUTTON_WIDTH - 16.0).max(64.0);
     egui::Grid::new(id)
-        .num_columns(2)
-        .spacing([16.0, 7.0])
-        .min_col_width(DETAIL_LABEL_WIDTH)
+        .num_columns(3)
+        .spacing([8.0, 7.0])
+        .min_col_width(0.0)
         .max_col_width(value_width)
         .show(ui, |ui| {
             for (label, value) in rows {
-                ui.label(RichText::new(*label).size(12.0).color(colors.muted));
-                wrapped_label(
-                    ui,
-                    RichText::new(value.as_str())
-                        .size(12.0)
-                        .color(colors.txt)
-                        .monospace(),
+                ui.add_sized(
+                    [DETAIL_LABEL_WIDTH, 22.0],
+                    egui::Label::new(
+                        RichText::new(colors.tr(label))
+                            .size(12.0)
+                            .color(colors.muted),
+                    ),
                 );
+                ui.scope(|ui| {
+                    ui.set_width(value_width);
+                    wrapped_label(
+                        ui,
+                        RichText::new(value.as_str())
+                            .size(12.0)
+                            .color(colors.txt)
+                            .monospace(),
+                    );
+                });
+                if matches!(*label, "Task" | "Run" | "Branch" | "Worktree")
+                    && !value.is_empty()
+                    && value != colors.tr("Not recorded")
+                {
+                    design::copy_button(ui, colors, label, value);
+                } else {
+                    ui.allocate_space(egui::vec2(design::COPY_BUTTON_WIDTH, 22.0));
+                }
                 ui.end_row();
             }
         });
@@ -463,7 +510,11 @@ fn detail_grid(ui: &mut Ui, colors: &C, id: &str, rows: &[(&str, String)]) {
 fn detail_row(ui: &mut Ui, colors: &C, label: &str, value: &str) {
     ui.horizontal_top(|ui| {
         ui.set_min_width(ui.available_width());
-        ui.label(RichText::new(label).size(12.0).color(colors.muted));
+        ui.label(
+            RichText::new(colors.tr(label))
+                .size(12.0)
+                .color(colors.muted),
+        );
         ui.add_space(8.0);
         wrapped_label(
             ui,
@@ -477,19 +528,24 @@ fn detail_row(ui: &mut Ui, colors: &C, label: &str, value: &str) {
 }
 
 fn section_label(ui: &mut Ui, colors: &C, label: &str) {
-    ui.label(RichText::new(label).size(11.0).strong().color(colors.faint));
+    ui.label(
+        RichText::new(colors.tr(label))
+            .size(11.0)
+            .strong()
+            .color(colors.faint),
+    );
     ui.add_space(5.0);
 }
 
-fn task_title(task: &TaskView) -> &str {
-    nonempty(&task.title, "Untitled task")
+fn task_title<'a>(colors: &C, task: &'a TaskView) -> &'a str {
+    nonempty(&task.title, colors.tr("Untitled task"))
 }
 
 fn task_state(task: &TaskView) -> &str {
     nonempty(&task.state, "Unknown state")
 }
 
-fn executor_label(task: &TaskView) -> &str {
+fn executor_label<'a>(colors: &C, task: &'a TaskView) -> &'a str {
     if !task.executor.is_empty() {
         return &task.executor;
     }
@@ -497,14 +553,14 @@ fn executor_label(task: &TaskView) -> &str {
         .first()
         .map(|run| run.harness.as_str())
         .filter(|label| !label.is_empty())
-        .unwrap_or("Unassigned")
+        .unwrap_or(colors.tr("Unassigned"))
 }
 
-fn run_label(run: &RunView) -> String {
+fn run_label(colors: &C, run: &RunView) -> String {
     format!(
         "{} · {} · {}",
-        nonempty(&run.harness, "Harness"),
-        nonempty(&run.role, "Run"),
+        nonempty(&run.harness, colors.tr("Harness")),
+        nonempty(&run.role, colors.tr("Run")),
         run.run_id
     )
 }

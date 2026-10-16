@@ -6,11 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui::{self, Key, Modifiers, RichText, ViewportBuilder};
+use eframe::egui::{self, Key, RichText, ViewportBuilder};
 #[cfg(test)]
 use vibemux_probe::AgentKind;
 
 use crate::{
+    localization::Language,
+    quick_search::{self, NavigationAction},
     supervisor_model::{
         ConnectionStatus, SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView,
     },
@@ -22,7 +24,9 @@ use crate::{
 };
 
 use super::{
-    C, agents, chat, composer, design, diagnostics, settings, sidebar,
+    C, agents, chat, composer, design, diagnostics,
+    quick_switcher::QuickSwitcher,
+    settings, shortcuts, sidebar,
     supervisor_state::{MainPage, SupervisorUiState, UiActionQueue},
     task_detail,
 };
@@ -46,11 +50,15 @@ pub struct SupervisorApp {
     actions: UiActionQueue,
     settings_open: bool,
     diagnostics_open: bool,
+    quick_switcher: QuickSwitcher,
+    shortcuts_open: bool,
     last_size: [f32; 2],
     pending_write: Option<Instant>,
     pending_resize: Option<Instant>,
     /// Last laid-out height of the auto-sized composer panel.
     composer_panel_height: f32,
+    native_terminal: super::native_terminal::EmbeddedTerminal,
+    persist_preferences: bool,
 }
 
 impl SupervisorApp {
@@ -70,10 +78,14 @@ impl SupervisorApp {
             actions,
             settings_open: false,
             diagnostics_open: false,
+            quick_switcher: QuickSwitcher::default(),
+            shortcuts_open: false,
             last_size: [0.0, 0.0],
             pending_write: None,
             pending_resize: None,
             composer_panel_height: 0.0,
+            native_terminal: super::native_terminal::EmbeddedTerminal::default(),
+            persist_preferences: true,
         }
     }
 
@@ -161,7 +173,7 @@ impl SupervisorApp {
     }
 
     fn persist_if_due(&mut self) {
-        if self.snapshot().mode == SnapshotMode::Demo {
+        if !self.persist_preferences || self.snapshot().mode == SnapshotMode::Demo {
             return;
         }
         let (pending_write, pending_resize, should_save) =
@@ -173,9 +185,21 @@ impl SupervisorApp {
         }
     }
 
+    /// Screenshot runners must not persist their temporary appearance settings.
+    pub fn disable_preference_persistence(&mut self) {
+        self.persist_preferences = false;
+    }
+
     fn set_theme(&mut self, theme: ThemeId) {
         if self.user_config.theme != theme {
             self.user_config.theme = theme;
+            self.pending_write = Some(Instant::now());
+        }
+    }
+
+    pub fn set_language(&mut self, language: Language) {
+        if self.user_config.language != language {
+            self.user_config.language = language;
             self.pending_write = Some(Instant::now());
         }
     }
@@ -191,16 +215,34 @@ impl SupervisorApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || ime_composition_active(ctx) {
+        if ctx.memory(|memory| memory.focused())
+            == Some(egui::Id::new(super::native_terminal::TERMINAL_WIDGET_ID))
+        {
+            return;
+        }
+        if ime_composition_active(ctx) {
+            return;
+        }
+        // Modal and popup owners consume Escape themselves. It must not also
+        // close the drawer or navigate the workspace behind them.
+        if self.quick_switcher.open
+            || self.shortcuts_open
+            || self
+                .ui_state
+                .lock()
+                .is_ok_and(|state| state.discard_prompt_open())
+            || egui::Popup::is_any_open(ctx)
+        {
+            return;
+        }
+        if let Some(action) = shortcuts::consume(ctx) {
+            self.apply_navigation(ctx, action);
+            return;
+        }
+        if ctx.wants_keyboard_input() {
             return;
         }
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
-            if let Ok(mut state) = self.ui_state.lock() {
-                if state.discard_prompt_open() {
-                    state.keep_draft();
-                    return;
-                }
-            }
             if self.diagnostics_open {
                 self.diagnostics_open = false;
                 return;
@@ -218,31 +260,80 @@ impl SupervisorApp {
                     state.show_coordinator_chat();
                 }
             }
-            return;
         }
+    }
 
-        let input = ctx.input(|input| input.clone());
-        let ctrl = input.modifiers == Modifiers::CTRL || input.modifiers == Modifiers::COMMAND;
-        if !ctrl {
-            return;
-        }
-        const DIGITS: [(Key, usize); 10] = [
-            (Key::Num1, 0),
-            (Key::Num2, 1),
-            (Key::Num3, 2),
-            (Key::Num4, 3),
-            (Key::Num5, 4),
-            (Key::Num6, 5),
-            (Key::Num7, 6),
-            (Key::Num8, 7),
-            (Key::Num9, 8),
-            (Key::Num0, 9),
-        ];
-        if let Some((_, index)) = DIGITS.into_iter().find(|(key, _)| input.key_pressed(*key)) {
-            if let Ok(mut state) = self.ui_state.lock() {
-                state.select_agent(index, self.view_model.agents.len());
+    /// Local navigation only; opening a task uses the existing bounded read request.
+    fn apply_navigation(&mut self, ctx: &egui::Context, action: NavigationAction) {
+        match action {
+            NavigationAction::Task(task_id) => {
+                if let Ok(mut state) = self.ui_state.lock() {
+                    state.show_coordinator_chat();
+                }
+                self.select_task(&task_id);
+            }
+            NavigationAction::Agent(index) => {
+                if let Ok(mut state) = self.ui_state.lock() {
+                    state.select_agent(index, self.view_model.agents.len());
+                }
+            }
+            NavigationAction::Search => self.quick_switcher.show(ctx),
+            NavigationAction::NewTask => self.request_new_task(),
+            NavigationAction::Conversation => {
+                if let Ok(mut state) = self.ui_state.lock() {
+                    state.show_coordinator_chat();
+                }
+            }
+            NavigationAction::Agents => {
+                if let Ok(mut state) = self.ui_state.lock() {
+                    state.return_to_agents_list();
+                }
+            }
+            NavigationAction::Settings => self.settings_open = true,
+            NavigationAction::Diagnostics => self.diagnostics_open = true,
+            NavigationAction::Light => self.set_theme(ThemeId::ClaudeLight),
+            NavigationAction::Dark => self.set_theme(ThemeId::Claude),
+            NavigationAction::Shortcuts => self.shortcuts_open = true,
+            NavigationAction::ToggleSidebar => {
+                self.set_sidebar_collapsed(!self.user_config.sidebar_collapsed)
             }
         }
+    }
+
+    /// Open the local navigation palette, also used by the synthetic preview.
+    pub fn show_quick_switcher(&mut self, ctx: &egui::Context) {
+        self.quick_switcher.show(ctx);
+    }
+
+    /// Show keyboard help without changing the selected page or task.
+    pub fn show_shortcuts(&mut self) {
+        self.shortcuts_open = true;
+    }
+
+    pub fn show_settings(&mut self) {
+        self.settings_open = true;
+    }
+
+    pub fn show_agents(&mut self) {
+        if let Ok(mut state) = self.ui_state.lock() {
+            state.return_to_agents_list();
+        }
+    }
+
+    pub fn show_claude_terminal(&mut self) {
+        if let Ok(mut state) = self.ui_state.lock() {
+            state.show_claude_terminal();
+        }
+    }
+
+    pub fn start_claude_terminal(
+        &mut self,
+        ctx: &egui::Context,
+        root: std::path::PathBuf,
+        fixture: bool,
+    ) {
+        self.show_claude_terminal();
+        self.native_terminal.start(ctx, root, fixture);
     }
 
     fn render_topbar(&mut self, ctx: &egui::Context, colors: &C, snapshot: &SupervisorSnapshot) {
@@ -255,6 +346,10 @@ impl SupervisorApp {
                     .inner_margin(egui::Margin::symmetric(20, 12)),
             )
             .show(ctx, |ui| {
+                let terminal_page = self
+                    .ui_state
+                    .lock()
+                    .is_ok_and(|state| state.page() == MainPage::ClaudeTerminal);
                 ui.horizontal(|ui| {
                     let title = snapshot
                         .coordinator
@@ -262,18 +357,36 @@ impl SupervisorApp {
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or("Coordinator");
                     ui.label(
-                        RichText::new("Main conversation")
-                            .size(15.0)
-                            .strong()
-                            .color(colors.txt),
+                        RichText::new(
+                            colors.tr(
+                                if self
+                                    .ui_state
+                                    .lock()
+                                    .is_ok_and(|state| state.page() == MainPage::ClaudeTerminal)
+                                {
+                                    "Claude terminal"
+                                } else {
+                                    "Main conversation"
+                                },
+                            ),
+                        )
+                        .size(super::typography::BODY_SIZE)
+                        .strong()
+                        .color(colors.txt),
                     );
                     ui.label(
-                        RichText::new(format!("/  {title}"))
-                            .size(12.0)
-                            .color(colors.muted),
+                        RichText::new(if terminal_page {
+                            colors.tr(self.native_terminal.phase_label()).to_string()
+                        } else {
+                            format!("/  {title}")
+                        })
+                        .size(12.0)
+                        .color(colors.muted),
                     );
                     ui.add_space(12.0);
-                    connection_indicator(ui, colors, snapshot.connection.status);
+                    if !terminal_page {
+                        connection_indicator(ui, colors, snapshot.connection.status);
+                    }
                     if snapshot.mode == SnapshotMode::Demo {
                         ui.add_space(10.0);
                         chat::demo_badge(ui, colors);
@@ -289,11 +402,40 @@ impl SupervisorApp {
                         if refresh.clicked() {
                             self.enqueue_refresh();
                         }
+                        ui.menu_button(colors.language.code(), |ui| {
+                            for (language, label) in [
+                                (Language::English, "English"),
+                                (Language::Chinese, "Chinese (Simplified)"),
+                            ] {
+                                if ui
+                                    .selectable_label(
+                                        self.user_config.language == language,
+                                        colors.tr(label),
+                                    )
+                                    .clicked()
+                                {
+                                    self.set_language(language);
+                                    ui.close();
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(colors.tr("Interface language"));
                     });
                 });
-                if let Some(detail) = snapshot.connection.detail.as_deref() {
+                if let Some(detail) = snapshot
+                    .connection
+                    .detail
+                    .as_deref()
+                    .filter(|_| !terminal_page)
+                {
                     ui.add_space(4.0);
-                    chat::wrapped_label(ui, RichText::new(detail).size(12.0).color(colors.muted));
+                    chat::wrapped_label(
+                        ui,
+                        RichText::new(colors.tr(detail))
+                            .size(12.0)
+                            .color(colors.muted),
+                    );
                 }
             });
     }
@@ -316,7 +458,10 @@ impl SupervisorApp {
         let Some(task) = selected_task else {
             return;
         };
-        let max_width = (viewport_width * 0.5).max(DRAWER_MIN_WIDTH);
+        let max_width =
+            (viewport_width - sidebar::width_for(self.user_config.sidebar_collapsed) - 400.0)
+                .min(viewport_width * 0.5)
+                .max(DRAWER_MIN_WIDTH);
         let mut close_clicked = false;
         egui::SidePanel::right(DRAWER_PANEL_ID)
             .resizable(true)
@@ -355,13 +500,15 @@ impl SupervisorApp {
             .ui_state
             .lock()
             .map_or_else(|_| Vec::new(), |state| state.open_task_windows());
-        let colors = super::pal(&palette_for(theme));
+        let colors = super::pal(&palette_for(theme)).with_language(self.user_config.language);
         for task_id in open_tasks {
             let task = snapshot.tasks.iter().find(|task| task.task_id == task_id);
             let viewport_id = chat::task_viewport_id(&task_id);
             let title = format!(
                 "{} · VibeMux",
-                task.map_or("Task observation", window_task_title)
+                task.map_or(colors.tr("Task observation"), |task| window_task_title(
+                    &colors, task
+                ))
             );
             let viewport = ViewportBuilder::default()
                 .with_title(title)
@@ -385,9 +532,9 @@ impl SupervisorApp {
                 );
                 let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) else {
                     egui::CentralPanel::default().show(child_ctx,|ui| {
-                        ui.heading("Task observation unavailable");
-                        ui.label("This task is absent from the current page or connection. Its execution has not been changed.");
-                        if ui.button("Refresh task").clicked() {
+                        ui.heading(colors.tr("Task observation unavailable"));
+                        ui.label(colors.tr("This task is absent from the current page or connection. Its execution has not been changed."));
+                        if ui.button(colors.tr("Refresh task")).clicked() {
                             actions.enqueue(SupervisorAction::LoadTask {task_id:task_id.clone()});
                             root_ctx.request_repaint();
                         }
@@ -403,7 +550,7 @@ impl SupervisorApp {
                     )
                     .show(child_ctx, |ui| {
                         let Ok(state) = state_arc.lock() else {
-                            ui.label("Task window state is temporarily unavailable.");
+                            ui.label(colors.tr("Task window state is temporarily unavailable."));
                             return;
                         };
                         state.with_task_window_selection_mut(&task_id, task, |selection| {
@@ -459,19 +606,13 @@ impl SupervisorApp {
         let snapshot = self.snapshot();
         let palette = palette_for(self.user_config.theme);
         super::apply_theme(ctx, &palette);
-        ctx.style_mut(|style| {
-            style
-                .text_styles
-                .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
-        });
-        let colors = super::pal(&palette);
+        let colors = super::pal(&palette).with_language(self.user_config.language);
         let target_options = composer::target_options(&self.view_model);
+        self.native_terminal.poll();
         self.persist_if_due();
         self.handle_keyboard(ctx);
 
-        let viewport_width = ctx
-            .input(|input| input.viewport().inner_rect.map(|rect| rect.width()))
-            .unwrap_or(1280.0);
+        let viewport_width = ctx.screen_rect().width();
         let active_page = self
             .ui_state
             .lock()
@@ -480,7 +621,10 @@ impl SupervisorApp {
             self.ui_state.lock().map_or((false, None), |state| {
                 (
                     state.welcome_active(),
-                    state.selected_task_id().map(str::to_owned),
+                    state
+                        .selected_task_id()
+                        .filter(|_| state.details_open())
+                        .map(str::to_owned),
                 )
             });
         let collapsed = self.user_config.sidebar_collapsed;
@@ -505,6 +649,7 @@ impl SupervisorApp {
                     match page {
                         MainPage::CoordinatorChat => state.show_coordinator_chat(),
                         MainPage::Agents => state.show_agents(),
+                        MainPage::ClaudeTerminal => state.show_claude_terminal(),
                     }
                 }
             }
@@ -522,6 +667,12 @@ impl SupervisorApp {
             }
             if actions.open_diagnostics {
                 self.diagnostics_open = true;
+            }
+            if actions.open_search {
+                self.quick_switcher.show(ctx);
+            }
+            if actions.open_shortcuts {
+                self.shortcuts_open = true;
             }
         }
 
@@ -615,6 +766,10 @@ impl SupervisorApp {
                         selected_agent_change = Some(Some(agent));
                     }
                 }
+                MainPage::ClaudeTerminal => {
+                    self.native_terminal
+                        .render(ui, &colors, snapshot.mode == SnapshotMode::Demo)
+                }
             });
         if let Some(selected) = selected_agent_change {
             if let Ok(mut state) = self.ui_state.lock() {
@@ -641,6 +796,9 @@ impl SupervisorApp {
             if let Some(size) = changes.window_size {
                 self.set_window_size(size);
             }
+            if let Some(language) = changes.language {
+                self.set_language(language);
+            }
         }
         if self.diagnostics_open {
             diagnostics::render(
@@ -652,6 +810,20 @@ impl SupervisorApp {
             );
         }
 
+        if self.quick_switcher.open {
+            let entries =
+                quick_search::entries(&snapshot, &self.view_model, self.user_config.language);
+            if let Some(action) =
+                self.quick_switcher
+                    .render(ctx, &colors, &entries, snapshot.next_cursor.is_some())
+            {
+                self.apply_navigation(ctx, action);
+            }
+        }
+        if self.shortcuts_open && shortcuts::render(ctx, &colors, &self.view_model) {
+            self.shortcuts_open = false;
+        }
+
         if self
             .ui_state
             .lock()
@@ -660,20 +832,20 @@ impl SupervisorApp {
             let modal = egui::Modal::new(egui::Id::new("discard_draft_prompt")).show(ctx, |ui| {
                 ui.set_width(320.0);
                 ui.label(
-                    RichText::new("Discard current draft?")
+                    RichText::new(colors.tr("Discard current draft?"))
                         .size(16.0)
                         .color(colors.txt),
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new("The draft has not been sent and will be removed.")
+                    RichText::new(colors.tr("The draft has not been sent and will be removed."))
                         .size(13.0)
                         .color(colors.muted),
                 );
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    let discard = ui.button("Discard").clicked();
-                    let keep = ui.button("Keep editing").clicked();
+                    let discard = ui.button(colors.tr("Discard")).clicked();
+                    let keep = ui.button(colors.tr("Keep editing")).clicked();
                     (discard, keep)
                 })
                 .inner
@@ -718,9 +890,10 @@ fn drawer_contents(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(window_task_title(task))
-                            .font(super::typography::display_font(
-                                ui.ctx(),
+                        RichText::new(window_task_title(colors, task))
+                            .font(super::typography::region_font(
+                                ui,
+                                colors.language,
                                 super::typography::TITLE_SIZE,
                             ))
                             .color(colors.txt),
@@ -753,16 +926,34 @@ fn connection_indicator(ui: &mut egui::Ui, colors: &C, status: ConnectionStatus)
     };
     let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 3.5, color);
-    ui.label(RichText::new(label).size(12.0).color(colors.muted));
+    ui.label(
+        RichText::new(colors.tr(label))
+            .size(12.0)
+            .color(colors.muted),
+    );
 }
 
-fn ime_composition_active(ctx: &egui::Context) -> bool {
+pub(super) fn ime_composition_active(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new("navigation_ime_composition");
+    let mut active = ctx.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+    if !ctx.input(|input| input.focused) {
+        active = false;
+    }
+    let mut has_event = false;
     ctx.input(|input| {
-        input
-            .events
-            .iter()
-            .any(|event| matches!(event, egui::Event::Ime(_)))
-    })
+        for event in &input.events {
+            if let egui::Event::Ime(event) = event {
+                has_event = true;
+                match event {
+                    egui::ImeEvent::Enabled => active = false,
+                    egui::ImeEvent::Preedit(text) => active = !text.is_empty(),
+                    egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled => active = false,
+                }
+            }
+        }
+    });
+    ctx.data_mut(|data| data.insert_temp(id, active));
+    active || has_event
 }
 
 fn consume_due_persistence(
@@ -781,9 +972,9 @@ fn consume_due_persistence(
     )
 }
 
-fn window_task_title(task: &TaskView) -> &str {
+fn window_task_title<'a>(colors: &C, task: &'a TaskView) -> &'a str {
     if task.title.trim().is_empty() {
-        "Untitled task"
+        colors.tr("Untitled task")
     } else {
         &task.title
     }
@@ -934,10 +1125,14 @@ mod tests {
             actions: UiActionQueue::default(),
             settings_open: false,
             diagnostics_open: false,
+            quick_switcher: QuickSwitcher::default(),
+            shortcuts_open: false,
             last_size: [0.0, 0.0],
             pending_write: None,
             pending_resize: None,
             composer_panel_height: 0.0,
+            native_terminal: super::super::native_terminal::EmbeddedTerminal::default(),
+            persist_preferences: false,
         }
     }
 
@@ -1021,6 +1216,244 @@ mod tests {
         );
     }
 
+    fn navigation_frame(
+        context: &egui::Context,
+        app: &mut SupervisorApp,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> egui::FullOutput {
+        app.snapshot.write().unwrap().mode = SnapshotMode::Demo;
+        context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(960.0, 600.0),
+                )),
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |context| app.render_frame(context),
+        )
+    }
+
+    fn navigation_key(
+        context: &egui::Context,
+        app: &mut SupervisorApp,
+        key: Key,
+        modifiers: egui::Modifiers,
+    ) {
+        navigation_frame(
+            context,
+            app,
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+    }
+
+    #[test]
+    fn claude_terminal_page_is_opt_in_and_keeps_keyboard_focus() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        app.show_claude_terminal();
+        let output = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.job.text == "Start Claude")));
+        assert_eq!(app.native_terminal.phase(), "not_started");
+        context.memory_mut(|memory| {
+            memory.request_focus(egui::Id::new(
+                super::super::native_terminal::TERMINAL_WIDGET_ID,
+            ))
+        });
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        assert!(!app.quick_switcher.open);
+        navigation_key(&context, &mut app, Key::Escape, egui::Modifiers::NONE);
+        assert_eq!(
+            app.ui_state.lock().unwrap().page(),
+            MainPage::ClaudeTerminal
+        );
+        assert_eq!(app.native_terminal.phase(), "not_started");
+        assert!(app.take_supervisor_actions().is_empty());
+    }
+
+    #[test]
+    fn quick_search_from_focused_composer_opens_exact_task_without_sending_draft() {
+        let (context, mut app) = focused_composer_app();
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        assert!(app.quick_switcher.open);
+        navigation_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Text("task_2".into())],
+            egui::Modifiers::NONE,
+        );
+        navigation_key(&context, &mut app, Key::Enter, egui::Modifiers::NONE);
+        assert!(!app.quick_switcher.open);
+        let state = app.ui_state.lock().unwrap();
+        assert_eq!(state.selected_task_id(), Some("task_2"));
+        assert!(state.details_open());
+        assert_eq!(state.composer_draft(), "draft");
+        assert!(!state.send_enabled());
+        assert!(!state.not_sent_hint_visible(0.0));
+        drop(state);
+        assert_eq!(
+            app.take_supervisor_actions(),
+            vec![SupervisorAction::LoadTask {
+                task_id: "task_2".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_search_enter_is_inert_and_escape_only_closes_the_palette() {
+        let (context, mut app) = focused_composer_app();
+        assert!(app.select_task("task_1"));
+        let _ = app.take_supervisor_actions();
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        navigation_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Text("no_matching_task".into())],
+            egui::Modifiers::NONE,
+        );
+        navigation_key(&context, &mut app, Key::Enter, egui::Modifiers::NONE);
+        assert!(app.quick_switcher.open);
+        navigation_key(&context, &mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.quick_switcher.open);
+        assert!(app.ui_state.lock().unwrap().details_open());
+        assert_eq!(app.ui_state.lock().unwrap().composer_draft(), "draft");
+        assert!(app.take_supervisor_actions().is_empty());
+    }
+
+    #[test]
+    fn quick_search_arrows_choose_the_second_task() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        navigation_key(&context, &mut app, Key::ArrowDown, egui::Modifiers::NONE);
+        navigation_key(&context, &mut app, Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(
+            app.ui_state.lock().unwrap().selected_task_id(),
+            Some("task_2")
+        );
+    }
+
+    #[test]
+    fn quick_search_tab_focus_determines_the_enter_action() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        // Let egui finish the new modal's invisible sizing pass before Tab.
+        let _ = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(egui::Id::new(super::super::quick_switcher::SEARCH_INPUT_ID))
+        );
+        let second_result = egui::Id::new(("quick_switcher_result", 1_usize));
+        // The native scroll region is itself a Tab stop before the rows.
+        for _ in 0..4 {
+            navigation_key(&context, &mut app, Key::Tab, egui::Modifiers::NONE);
+            if context.memory(|memory| memory.focused()) == Some(second_result) {
+                break;
+            }
+        }
+        assert_eq!(
+            context.memory(|memory| memory.focused()),
+            Some(second_result)
+        );
+        navigation_key(&context, &mut app, Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(
+            app.ui_state.lock().unwrap().selected_task_id(),
+            Some("task_2")
+        );
+    }
+
+    #[test]
+    fn quick_search_fits_the_minimum_window_with_a_partial_task_list() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        app.snapshot.write().unwrap().next_cursor = Some("next_page".into());
+        app.show_quick_switcher(&context);
+        let _ = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        let _ = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        let bounds =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, 600.0)).shrink(12.0);
+        let panel = context
+            .memory(|memory| memory.area_rect(egui::Id::new("quick_switcher")))
+            .expect("quick switcher panel");
+        assert!(bounds.contains_rect(panel), "{panel:?}");
+        let query = context
+            .read_response(egui::Id::new(super::super::quick_switcher::SEARCH_INPUT_ID))
+            .expect("search field");
+        assert!(bounds.contains_rect(query.rect));
+    }
+
+    #[test]
+    fn shortcuts_work_while_typing_and_new_task_preserves_a_nonempty_draft() {
+        let (context, mut app) = focused_composer_app();
+        navigation_key(&context, &mut app, Key::B, egui::Modifiers::CTRL);
+        assert!(app.user_config.sidebar_collapsed);
+        navigation_key(&context, &mut app, Key::N, egui::Modifiers::CTRL);
+        assert!(app.ui_state.lock().unwrap().discard_prompt_open());
+        navigation_key(&context, &mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.ui_state.lock().unwrap().discard_prompt_open());
+        assert_eq!(app.ui_state.lock().unwrap().composer_draft(), "draft");
+    }
+
+    #[test]
+    fn navigation_waits_for_ime_commit_across_frames() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        navigation_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Preedit("draft".into()))],
+            egui::Modifiers::NONE,
+        );
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        assert!(!app.quick_switcher.open);
+        navigation_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Disabled)],
+            egui::Modifiers::NONE,
+        );
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        assert!(app.quick_switcher.open);
+    }
+
+    #[test]
+    fn enabling_ime_without_composing_does_not_block_shortcuts() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        let _ = navigation_frame(
+            &context,
+            &mut app,
+            vec![egui::Event::Ime(egui::ImeEvent::Enabled)],
+            egui::Modifiers::NONE,
+        );
+        navigation_key(&context, &mut app, Key::K, egui::Modifiers::CTRL);
+        assert!(app.quick_switcher.open);
+    }
+
+    #[test]
+    fn shortcut_help_escape_preserves_the_drawer() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        app.select_task("task_1");
+        navigation_key(&context, &mut app, Key::Slash, egui::Modifiers::CTRL);
+        assert!(app.shortcuts_open);
+        navigation_key(&context, &mut app, Key::Escape, egui::Modifiers::NONE);
+        assert!(!app.shortcuts_open);
+        assert!(app.ui_state.lock().unwrap().details_open());
+    }
+
     fn render_at(
         app: &mut SupervisorApp,
         width: f32,
@@ -1054,6 +1487,110 @@ mod tests {
             )
             .expect("sidebar panel");
             assert!((panel.rect.width() - expected).abs() < 1.0, "{collapsed}");
+        }
+    }
+
+    #[test]
+    fn language_switch_preserves_draft_task_and_independent_windows() {
+        let mut app = test_app();
+        app.snapshot.write().unwrap().mode = SnapshotMode::Demo;
+        app.select_task("task_1");
+        app.open_task_window("task_2");
+        app.ui_state
+            .lock()
+            .unwrap()
+            .set_composer_draft("Keep {draft} 東京".into());
+        app.set_language(Language::Chinese);
+        let (_, output) = render_at(&mut app, 1280.0, 800.0);
+        let text: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.iter().any(|text| text == "工作区动态"));
+        assert!(text.iter().any(|text| text == "新建任务"));
+        let state = app.ui_state.lock().unwrap();
+        assert_eq!(state.composer_draft(), "Keep {draft} 東京");
+        assert_eq!(state.selected_task_id(), Some("task_1"));
+        assert!(state.task_window_is_open("task_2"));
+        assert!(!state.send_enabled());
+        drop(state);
+        app.set_language(Language::English);
+        let (_, output) = render_at(&mut app, 1280.0, 800.0);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Workspace updates")));
+    }
+
+    #[test]
+    fn chinese_and_english_queries_find_the_same_local_action() {
+        let app = test_app();
+        let entries = quick_search::entries(&app.snapshot(), &app.view_model, Language::Chinese);
+        for query in ["设置", "Settings"] {
+            let results = quick_search::search(&entries, query);
+            assert_eq!(
+                results.first().map(|entry| &entry.action),
+                Some(&NavigationAction::Settings)
+            );
+        }
+        let tasks = quick_search::search(&entries, "task_1");
+        assert_eq!(tasks[0].label, app.snapshot().tasks[0].title);
+    }
+
+    #[test]
+    fn settings_language_button_changes_the_rendered_interface() {
+        let context = egui::Context::default();
+        let mut app = test_app();
+        app.show_settings();
+        let _ = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        let output = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Chinese (Simplified)" => {
+                    Some(text.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("Chinese language choice");
+        for pressed in [true, false] {
+            let _ = navigation_frame(
+                &context,
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                egui::Modifiers::NONE,
+            );
+        }
+        assert_eq!(app.user_config.language, Language::Chinese);
+        let output = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "界面语言")));
+    }
+
+    #[test]
+    fn shortcut_help_fits_minimum_window_in_both_languages() {
+        for language in Language::ALL {
+            let context = egui::Context::default();
+            let mut app = test_app();
+            app.set_language(language);
+            app.show_shortcuts();
+            for _ in 0..3 {
+                let _ = navigation_frame(&context, &mut app, vec![], egui::Modifiers::NONE);
+            }
+            let panel = context
+                .memory(|memory| memory.area_rect(egui::Id::new("keyboard_shortcuts")))
+                .unwrap();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, 600.0));
+            assert!(screen.contains_rect(panel), "{language:?}: {panel:?}");
         }
     }
 

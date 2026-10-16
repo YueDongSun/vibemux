@@ -19,6 +19,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{ThemeId, palette_for};
+use crate::localization::Language;
 
 /// On-disk schema version. Bump when the JSON layout changes.
 pub const SCHEMA_VERSION: u16 = 1;
@@ -29,9 +30,8 @@ pub struct WindowSize {
     pub height: u32,
 }
 
-/// Persisted across launches. Only `theme` and `window_size` are
-/// honored on write today; backend choice and telemetry opt-in are
-/// deliberately not persisted in this slice.
+/// Local presentation preferences persisted across launches. Backend choice
+/// and telemetry opt-in are deliberately not persisted in this slice.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UserConfig {
     pub schema_version: u16,
@@ -40,6 +40,8 @@ pub struct UserConfig {
     /// Sidebar collapsed to its icon rail (ADR 030 §7).
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    #[serde(default)]
+    pub language: Language,
 }
 
 impl Default for UserConfig {
@@ -52,6 +54,7 @@ impl Default for UserConfig {
                 height: 800,
             },
             sidebar_collapsed: false,
+            language: Language::English,
         }
     }
 }
@@ -269,6 +272,37 @@ mod tests {
         let config = load_user_config_at(&path);
         assert_eq!(config.theme, ThemeId::Claude);
         assert!(!config.sidebar_collapsed);
+        assert_eq!(config.language, Language::English);
+    }
+
+    #[test]
+    fn chinese_language_round_trips_with_existing_preferences() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        let config = UserConfig {
+            language: Language::Chinese,
+            theme: ThemeId::Nord,
+            sidebar_collapsed: true,
+            ..Default::default()
+        };
+        save_user_config_at(&config, &path).expect("save");
+        assert_eq!(load_user_config_at(&path), config);
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(json["language"], "zh_cn");
+        assert_eq!(json["schema_version"], 1);
+    }
+
+    #[test]
+    fn an_unknown_language_falls_back_without_losing_the_theme_or_layout() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        fs::write(&path, r#"{"schema_version":1,"theme":"gruvbox","window_size":{"width":960,"height":600},"sidebar_collapsed":true,"language":"future_locale"}"#).unwrap();
+        let config = load_user_config_at(&path);
+        assert_eq!(config.language, Language::English);
+        assert_eq!(config.theme, ThemeId::Gruvbox);
+        assert!(config.sidebar_collapsed);
+        assert_eq!(config.window_size.width, 960);
     }
 
     #[test]

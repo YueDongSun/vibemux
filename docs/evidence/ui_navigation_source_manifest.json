@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "9e738f12c6dae4d97a5a567a0d261427c4c6fb86",
+  "branch": "codex/ui_navigation",
+  "toolchain": "1.95.0-x86_64-pc-windows-msvc",
+  "platform": "Microsoft Windows NT 10.0.26300.0",
+  "files": [
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend_preview.rs",
+      "sha256": "2fd5651191386890b4263551dcb42c28ff83e2fc3749bb75e2f600e416e5439c"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/chat.rs",
+      "sha256": "2f118aadd31174121ae4210ab373cea307271424f6e8d5c7ae65714726ca81b1"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/design.rs",
+      "sha256": "ced1092e4c1fa23ff519e0b340673c9f5116f45b2bbbfa676028cd9983e347fe"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/mod.rs",
+      "sha256": "b88b761a98d277f16ca9fc184139180af547dd1ffd0d0549c49c1c3a3dde39b1"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/quick_switcher.rs",
+      "sha256": "2e12e37c153daa22eb338e5f59c16377fc27f021ef9a3a28e2f8401d48837a5f"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/shortcuts.rs",
+      "sha256": "2d42756ba29d4abe1e787ce605935ebd2557eaa62e343fc6b96db01ecdbf3f91"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/sidebar.rs",
+      "sha256": "e4f6cdb1aed9cc8f99fb4840ac9aa2158d4ee064d0f55784d717f07c77f6b532"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/supervisor_app.rs",
+      "sha256": "3b6839fe4fe739545d5d505e0a65619169c2f5a9211f7fbef6ad7ee2717573b3"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/task_detail.rs",
+      "sha256": "b880fecade1892c0eef7101a34cce1f7b2490203f86f91447c560b9aa8ec1d38"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/lib.rs",
+      "sha256": "a1dea0a897c3e64d54f40452811e89f9949b0941b14e1b7db620bb832876983c"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/quick_search.rs",
+      "sha256": "f63f953ad0246e92744c25c0f1fce5102995efc6377f58de3b757479b43eb472"
+    }
+  ],
+  "preview_binary_sha256": "a780c67e1361d5b09f32e7856c53bb0856db06a459f2328598b2504436039353",
+  "retained_previews": [
+    {
+      "path": "docs/frontend_previews/ui_navigation_switcher.png",
+      "source_capture": "switcher_claude_light_1280_800_1.png",
+      "sha256": "4d027e29c5724998250249b06c9a8c56545380ea684abc65c05afa890532c3ab"
+    },
+    {
+      "path": "docs/frontend_previews/ui_navigation_drawer.png",
+      "source_capture": "drawer_claude_light_960_600_1.png",
+      "sha256": "717fd84790e6e38a820cc8614ea1d25c6cf765b0a825bb995788e5c43f8d063d"
+    },
+    {
+      "path": "docs/frontend_previews/ui_navigation_shortcuts.png",
+      "source_capture": "shortcuts_claude_960_600_1.png",
+      "sha256": "7779d27e2a921f01f5c79391a3abc358f0af2504df5edaf95508bc4ca3dd3134"
+    }
+  ]
+}

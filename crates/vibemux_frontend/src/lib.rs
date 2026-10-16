@@ -15,9 +15,11 @@
 pub mod dsh_tui;
 pub mod gui;
 mod live_app;
+pub mod localization;
 #[cfg(feature = "gui_screenshot")]
 pub mod preview;
 pub mod probe_env;
+mod quick_search;
 pub mod supervisor_client;
 mod supervisor_mapping;
 pub mod supervisor_model;

@@ -17,7 +17,8 @@ pub fn render(
     snapshot: &SupervisorSnapshot,
     view_model: &ViewModel,
 ) {
-    egui::Window::new("Diagnostics")
+    egui::Window::new(colors.tr("Diagnostics"))
+        .id(egui::Id::new("workspace_diagnostics"))
         .open(open)
         .collapsible(false)
         .default_width(520.0)
@@ -27,7 +28,7 @@ pub fn render(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     if snapshot.mode == crate::supervisor_model::SnapshotMode::Demo {
-                        ui.label(RichText::new("DEMO DATA").size(11.0).strong().color(colors.warn));
+                        ui.label(RichText::new(colors.tr("DEMO DATA")).size(11.0).strong().color(colors.warn));
                         ui.add_space(8.0);
                     }
                     section(ui, colors, "SUPERVISOR");
@@ -35,11 +36,11 @@ pub fn render(
                         ui,
                         colors,
                         "Connection",
-                        snapshot.connection.status.label(),
+                        colors.tr(snapshot.connection.status.label()),
                         connection_color(colors, snapshot.connection.status),
                     );
                     if let Some(detail) = snapshot.connection.detail.as_deref() {
-                        wrapped_label(ui, RichText::new(detail).size(12.0).color(colors.muted));
+                        wrapped_label(ui, RichText::new(colors.tr(detail)).size(12.0).color(colors.muted));
                     }
                     value_row(ui, colors, "Project", &snapshot.project_name, colors.txt);
                     value_row(ui, colors, "Tasks in page", &snapshot.tasks.len().to_string(), colors.txt);
@@ -47,7 +48,7 @@ pub fn render(
                         ui,
                         colors,
                         "More tasks",
-                        if snapshot.next_cursor.is_some() { "available" } else { "none reported" },
+                        colors.tr(if snapshot.next_cursor.is_some() { "available" } else { "none reported" }),
                         colors.muted,
                     );
                     ui.add_space(14.0);
@@ -69,14 +70,14 @@ pub fn render(
 
                     section(ui, colors, "ALLOWLISTED ENVIRONMENT");
                     if view_model.env_allowlist.is_empty() {
-                        ui.label(RichText::new("No allowlisted environment values were reported.").size(12.0).color(colors.muted));
+                        ui.label(RichText::new(colors.tr("No allowlisted environment values were reported.")).size(12.0).color(colors.muted));
                     } else {
                         for (key, value) in &view_model.env_allowlist {
                             value_row(
                                 ui,
                                 colors,
                                 key,
-                                if value.is_some() { "set" } else { "unset" },
+                                colors.tr(if value.is_some() { "set" } else { "unset" }),
                                 colors.muted,
                             );
                         }
@@ -84,7 +85,7 @@ pub fn render(
                     ui.add_space(12.0);
                     wrapped_label(
                         ui,
-                        RichText::new("Diagnostics show probe summaries and allowlisted variable presence; values and prompt content are not displayed.")
+                        RichText::new(colors.tr("Diagnostics show probe summaries and allowlisted variable presence; values and prompt content are not displayed."))
                             .size(12.0)
                             .color(colors.faint),
                     );
@@ -93,14 +94,23 @@ pub fn render(
 }
 
 fn section(ui: &mut Ui, colors: &C, label: &str) {
-    ui.label(RichText::new(label).size(11.0).strong().color(colors.faint));
+    ui.label(
+        RichText::new(colors.tr(label))
+            .size(11.0)
+            .strong()
+            .color(colors.faint),
+    );
     ui.add_space(5.0);
 }
 
 fn value_row(ui: &mut Ui, colors: &C, label: &str, value: &str, value_color: egui::Color32) {
     ui.horizontal_top(|ui| {
         ui.set_min_width(ui.available_width());
-        ui.label(RichText::new(label).size(12.0).color(colors.muted));
+        ui.label(
+            RichText::new(colors.tr(label))
+                .size(12.0)
+                .color(colors.muted),
+        );
         ui.add_space(8.0);
         wrapped_label(
             ui,

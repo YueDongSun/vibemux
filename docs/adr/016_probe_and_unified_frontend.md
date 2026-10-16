@@ -2,6 +2,11 @@
 
 Status: Accepted for pre-alpha implementation
 
+Amended by [ADR 036](036_interactive_claude_terminal.md) for an explicitly
+started Claude terminal: a generic VT engine renders a contained PTY session
+inside the GUI. Historical external-only restrictions below describe the
+earlier frontend milestone. Terminal content remains presentation data.
+
 ## Context
 
 VibeMux currently diagnoses local agent availability, launcher compatibility, local gateway routing, CC Switch health, and A2A loopback behavior through ad hoc session commands. Those checks produced useful evidence, but they are not repeatable product behavior and cannot feed a stable UI.

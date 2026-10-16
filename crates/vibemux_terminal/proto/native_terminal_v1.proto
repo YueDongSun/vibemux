@@ -1,0 +1,50 @@
+syntax = "proto3";
+package vibemux.native_terminal.v1;
+
+message Command {
+  uint32 version = 1;
+  oneof operation {
+    Open open = 2;
+    bytes input = 3;
+    Size resize = 4;
+    bool close = 5;
+    sint32 scroll = 6;
+  }
+}
+message Open {
+  string project_root = 1;
+  string executable = 2;
+  string git_executable = 3;
+  Size size = 4;
+  bool fixture = 5;
+}
+message Size { uint32 columns = 1; uint32 rows = 2; }
+message Cell {
+  string text = 1;
+  fixed32 foreground = 2;
+  fixed32 background = 3;
+  uint32 flags = 4;
+}
+message Screen {
+  Size size = 1;
+  repeated Cell cells = 2;
+  uint32 cursor_row = 3;
+  uint32 cursor_column = 4;
+  bool cursor_visible = 5;
+  bool application_cursor = 6;
+  bool bracketed_paste = 7;
+}
+message Notice {
+  uint32 version = 1;
+  oneof payload {
+    Screen screen = 2;
+    Status status = 3;
+  }
+}
+message Status {
+  string phase = 1;
+  string code = 2;
+  string worktree = 3;
+  string branch = 4;
+  uint32 process_id = 5;
+}

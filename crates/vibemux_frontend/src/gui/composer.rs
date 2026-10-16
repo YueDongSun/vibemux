@@ -52,12 +52,15 @@ pub fn target_options(view_model: &ViewModel) -> Vec<TargetOption> {
 }
 
 #[must_use]
-pub fn caption_text(target: &ComposerTarget) -> String {
+pub fn caption_text(target: &ComposerTarget, language: crate::localization::Language) -> String {
     let prefix = match target {
-        ComposerTarget::Coordinator => "Draft only".to_string(),
-        ComposerTarget::Harness(name) => format!("Draft for {name}"),
+        ComposerTarget::Coordinator => language.text("Draft only").to_string(),
+        ComposerTarget::Harness(name) => language.format("Draft for {name}", &[("name", name)]),
     };
-    format!("{prefix} · coordinator chat is not connected")
+    language.format(
+        "{draft} · coordinator chat is not connected",
+        &[("draft", &prefix)],
+    )
 }
 
 pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[TargetOption]) {
@@ -79,10 +82,10 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
                         .id(egui::Id::new(COMPOSER_TEXT_ID))
                         .desired_width(f32::INFINITY)
                         .desired_rows(2)
-                        .hint_text(RichText::new(COMPOSER_PLACEHOLDER).color(c.muted))
+                        .hint_text(RichText::new(c.tr(COMPOSER_PLACEHOLDER)).color(c.muted))
                         .frame(false)
                         .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
-                        .font(egui::TextStyle::Body),
+                        .font(super::typography::body_font(ui)),
                 )
             })
             .inner;
@@ -113,7 +116,7 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
                 target_chip(ui, c, state, options);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let response = send_button(ui, c, state.send_enabled())
-                        .on_hover_text(state.send_disabled_reason());
+                        .on_hover_text(c.tr(state.send_disabled_reason()));
                     if response.clicked() {
                         attempt_send(state, now);
                     }
@@ -125,9 +128,9 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
     let hint = state.not_sent_hint_visible(now);
     ui.label(
         RichText::new(if hint {
-            NOT_SENT_TEXT.to_string()
+            c.tr(NOT_SENT_TEXT).to_string()
         } else {
-            caption_text(state.composer_target())
+            caption_text(state.composer_target(), c.language)
         })
         .size(11.5)
         .color(if hint { c.warn } else { c.muted }),
@@ -161,7 +164,8 @@ fn send_button(ui: &mut Ui, c: &C, enabled: bool) -> egui::Response {
         .circle_filled(rect.center(), SEND_BUTTON_SIZE / 2.0, fill);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)));
     design::icon(&mut child, Icon::Send, arrow, 16.0);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Send"));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, c.tr("Send")));
     response
 }
 
@@ -169,7 +173,13 @@ fn target_chip(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Tar
     let current = options
         .iter()
         .find(|option| &option.target == state.composer_target())
-        .map_or("Coordinator", |option| option.label.as_str())
+        .map_or(c.tr("Coordinator"), |option| {
+            if option.target == ComposerTarget::Coordinator {
+                c.tr("Coordinator")
+            } else {
+                option.label.as_str()
+            }
+        })
         .to_string();
     egui::ComboBox::from_id_salt("composer_target")
         .selected_text(RichText::new(current).size(12.5).color(c.muted))
@@ -178,10 +188,17 @@ fn target_chip(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Tar
                 let selected = &option.target == state.composer_target();
                 let response = ui.add_enabled(
                     option.enabled,
-                    egui::Button::selectable(selected, option.label.as_str()),
+                    egui::Button::selectable(
+                        selected,
+                        if option.target == ComposerTarget::Coordinator {
+                            c.tr("Coordinator")
+                        } else {
+                            option.label.as_str()
+                        },
+                    ),
                 );
                 let response = match option.reason.as_deref() {
-                    Some(reason) => response.on_disabled_hover_text(reason),
+                    Some(reason) => response.on_disabled_hover_text(c.tr(reason)),
                     None => response,
                 };
                 if response.clicked() {
@@ -249,11 +266,17 @@ mod tests {
     #[test]
     fn caption_always_says_the_draft_is_not_sent() {
         assert_eq!(
-            caption_text(&ComposerTarget::Coordinator),
+            caption_text(
+                &ComposerTarget::Coordinator,
+                crate::localization::Language::English
+            ),
             "Draft only · coordinator chat is not connected"
         );
         assert_eq!(
-            caption_text(&ComposerTarget::Harness("Codex".to_string())),
+            caption_text(
+                &ComposerTarget::Harness("Codex".to_string()),
+                crate::localization::Language::English
+            ),
             "Draft for Codex · coordinator chat is not connected"
         );
     }

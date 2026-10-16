@@ -21,6 +21,7 @@ pub enum MainPage {
     #[default]
     CoordinatorChat,
     Agents,
+    ClaudeTerminal,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -118,6 +119,13 @@ impl SupervisorUiState {
     pub fn show_agents(&mut self) {
         self.welcome_active = false;
         self.page = MainPage::Agents;
+    }
+
+    pub fn show_claude_terminal(&mut self) {
+        self.welcome_active = false;
+        self.page = MainPage::ClaudeTerminal;
+        self.selected_agent = None;
+        self.close_details();
     }
 
     #[must_use]

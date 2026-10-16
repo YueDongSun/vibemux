@@ -14,6 +14,7 @@ pub enum Icon {
     SidebarToggle,
     Send,
     Close,
+    Search,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -28,6 +29,10 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
         )
     };
     match kind {
+        Icon::Search => {
+            painter.circle_stroke(position(0.4, 0.4), rect.width() * 0.3, stroke);
+            painter.line_segment([position(0.63, 0.63), position(0.95, 0.95)], stroke);
+        }
         Icon::Chat => {
             painter.rect_stroke(rect, 3, stroke, egui::StrokeKind::Inside);
             painter.line_segment([position(0.22, 0.35), position(0.78, 0.35)], stroke);
@@ -84,9 +89,9 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
     }
 }
 
-pub const COMPOSER_RADIUS: u8 = 20;
-pub const BUTTON_RADIUS: u8 = 8;
-pub const CARD_RADIUS: u8 = 12;
+pub const COMPOSER_RADIUS: u8 = 24;
+pub const BUTTON_RADIUS: u8 = 12;
+pub const CARD_RADIUS: u8 = 16;
 
 /// Fade `rect` from transparent at the top to `color` at the bottom.
 pub fn paint_bottom_fade(painter: &Painter, rect: Rect, color: Color32) {
@@ -152,6 +157,7 @@ pub fn paint_focus_ring(ui: &Ui, response: &Response, radius: u8, c: &C) {
 
 /// A square icon button with a tooltip and an explicit, stable `id`.
 pub fn icon_button(ui: &mut Ui, c: &C, kind: Icon, tooltip: &str, id: egui::Id) -> Response {
+    let tooltip = c.tr(tooltip);
     let (_, rect) = ui.allocate_space(vec2(ICON_BUTTON_SIZE, ICON_BUTTON_SIZE));
     let response = ui.interact(rect, id, Sense::click());
     if response.hovered() || response.has_focus() {
@@ -192,10 +198,14 @@ pub fn composer_frame(c: &C) -> egui::Frame {
 }
 
 pub fn nav_row(ui: &mut Ui, c: &C, label: &str, kind: Icon, selected: bool) -> bool {
+    let label = c.tr(label);
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
     if selected || response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 7, if selected { c.accent_bg } else { c.raised });
+        ui.painter().rect_filled(
+            rect,
+            BUTTON_RADIUS,
+            if selected { c.accent_bg } else { c.raised },
+        );
     }
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -211,7 +221,7 @@ pub fn nav_row(ui: &mut Ui, c: &C, label: &str, kind: Icon, selected: bool) -> b
     child.add_space(7.0);
     child.label(
         RichText::new(label)
-            .size(14.0)
+            .size(super::typography::CONTROL_SIZE)
             .color(if selected { c.txt } else { c.muted }),
     );
     paint_focus_ring(ui, &response, BUTTON_RADIUS, c);
@@ -222,11 +232,53 @@ pub fn nav_row(ui: &mut Ui, c: &C, label: &str, kind: Icon, selected: bool) -> b
 }
 
 pub fn quiet_button(ui: &mut Ui, c: &C, label: &str) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).size(13.0).color(c.muted))
-            .frame(false)
-            .corner_radius(6),
-    )
+    let response = ui.add(
+        egui::Button::new(RichText::new(c.tr(label)).size(12.0).color(c.txt))
+            .fill(c.raised)
+            .stroke(Stroke::new(1.0, c.border))
+            .corner_radius(u8::MAX)
+            .min_size(vec2(0.0, 30.0)),
+    );
+    paint_focus_ring(ui, &response, u8::MAX, c);
+    response
+}
+
+const COPY_FEEDBACK_SECONDS: f64 = 1.5;
+pub const COPY_BUTTON_WIDTH: f32 = 54.0;
+
+/// Copy only the explicitly clicked field; feedback is ephemeral and scoped
+/// to its value, so selecting another task cannot retain a stale success hint.
+pub fn copy_button(ui: &mut Ui, c: &C, label: &str, value: &str) -> Response {
+    let id = ui.make_persistent_id(("copy_field", label, value));
+    let now = ui.input(|input| input.time);
+    let copied = ui
+        .data(|data| data.get_temp::<f64>(id))
+        .is_some_and(|started| now >= started && now - started < COPY_FEEDBACK_SECONDS);
+    let response = ui
+        .push_id(id, |ui| {
+            ui.add_sized(
+                [COPY_BUTTON_WIDTH, 22.0],
+                egui::Button::new(
+                    RichText::new(c.tr(if copied { "Copied" } else { "Copy" }))
+                        .size(11.0)
+                        .color(if copied { c.accent_text } else { c.muted }),
+                )
+                .frame(true)
+                .corner_radius(u8::MAX),
+            )
+        })
+        .inner
+        .on_hover_text(c.format("Copy {label}", &[("label", c.tr(label))]));
+    if response.clicked() {
+        ui.ctx().copy_text(value.to_string());
+        ui.data_mut(|data| data.insert_temp(id, now));
+        ui.ctx().request_repaint();
+    }
+    if copied {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    response
 }
 
 pub fn status(ui: &mut Ui, c: &C, state: &str) {
@@ -235,7 +287,7 @@ pub fn status(ui: &mut Ui, c: &C, state: &str) {
         let (rect, _) = ui.allocate_exact_size(vec2(7.0, 7.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 3.0, color);
         ui.label(
-            RichText::new(state_text(state))
+            RichText::new(c.tr(&state_text(state)))
                 .size(12.0)
                 .color(state_text_color(c, state)),
         );
@@ -275,6 +327,72 @@ pub fn state_text(state: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_copy_requires_a_click_and_preserves_the_exact_unicode_value() {
+        let context = egui::Context::default();
+        let colors = super::super::pal(&crate::theme::palette_for(
+            crate::theme::ThemeId::ClaudeLight,
+        ));
+        let value = "feature/Überprüfung 東京";
+        let mut rect = Rect::NOTHING;
+        let initial = context.run(
+            egui::RawInput {
+                time: Some(0.0),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    rect = copy_button(ui, &colors, "Branch", value).rect;
+                });
+            },
+        );
+        assert!(initial.platform_output.commands.is_empty());
+        let position = rect.center();
+        let render = |events: Vec<egui::Event>, time| {
+            context.run(
+                egui::RawInput {
+                    events,
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        copy_button(ui, &colors, "Branch", value);
+                    });
+                },
+            )
+        };
+        render(
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            0.1,
+        );
+        let output = render(
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            0.2,
+        );
+        assert!(
+            matches!(output.platform_output.commands.as_slice(), [egui::OutputCommand::CopyText(text)] if text == value)
+        );
+        let feedback = render(vec![], 0.3);
+        assert!(feedback.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Copied")));
+        let expired = render(vec![], 2.0);
+        assert!(!expired.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Copied")));
+        assert!(expired.platform_output.commands.is_empty());
+    }
 
     #[test]
     fn spark_has_eight_rays_alternating_long_and_short() {

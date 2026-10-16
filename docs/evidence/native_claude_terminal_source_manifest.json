@@ -1,0 +1,469 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-10-14T12:21:30.408745+00:00",
+  "base_head": "9e738f12c6dae4d97a5a567a0d261427c4c6fb86",
+  "branch": "codex/claude_tui_gui",
+  "state": "local_uncommitted",
+  "readiness": "conditional_pre_alpha",
+  "environment": {
+    "os": "Windows-10-10.0.26300-SP0",
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "configured_msrv": "1.85",
+    "msrv_verified": false
+  },
+  "sources": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "38ab76bd6cb14616f112266fb17c83f1d77edab66f3b2378843ba04ca50ae5f2"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "9b8e3b58b38147f143bba83ec17b7c7602ce0f9981cff73168d3f8bc84b6bcea"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "4f7771cb6b59fc34543ae7415f850a4dc65ef5b1e23e62147f1a6eb43bcc0c8e"
+    },
+    {
+      "path": "config/theme_palettes.json",
+      "sha256": "dca6600c614f31c44daeddf5de3dd8f2c7853e41ebdb35cafde99eeb4fa0c4ce"
+    },
+    {
+      "path": "crates/vibemux_frontend/Cargo.toml",
+      "sha256": "d04bbf4848cd0fc933aecf2e263af02405c49892120b54f4c2bfbd2bbe2075a8"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_dsh_tui.rs",
+      "sha256": "14111ba55c7927e8b0462dc42fec8ea3ad67b5fc2ac80fa0c3e8e12ab068b654"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend.rs",
+      "sha256": "588e6bbf879159429bdab03294a4c3e2ac1334a62a08822be5f2ae9d61ed72bc"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend_dump.rs",
+      "sha256": "475f480acc2ec596062bd03e97d5ce6cdeb70e73f6766920feea2719d5cbe50e"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend_preview.rs",
+      "sha256": "029f326812236b8f9ef8d454e7bba3507574c3f5904424cae7765db9d1bc6518"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/bin/vibemux_frontend_tui.rs",
+      "sha256": "bb502a3070bec26f0d2d06d358db053a149b2df0dfce768d0f8d5003f27d3849"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/dsh_tui/mod.rs",
+      "sha256": "210350d3afa59398478b40eec053c78b49320f4aad3c7f45b69b4db6a5431406"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/dsh_tui/render.rs",
+      "sha256": "68f62af458231f15185b7cdf4b2c6939dd26ea9d62c8c9bd11b74b743bdb7b73"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/agents.rs",
+      "sha256": "a898c9781050c932268989723b5e7b4ef4711586d6c8d4cec0575a2246f0f129"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/chat.rs",
+      "sha256": "f3bbcc0f09b9c20b6a08320de0a871cfe9a14559e0fec62a5aa8e084282a21f7"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/composer.rs",
+      "sha256": "31cd68ca54cb00bd63c711f075d172c7c0bbcc5c68391a583f3ada0d5287235f"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/design.rs",
+      "sha256": "85b5e39d009ff95c43354fe1ec4478d67164f4aa70406200bffe4ee91a358f40"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/diagnostics.rs",
+      "sha256": "4e7bf23c4d343c6806d08e5c1bb700b95e58a3e44fc39bfffc520515e9f150d7"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/mod.rs",
+      "sha256": "02f6f130de113d1ae810ca499b4650289c517a29c2943dc1756cc90fd99a7245"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/native_terminal.rs",
+      "sha256": "0b72ae55fea2c271bb979f335a25911b2d94feae5bcdefa97a32d0caedfad684"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/quick_switcher.rs",
+      "sha256": "51d0a12741da44c3df8b13fdb62ce617cc2243b8fd293d9eb1847b51b3891437"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/settings.rs",
+      "sha256": "de5d0d7093c95292173262eb032a65417229c531b14f9332b790b6ed6fc02688"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/shortcuts.rs",
+      "sha256": "2516f751bffc1edbaa789ae1bf1869831be6d0fc05dfa3a813cad5b4728c8558"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/sidebar.rs",
+      "sha256": "929363fba0526d5078e159eb33eb54d2d8713ac043f809d5fa33ed87384107dd"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/supervisor_app.rs",
+      "sha256": "e79dbaea2c354da1f7a69783f408b0f7685b8cc4f7f239490caa0c71008abfa0"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/supervisor_state.rs",
+      "sha256": "4df68a57dd651aec91bce52d66e8d374f288289abb8e4de8fa35c540520e047b"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/task_detail.rs",
+      "sha256": "297033ec67903d832503f4ee954edf3a257de1d662bd00d54aab462fa4fb2cf3"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/theme.rs",
+      "sha256": "082f0b21d40b99b17d115995e00b221e1e31365b65bc93038538aeaa3f8af912"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/typography.rs",
+      "sha256": "910f78c15fa12e3980db8b140db0c740317cdbe154d02de108a7e5643aada3e3"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/gui/welcome.rs",
+      "sha256": "2e5d1642ff6f6517aac1009103fac3c4325ad69e732ca6e1e12c0b02df39d8f6"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/lib.rs",
+      "sha256": "f1bddcb6e6ba293904b662b2adbb64003c40ffaa59f06eaede2130c2d5a1691a"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/live_app.rs",
+      "sha256": "9f3661ce4c593a1d2589841563dd3db8b1ded711ddadfa5f270211ee6105bd81"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/localization.rs",
+      "sha256": "304ec43b958f5662ae42bcc67ee8d174f20631c5b8090dba23fc9d9ad0b08afc"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/preview.rs",
+      "sha256": "f08b638c26d2251741c0f0dc3c03ee7cdda67894ae0210d48d26061bfcd16aa6"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/probe_env.rs",
+      "sha256": "ec2d818900f0bf5bb88d1165c91b5ddf19f5efb8a9a59209fc170464bac0bc98"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/quick_search.rs",
+      "sha256": "edfb44e7d8759f1743034020f2abfc11580b6129d67857d7012d1ff0382a6e10"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/supervisor_client.rs",
+      "sha256": "a2e6551d55dcdd2fbdc663dff7aed1bbb945053315f806eb117b527608702263"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/supervisor_mapping.rs",
+      "sha256": "2b35917f5049da62d865362630027f2ceda50d8da75e3e70f86e1ed66a4b0b9c"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/supervisor_model.rs",
+      "sha256": "fc86803403b6fdc3eaab16bbc28ca06a334b93d9962036bd9458895656dcda41"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/theme/contrast.rs",
+      "sha256": "c7ed1c985e27cd5d79fc2c422c845986c8d16ab247c97b5d5058698a53e1887c"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/theme/mod.rs",
+      "sha256": "b23433a1e5badcd5a2273105d63ac304db08d420131866b9277a126182f038fb"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/theme/palette.rs",
+      "sha256": "b9a11e572a73a7d20046534462a765a694fbffc04613e2cd3389c2172b135018"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/theme/serialize.rs",
+      "sha256": "75d3ec70b7e9053351ddc81a8b83bb7d187c0f5c1ba15803da28490db8f2cf03"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/tui/footer.rs",
+      "sha256": "1b028ca64c33c1dfd37293eea4b83a0c119afdb8041025ac791e0cf8ea9a9671"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/tui/mod.rs",
+      "sha256": "537e6b5622325161e654c3289c3b3d19f3e4c90f573f3be33915570bfb47d45e"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/tui/render.rs",
+      "sha256": "42b0e9f882a719f63950daa71ebfcf1cb9032d225806eec4ff3eeb41bdc307d8"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/tui/snapshot.rs",
+      "sha256": "8822cdc0b8aacf702f1eb7fb92b92a70ce2ef7dca5afedc80d1dc217267e5118"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/tui/theme.rs",
+      "sha256": "4d46deb71040e69b88460a3c413e32a2e1a507161fdf2379fb8c1873744ffd6b"
+    },
+    {
+      "path": "crates/vibemux_frontend/src/view_model.rs",
+      "sha256": "da4edc179252220c5c5959233cf2296685a75e8f8d2946ea46bb7866525f9a2d"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/cli.rs",
+      "sha256": "01fb49b5fed2cf634fb892e25335eed5f1bfbf6d32fe992ba289d26a920f495b"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_classic_120x32.txt",
+      "sha256": "15ec86c7f6a7263f6248b8dea90722af404bafad79febb255a540e123c86462d"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_classic_80x24.txt",
+      "sha256": "aa9473bfdc001c245e0a046976c4a5da43f8172854e73d5fa5e0039d0e859207"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_gruvbox_120x32.txt",
+      "sha256": "32eb7a7dc099cb7535010351f14ba490091e97f7f4f9c00b166ddf7c679a5f10"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_gruvbox_80x24.txt",
+      "sha256": "9dddb217488af3db009d5fa2574c1d80d068ab6de6a45308a010e8c1d3cb60d8"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_high-contrast_120x32.txt",
+      "sha256": "d2466dc370e9653577ae7fc7da78cc700a7cfb8f1a25acac4c04762d2c513c71"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_high-contrast_80x24.txt",
+      "sha256": "d68267170f2a8fa7f3db93d691031ff8eabff792c93c0a31f0fda524d00c16a7"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_light_120x32.txt",
+      "sha256": "e7fee057a73ae219445fb7e9e4b15fccc19b8b34bfe0299d49a4d2d9533c1d3c"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_light_80x24.txt",
+      "sha256": "d5a6a069d9ff4df84bd609de5c2b693ab9d277171744bce469e962471ee4ff56"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_mono_120x32.txt",
+      "sha256": "9df60f543f74aa842d379848ca1b1a679f904ffdcac6014c89925bf5d84dedc1"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_mono_80x24.txt",
+      "sha256": "2d5c064676798f334628797178cca9e06071e56cfce47d3294d67199ca563117"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_nord_120x32.txt",
+      "sha256": "fc93b48106e8981019374755dc185dcf00c46643e4537ce4d02e70aa5b712fe8"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/fixtures/golden/dashboard_nord_80x24.txt",
+      "sha256": "232b40a875be5ebdcb05b5eb252e7697a0d80f978ba15a7a8fd09db3b63d8b4b"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/palette_parity.rs",
+      "sha256": "19484e406fa4c4b4f75a85ace72bc0a907fea817860393e0a9b33d8e7b0c161a"
+    },
+    {
+      "path": "crates/vibemux_frontend/tests/supervisor_ui.rs",
+      "sha256": "5112293e05e8be3b10a956080928260ef57d881cbd6f7b8a64274887e1441283"
+    },
+    {
+      "path": "crates/vibemux_terminal/build.rs",
+      "sha256": "ac1f57f1ab7970c7513b5f4d43c930bf48a2efa135cb948d64939108a134f653"
+    },
+    {
+      "path": "crates/vibemux_terminal/Cargo.toml",
+      "sha256": "a27690d2a4f550091852fa13316118a973a4a9e323d77e3119b11e0fc8d4ffd3"
+    },
+    {
+      "path": "crates/vibemux_terminal/proto/native_terminal_v1.proto",
+      "sha256": "c1a53538354d3a323c5d9c4e704c1ed6a82d080c7393456b274e83bf46ad9bd0"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/bin/vibemux_terminal_fixture.rs",
+      "sha256": "4d4be78cb39597bfea46c555b63eab6ca2b587621703bffd8711e3239074c4b8"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/bin/vibemux_terminal_host.rs",
+      "sha256": "a0851c013cfa24fe065863f9effbbd0303a250ee4f5f4303b7b97355c7e7b1b0"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/client.rs",
+      "sha256": "6d8621192b0f8168b9300f675b0002b63654191ff19efe1495182365bf9f4ccb"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/host.rs",
+      "sha256": "2dc200bb9ec614dab0aaf93fd964c7b6737bfa2d77ee4556f19dfe950b635443"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/lib.rs",
+      "sha256": "e39198a9de1790def504e65016c71817872ff23cce58093065786cc36199224e"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/model.rs",
+      "sha256": "6e31dc5595fc7063e3c89dba1ff4e8c09e1726d62499b72ba835a76d95a35745"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/protocol.rs",
+      "sha256": "093ef504f05fdc433750f4ed8b3b491a2344fae3fbf0ab149731b1dac2c0a16f"
+    },
+    {
+      "path": "crates/vibemux_terminal/src/workspace.rs",
+      "sha256": "e48108e81ce5a5dfae1adf68c529b925c253f64e330daad1aebb742ee07e6ac3"
+    },
+    {
+      "path": "crates/vibemux_terminal/tests/fuzz_boundaries.rs",
+      "sha256": "40135f444179de5b47f20de377a3c0d0d1b005e77c29e0b0263b3d9ad3e44194"
+    },
+    {
+      "path": "crates/vibemux_terminal/tests/pty_session.rs",
+      "sha256": "333ea653760f166060cbe52fe55cc4a66cdea4322ca7d29ee649afef10376a4d"
+    },
+    {
+      "path": "docs/adr/016_probe_and_unified_frontend.md",
+      "sha256": "94359163683c2ce5226deff056bc8a3814f11398763063e4159f21cc14167bca"
+    },
+    {
+      "path": "docs/adr/028_supervisor_chat_frontend.md",
+      "sha256": "dd51e8f48f73e3bc5d47a41fe5cf6922917a1eb1eccc52890eb1120e7c72a2e8"
+    },
+    {
+      "path": "docs/adr/030_claude_style_gui.md",
+      "sha256": "f079c772ab4c736064c30d963b3af3c2990e49aaa9fc544783ac129699d7dcd2"
+    },
+    {
+      "path": "docs/adr/035_gui_language_and_rounded_controls.md",
+      "sha256": "3d79b6725de572802af9984b8d4610d05e703202d4ad971804077d8766b552a5"
+    },
+    {
+      "path": "docs/adr/036_interactive_claude_terminal.md",
+      "sha256": "398fe06b421d9e87daae23970fdd2936c4ea81e52debdbc84b5cbfcfa16a2ecd"
+    },
+    {
+      "path": "docs/architecture.md",
+      "sha256": "3c9fbe3f64e878c5e077ec13cb0444b28a2f1a215e7e73705ec3eef81cf55b2c"
+    },
+    {
+      "path": "docs/evidence/native_claude_terminal_validation.md",
+      "sha256": "0d1d094b122aef3d816171b0bd90084b48aabdafbc765982c5e4d6b841973016"
+    },
+    {
+      "path": "PROGRESS.md",
+      "sha256": "6d7719e9c27dbe9c36b5f593e210cc8fa34d3456ae3a0962f2cb7bcfef2429ee"
+    },
+    {
+      "path": "README.md",
+      "sha256": "eca82ada4ea830f837d92a36906281c520e5ea73b2c20125aa200f3c051479d8"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "c9995793d9328af36f85052f38407dc5deba49a3494fee13ef610eda6b755e07"
+    }
+  ],
+  "binaries": [
+    {
+      "path": "target/debug/vibemux_frontend.exe",
+      "sha256": "a3fc7cc15c9da215b4caf9437b98b894d7bb17c337191a54fa6b2a06caf2f895"
+    },
+    {
+      "path": "target/debug/vibemux_frontend_preview.exe",
+      "sha256": "5d4793b87325fa7fe0fcaa7434a72c4c09c304efe966d5b2dda9d3c3f3685d59"
+    },
+    {
+      "path": "target/debug/vibemux_terminal_host.exe",
+      "sha256": "955225817a958ea490411228b5536f1166b530ecc24135eb8a184630c07a66a0"
+    },
+    {
+      "path": "target/debug/vibemux_terminal_fixture.exe",
+      "sha256": "fa033fa3bd379ec6cfa48c59e2e9031631a09ba8121ebf16e4961c80803e83c5"
+    }
+  ],
+  "native_claude_executable_sha256": "295b49ec092f31a7de9c6ff286d9d8f120a4f029b9ad9a5ac0b12c35cbf4df2b",
+  "captures": [
+    {
+      "path": "docs/frontend_previews/native_claude_terminal_fixture_english.png",
+      "kind": "real_pty_fixture",
+      "language": "en",
+      "visibility": "public_safe",
+      "sha256": "82d0c759f489aba55a43581626817f847b0e49257053b34168f775e68ff47659",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "path": "docs/frontend_previews/native_claude_terminal_fixture_chinese.png",
+      "kind": "real_pty_fixture",
+      "language": "zh_cn",
+      "visibility": "public_safe",
+      "sha256": "fbe662e37d0db352383258a39f54f1a264bb61132670cb0246425a604c93247c",
+      "width": 1280,
+      "height": 800
+    },
+    {
+      "path": "target/claude_terminal_capture/claude_live_final.png",
+      "kind": "live_claude_initialization",
+      "language": "en",
+      "visibility": "private_ignored",
+      "sha256": "34f8ffedcd2b5de25f10d1eec3f21e1f8b03c02a302d99b2e70c952d91e71323",
+      "width": 1280,
+      "height": 800
+    }
+  ],
+  "capture_process_summary": [
+    {
+      "scene": "claude_fixture",
+      "language": "en",
+      "exit_code": 0,
+      "observed_children": 6,
+      "observed_claude": false,
+      "remaining_observed_processes": 0
+    },
+    {
+      "scene": "claude_fixture",
+      "language": "zh_cn",
+      "exit_code": 0,
+      "observed_children": 6,
+      "observed_claude": false,
+      "remaining_observed_processes": 0
+    },
+    {
+      "scene": "claude_live",
+      "language": "en",
+      "exit_code": 0,
+      "observed_children": 6,
+      "observed_claude": true,
+      "remaining_observed_processes": 0
+    }
+  ],
+  "targeted_tests": {
+    "passed": 157,
+    "failed": 0,
+    "ignored": 1,
+    "terminal": 11,
+    "frontend": 146,
+    "deterministic_fuzz_cases": 1024
+  },
+  "broader_workspace_attempt": {
+    "passed": 956,
+    "failed": 1,
+    "ignored": 2,
+    "complete": false,
+    "failure": "vibemuxd/tests/workflow_optimizer.rs:204 holdout verified_success was false",
+    "scope": "Predates final VT caps; final targeted tests cover the delivered terminal and GUI"
+  },
+  "checks": {
+    "terminal_strict_clippy": "passed_no_deps",
+    "build": "passed",
+    "formatting": "passed",
+    "diff_check": "passed",
+    "workspace_clippy": "blocked_by_unchanged_windows_acl_native.rs:140",
+    "frontend_clippy": "blocked_by_two_unchanged_findings",
+    "nextest": "not_installed",
+    "deny": "not_installed",
+    "audit": "not_installed"
+  },
+  "live_validation": {
+    "native_trust_prompt_visible": true,
+    "trust_answered": false,
+    "model_prompt_sent": false,
+    "preferences_file_created": false,
+    "terminal_input_scope": "Real fixture; live initialization only"
+  },
+  "publication": "none"
+}

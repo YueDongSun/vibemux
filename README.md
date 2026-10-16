@@ -297,14 +297,59 @@ appearance preferences are preserved. Sending from the composer is not
 available yet: Enter keeps the draft and says it was not sent, and Shift+Enter
 inserts a newline.
 
+Use **Search anything** in the sidebar or **Ctrl+K** to jump to a loaded task,
+inspect an agent, or run a local workspace action. Search accepts task titles,
+IDs, and harness names; use Up/Down and Enter to open a result, or Esc to
+return to your draft. Only loaded tasks are searched, and the switcher says
+when more pages are available. It never starts an agent or sends a message.
+
+**Ctrl+N** starts a new draft (with confirmation before discarding text),
+**Ctrl+B** toggles the sidebar, **Ctrl+,** opens Settings, and **Ctrl+/** shows
+keyboard help. These shortcuts also work while typing and wait during IME
+composition. Task details offer explicit **Copy** buttons for the title,
+task/run IDs, branch, and worktree path, with a brief **Copied** confirmation.
+The collapsed sidebar retains search, diagnostics, and a current-page marker.
+
+The interface defaults to **English**. Use the **EN/CN** control in the header
+or **Settings → Interface language** to switch to **Simplified Chinese**.
+The preference is saved locally and takes effect immediately, including task
+windows. Drafts and task content retain their original text. Demo task titles
+and example paths are English by default. Rounded action pills, softer cards,
+and an accent-tinted New task control extend the Claude-inspired styling.
+Typography adapts to the available panel width: compact headings become
+smaller, task updates use sans-serif body text, Chinese headings use the
+interface font, and shortcut help scrolls within the window.
+
 Task windows have Overview, Activity, Artifacts and Terminal tabs. Closing a
 window does not stop its task. `Ctrl+1..0` accesses the ten pre-existing harness diagnostics;
 Escape closes overlays before returning to Coordinator. Task and terminal
 connection states are separate. An explicitly configured WezTerm observer can
 associate an existing native pane with an A2A-backed Run and focus it after
-identity checks. Watch and interact with the CLI in WezTerm; embedded terminal
-rendering and harness launch/input remain future work. See
+identity checks. Those linked panes remain external WezTerm surfaces. See
 [terminal observation setup and protocol](docs/terminal_observer_protocol.md).
+
+**Claude terminal → Start Claude** opens the real, interactive Claude Code TUI
+inside the GUI. Start the GUI from the Git project you want to work on. Claude
+must already be installed (`claude.exe` on PATH or in the native user install
+directory on Windows), and Git must be on PATH. The project must ignore
+`/.vibemux/`. Each Start creates a fresh worktree and branch at committed HEAD;
+uncommitted changes in the original checkout are preserved. The worktree,
+branch, and private ownership receipt remain after the session ends.
+
+Click the terminal to type. Text, Enter, arrows, Tab, Escape, Ctrl keys, paste,
+scrollback, and window resize reach the native terminal. Claude presents its
+own trust and tool-permission prompts. **Stop session** or closing VibeMux
+terminates the owned terminal process tree. Terminal text and process exit do
+not change daemon Task/Run status. This is a separate manual session; it does
+not attach an existing daemon run or reuse the coordinator chat composer.
+The GUI language choice does not translate Claude's native terminal output.
+See [ADR 036](docs/adr/036_interactive_claude_terminal.md) for limits.
+
+Build the GUI and its adjacent terminal host together:
+
+```text
+cargo build -p vibemux_frontend --bin vibemux_frontend -p vibemux_terminal --bin vibemux_terminal_host
+```
 
 Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
 `cargo run -p vibemux_frontend --bin vibemux_frontend`. The GUI does not start
@@ -313,13 +358,22 @@ unavailable state. The existing structured supervisor recipe is not a continuous
 coding-agent chat service.
 
 The screenshot-only `vibemux_frontend_preview` binary is built with
-`--features gui_screenshot`; its scenes are visibly marked **DEMO DATA** and
+`--features gui_screenshot`; normal scenes are visibly marked **DEMO DATA** and
 never contact a daemon or model. Example:
 `cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
 Scenes are `chat`, `drawer`, `task`, `task_terminal`, `disconnected`, `welcome`,
-and `collapsed`.
+`collapsed`, `switcher`, `shortcuts`, `settings`, `agents`, and `claude_terminal`
+(the unstarted terminal page).
+An optional final `en` or `zh_cn` argument after the PNG path selects the
+preview's language; the default is `en`.
 The `task` scenes capture the actual independent native viewport.
+Explicit `claude_fixture` and `claude_live` scenes start an owned PTY fixture
+or the installed Claude CLI, respectively. They require adjacent host/fixture
+binaries and accept a project directory after the locale argument. They send
+no input; live initialization can display native trust/login prompts and retains
+its worktree. Keep live screenshots private because native output may include
+local paths or account information. Fixture output is labeled in the terminal.
 
 The TUI ships six themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), `light` (dark variants tuned for white or very light terminal backgrounds), and the brand themes `nord` and `gruvbox` (xterm-256 indices resolved from the brand palettes, so they render the same hues on WezTerm and tmux without a truecolor dependency). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
 
@@ -356,7 +410,7 @@ cargo run -p vibemux_frontend --bin vibemux_frontend_tui
 cargo run -p vibemux_frontend --bin vibemux_frontend
 ```
 
-`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the Supervisor Chat GUI described above. All eleven harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi, DSH) appear as TUI dashboard rows and GUI diagnostics; real PTY/ConPTY attach is not implemented and must not be treated as usable. DSH additionally has the live `vibemux_dsh_tui` session surface, which speaks DSH's own SDK protocol rather than attaching to a terminal.
+`vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the Supervisor Chat GUI described above. All eleven harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi, DSH) appear as TUI dashboard rows and GUI diagnostics. The separate Claude terminal page starts a new interactive PTY/ConPTY session; attaching existing panes or other vendors is not implemented. DSH additionally has the live `vibemux_dsh_tui` session surface, which speaks DSH's own SDK protocol rather than attaching to a terminal.
 
 ## DeepSeek Harness (DSH)
 

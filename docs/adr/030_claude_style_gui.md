@@ -1,9 +1,13 @@
 # ADR 030: Claude-style GUI with a light and dark Claude theme pair
 
 Status: Accepted. Phase 1 (palettes, typography, sidebar, welcome state,
-composer, conversation rows, and the docked drawer) is implemented. Phase 2
-(shortcuts, quick switcher, appearance modes, motion, and copy buttons) is not
-implemented yet. PROGRESS.md records the status of each phase.
+composer, conversation rows, and the docked drawer) is implemented. The
+phase 2 navigation slice (shortcuts, quick switcher, and copy buttons) is
+implemented. Appearance following and motion controls remain planned.
+PROGRESS.md records the verification and remaining work for each slice.
+
+The current GUI language preference and rounded-control tokens are amended by
+[ADR 035](035_gui_language_and_rounded_controls.md).
 
 Amends ADR 028: the default theme for new profiles becomes `claude_light`
 instead of `studio`, and the task drawer, composer, and sidebar change
@@ -169,6 +173,12 @@ redistributed. Off Windows, the serif family falls back to the sans family.
 
 These components are shared by all themes; only the colors differ.
 
+The navigation slice additionally places Search in both sidebar sizes and
+Diagnostics in the collapsed rail, marks the rail's selected page, and only
+highlights a Recent while its drawer is open. Drawer sizing reserves 400 px
+for the conversation where the minimum drawer width allows it; at 960 px the
+drawer uses its 360 px minimum. The activity heading wraps within that space.
+
 ### 5. Functions
 
 - **New task** (sidebar button, and `Ctrl+N` in phase 2) opens the welcome
@@ -190,6 +200,10 @@ These components are shared by all themes; only the colors differ.
   case-insensitive Unicode; a label prefix ranks above a word-start match,
   which ranks above a substring match, and ties keep source order. Opening a
   task opens its drawer.
+  The delivered navigation slice also includes Conversation and Agents actions.
+  Match system is omitted until appearance following is implemented. The
+  footer explicitly identifies a partial task list, the query is capped at
+  256 characters, and closing the switcher restores prior keyboard focus.
 - **Shortcuts** come from one table in `gui/shortcuts.rs` that drives both key
   handling and the `Ctrl+/` overlay:
 
@@ -281,7 +295,8 @@ One implementation plan, delivered as two pull requests:
 - Send remains unavailable and never produces a fake message or response.
 - The greeting shows no user name, and nothing reads the OS account name.
 - The clipboard is written only on an explicit click and only with the shown
-  text. No new data leaves the process.
+  text. This copies the selected field to the local OS clipboard; it does not
+  transmit it to a daemon or remote service. Feedback is temporary UI state.
 - The GUI reads system fonts only from the Windows font directory and never
   from paths supplied by project files.
 

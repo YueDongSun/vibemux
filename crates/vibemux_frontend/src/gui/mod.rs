@@ -8,7 +8,10 @@ mod chat;
 mod composer;
 mod design;
 mod diagnostics;
+mod native_terminal;
+mod quick_switcher;
 mod settings;
+mod shortcuts;
 mod sidebar;
 mod supervisor_app;
 mod supervisor_state;
@@ -30,6 +33,7 @@ use eframe::egui::{Color32, ViewportBuilder};
 /// frame from the active `ThemePalette`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct C {
+    pub language: crate::localization::Language,
     pub bg: Color32,
     /// Mid surface (Primer "canvas subtle"): sidebar and box headers.
     pub surf: Color32,
@@ -61,6 +65,7 @@ pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
         crate::theme::contrast::TEXT_CONTRAST_MINIMUM,
     );
     C {
+        language: crate::localization::Language::English,
         bg,
         surf: hex(&p.surface),
         raised: hex(&p.surface_alt),
@@ -75,6 +80,21 @@ pub(crate) fn pal(p: &crate::theme::ThemePalette) -> C {
         warn: hex(&p.warning),
         danger: hex(&p.danger),
         light: p.is_light(),
+    }
+}
+
+impl C {
+    pub fn with_language(mut self, language: crate::localization::Language) -> Self {
+        self.language = language;
+        self
+    }
+
+    pub fn tr<'a>(&self, english: &'a str) -> &'a str {
+        self.language.text(english)
+    }
+
+    pub fn format(&self, english: &str, arguments: &[(&str, &str)]) -> String {
+        self.language.format(english, arguments)
     }
 }
 

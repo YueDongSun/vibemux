@@ -2,6 +2,10 @@
 
 Status: Accepted for the requested pre-alpha implementation
 
+Amended by [ADR 036](036_interactive_claude_terminal.md): a separate manual
+Claude terminal page can start a contained interactive PTY inside the GUI.
+The existing task-pane observation contract below remains external-only.
+
 Supersedes ADR 027's home screen and harness-seat navigation. ADR 016's native
 terminal boundary and ADR 026's shared palette contracts remain in force.
 

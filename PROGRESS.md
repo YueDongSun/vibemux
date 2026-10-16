@@ -59,7 +59,8 @@ VibeMux is a Windows-first, local-first coordination environment for multiple co
 
 ### Explicit non-goals for the current release line
 
-- A custom terminal renderer.
+- Reimplementing a vendor-specific TUI. The generic embedded VT surface is
+  governed by ADR 036 and does not infer structured task state.
 - A custom model runtime.
 - Kubernetes or distributed consensus.
 - In-process third-party native plugins.
@@ -3014,3 +3015,129 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   use loopback HTTP.
 - Not implemented: redacted task-summary forwarding, other decision kinds
   and backends, per-repository threshold fitting, and roadmap items 3-10.
+
+### 2026-10-13 - Native GUI navigation and useful controls (ADR 030)
+
+**Status**
+- M5.0 remains `PARTIAL`. ADR 030 phase 2's navigation and clipboard slice is
+  implemented on `codex/ui_navigation`, based on GitHub `main` at
+  `9e738f12c6dae4d97a5a567a0d261427c4c6fb86`. Appearance following, Reduce
+  motion, and spark animation remain planned.
+
+**Implemented**
+- Local ranked search for loaded tasks, IDs, harnesses, agents, and actions;
+  `Ctrl+K`, keyboard selection, bounded results, partial-list guidance, and a
+  scrollable palette that fits the 960x600 minimum.
+- Shared keyboard shortcuts and help, draft-preserving navigation, native
+  Control/command flag handling, and IME composition guards.
+- Explicit clipboard buttons with temporary feedback; search, diagnostics,
+  and a current-page marker in the collapsed sidebar; corrected Recents
+  highlighting and narrow drawer/conversation spacing.
+
+**Verification**
+- Native Windows 10.0.26300.0, Rust 1.95.0:
+  `cargo test -p vibemux_frontend --all-features --locked --offline -j 2`:
+  **135 passed, 0 failed, 1 ignored** (existing fixture generator), including
+  15 new regressions. Formatting and `git diff --check` passed.
+- 18 synthetic native captures cover light/dark search, drawer, and shortcuts
+  at normal/minimum sizes and 1.5 rendering scale; representative frames were
+  visually inspected. Initial palette clipping and focus regressions were
+  reproduced and corrected before the final test/capture run.
+- Strict workspace Clippy is blocked by an unchanged `manual_div_ceil` at
+  `windows_acl_native.rs:140`. Strict frontend-only Clippy reports unchanged
+  `collapsible_match` in `dsh_tui/mod.rs:251` and `derivable_impls` in
+  `theme/mod.rs:81`. No suppression or unrelated repair was introduced.
+- No protocol/configuration migration, live provider or terminal execution,
+  hosted CI, commit, or publication. Linux/WSL, real IME, and physical display
+  transitions remain unverified. Existing local A2A documentation was preserved.
+- [Detailed handoff and limitations](docs/evidence/ui_navigation_validation.md)
+  and [source/capture identities](docs/evidence/ui_navigation_source_manifest.json).
+
+### 2026-10-13 - English/Chinese GUI and adaptive typography (ADR 035)
+
+- English is the default interface and demo-content language. A saved EN/CN
+  choice in the header and Settings selects Simplified Chinese UI text while
+  retaining drafts, task content, technical identifiers, and task windows.
+  Unknown/missing language values fall back to English without losing theme
+  or layout preferences. Frontend JSON schema remains 1 with an optional field.
+- Rounded task actions, tabs, cards, and composer extend the warm visual style.
+  Heading sizes respond to panel width; Chinese headings and task update prose
+  use sans-serif. Shortcut help scrolls within the minimum window bounds.
+- Native Windows/Rust 1.95: complete frontend suite passed 142 tests with one
+  ignored fixture generator. Final unit run including two additional geometry
+  regressions passed 127 tests, zero failed, one ignored. Formatting and diff
+  checks passed. Six corrected native screenshots cover EN/CN and compact
+  light/dark views; representative frames were visually inspected.
+- Strict frontend Clippy still reports the two unchanged baseline diagnostics
+  in DSH input handling and ThemeId's default implementation. No lint suppression,
+  new dependency, daemon/database/IPC change, commit, push, or deployment.
+- M5.0 remains `PARTIAL`; real IME/accessibility, physical DPI transitions,
+  Linux/WSL, and full release gates remain unverified.
+- [Validation and handoff](docs/evidence/ui_language_validation.md),
+  [source identities](docs/evidence/ui_language_source_manifest.json), and
+  [ADR 035](docs/adr/035_gui_language_and_rounded_controls.md).
+
+### 2026-10-14 - Smaller GUI fonts
+
+- Reduce greetings to 24 px, page headings to 18 px, task titles to 15 px,
+  default body text to 13 px, and controls to 12 px. Compact panels use 16 px
+  headings and 12 px body text. Centralized sizes now also govern the composer,
+  header, sidebar, quick switcher, and shortcut help; remove the duplicate
+  15 px body override. Language and execution semantics are unchanged.
+- Native Windows/Rust 1.95: complete frontend suite **144 passed, 0 failed,
+  1 ignored**; formatting and diff checks passed. Four new native captures
+  cover EN/CN conversation at 1280x800 and drawers at 960x600. Representative
+  full/compact frames were visually inspected. Scoped Clippy remains blocked
+  by the two previously recorded diagnostics in unchanged code.
+- Local uncommitted changes only; no publication or deployment. Linux/WSL,
+  physical DPI transitions, and full release gates remain unverified.
+- [Validation](docs/evidence/ui_language_validation.md) and
+  [current source/image identities](docs/evidence/ui_compact_font_source_manifest.json).
+
+### 2026-10-14 - Interactive Claude TUI in the native GUI (ADR 036)
+
+- M5.0 remains `PARTIAL`. The explicit interactive-terminal request is
+  implemented on `codex/claude_tui_gui`: **Claude terminal → Start Claude**
+  starts the actual CLI inside a contained PTY/ConPTY and renders its VT screen
+  in the GUI. The page accepts focused keyboard input, paste, Unicode commits,
+  resize, and scroll; GUI chrome supports EN/CN and compact monospace text.
+- A first-party `vibemux_terminal_host` owns process lifecycle, private
+  Protobuf v1 pipes, bounded terminal state, and manual worktree allocation.
+  Each writable Start creates a new branch/worktree and private receipt at
+  committed HEAD. Main edits are preserved; Git resources remain on exit.
+  There is no database or existing Control/plugin migration, no canonical
+  Task/Run writer, no automatic approval, and no terminal-text success inference.
+- Native Windows fixture checks exercise real input/resize, independent
+  sessions, Stop/exit, actual Git isolation, dirty-main preservation, malformed
+  frames, bounded parsing, and keyboard focus. A real installed Claude
+  initialization was visually captured at its native folder-trust prompt;
+  the prompt was left unanswered and no model input was sent.
+- Source/build/capture identities and exact completed validation are recorded
+  in [the handoff](docs/evidence/native_claude_terminal_validation.md) and
+  [the source manifest](docs/evidence/native_claude_terminal_source_manifest.json).
+  Live captures and process receipts remain private under ignored `target/`.
+- Final targeted Windows validation: **157 passed, 0 failed, 1 ignored** and
+  strict terminal lint/build/format/diff checks passed. The broader run stopped
+  after **956 passed, 1 failed, 2 ignored** at the unchanged optimizer holdout
+  assertion (`workflow_optimizer.rs:204`); its cause is unresolved. Existing
+  workspace/frontend lint findings and missing nextest/deny/audit tools remain
+  release limits, not passes.
+- Linux/WSL, physical IME/accessibility, live inference/tool execution, and full
+  release gates remain distinct. Existing-pane attach and other vendor terminal
+  pages are not implemented. Changes are local; no publication or deployment.
+
+### 2026-10-16 - UI feature-branch publication validation
+
+- The user authorized committing and pushing the completed UI and interactive
+  Claude-terminal work to GitHub on `codex/claude_tui_gui`.
+- Fresh native Windows/Rust 1.95 validation passed **157 tests, 0 failed,
+  1 ignored**; strict terminal lint, formatting, and whitespace checks passed.
+  Tested Rust, dependency, and protocol inputs match the 2026-10-14 receipt.
+- The previously recorded broader optimizer failure, existing lint findings,
+  unavailable release tools, and unverified platform paths remain limitations.
+  This is feature-branch publication for review, not a production release.
+- The separate user-owned A2A documents and their proposed progress entry are
+  excluded from the commit and preserved in the working tree. Private live
+  captures, logs, runtime state, and binaries remain ignored.
+- Remote publication is complete only when the pushed branch head is freshly
+  observed to equal the reviewed local commit; no main-branch merge is included.

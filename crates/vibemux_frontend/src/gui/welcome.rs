@@ -33,9 +33,10 @@ pub fn render_heading(ui: &mut Ui, c: &C, greeting: &str) {
         design::spark(ui, c.accent, 34.0, 0.0);
         ui.add_space(10.0);
         ui.label(
-            RichText::new(greeting)
-                .font(typography::display_font(
-                    ui.ctx(),
+            RichText::new(c.tr(greeting))
+                .font(typography::region_font(
+                    ui,
+                    c.language,
                     typography::GREETING_SIZE,
                 ))
                 .color(c.txt),
