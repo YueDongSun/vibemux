@@ -25,7 +25,12 @@ from dual_track_acceptance.runner import (  # noqa: E402
     run,
     validate,
 )
-from dual_track_acceptance.runner_config import EXIT_USAGE  # noqa: E402
+from dual_track_acceptance.runner_config import EXIT_BLOCKED, EXIT_USAGE  # noqa: E402
+from dual_track_acceptance.windows_launch_context import (  # noqa: E402
+    Windows_Launch_Error,
+    require_launch_context,
+    suppress_windows_error_dialogs,
+)
 
 
 def parse_arguments(argv: list[str]) -> argparse.Namespace:
@@ -57,15 +62,25 @@ def main(argv: list[str]) -> int:
     if arguments.mode == MODE_OFFLINE and (arguments.config or arguments.live_opt_in):
         print("--config and --live_opt_in apply to live mode only", file=sys.stderr)
         return EXIT_USAGE
-    return run(
-        RunRequest(
-            mode=arguments.mode,
-            output=arguments.output,
-            config=arguments.config,
-            live_opt_in=arguments.live_opt_in,
-            argv=[Path(sys.argv[0]).name, *argv],
+    try:
+        require_launch_context()
+        suppress_windows_error_dialogs()
+    except Windows_Launch_Error as error:
+        print(f"verify_dual_track: {error}", file=sys.stderr)
+        return EXIT_BLOCKED
+    try:
+        return run(
+            RunRequest(
+                mode=arguments.mode,
+                output=arguments.output,
+                config=arguments.config,
+                live_opt_in=arguments.live_opt_in,
+                argv=[Path(sys.argv[0]).name, *argv],
+            )
         )
-    )
+    except Windows_Launch_Error as error:
+        print(f"verify_dual_track: {error}", file=sys.stderr)
+        return EXIT_BLOCKED
 
 
 if __name__ == "__main__":

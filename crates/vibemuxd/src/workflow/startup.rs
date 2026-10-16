@@ -10,7 +10,6 @@
 use std::path::Path;
 
 use time::OffsetDateTime;
-use vibemux_harness::dispatch::writable_profile::writable_profile_id;
 use vibemux_workflow::{gates::WorkflowPhase, leases::LeaseState};
 
 use super::{
@@ -48,8 +47,22 @@ pub(crate) fn load_setup(
         .filter_map(|slot| {
             dispatch
                 .execution_protocol(slot.harness)
-                .filter(|protocol| writable_profile_id(*protocol).is_ok())
+                .filter(|_| {
+                    dispatch
+                        .execution_profile(slot.harness, config.config.evidence_class)
+                        .is_some()
+                })
                 .map(|protocol| (slot.slot_id.clone(), protocol))
+        })
+        .collect();
+    let slot_profiles = config
+        .config
+        .slots
+        .iter()
+        .filter_map(|slot| {
+            dispatch
+                .execution_profile(slot.harness, config.config.evidence_class)
+                .map(|profile| (slot.slot_id.clone(), profile.to_string()))
         })
         .collect();
     protect_state_root(&state_dir.join(WORKFLOW_STATE_DIR_NAME))?;
@@ -58,6 +71,7 @@ pub(crate) fn load_setup(
         canonical_root,
         state: StateFiles::new(state_dir),
         slot_protocols,
+        slot_profiles,
         trampoline: dispatch.trampoline(),
     })
 }
@@ -87,6 +101,10 @@ pub(crate) async fn reconcile(
     writer: &WriterHandle,
     heartbeat_ms: u64,
 ) -> Result<(), WorkflowError> {
+    let recover = writer.clone();
+    call_writer(move || recover.recover_model_calls()).await?;
+    let recover = writer.clone();
+    call_writer(move || recover.recover_supervisors(OffsetDateTime::now_utc())).await?;
     let mut after = None;
     loop {
         let reader = writer.clone();

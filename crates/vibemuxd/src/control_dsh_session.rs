@@ -342,6 +342,8 @@ mod tests {
         }
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
+        assert!(supported_control_version(CONTROL_PROTOCOL_VERSION));
+        assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
     }
 
     #[test]

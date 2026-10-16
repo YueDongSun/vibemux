@@ -15,6 +15,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cdp_connection, Cdp_session } from "./cdp_client.mjs";
+import { browser_preflight_config, preflight_browser_page } from "./browser_preflight.mjs";
 import {
   create_temp_dir,
   describe_start_error,
@@ -47,7 +48,7 @@ export const browser_suite_config = Object.freeze({
   network_idle_ms: 150,
   settle_ms: 300,
   api_timeout_ms: 5000,
-  viewport: { width: 1280, height: 900 },
+  viewport: browser_preflight_config.viewport,
   data_file_name: "taskboard_browser.json",
   base_flags: [
     "--headless=new",
@@ -1027,6 +1028,10 @@ export async function run_browser_suite({ candidate_dir, mode, browser_executabl
     launch_failures: browser.launch_failures,
   };
   try {
+    result.blocked_reason = await preflight_browser_page(browser.connection, {
+      timeout_ms: Math.min(browser_suite_config.check_timeout_ms, Math.max(0, suite_deadline - Date.now())),
+    });
+    if (result.blocked_reason !== null) return result;
     for (const check of browser_checks) {
       if (browser.connection.closed || browser.tracked.exit_result !== null) {
         // A dead browser is an environment failure, not a candidate defect.

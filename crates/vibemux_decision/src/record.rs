@@ -142,10 +142,10 @@ impl DecisionRecord {
         now: OffsetDateTime,
     ) -> Result<DispatchBinding, DecisionError> {
         self.validate()?;
-        if let Some(consumption) = self.consumption {
-            if consumption.request_id != request_id {
-                return Err(DecisionError::AlreadyConsumed);
-            }
+        if let Some(consumption) = self.consumption
+            && consumption.request_id != request_id
+        {
+            return Err(DecisionError::AlreadyConsumed);
         }
         let harness = match (self.status, self.chosen_harness) {
             (DecisionStatus::Escalated, _) => return Err(DecisionError::Escalated),

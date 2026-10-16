@@ -89,6 +89,14 @@ pub struct WorkflowEvaluateArgument {
 }
 
 impl ControlClient {
+    pub async fn workflow_contract_edit(&self, edit: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowContractEdit,
+            Some(&edit),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
     /// Validates, compiles, and admits a workflow request. A rejected
     /// contract answers `{"outcome": "rejected", "violation_codes": ...}`.
     pub async fn workflow_prepare(
@@ -122,6 +130,30 @@ impl ControlClient {
 
     pub async fn workflow_status(&self, workflow_id: Uuid) -> Result<Value, ControlError> {
         self.workflow_lookup(ControlOperation::WorkflowStatus, workflow_id)
+            .await
+    }
+
+    pub async fn workflow_supervisor_start(
+        &self,
+        contract: &str,
+        request_id: Uuid,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowSupervisorStart,
+            Some(&WorkflowStartArgument {
+                contract: contract.to_string(),
+                request_id,
+            }),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_supervisor_status(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<Value, ControlError> {
+        self.workflow_lookup(ControlOperation::WorkflowSupervisorStatus, workflow_id)
             .await
     }
 
@@ -299,6 +331,12 @@ pub(super) async fn dispatch(
 ) -> Result<ControlPayload, ControlError> {
     let service = &state.workflow;
     let value = match operation {
+        ControlOperation::WorkflowContractEdit => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let edit: Value =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.edit_contract(edit).await)?
+        }
         ControlOperation::WorkflowPrepare => {
             // The frame already bounds the argument; the service bounds the
             // request and the policy.
@@ -324,6 +362,20 @@ pub(super) async fn dispatch(
         ControlOperation::WorkflowStatus => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;
             encode(service.status(lookup.workflow_id).await)?
+        }
+        ControlOperation::WorkflowSupervisorStart => {
+            let start: WorkflowStartArgument = parse_lookup(argument)?;
+            let contract =
+                Sha256Digest::from_hex(&start.contract).ok_or(ControlError::InvalidRequest)?;
+            encode(
+                service
+                    .start_model_supervisor(contract, start.request_id)
+                    .await,
+            )?
+        }
+        ControlOperation::WorkflowSupervisorStatus => {
+            let lookup: WorkflowLookup = parse_lookup(argument)?;
+            encode(service.supervisor_status(lookup.workflow_id).await)?
         }
         ControlOperation::WorkflowPause => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;

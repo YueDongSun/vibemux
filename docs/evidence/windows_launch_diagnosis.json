@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "kind": "windows_tool_launch_diagnosis",
+  "status": "project_owned_boundary_repaired",
+  "symptom": {
+    "application": "ruff.exe",
+    "windows_status": "0xc0000142",
+    "signed_exit_status": -1073741502
+  },
+  "paired_checks": [
+    {
+      "tool": "project Ruff",
+      "version": "0.16.1",
+      "restricted_sids": true,
+      "create_no_window": false,
+      "exit": -1073741502
+    },
+    {
+      "tool": "project Ruff",
+      "version": "0.16.1",
+      "restricted_sids": true,
+      "create_no_window": true,
+      "exit": -1073741502
+    },
+    {
+      "tool": "project Ruff",
+      "version": "0.16.1",
+      "restricted_sids": false,
+      "create_no_window": false,
+      "exit": 0
+    },
+    {
+      "tool": "project Ruff",
+      "version": "0.16.1",
+      "restricted_sids": false,
+      "create_no_window": true,
+      "exit": 0
+    },
+    {
+      "tool": "Node",
+      "version": "24.18.0",
+      "restricted_sids": true,
+      "exit": 0
+    },
+    {
+      "tool": "Node",
+      "version": "24.18.0",
+      "restricted_sids": false,
+      "exit": 0
+    }
+  ],
+  "conclusion": "The identical Ruff executable succeeds under normal host access and fails under the restricted launch token; replacing it is not justified. CREATE_NO_WINDOW alone does not repair the initialization failure.",
+  "not_established": "The exact DLL or denied subsystem has not been identified; Node historical failures are not assumed to have the identical cause.",
+  "shell_resolution": {
+    "bare_ruff_owner": "separate Tailnet Mesh environment",
+    "project_checks": "explicit project Python -m ruff"
+  },
+  "repair": {
+    "token_api": "GetTokenInformation(TokenRestrictedSids), bounded buffer/count/alignment checks and owned handle closure",
+    "restricted_or_unknown": "refuse before native child launch",
+    "error_mode": "per-process CLI startup bits preserved and extended; no registry/global setting mutation",
+    "native_failure": "windows_tool_initialization_failed retains raw signed and hex status",
+    "retry": "none; no token switch or sandbox weakening",
+    "validate_mode": "read-only, no launch-state mutation"
+  },
+  "live_preflight": {
+    "restricted": {
+      "state": "restricted",
+      "result": "refused_before_child_launch",
+      "exit": 2,
+      "output_directory_created": false
+    },
+    "normal_host": {
+      "state": "unrestricted",
+      "result": "admitted"
+    }
+  },
+  "validation": {
+    "ruff_format": "passed",
+    "ruff_lint": "passed",
+    "mypy_sources": 32,
+    "python_tests_passed": 132,
+    "source": "integration worktree after launch repair, before the supervisor increment"
+  },
+  "unrelated_process_observation": {
+    "owner": "OpenClaw",
+    "active_child_group_observed": 387,
+    "modified_or_terminated": false,
+    "reason": "outside VibeMux ownership; no causal claim or cleanup authorization inferred"
+  },
+  "host_boundary": "Direct native commands launched by the Codex host are outside the project CLI preflight. This chat uses approved normal-host access and qualified project tools for those checks.",
+  "references": [
+    "https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation",
+    "https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-istokenrestricted",
+    "https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-seterrormode"
+  ]
+}

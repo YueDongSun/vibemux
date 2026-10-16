@@ -24,6 +24,8 @@ pub mod digest;
 pub mod error_code;
 pub mod events;
 pub mod final_text;
+#[cfg(feature = "test_helpers")]
+pub mod fixture_guard;
 pub mod json_line_framer;
 pub mod launch_spec;
 pub mod observation;
@@ -36,6 +38,10 @@ pub mod writable_profile;
 pub use attempt::{DispatchPhase, DispatchTrigger, PhaseTransition, TransitionResult};
 pub use digest::Sha256Digest;
 pub use error_code::DispatchError;
+#[cfg(feature = "test_helpers")]
+pub use fixture_guard::{
+    FixtureLaunchGuard, build_writable_fixture_launch_spec, fixture_profile_id,
+};
 pub use observation::{ObservationKind, ObservedRecord};
 pub use outcome::{AttemptOutcome, OutcomeDecision, ProcessExit};
 pub use protocol_session::{ProtocolSession, SessionTerminal};

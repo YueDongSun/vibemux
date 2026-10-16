@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-test_helpers = []
+test_helpers = ["vibemux_harness/test_helpers", "vibemux_workflow/test_helpers"]
 
 [[bin]]
 name = "vibemux_registry_mock"
@@ -45,6 +45,7 @@ path = "src/bin/vibemux_decision_fixture.rs"
 required-features = ["test_helpers"]
 
 [dependencies]
+reqwest.workspace = true
 prost.workspace = true
 async-trait.workspace = true
 futures.workspace = true
@@ -74,6 +75,7 @@ vibemux_types = { path = "../vibemux_types" }
 vibemux_workflow = { path = "../vibemux_workflow" }
 
 [dev-dependencies]
+rusqlite.workspace = true
 sysinfo.workspace = true
 tempfile.workspace = true
 vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }

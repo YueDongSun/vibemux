@@ -161,7 +161,7 @@ async fn control_versions_keep_old_health_and_reject_unsupported_reads_explicitl
     let health = peer.call(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"health","arguments":{}}})).await;
     let refused = peer.call(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"frontend_tasks","arguments":{}}})).await;
     peer.finish().await;
-    descriptor["version"] = json!(8);
+    descriptor["version"] = json!(vibemuxd::control::CONTROL_PROTOCOL_VERSION + 1);
     std::fs::write(&legacy, serde_json::to_vec(&descriptor).unwrap()).unwrap();
     let mut peer = McpPeer::start(&legacy).await;
     let unknown = peer.call(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"health","arguments":{}}})).await;

@@ -10,8 +10,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import IO
 
+from .windows_launch_context import require_launch_context
+
 process_termination_timeout_seconds = 15
 windows_taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+windows_creation_flags = (
+    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    if sys.platform == "win32"
+    else 0
+)
 
 
 def terminate_owned_tree(process: subprocess.Popen[bytes]) -> None:
@@ -50,6 +57,7 @@ def run_owned_command(
     timeout_seconds: float,
 ) -> tuple[int | None, bool]:
     """Returns the exit status and timeout flag after owned-tree termination."""
+    require_launch_context()
     process = subprocess.Popen(
         list(argv),
         cwd=cwd,
@@ -59,7 +67,7 @@ def run_owned_command(
         stderr=stderr,
         shell=False,
         start_new_session=sys.platform != "win32",
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+        creationflags=windows_creation_flags,
     )
     try:
         return process.wait(timeout=timeout_seconds), False

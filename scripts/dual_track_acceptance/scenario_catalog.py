@@ -293,12 +293,23 @@ RULES: Mapping[tuple[str, str], EvidenceRule] = {
         _store("contract_generations_never_rebind_admitted_attempts"),
         _daemon("workflow_admission", "a_changed_request_cannot_overwrite_an_admitted_one"),
     ),
-    ("G01", "gateway_fixture"): _not_implemented(
-        "the daemon has no AAG gateway client, so no fixture gateway can be driven through it; "
-        "only the pure route contract is unit-tested",
-        _workflow("gateway", "a_global_pin_blocks_strict_routing_and_changes_the_generation"),
-        _workflow("gateway", "correlation_header_is_content_free"),
-        _workflow("gateway", "configs_are_loopback_only_and_reference_credentials_by_name"),
+    ("G01", "gateway_fixture"): _tests(
+        _daemon(
+            "workflow_gateway_compile",
+            "control_compiler_uses_only_permitted_fixture_gateway_and_revalidates_candidates",
+        ),
+        _daemon(
+            "aag_gateway_transport",
+            "a_fixture_label_requires_an_owned_listener_for_the_exact_origin",
+        ),
+        _daemon(
+            "aag_gateway_transport", "concurrent_aliases_keep_correlation_and_unknown_attribution"
+        ),
+        _daemon("aag_gateway_transport", "anthropic_headers_and_live_attestation_boundary"),
+        _daemon(
+            "aag_gateway_transport",
+            "configuration_pin_and_protocol_changes_block_before_model_send",
+        ),
     ),
     ("G01", "live_gateway"): _live(LIVE_GATEWAY),
     ("G02", "adapter_fixture"): _tests(
@@ -311,12 +322,24 @@ RULES: Mapping[tuple[str, str], EvidenceRule] = {
             "unsupported_protocols_unbound_roles_and_missing_aliases_are_refused_up_front",
         ),
     ),
-    ("G03", "gateway_fixture"): _not_implemented(
-        "no daemon gateway client exists to fail over or stream through a fixture gateway; "
-        "only the pure retry and stream-stitching contract is unit-tested",
-        _workflow("gateway", "failures_after_output_or_tool_calls_are_never_retried_automatically"),
-        _workflow("gateway", "broken_streams_are_not_stitched"),
-        _workflow("gateway", "usage_is_parsed_when_reported_and_unknown_otherwise"),
+    ("G03", "gateway_fixture"): _tests(
+        _daemon(
+            "aag_gateway_transport",
+            "completed_sse_uses_the_stream_accumulator_without_inventing_usage",
+        ),
+        _daemon(
+            "aag_gateway_transport", "response_bounds_status_and_partial_streams_are_not_replayed"
+        ),
+        _daemon(
+            "aag_gateway_transport", "cancellation_and_deadline_never_replay_an_ambiguous_request"
+        ),
+        _daemon(
+            "model_runtime_output", "oversized_completed_output_is_rejected_and_never_resubmitted"
+        ),
+        _daemon(
+            "model_runtime_output",
+            "completed_receipt_in_gateway_error_is_rejected_persisted_and_never_replayed",
+        ),
     ),
     ("G04", "live_gateway"): _live(LIVE_GATEWAY),
     ("S01", "deterministic_fixture"): _tests(FLAGSHIP, checks=("flagship_two_sessions",)),
@@ -342,18 +365,47 @@ RULES: Mapping[tuple[str, str], EvidenceRule] = {
         _daemon("harness_dispatch", "concurrent_repeats_of_one_request_launch_one_attempt"),
     ),
     ("T01", "live_native_windows"): _live(LIVE_NATIVE),
-    ("T02", "adapter_fixture"): _not_implemented(
-        "native sessions are not owned, so human input ownership and unknown-delivery handling "
-        "are not implemented; only structured-mode interruption is tested",
+    ("T02", "adapter_fixture"): _tests(
+        _daemon(
+            "harness_dispatch",
+            "codex_exec_completes_and_keeps_its_transcript_out_of_canonical_state",
+        ),
+        _daemon("harness_dispatch", "claude_stream_json_completes_after_denying_the_tool"),
+        _daemon("native_controller_runtime", "concurrent_claims_deliver_exact_literal_bytes_once"),
+        _daemon("native_controller_runtime", "two_owned_controllers_do_not_cross_deliver"),
+        _daemon(
+            "native_controller_runtime",
+            "mismatched_payload_inventory_and_human_owner_refuse_before_effect",
+        ),
+        _daemon(
+            "native_controller_runtime",
+            "unknown_or_mismatched_acknowledgement_is_durable_and_never_resent",
+        ),
+        _daemon(
+            "native_controller_runtime",
+            "interruption_ack_is_not_completion_and_handoff_waits_for_terminal_owner",
+        ),
         _daemon("harness_dispatch", "claude_confirms_an_interrupt_without_a_kill"),
         _daemon("harness_dispatch", "codex_app_server_confirms_an_interrupt_without_a_kill"),
+        _daemon(
+            "harness_dispatch", "a_restart_leaves_a_running_attempt_pending_until_acknowledged"
+        ),
         CANCELLED_TURN,
     ),
     ("T02", "live_native_windows"): _live(LIVE_NATIVE),
-    ("T03", "adapter_fixture"): _not_implemented(
-        "structured/native handoff and context-transfer resume are not implemented; "
-        "native attach is refused",
-        FLAGSHIP,
+    ("T03", "adapter_fixture"): _tests(
+        _daemon(
+            "native_controller_runtime",
+            "interruption_ack_is_not_completion_and_handoff_waits_for_terminal_owner",
+        ),
+        _daemon(
+            "native_controller_runtime",
+            "unsupported_same_session_resume_and_wrong_approval_scope_are_refused",
+        ),
+        _daemon(
+            "workflow_cooperate",
+            "two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration",
+        ),
     ),
     ("T03", "live_native_windows"): _live(LIVE_NATIVE),
     ("T04", "live_mixed_harness"): _live(

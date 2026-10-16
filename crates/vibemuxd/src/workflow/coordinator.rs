@@ -62,7 +62,8 @@ pub const ESCALATED_CODE: &str = "message_escalated";
 pub const NO_VALID_CANDIDATE_CODE: &str = "no_valid_candidate";
 pub const REPAIRS_EXHAUSTED_CODE: &str = "task_repairs_exhausted";
 /// Snapshot violations that fail the Run outright (W01).
-const RUN_FAILING_CODES: [&str; 2] = ["snapshot_protected_path", "snapshot_forbidden_path"];
+pub(crate) const RUN_FAILING_CODES: [&str; 2] =
+    ["snapshot_protected_path", "snapshot_forbidden_path"];
 
 /// How a coordinator stopped.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -133,6 +134,7 @@ async fn drive(
             (
                 index,
                 StepInput {
+                    request_id: None,
                     purpose: TurnPurpose::Implement,
                     notes: Vec::new(),
                     deliveries: Vec::new(),
@@ -188,7 +190,7 @@ fn turns_left(record: &WorkflowRecord, task_key: &SpecIdentifier) -> bool {
 
 /// The candidate a unit recorded last, with its texts reloaded from the
 /// blob store, so a resumed coordinator continues from it.
-async fn restore_latest(
+pub(crate) async fn restore_latest(
     context: &RunContext,
     snapshot: &WorkflowSnapshot,
     unit: &Unit,
@@ -234,7 +236,7 @@ async fn restore_latest(
 
 /// Runs the given steps, at most `width` at a time, each under its own
 /// lease. Results come back in unit order.
-async fn run_steps(
+pub(crate) async fn run_steps(
     context: &RunContext,
     states: &mut [UnitState],
     inputs: Vec<(usize, StepInput)>,
@@ -257,7 +259,7 @@ async fn run_steps(
 /// Admits the steps' checkpoint messages in unit order, stages a bundle
 /// for every answer, and settles supervisor-bound messages. A fresh
 /// escalating message blocks the workflow for the operator.
-async fn after_steps(
+pub(crate) async fn after_steps(
     context: &RunContext,
     states: &[UnitState],
     outcomes: Vec<(usize, Result<StepOutcome, WorkflowError>)>,
@@ -349,6 +351,7 @@ async fn routed_inputs(
             inputs.push((
                 index,
                 StepInput {
+                    request_id: None,
                     purpose,
                     notes: Vec::new(),
                     deliveries,
@@ -510,6 +513,7 @@ async fn step(
         context,
         state,
         StepInput {
+            request_id: None,
             purpose,
             notes,
             deliveries,
@@ -558,7 +562,7 @@ async fn judge(
         }) {
         Some(review) => review,
         None => {
-            let outcome = review_candidate(context, unit, candidate).await?;
+            let outcome = review_candidate(context, unit, candidate, None).await?;
             findings = outcome
                 .findings
                 .iter()
@@ -792,7 +796,7 @@ fn comparison_entry(
 }
 
 /// Moves a workflow that could not continue to `failed`.
-async fn fail(context: &RunContext, code: &str) -> RunEnd {
+pub(crate) async fn fail(context: &RunContext, code: &str) -> RunEnd {
     if context.stopping() {
         return stop(context)
             .await
@@ -814,7 +818,7 @@ async fn fail(context: &RunContext, code: &str) -> RunEnd {
 }
 
 /// Ends a paused or cancelled run once every lease it held is settled.
-async fn stop(context: &RunContext) -> Result<RunEnd, WorkflowError> {
+pub(crate) async fn stop(context: &RunContext) -> Result<RunEnd, WorkflowError> {
     match context.control() {
         Control::Pause => {
             let record = context.record().await?;

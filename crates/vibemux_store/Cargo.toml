@@ -22,3 +22,4 @@ vibemux_workflow = { path = "../vibemux_workflow" }
 
 [dev-dependencies]
 tempfile.workspace = true
+vibemux_workflow = { path = "../vibemux_workflow", features = ["test_helpers"] }

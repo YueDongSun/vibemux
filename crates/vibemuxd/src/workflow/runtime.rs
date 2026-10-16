@@ -27,10 +27,12 @@ use vibemux_store::{AttemptPurpose, LeaseRecord, LeaseRequest, WorkflowSnapshot}
 use vibemux_types::{RunId, a2a::RunWorkspace};
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier,
+    execution_authority::ExecutionAuthority,
     gates::WorkflowPhase,
     leases::{LeaseEvent, LeaseState},
     messages::Participant,
     renderer::{ContextBlock, TurnPurpose},
+    task_spec::ToolName,
     workflow_record::WorkflowRecord,
 };
 use vibemux_workspace::WorkspaceManager;
@@ -76,6 +78,7 @@ pub(crate) struct WorkflowSetup {
     pub state: StateFiles,
     /// The execution protocol of each slot whose harness route may execute.
     pub slot_protocols: BTreeMap<SpecIdentifier, NativeProtocol>,
+    pub slot_profiles: BTreeMap<SpecIdentifier, String>,
     pub trampoline: Option<PathBuf>,
 }
 
@@ -130,6 +133,8 @@ impl Unit {
 /// What one turn is.
 #[derive(Clone, Debug)]
 pub(crate) struct TurnSpec {
+    /// A durable supervisor intent binds its child admission before launch.
+    pub request_id: Option<Uuid>,
     pub task_key: SpecIdentifier,
     pub contract_id: Sha256Digest,
     pub session_id: Uuid,
@@ -415,12 +420,12 @@ impl RunContext {
                 + 1
         };
         Ok(TurnIdentity {
-            request_id: turn_request_id(
+            request_id: spec.request_id.unwrap_or(turn_request_id(
                 self.workflow_id,
                 spec.lease.lease_id,
                 spec.purpose,
                 u32::try_from(ordinal).map_err(|_| WorkflowError::Internal)?,
-            ),
+            )),
             turn_number: u32::try_from(turn_number).map_err(|_| WorkflowError::Internal)?,
             policy_digest: snapshot.record.policy_digest,
         })
@@ -465,13 +470,20 @@ impl RunContext {
         deliveries: &[Delivery],
     ) -> Result<TurnResult, WorkflowError> {
         let spec = &plan.spec;
-        let grant = if spec.purpose.is_read_only() {
-            WritableGrant::READ_ONLY
-        } else {
-            WritableGrant {
-                edit_files: true,
-                run_dev_tests: true,
-            }
+        let task_spec = self
+            .plan
+            .specs
+            .get(&spec.task_key)
+            .ok_or(WorkflowError::Internal)?;
+        let authority =
+            ExecutionAuthority::from_spec(task_spec).map_err(|_| WorkflowError::Internal)?;
+        let effective_tools = authority.effective_tools(spec.purpose.is_read_only());
+        let grant = WritableGrant {
+            read_files: effective_tools.contains(&ToolName::ReadFiles),
+            search_files: effective_tools.contains(&ToolName::SearchFiles),
+            edit_files: effective_tools.contains(&ToolName::EditFiles),
+            write_files: effective_tools.contains(&ToolName::WriteFiles),
+            run_dev_tests: effective_tools.contains(&ToolName::RunDevTests),
         };
         let mut conflicts = 0;
         loop {
@@ -481,6 +493,17 @@ impl RunContext {
                 harness: spec.harness,
                 prompt: plan.prompt.clone(),
                 grant,
+                task_spec_digest: authority.task_spec_digest,
+                evidence_class: self.setup.config.config.evidence_class,
+                route_label: self
+                    .setup
+                    .config
+                    .config
+                    .slots
+                    .iter()
+                    .find(|slot| slot.slot_id == spec.lease.slot_id)
+                    .map(|slot| self.route_label(slot))
+                    .ok_or(WorkflowError::SlotUnavailable)?,
                 working_directory: spec.working_directory.clone(),
                 base_commit: record.base_commit.clone(),
                 binding: WorkflowTurnBinding {

@@ -39,6 +39,13 @@ pub enum WorkflowCommand {
         contract: String,
         request_id: Uuid,
     },
+    SupervisorStart {
+        contract: String,
+        request_id: Uuid,
+    },
+    SupervisorStatus {
+        workflow_id: Uuid,
+    },
     Status {
         workflow_id: Uuid,
     },
@@ -70,6 +77,9 @@ pub enum WorkflowCommand {
     PromptEvaluate {
         candidate: String,
         suite: String,
+    },
+    PromptEdit {
+        request_file: PathBuf,
     },
     PromptVersions,
     PromptRollback,
@@ -122,15 +132,23 @@ pub(crate) fn parse_workflow_arguments(
                 flags.request_file = Some(path()?);
                 2
             }
+            ("prompt", "edit", "--request-file") if flags.request_file.is_none() => {
+                flags.request_file = Some(path()?);
+                2
+            }
             ("workflow", "prepare", "--policy-file") if flags.policy_file.is_none() => {
                 flags.policy_file = Some(path()?);
                 2
             }
-            ("workflow", "start", "--contract") if flags.contract.is_none() => {
+            ("workflow", "start" | "supervisor_start", "--contract")
+                if flags.contract.is_none() =>
+            {
                 flags.contract = Some(text_value(value)?.to_string());
                 2
             }
-            ("workflow", "start", "--request-id") if flags.request_id.is_none() => {
+            ("workflow", "start" | "supervisor_start", "--request-id")
+                if flags.request_id.is_none() =>
+            {
                 flags.request_id = Some(parse_id(text_value(value)?)?);
                 2
             }
@@ -194,6 +212,16 @@ pub(crate) fn parse_workflow_arguments(
             }
         }
         ("workflow", "status") => WorkflowCommand::Status { workflow_id: id()? },
+        ("workflow", "supervisor_start") => {
+            none(positional.is_some())?;
+            WorkflowCommand::SupervisorStart {
+                contract: flags.contract.ok_or(DaemonCliError::InvalidArguments)?,
+                request_id: flags.request_id.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("workflow", "supervisor_status") => {
+            WorkflowCommand::SupervisorStatus { workflow_id: id()? }
+        }
         ("workflow", "pause") => WorkflowCommand::Pause { workflow_id: id()? },
         ("workflow", "cancel") => WorkflowCommand::Cancel { workflow_id: id()? },
         ("workflow", "purge") => WorkflowCommand::Purge { workflow_id: id()? },
@@ -222,6 +250,12 @@ pub(crate) fn parse_workflow_arguments(
             WorkflowCommand::PromptEvaluate {
                 candidate: flags.candidate.ok_or(DaemonCliError::InvalidArguments)?,
                 suite: flags.suite.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("prompt", "edit") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PromptEdit {
+                request_file: flags.request_file.ok_or(DaemonCliError::InvalidArguments)?,
             }
         }
         ("prompt", "versions") => {
@@ -292,6 +326,15 @@ pub async fn run_workflow(
         WorkflowCommand::Status { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_status(workflow_id).await.map_err(map_workflow_error)?})
         }
+        WorkflowCommand::SupervisorStart {
+            contract,
+            request_id,
+        } => {
+            json!({"ok": true, "workflow": client.workflow_supervisor_start(&contract, request_id).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::SupervisorStatus { workflow_id } => {
+            json!({"ok": true, "supervisor": client.workflow_supervisor_status(workflow_id).await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::Pause { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_pause(workflow_id).await.map_err(map_workflow_error)?})
         }
@@ -338,6 +381,10 @@ pub async fn run_workflow(
         }
         WorkflowCommand::PromptVersions => {
             json!({"ok": true, "versions": client.workflow_policy_versions().await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::PromptEdit { request_file } => {
+            let edit = read_document(request_file, MAX_WORKFLOW_REQUEST_BYTES).await?;
+            json!({"ok": true, "edit": client.workflow_contract_edit(edit).await.map_err(map_workflow_error)?})
         }
         WorkflowCommand::PromptRollback => {
             json!({"ok": true, "active": client.workflow_policy_rollback().await.map_err(map_workflow_error)?})
@@ -530,6 +577,14 @@ mod tests {
     fn every_command_parses_its_documented_form() {
         let id = Uuid::new_v4();
         let text = id.to_string();
+        assert_eq!(
+            parse("prompt", &["edit", "--request-file", "edit.json"]),
+            Ok(WorkflowCommand::PromptEdit {
+                request_file: PathBuf::from("edit.json")
+            })
+        );
+        assert!(parse("prompt", &["edit", "--request-file", "edit.json", "extra"]).is_err());
+        assert!(parse("prompt", &["edit", "--policy-file", "policy.json"]).is_err());
         assert_eq!(
             parse(
                 "workflow",

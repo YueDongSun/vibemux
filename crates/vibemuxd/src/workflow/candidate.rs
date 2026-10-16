@@ -124,6 +124,7 @@ fn spec_digest(
 /// What one worker step is asked to do.
 #[derive(Debug)]
 pub(crate) struct StepInput {
+    pub request_id: Option<Uuid>,
     pub purpose: TurnPurpose,
     pub notes: Vec<String>,
     /// Admitted messages (and their bundles) delivered at this turn
@@ -170,6 +171,7 @@ async fn step_under_lease(
     let unit = state.unit.clone();
     let purpose = input.purpose;
     let mut spec = TurnSpec {
+        request_id: input.request_id,
         task_key: unit.task_key.clone(),
         contract_id: unit.contract_id,
         session_id: unit.session_id,
@@ -361,6 +363,7 @@ pub(crate) async fn review_candidate(
     context: &RunContext,
     unit: &Unit,
     candidate: &CollectedCandidate,
+    request_id: Option<Uuid>,
 ) -> Result<ReviewOutcome, WorkflowError> {
     let manifest = candidate.manifest().ok_or(WorkflowError::Snapshot)?.clone();
     let digest = candidate.digest();
@@ -393,6 +396,7 @@ pub(crate) async fn review_candidate(
     let result = async {
         let plan = context
             .plan_turn(TurnSpec {
+                request_id,
                 task_key: unit.task_key.clone(),
                 contract_id: unit.contract_id,
                 session_id,
@@ -429,6 +433,12 @@ pub(crate) async fn review_candidate(
         &context.setup.state.blobs(),
     )
     .await?;
+    let writer = context.writer.clone();
+    let request_id = turn.request_id;
+    let attempt = call_writer(move || writer.workflow_attempt(request_id))
+        .await?
+        .ok_or(WorkflowError::Internal)?;
+    let execution = attempt.execution.ok_or(WorkflowError::Internal)?;
     let receipt = ReviewReceipt {
         schema_version: RECEIPT_SCHEMA_VERSION,
         receipt_id: Uuid::new_v4(),
@@ -439,6 +449,7 @@ pub(crate) async fn review_candidate(
         reviewer_run_id: turn.run_id,
         reviewer_session_id: session_id,
         reviewer_route: context.route_label(&reviewer_slot),
+        effective_route: Some(execution.effective_route),
         reviewer_harness: reviewer_slot.harness,
         verdict,
         findings_count: u32::try_from(findings.len()).unwrap_or(u32::MAX),
@@ -505,6 +516,7 @@ pub(crate) async fn verify_subject(
         task_key: subject.task_key,
         contract_ids: subject.contract_ids,
         subject_digest: subject.digest,
+        derived_subject: None,
         suites: suites.results,
         verifier_files_digest: context.setup.config.verifier_digest,
         tool_versions: suites.tool_versions,
@@ -621,7 +633,13 @@ pub(crate) async fn negative_control(
     let scope = task_scope(context, &unit.task_key)?;
     let key = format!("negative:{}:{}", unit.task_key, digest.to_hex());
     let changed_bytes = mutated_manifest.total_bytes();
-    let (workspace, collection) = materialize(context, &key, &[mutated_manifest], scope).await?;
+    let (workspace, collection) = materialize(
+        context,
+        &key,
+        std::slice::from_ref(&mutated_manifest),
+        scope,
+    )
+    .await?;
     if collection.digest() != Some(digest) {
         return Err(WorkflowError::Snapshot);
     }
@@ -632,7 +650,7 @@ pub(crate) async fn negative_control(
         .ok_or(WorkflowError::Internal)?
         .required_suites
         .clone();
-    let verification = verify_subject(
+    let mut verification = verify_subject(
         context,
         VerifySubject {
             workspace: &workspace,
@@ -643,6 +661,24 @@ pub(crate) async fn negative_control(
             suites: &suites,
         },
     )
+    .await?;
+    verification.schema_version = 2;
+    verification.derived_subject = Some(vibemux_workflow::gates::DerivedVerifierSubject {
+        source_candidate_digest: source.digest(),
+        mutation_id: NEGATIVE_MUTATION_ID.into(),
+        manifest: mutated_manifest,
+    });
+    let writer = context.writer.clone();
+    let workflow_id = context.workflow_id;
+    let receipt = WorkflowReceipt::Verification(verification.clone());
+    call_writer(move || {
+        writer.record_workflow_receipt(
+            workflow_id,
+            receipt.clone(),
+            None,
+            OffsetDateTime::now_utc(),
+        )
+    })
     .await?;
     let mut record = source.receipt.candidate.clone();
     record.candidate_digest = digest;

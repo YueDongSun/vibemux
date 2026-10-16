@@ -417,6 +417,8 @@ impl WorkflowService {
         let versions = self.policy_versions().await?;
         let base = active_policy(&versions)
             .map_or_else(OptimizablePolicy::baseline, |record| record.policy.clone());
+        base.validate_operational()
+            .map_err(|error| WorkflowError::Optimizer { code: error.code() })?;
         let base_digest = base.digest().map_err(|_| WorkflowError::Internal)?;
         let cycle_id = Sha256Digest::of_fields(
             CYCLE_ID_DOMAIN,

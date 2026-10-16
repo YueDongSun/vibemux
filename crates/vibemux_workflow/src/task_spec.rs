@@ -650,8 +650,8 @@ pub fn is_full_commit(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-#[cfg(test)]
-pub(crate) mod fixtures {
+#[cfg(any(test, feature = "test_helpers"))]
+pub mod fixtures {
     //! A valid TaskBoard Track A spec shared by the module tests.
 
     use super::*;

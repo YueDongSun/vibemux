@@ -28,6 +28,8 @@ const BASE_ROLE: &str = "You are a VibeMux worker assigned one versioned task co
 const IMPROVE_MARKER: &str = "Check every title for blank input before writing the store.";
 /// The harmful wording: the worker also rewrites a protected file.
 const HARMFUL_MARKER: &str = "Also refresh the project manifest.";
+/// Operational template wording that the fixture does not turn into a repair.
+const NO_GAIN_MARKER: &str = "Use a concise summary before editing the store.";
 
 fn store_file(source: &str) -> Value {
     json!({"src/store.mjs": taskboard_file(source)})
@@ -142,8 +144,7 @@ async fn only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back() {
             json!({"changes": [{"field": "budget_caps.max_turns", "value": 12}],
                 "expected_benefit": "More turns.", "possible_regressions": []}),
             role_change(HARMFUL_MARKER),
-            json!({"changes": [{"field": "summary_budget_bytes", "value": 4096}],
-                "expected_benefit": "Smaller bundles.", "possible_regressions": []}),
+            role_change(NO_GAIN_MARKER),
             role_change(IMPROVE_MARKER),
         ],
     );

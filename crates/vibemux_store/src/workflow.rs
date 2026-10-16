@@ -1,4 +1,4 @@
-//! Durable supervised workflows (ADR 031): store schema 5 and the writer
+//! Durable supervised workflows (ADRs 031/036): store schemas 5 and 7 to 9 and the writer
 //! transactions that apply the pure `vibemux_workflow` rules.
 //!
 //! A workflow references its admitted contracts by identity and its child
@@ -10,9 +10,24 @@
 //! event in the same immediate transaction. Payloads are content-free:
 //! identifiers, digests, counts, and fixed codes only.
 
+mod contract_edit;
+mod model_calls;
+pub(crate) use contract_edit::MIGRATION_V9;
+pub use contract_edit::{ContractEditAdmission, ContractEditCommit, ContractEditRecord};
+mod recovery_store;
+mod supervisor_commands;
 mod workflow_rows;
+pub use recovery_store::{
+    ControllerCommit, ControllerOutboxCommit, ControllerOutboxKind, ControllerOutboxOutcome,
+    ControllerOutboxRecord, ControllerOutboxState, RecoveryBindingCommit, RecoveryCheckpointCommit,
+    RecoveryPlanBinding,
+};
+pub(crate) use supervisor_commands::MIGRATION_V8;
+pub use supervisor_commands::{
+    SupervisorActionFinish, SupervisorProposalCommit, SupervisorRoundAdmission, SupervisorStart,
+};
 
-use rusqlite::{Transaction, TransactionBehavior};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -23,6 +38,7 @@ use vibemux_types::{EventId, ProjectId};
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier,
     contract::ContractArtifact,
+    execution_authority::ExecutionAuthority,
     gates::{
         AcceptanceLevel, CandidateAcceptance, GateRequirements, IntegrationReceipt, ReviewReceipt,
         ReviewVerdict, VerifierReceipt, WorkflowPhase, candidate_gate, cooperative_acceptance,
@@ -34,7 +50,7 @@ use vibemux_workflow::{
     optimizer::{OptimizablePolicy, PolicyHistory, PolicyVersion},
     receipts::{CandidateReceipt, WorkflowReceipt},
     slots::SlotFacts,
-    task_spec::WorkflowMode,
+    task_spec::{TaskSpec, ToolName, WorkflowMode},
     workflow_record::{TaskProgress, WorkflowRecord},
 };
 
@@ -46,10 +62,85 @@ use crate::{
 use workflow_rows::uuid_key;
 
 pub const WORKFLOW_STORE_RECORD_SCHEMA_VERSION: u32 = 1;
+pub const WORKFLOW_ATTEMPT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const MIGRATION_V7: &str = r#"
+CREATE TABLE workflow_contract_authorities (
+    contract_id TEXT PRIMARY KEY REFERENCES workflow_contracts(contract_id),
+    task_spec_digest TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    created_sequence INTEGER NOT NULL REFERENCES events(sequence)
+);
+CREATE TABLE workflow_model_call_owners (
+    owner_key TEXT PRIMARY KEY,
+    workflow_id TEXT REFERENCES workflows(workflow_id),
+    max_calls INTEGER NOT NULL,
+    deadline_unix_ms INTEGER NOT NULL,
+    calls_used INTEGER NOT NULL
+);
+CREATE TABLE workflow_model_calls (
+    call_id TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL REFERENCES workflow_model_call_owners(owner_key),
+    state TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    updated_sequence INTEGER NOT NULL REFERENCES events(sequence)
+);
+CREATE TABLE workflow_controllers (
+    controller_key TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id),
+    task_key TEXT NOT NULL,
+    session_id TEXT NOT NULL UNIQUE,
+    record_json TEXT NOT NULL,
+    updated_sequence INTEGER NOT NULL REFERENCES events(sequence)
+);
+CREATE TABLE workflow_controller_outbox (
+    effect_id TEXT PRIMARY KEY,
+    controller_key TEXT NOT NULL REFERENCES workflow_controllers(controller_key),
+    controller_version INTEGER NOT NULL,
+    command_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_sequence INTEGER NOT NULL REFERENCES events(sequence),
+    UNIQUE(controller_key, controller_version)
+);
+CREATE TABLE workflow_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id),
+    state_digest TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    created_sequence INTEGER NOT NULL REFERENCES events(sequence)
+);
+CREATE TABLE workflow_recovery_bindings (
+    workflow_id TEXT PRIMARY KEY REFERENCES workflows(workflow_id),
+    record_json TEXT NOT NULL,
+    created_sequence INTEGER NOT NULL REFERENCES events(sequence)
+);
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"#;
 const EVENT_ACTOR: &str = "vibemuxd";
 const SUPERVISOR_INBOX_DOMAIN: &str = "vibemux.workflow.supervisor_inbox.v1";
 /// Bound on records returned by one snapshot read.
 pub const MAX_SNAPSHOT_ITEMS: usize = 512;
+
+fn load_contract_authority(
+    connection: &rusqlite::Connection,
+    contract_id: Sha256Digest,
+) -> Result<Option<ExecutionAuthority>, StoreError> {
+    let row: Option<(String, String)> = connection.query_row(
+        "SELECT task_spec_digest, record_json FROM workflow_contract_authorities WHERE contract_id = ?",
+        [contract_id.to_hex()], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+    row.map(|(digest, record)| {
+        let authority: ExecutionAuthority = serde_json::from_str(&record)
+            .map_err(|_| workflow_error("store_workflow_projection_mismatch"))?;
+        if authority.schema_version
+            != vibemux_workflow::execution_authority::EXECUTION_AUTHORITY_SCHEMA_VERSION
+            || authority.task_spec_digest.to_hex() != digest
+        {
+            return Err(workflow_error("store_workflow_projection_mismatch"));
+        }
+        Ok(authority)
+    })
+    .transpose()
+}
 
 /// Adds the workflow tables. `migrate` runs it and the version marker in one
 /// immediate transaction, so a failure leaves the database at schema 4.
@@ -221,6 +312,9 @@ pub struct WorkflowAttemptRecord {
     pub purpose: AttemptPurpose,
     pub session_id: Uuid,
     pub rendered_prompt_sha256: Sha256Digest,
+    /// Missing on historical v1 attempts; never inferred as execution authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<WorkflowExecutionBinding>,
     pub created_at_ms: u64,
 }
 
@@ -234,7 +328,21 @@ pub struct WorkflowAttemptAdmission {
     pub contract_id: Sha256Digest,
     pub purpose: AttemptPurpose,
     pub session_id: Uuid,
+    pub execution: WorkflowExecutionBinding,
     pub dispatch: HarnessDispatchAdmission,
+}
+
+/// Effective authority and actual pinned launch route, fixed before dispatch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowExecutionBinding {
+    pub task_spec_digest: Sha256Digest,
+    pub effective_tools: std::collections::BTreeSet<ToolName>,
+    pub harness_profile: String,
+    pub route_config_digest: Sha256Digest,
+    pub evidence_class: vibemux_workflow::slots::EvidenceClass,
+    pub route_label: String,
+    pub effective_route: vibemux_workflow::execution_authority::EffectiveRouteIdentity,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -437,6 +545,49 @@ fn dispatch_terminal(phase: &str) -> bool {
 }
 
 impl SqliteStore {
+    /// Registers only the tool summary of the exact persisted TaskSpec digest.
+    /// No prompt or source bytes are retained. Until this succeeds execution is refused.
+    pub fn bind_workflow_contract_authority(
+        &mut self,
+        contract_id: Sha256Digest,
+        spec: &TaskSpec,
+        timestamp: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        spec.validate_structure()
+            .map_err(|_| workflow_error("store_workflow_authority_invalid"))?;
+        let authority = ExecutionAuthority::from_spec(spec)
+            .map_err(|_| workflow_error("store_workflow_authority_invalid"))?;
+        let transaction = self.immediate()?;
+        let contract = workflow_rows::load_contract(&transaction, contract_id)?
+            .ok_or_else(|| workflow_error("store_workflow_stale_contract"))?;
+        if contract.task_spec_digest != authority.task_spec_digest
+            || contract.task_key != spec.task_key.as_str()
+            || contract.workflow_key != spec.workflow_key.as_str()
+            || contract.contract_version != spec.contract_version
+            || contract.base_commit != spec.base_commit
+        {
+            return Err(workflow_error("store_workflow_authority_mismatch"));
+        }
+        if let Some(existing) = load_contract_authority(&transaction, contract_id)? {
+            if existing != authority {
+                return Err(workflow_error("store_workflow_authority_conflict"));
+            }
+            return Ok(());
+        }
+        let (_, sequence) = append(
+            &transaction,
+            "workflow_contract_authority_bound",
+            format!("workflow_contract_authority:{}", contract_id.to_hex()),
+            json!({"contract_id": contract_id, "task_spec_digest": authority.task_spec_digest,
+                "admitted_tools": authority.admitted_tools}),
+            timestamp,
+        )?;
+        transaction.execute("INSERT INTO workflow_contract_authorities(contract_id, task_spec_digest, record_json, created_sequence) VALUES (?, ?, ?, ?)",
+            params![contract_id.to_hex(), authority.task_spec_digest.to_hex(), serde_json::to_string(&authority)?, sequence])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn immediate(&mut self) -> Result<Transaction<'_>, StoreError> {
         Ok(self
             .connection
@@ -493,6 +644,11 @@ impl SqliteStore {
                 sequence: existing.sequence,
             });
         }
+        // Preserve the original admission fingerprint and replay path. Compiler
+        // accounting is charged only while creating this workflow, atomically
+        // with the owner association; historical call admissions stay unchanged.
+        let (admitted, compiler_association) =
+            model_calls::charge_compiler_for_prepare(&transaction, record)?;
         let contract_ids: Vec<String> = record
             .tasks
             .iter()
@@ -517,10 +673,13 @@ impl SqliteStore {
         for contract in contracts {
             workflow_rows::insert_contract_if_absent(&transaction, contract, sequence)?;
         }
-        workflow_rows::insert_workflow(&transaction, record, fingerprint, sequence)?;
+        workflow_rows::insert_workflow(&transaction, &admitted, fingerprint, sequence)?;
+        if let Some(association) = &compiler_association {
+            model_calls::associate_prepared_compiler(&transaction, association, timestamp)?;
+        }
         transaction.commit()?;
         Ok(WorkflowCommit {
-            record: record.clone(),
+            record: admitted,
             sequence: event.sequence().get(),
             event: Some(event),
         })
@@ -975,16 +1134,67 @@ impl SqliteStore {
         {
             return Err(workflow_error("store_workflow_base_mismatch"));
         }
-        if let Some(existing) =
-            workflow_rows::load_attempt(&transaction, admission.dispatch.request_id)?
+        let previous_attempt =
+            workflow_rows::load_attempt(&transaction, admission.dispatch.request_id)?;
+        if previous_attempt.is_none()
+            && stored
+                .record
+                .task(&admission.task_key)
+                .is_some_and(|task| task.contract_id != admission.contract_id)
         {
+            return Err(workflow_error("store_workflow_stale_contract"));
+        }
+        let authority = load_contract_authority(&transaction, admission.contract_id)?
+            .ok_or_else(|| workflow_error("store_workflow_authority_legacy_unverified"))?;
+        let read_only = matches!(
+            admission.purpose,
+            AttemptPurpose::Answer | AttemptPurpose::Review
+        );
+        let expected_profile = match (
+            admission.execution.evidence_class,
+            admission.dispatch.harness,
+            admission.dispatch.protocol,
+        ) {
+            (
+                vibemux_workflow::slots::EvidenceClass::Fixture,
+                vibemux_harness::AgentKind::Codex,
+                vibemux_harness::dispatch::NativeProtocol::CodexExec,
+            ) => Some("codex_fixture_writable_v1"),
+            (
+                vibemux_workflow::slots::EvidenceClass::Fixture,
+                vibemux_harness::AgentKind::Claude,
+                vibemux_harness::dispatch::NativeProtocol::ClaudeStreamJson,
+            ) => Some("claude_fixture_writable_v1"),
+            (vibemux_workflow::slots::EvidenceClass::Live, _, protocol) => {
+                vibemux_harness::dispatch::writable_profile::writable_profile_id(protocol).ok()
+            }
+            _ => None,
+        };
+        if admission.execution.task_spec_digest != authority.task_spec_digest
+            || authority.task_spec_digest != contract.task_spec_digest
+            || admission.execution.effective_tools != authority.effective_tools(read_only)
+            || admission.execution.route_config_digest != admission.dispatch.config_sha256
+            || admission.execution.evidence_class != stored.record.evidence_class
+            || admission.execution.effective_route.config_digest != admission.dispatch.config_sha256
+            || admission.execution.effective_route.harness != admission.dispatch.harness
+            || admission.execution.effective_route.protocol != admission.dispatch.protocol
+            || admission.execution.effective_route.profile != admission.execution.harness_profile
+            || admission.execution.harness_profile.is_empty()
+        {
+            return Err(workflow_error("store_workflow_launch_grant_mismatch"));
+        }
+        if expected_profile != Some(admission.execution.harness_profile.as_str()) {
+            return Err(workflow_error("store_workflow_launch_profile_mismatch"));
+        }
+        if let Some(existing) = previous_attempt {
             let same = existing.workflow_id == admission.workflow_id
                 && existing.lease_id == admission.lease_id
                 && existing.lease_generation == admission.lease_generation
                 && existing.task_key == admission.task_key
                 && existing.contract_id == admission.contract_id
                 && existing.purpose == admission.purpose
-                && existing.session_id == admission.session_id;
+                && existing.session_id == admission.session_id
+                && existing.execution.as_ref() == Some(&admission.execution);
             if !same {
                 return Err(workflow_error("store_workflow_attempt_conflict"));
             }
@@ -1001,6 +1211,7 @@ impl SqliteStore {
         if stored.record.version != admission.expected_workflow_version {
             return Err(workflow_error("store_workflow_version_conflict"));
         }
+        supervisor_commands::check_dispatch(&transaction, admission)?;
         if !stored.record.phase.admits_work() {
             return Err(workflow_error("store_workflow_not_running"));
         }
@@ -1058,7 +1269,7 @@ impl SqliteStore {
             return Err(workflow_error("store_workflow_attempt_conflict"));
         }
         let attempt = WorkflowAttemptRecord {
-            schema_version: WORKFLOW_STORE_RECORD_SCHEMA_VERSION,
+            schema_version: WORKFLOW_ATTEMPT_SCHEMA_VERSION,
             request_id: admission.dispatch.request_id,
             workflow_id: admission.workflow_id,
             lease_id: admission.lease_id,
@@ -1068,6 +1279,7 @@ impl SqliteStore {
             purpose: admission.purpose,
             session_id: admission.session_id,
             rendered_prompt_sha256: admission.dispatch.prompt.sha256,
+            execution: Some(admission.execution.clone()),
             created_at_ms: millis(admission.dispatch.timestamp),
         };
         let (_, sequence) = append(
@@ -1277,6 +1489,7 @@ impl SqliteStore {
         timestamp: OffsetDateTime,
     ) -> Result<WorkflowCommit, StoreError> {
         let transaction = self.immediate()?;
+        supervisor_commands::check_task_gate(&transaction, workflow_id, Some(task_key))?;
         let stored = workflow_rows::load_existing_workflow(&transaction, workflow_id)?;
         if stored.record.version != expected_version {
             return Err(workflow_error("store_workflow_version_conflict"));
@@ -1339,6 +1552,7 @@ impl SqliteStore {
         timestamp: OffsetDateTime,
     ) -> Result<WorkflowCommit, StoreError> {
         let transaction = self.immediate()?;
+        supervisor_commands::check_task_gate(&transaction, workflow_id, None)?;
         let stored = workflow_rows::load_existing_workflow(&transaction, workflow_id)?;
         if stored.record.version != expected_version {
             return Err(workflow_error("store_workflow_version_conflict"));
@@ -1750,7 +1964,7 @@ impl SqliteStore {
         timestamp: OffsetDateTime,
     ) -> Result<PolicyVersionRecord, StoreError> {
         policy
-            .validate()
+            .validate_operational()
             .map_err(|error| workflow_error(error.code()))?;
         let digest = policy
             .digest()
@@ -2001,6 +2215,15 @@ fn check_candidate(
     {
         return Err(workflow_error("store_workflow_attempt_mismatch"));
     }
+    let execution = attempt
+        .execution
+        .as_ref()
+        .ok_or_else(|| workflow_error("store_workflow_candidate_route_unverified"))?;
+    if candidate.candidate.worker_route != execution.route_label
+        || candidate.candidate.worker_harness != execution.effective_route.harness
+    {
+        return Err(workflow_error("store_workflow_candidate_route_mismatch"));
+    }
     let phase = workflow_rows::dispatch_phase(transaction, attempt.request_id)?
         .ok_or_else(|| workflow_error("store_workflow_projection_mismatch"))?;
     if !dispatch_terminal(&phase) {
@@ -2054,6 +2277,20 @@ fn check_review(
     }) {
         return Err(workflow_error("store_workflow_review_unknown_candidate"));
     }
+    let source = candidates
+        .iter()
+        .find(|candidate| {
+            candidate.candidate.candidate_digest == review.candidate_digest
+                && candidate.candidate.task_key == review.task_key
+                && candidate.candidate.contract_id == review.contract_id
+        })
+        .ok_or_else(|| workflow_error("store_workflow_review_unknown_candidate"))?;
+    let source_attempt = workflow_rows::load_attempt(transaction, source.attempt_request_id)?
+        .ok_or_else(|| workflow_error("store_workflow_unknown_attempt"))?;
+    let source_execution = source_attempt
+        .execution
+        .as_ref()
+        .ok_or_else(|| workflow_error("store_workflow_review_route_unverified"))?;
     // The reviewer Run must belong to a review attempt of this workflow.
     let attempts = workflow_rows::attempts_for(transaction, workflow_id)?;
     let reviewer_run = review.reviewer_run_id.as_hyphenated().to_string();
@@ -2080,6 +2317,22 @@ fn check_review(
                 || dispatch.harness != review.reviewer_harness
             {
                 return Err(workflow_error("store_workflow_review_unbound"));
+            }
+            let execution = attempt
+                .execution
+                .as_ref()
+                .ok_or_else(|| workflow_error("store_workflow_review_route_unverified"))?;
+            if review.effective_route.as_ref() != Some(&execution.effective_route)
+                || review.reviewer_route != execution.route_label
+            {
+                return Err(workflow_error("store_workflow_review_route_mismatch"));
+            }
+            if execution.effective_route == source_execution.effective_route
+                || (execution.evidence_class == vibemux_workflow::slots::EvidenceClass::Live
+                    && (execution.effective_route.endpoint.is_none()
+                        || source_execution.effective_route.endpoint.is_none()))
+            {
+                return Err(workflow_error("store_workflow_review_not_independent"));
             }
             let phase = workflow_rows::dispatch_phase(transaction, attempt.request_id)?
                 .ok_or_else(|| workflow_error("store_workflow_projection_mismatch"))?;
@@ -2111,6 +2364,45 @@ fn check_verification_subject(
     verification: &VerifierReceipt,
 ) -> Result<(), StoreError> {
     let subject = verification.subject_digest;
+    if let Some(derived) = &verification.derived_subject {
+        let source = admitted_candidates(transaction, record.workflow_id)?
+            .into_iter()
+            .find(|candidate| {
+                candidate.candidate.candidate_digest == derived.source_candidate_digest
+            })
+            .ok_or_else(|| workflow_error("store_workflow_verification_unknown_subject"))?;
+        let source_manifest = source
+            .manifest
+            .as_ref()
+            .ok_or_else(|| workflow_error("store_workflow_candidate_invalid"))?;
+        let same_paths = source_manifest.entries.len() == derived.manifest.entries.len()
+            && source_manifest
+                .entries
+                .iter()
+                .zip(&derived.manifest.entries)
+                .all(|(first, second)| first.path == second.path);
+        let changed = source_manifest
+            .entries
+            .iter()
+            .zip(&derived.manifest.entries)
+            .filter(|(first, second)| first != second)
+            .count();
+        if verification.schema_version != 2
+            || derived.mutation_id.is_empty()
+            || derived.mutation_id.len() > 128
+            || derived.mutation_id.chars().any(char::is_control)
+            || subject == derived.source_candidate_digest
+            || derived.manifest.base_commit != record.base_commit
+            || derived.manifest.digest().ok() != Some(subject)
+            || !same_paths
+            || changed != 1
+            || verification.task_key.as_ref() != Some(&source.candidate.task_key)
+            || verification.contract_ids.as_slice() != [source.candidate.contract_id]
+        {
+            return Err(workflow_error("store_workflow_derived_subject_invalid"));
+        }
+        return Ok(());
+    }
     let known = match &verification.task_key {
         Some(task_key) => admitted_candidates(transaction, record.workflow_id)?
             .iter()

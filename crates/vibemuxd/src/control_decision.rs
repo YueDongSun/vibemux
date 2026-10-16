@@ -422,10 +422,10 @@ mod tests {
         for operation in OPERATIONS {
             assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V8);
         }
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V8);
+        const { assert!(CONTROL_PROTOCOL_VERSION >= CONTROL_PROTOCOL_V8) };
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
         assert!(supported_control_version(CONTROL_PROTOCOL_V8));
-        assert!(!supported_control_version(CONTROL_PROTOCOL_V8 + 1));
+        assert!(!supported_control_version(CONTROL_PROTOCOL_VERSION + 1));
         assert!(DECISION_ADVISE_DEADLINE > PEER_DEADLINE);
     }
 
