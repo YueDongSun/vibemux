@@ -2920,6 +2920,175 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
   cleanup fail, the resource is retained for later cleanup; the double-failure
   path is not injected by the new regression.
 
+---
+
+### 2026-10-06 — Mobile access research and phased design proposal
+
+**Scope and resulting contracts**
+- Research-and-design deliverable only, owned by this session: two new documents and this amended progress log. No code, store schema, control protocol, plugin contract, A2A surface, or CI change.
+- Files: [docs/mobile_access_design.md](docs/mobile_access_design.md) (new), [docs/adr/033_mobile_access_channels.md](docs/adr/033_mobile_access_channels.md) (new, `Proposed`), `PROGRESS.md` (this entry plus the §5.2 planned-additions tree).
+
+**Status change**
+- None. No milestone status moved. Mobile access is recorded as a proposed design, not accepted scope.
+
+**Implemented**
+- Documentation-only deliverable, no code: an industry survey of bot-class and remote-access patterns (Happy Coder, the OpenClaw gateway with its current release line and official iOS/Android companion apps, lightweight Telegram control bots, Vibe Kanban, the Tailscale serve exposure pattern, Feishu/DingTalk/WeCom bot APIs, the Rust bot crates, and Tauri 2 mobile), a current-state inventory of the existing control IPC and A2A surfaces, and a track-based mobile access design with threat-model notes.
+- Operator priority recorded in the design (2026-10-06): tailnet-exposed read-only mobile PWA first (proposed `crates/vibemux_web`), an OpenClaw gateway connector second (proposed `crates/vibemux_bot`), a direct Feishu adapter third, and an independent iOS/Android app via a Tauri 2 shell reusing the same frontend last.
+- All tracks stay within the accepted security posture: the only new listener is loopback and token-gated, connector channel traffic is outbound-only, every payload follows content-free defaults, and no git-mutation, prompt-relay, or auto-approval action exists at any phase.
+- An October 2026 community-alignment pass (Claude Code Remote Control and mobile apps, Cursor web agents, Omnara, Happy, claude-code-webui, agentapi, ccgram, OpenCode serve/share, OpenClaw webhook plus MCP seams, self-hosted Web Push feasibility, Tauri push plugin status, Feishu long-connection card callbacks) fixed three seams: Track A gains self-hosted web push and one-time QR enrollment with an OpenAPI-described JSON API; Track B uses the gateway's token-protected webhook plus MCP tool registration; Track C gets interactive cards over the Feishu long connection without a public callback URL.
+- A three-reviewer adversarial pass (red-team security, rules-compliance audit, consistency/feasibility) produced 35 findings, and the material ones are folded back into the two documents: the Track B MCP surface mandates bearer auth with constant-time comparison and bounded concurrency; the Track B relay payload is minimal-verbosity-only (never titles) against cross-tool prompt injection through the gateway LLM; the same-logon trust-boundary claim is restated as a deliberate bounded extension of the ADR 020 model (the phone is outside that boundary); the M5 "remote browser access" deferral is recorded as partially reopened; planned-crate labels are corrected from `PLANNED` to `PROPOSED`; enrollment redemption is POST-body-only with a failed-attempt limiter; push endpoints inherit webhook URL validation; daemon-restart generation semantics (`ControlClient::same_generation`) are specified for dedupe keys; and CI ownership of the future PWA build is flagged as an infrastructure change.
+
+**Evidence**
+- Documentation only. No build, test, or live validation was executed for this change; the design cites verified code paths (`ControlOperation` v7 table, dispatch/DSH `after_sequence` cursors, the GUI 5 s `POLL_INTERVAL` polling precedent) and public references listed in the design document.
+
+**Remaining**
+- Acceptance decision on ADR 033; PWA frontend stack and MCP transport dependency reviews under the §16 rules; the M9 security review before any release claim; the Tauri 2 app track requires its own ADR with signing and distribution decisions.
+
+**Known risks**
+- Publishing the Track A web surface to a tailnet is an operator action on the operator's trust boundary; VibeMux still binds loopback only, and no remote-readiness claim is made beyond that documented pattern.
+- Outbound delivery to IM or assistant platforms intentionally exposes task metadata (IDs, states, optionally titles); the design's content policy and allowlists bound but do not eliminate this egress.
+
+---
+
+
+---
+
+### 2026-10-08 — Track A read-only mobile web implementation
+
+**Status:** `PARTIAL`. ADR 033 is Accepted by the operator and the §5.2
+`vibemux_web` label is PLANNED (scope acceptance); implementation and release
+qualification are recorded separately here. No milestone is promoted.
+
+## Scope
+- Task: Implement accepted Track A in the additive `vibemux_web` workspace member.
+- Owned modules: web control projections, HTTP/API/authentication, enrollment,
+  private web state, Web Push, frontend, API contract, build/CI, and these docs.
+- Integration used one feature branch and separate bounded worker worktrees.
+  Existing primary-checkout DSH and documentation edits were preserved.
+
+## Implemented
+- Operator-started, fail-closed loopback server with a 5-second configurable
+  poller reusing existing authenticated control IPC; no daemon autostart.
+- Bounded task/run and optional configured dispatch/workflow projections,
+  optional DSH health, generation/race detection, and stale title suppression.
+- Instance bearer on every route, including shell, assets, OpenAPI and
+  enrollment; constant-time digest comparison, failed-attempt/concurrency/body
+  limits, strict CSP/referrer/security headers, static MIME and ETag/304 handling.
+- Random 256-bit, 120-second single-use enrollment tokens with bounded storage,
+  POST-only redemption and SVG QR invitations. Rotation invalidates all HTTP
+  credentials and prior push subscriptions while keeping permanent VAPID keys.
+- Persistent VAPID P-256 keys and full bounded PushSubscription JSON, protected
+  runtime files/instance lock, validated public/pinned HTTPS endpoints, no proxies
+  or redirects, bounded retries/responses/sweeps, expiration/404/410 pruning and
+  quarantine. Push wire JSON contains exactly kind/id/state; dedupe stays local.
+- Svelte 5/Vite/TypeScript PWA, local bundled Workbox, explicit update activation,
+  a bounded 90-second/64-entry/256-KiB authenticated cache, stale notices and
+  cross-generation/refresh consistency checks. No cached title is current.
+- Hand-written OpenAPI 3.1 API version 0.1.0 with route coverage. Exact Node
+  22.22.0 frontend build/check/test/audit steps precede cargo in Windows/Ubuntu CI.
+  Compile-time guard rejects missing/empty frontend output; dist is not tracked.
+
+## Behavior and invariants
+- Production web code never opens SQLite, writes canonical state, requests
+  terminal output, invokes a write control operation, or mutates Git.
+- Task links are validated configuration UUIDs because the current protocol
+  cannot enumerate dispatch/workflow IDs by task. Missing links remain untracked.
+- Every endpoint remains bearer-gated per the operator's explicit clarification.
+  Ordinary browser/QR mobile bootstrap is unavailable unless the operator supplies
+  authentication covering navigation, assets and service-worker/background fetches.
+- State reports come from validated daemon projections, never terminal exit/idle.
+
+## Files changed
+- `crates/vibemux_web/` Rust modules, binary, tests, build guard and OpenAPI.
+- `crates/vibemux_web/web/` frontend sources, npm package/lock and ignored build output.
+- Root Cargo manifest/lock, `.github/workflows/ci.yml`, ADR 033, mobile design status,
+  `docs/vibemux_web.md`, and this progress record. No baseline dependency versions
+  were removed or changed; no daemon/control/store/A2A/Python source was modified.
+
+## Validation executed
+- Runtime: native Windows, Rust/Cargo 1.85.0, Node 22.22.0. Command-local npm cache,
+  TEMP/TMP and build directories were used. The local Rust build used verified
+  OpenSSL 3.0.17 through command-local OPENSSL_DIR/OPENSSL_NO_VENDOR; vendored CI
+  OpenSSL compilation remains unverified. Global runtime/PATH/provider settings
+  were not changed.
+- `npm ci`: passed using the committed lockfile.
+- `npm run typecheck`: passed, 0 errors/0 warnings.
+- `npm test`: passed, 10 tests (cache bound/expiry/body limit, bearer partition,
+  stale title/marker, push whitelist, cross-generation/refresh consistency).
+- `npm run build`: passed; embedded shell/manifest/service worker/assets produced.
+- `npm audit --audit-level=low`: passed, 0 vulnerabilities; no audit exclusions.
+- `cargo fmt --all -- --check`: passed (exit 0).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed (exit 0).
+- `cargo test -p vibemux_web --all-features --locked`: passed, 30 tests total
+  (21 module tests, 3 real control-pipe tests, 6 real HTTP/contract tests).
+- `cargo test --workspace --all-features`: failed with 10 existing CLI unit
+  `ControlRuntimeUnavailable` errors when using the restricted host's default
+  LOCALAPPDATA. A single unchanged CLI test passed after assigning a writable
+  task-local LOCALAPPDATA, confirming that environment cause.
+- `cargo test --workspace --all-features -- --test-threads=2`, with task-local
+  LOCALAPPDATA: failed in all 3 existing `vibemux_cli::bootstrap_process` tests
+  with `SpawnFailed` (exit 101). Those source files were left unchanged.
+- `cargo nextest run --workspace --all-features`: failed at the same default
+  runtime-directory issue: 48 passed, 10 failed, 2 skipped; 795 tests not run.
+- `cargo nextest run --workspace --all-features --test-threads=2`, with task-local
+  LOCALAPPDATA: failed at existing bootstrap-process tests: 58 passed, 2 failed,
+  2 skipped; 793 tests not run (exit 100). A skip is not release evidence.
+- `cargo deny check`: failed initially on the restricted default advisory cache.
+  Re-executed with a temporary config changing only advisory db-path: advisories
+  FAILED, licenses FAILED (no repository license allow policy), bans/sources OK.
+  No ignored advisories or relaxed policies were added.
+- `cargo audit --no-fetch -d <fresh_task_local_rustsec_git_db> --json`: failed
+  (exit 1): RSA 0.9.10 RUSTSEC-2023-0071 in the new push crypto chain, plus the
+  existing time 0.3.44 RUSTSEC-2026-0009 and rustls 0.23.43 RUSTSEC-2026-0285.
+- Production embedding guard, compiled directly and executed against real dist:
+  present output passed (exit 0); missing dist rejected (exit 101), then restored.
+- Fresh bundled Chromium against the real web binary with an authenticated,
+  task-owned bootstrap fixture: phone 390px and desktop 1366px rendered without
+  horizontal overflow; stale/unavailable notice, protected shell/API, initial SW
+  installation/control passed; 0 page errors and 0 CSP errors. A page-only header
+  fixture could not authenticate SW fetches; no public-route exception was added.
+- `git diff --check`: passed before local delivery. Worker claims were followed by
+  independently observed integrated checks. CI was configured, not executed remotely.
+
+## Platform coverage
+- Windows: native feature tests, IPC, HTTP, ACL and viewport/browser fixture evidence.
+- Linux/WSL: not executed; Ubuntu CI build configured only.
+- Live terminal backend: not applicable; no terminal route or proxy exists.
+- Live tailnet/operator bootstrap, installed iOS/Android PWA push and actual vendor
+  delivery, offline-device behavior and live SW replacement: unverified.
+
+## Compatibility / migration
+- No daemon/control/store/plugin/A2A migration or operation change.
+- New pre-alpha API 0.1.0 and private web-state schema 1, with an additive credential
+  epoch; older private state without an epoch revokes old subscriptions on startup
+  while retaining VAPID keys. No stable API compatibility promise is made.
+- Rollback is stopping the web process and removing its config; no canonical state
+  is altered. Known web-local state is independently owned.
+
+## Security impact
+- Strict authentication, content limits, ACL/link checks, origin-local assets and
+  validated/pinned outbound destinations preserve the accepted read-only boundary.
+- Push carries no titles/branches/prompts/paths/tokens/free text. Token rotation
+  revokes notification recipients as well as future HTTP access.
+- The accepted mobile threat model and Track A residual risks are recorded in
+  `docs/mobile_access_design.md` §7 and `docs/vibemux_web.md`.
+
+## Remaining work
+- Resolve the existing Windows process-bootstrap gate in its own bounded scope,
+  establish the dependency/license policy and remediate the reported advisories.
+- Qualify CI/Ubuntu, real operator bootstrap/tailnet and installed iOS/Android push;
+  M9 review still precedes any release claim. Tracks B/C/D remain out of scope.
+
+## Known risks
+- No full-workspace green gate or release-readiness claim. New RSA dependency has
+  an unresolved advisory even though VAPID request construction uses P-256.
+- Push is best-effort: persisted pre-send claims can lose an uncertain delivery,
+  and bounded in-call retries can duplicate at a vendor. No exactly-once claim.
+- Shared bearer rotation is deliberately coarse. The auth limiter is global and
+  can temporarily deny valid clients after enough failed attempts.
+- The strict bootstrap prerequisite is real; the temporary authenticated test
+  fixture is not a shipped bootstrap service or proof of an operator deployment.
+
 ### 2026-10-12 - Decision port and advisory harness routing (ADR 034, `feat/decision_port`)
 
 **Scope and implementation**
