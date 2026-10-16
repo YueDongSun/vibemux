@@ -34,6 +34,12 @@ export const browser_suite_config = Object.freeze({
   check_timeout_ms: 30_000,
   devtools_port_timeout_ms: 20_000,
   devtools_port_poll_ms: 50,
+  // A browser that dies or refuses DevTools while it starts is an
+  // environment failure. The launch is retried with a fresh process and
+  // profile, but only while the suite still has time for its checks.
+  launch_attempts: 3,
+  launch_retry_delay_ms: 500,
+  launch_retry_min_remaining_ms: 60_000,
   browser_close_timeout_ms: 10_000,
   child_exit_timeout_ms: 5000,
   poll_timeout_ms: 5000,
@@ -130,12 +136,46 @@ async function launch_browser(browser_executable, temp_root) {
     browser.version = String(version_info.product ?? "").split("/")[1] ?? String(version_info.product);
     return browser;
   } catch (error) {
+    // The WebSocket error event carries no cause, so the browser's own state
+    // is the only clue to why DevTools did not answer.
+    const browser_state = browser.tracked.exit_result === null
+      ? "browser was still running"
+      : `browser had exited: ${JSON.stringify(browser.tracked.exit_result)}`;
     await close_browser(browser);
     if (error instanceof Browser_unavailable_error) {
       throw error;
     }
-    throw new Browser_unavailable_error(`browser could not be controlled: ${error.message}`);
+    throw new Browser_unavailable_error(`browser could not be controlled: ${error.message}; ${browser_state}`);
   }
+}
+
+// Launches the browser and retries a failed start. Every check runs after
+// the launch, so no candidate code has run yet and a retry cannot hide a
+// candidate defect. Earlier failures stay in the result as evidence; when
+// every attempt fails, all of them become the blocked reason.
+async function launch_browser_with_retries(browser_executable, temp_root, suite_deadline) {
+  const launch_failures = [];
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const browser = await launch_browser(browser_executable, temp_root);
+      browser.launch_failures = launch_failures;
+      return browser;
+    } catch (error) {
+      if (!(error instanceof Browser_unavailable_error)) {
+        throw error;
+      }
+      launch_failures.push(error.message);
+    }
+    const remaining_ms = suite_deadline - Date.now();
+    if (attempt >= browser_suite_config.launch_attempts || remaining_ms < browser_suite_config.launch_retry_min_remaining_ms) {
+      break;
+    }
+    await delay(browser_suite_config.launch_retry_delay_ms);
+  }
+  const reason = launch_failures.length === 1
+    ? launch_failures[0]
+    : `browser launch failed ${launch_failures.length} times: ${launch_failures.join(" | ")}`;
+  throw new Browser_unavailable_error(reason);
 }
 
 // Records the browser-reported child processes (renderers, GPU, utilities) so
@@ -939,13 +979,17 @@ export async function run_browser_suite({ candidate_dir, mode, browser_executabl
   }
   let browser;
   try {
-    browser = await launch_browser(browser_executable, temp_root);
+    browser = await launch_browser_with_retries(browser_executable, temp_root, suite_deadline);
   } catch (error) {
     result.blocked_reason = error instanceof Browser_unavailable_error ? error.message : `browser launch failed: ${error.message}`;
     return result;
   }
   result.command = browser.command;
-  result.browser = { executable_name: browser.executable_name, version: browser.version };
+  result.browser = {
+    executable_name: browser.executable_name,
+    version: browser.version,
+    launch_failures: browser.launch_failures,
+  };
   try {
     for (const check of browser_checks) {
       if (browser.connection.closed || browser.tracked.exit_result !== null) {
