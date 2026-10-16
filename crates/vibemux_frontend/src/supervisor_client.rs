@@ -520,10 +520,10 @@ mod tests {
     ) -> SupervisorSnapshot {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                if let Some(snapshot) = client.take_snapshot() {
-                    if predicate(&snapshot) {
-                        return snapshot;
-                    }
+                if let Some(snapshot) = client.take_snapshot()
+                    && predicate(&snapshot)
+                {
+                    return snapshot;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }

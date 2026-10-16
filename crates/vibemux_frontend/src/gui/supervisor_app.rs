@@ -126,11 +126,10 @@ impl SupervisorApp {
     /// Select the content tab of an existing native task view.
     pub fn set_task_window_tab(&mut self, task_id: &str, tab: super::TaskDetailTab) {
         let snapshot = self.snapshot();
-        if let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) {
-            if let Ok(state) = self.ui_state.lock() {
-                state
-                    .with_task_window_selection_mut(task_id, task, |selection| selection.tab = tab);
-            }
+        if let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id)
+            && let Ok(state) = self.ui_state.lock()
+        {
+            state.with_task_window_selection_mut(task_id, task, |selection| selection.tab = tab);
         }
     }
 
@@ -191,15 +190,15 @@ impl SupervisorApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() || ime_composition_active(ctx) {
+        if ctx.egui_wants_keyboard_input() || ime_composition_active(ctx) {
             return;
         }
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
-            if let Ok(mut state) = self.ui_state.lock() {
-                if state.discard_prompt_open() {
-                    state.keep_draft();
-                    return;
-                }
+            if let Ok(mut state) = self.ui_state.lock()
+                && state.discard_prompt_open()
+            {
+                state.keep_draft();
+                return;
             }
             if self.diagnostics_open {
                 self.diagnostics_open = false;
@@ -238,23 +237,23 @@ impl SupervisorApp {
             (Key::Num9, 8),
             (Key::Num0, 9),
         ];
-        if let Some((_, index)) = DIGITS.into_iter().find(|(key, _)| input.key_pressed(*key)) {
-            if let Ok(mut state) = self.ui_state.lock() {
-                state.select_agent(index, self.view_model.agents.len());
-            }
+        if let Some((_, index)) = DIGITS.into_iter().find(|(key, _)| input.key_pressed(*key))
+            && let Ok(mut state) = self.ui_state.lock()
+        {
+            state.select_agent(index, self.view_model.agents.len());
         }
     }
 
-    fn render_topbar(&mut self, ctx: &egui::Context, colors: &C, snapshot: &SupervisorSnapshot) {
-        egui::TopBottomPanel::top("supervisor_header")
+    fn render_topbar(&mut self, root_ui: &mut egui::Ui, colors: &C, snapshot: &SupervisorSnapshot) {
+        egui::Panel::top("supervisor_header")
             .show_separator_line(true)
-            .min_height(TOPBAR_MIN_HEIGHT)
+            .min_size(TOPBAR_MIN_HEIGHT)
             .frame(
                 egui::Frame::new()
                     .fill(colors.bg)
                     .inner_margin(egui::Margin::symmetric(20, 12)),
             )
-            .show(ctx, |ui| {
+            .show_inside(root_ui, |ui| {
                 ui.horizontal(|ui| {
                     let title = snapshot
                         .coordinator
@@ -300,7 +299,7 @@ impl SupervisorApp {
 
     fn render_drawer(
         &mut self,
-        ctx: &egui::Context,
+        root_ui: &mut egui::Ui,
         colors: &C,
         snapshot: &SupervisorSnapshot,
         viewport_width: f32,
@@ -318,16 +317,16 @@ impl SupervisorApp {
         };
         let max_width = (viewport_width * 0.5).max(DRAWER_MIN_WIDTH);
         let mut close_clicked = false;
-        egui::SidePanel::right(DRAWER_PANEL_ID)
+        egui::Panel::right(DRAWER_PANEL_ID)
             .resizable(true)
-            .default_width(DRAWER_DEFAULT_WIDTH.min(max_width))
-            .width_range(DRAWER_MIN_WIDTH..=max_width)
+            .default_size(DRAWER_DEFAULT_WIDTH.min(max_width))
+            .size_range(DRAWER_MIN_WIDTH..=max_width)
             .frame(
                 egui::Frame::new()
                     .fill(colors.bg)
                     .inner_margin(egui::Margin::symmetric(18, 14)),
             )
-            .show(ctx, |ui| {
+            .show_inside(root_ui, |ui| {
                 drawer_contents(
                     ui,
                     colors,
@@ -338,10 +337,8 @@ impl SupervisorApp {
                     &mut close_clicked,
                 );
             });
-        if close_clicked {
-            if let Ok(mut state) = self.ui_state.lock() {
-                state.close_details();
-            }
+        if close_clicked && let Ok(mut state) = self.ui_state.lock() {
+            state.close_details();
         }
     }
 
@@ -372,8 +369,8 @@ impl SupervisorApp {
             let actions = self.actions.clone();
             let root_ctx = ctx.clone();
             let task_colors = colors;
-            ctx.show_viewport_deferred(viewport_id, viewport, move |child_ctx, _class| {
-                let close_requested = child_ctx.input(|input| input.viewport().close_requested());
+            ctx.show_viewport_deferred(viewport_id, viewport, move |child_ui, _class| {
+                let close_requested = child_ui.input(|input| input.viewport().close_requested());
                 if close_requested {
                     actions.report_task_window_closed(task_id.clone());
                     root_ctx.request_repaint();
@@ -384,7 +381,7 @@ impl SupervisorApp {
                     |snapshot| snapshot.clone(),
                 );
                 let Some(task) = snapshot.tasks.iter().find(|task| task.task_id == task_id) else {
-                    egui::CentralPanel::default().show(child_ctx,|ui| {
+                    egui::CentralPanel::default().show_inside(child_ui,|ui| {
                         ui.heading("Task observation unavailable");
                         ui.label("This task is absent from the current page or connection. Its execution has not been changed.");
                         if ui.button("Refresh task").clicked() {
@@ -394,14 +391,15 @@ impl SupervisorApp {
                     });
                     return;
                 };
-                super::apply_theme(child_ctx, &palette_for(theme));
+                super::apply_theme(child_ui.ctx(), &palette_for(theme));
+                child_ui.set_style(child_ui.ctx().global_style());
                 egui::CentralPanel::default()
                     .frame(
                         egui::Frame::new()
                             .fill(task_colors.bg)
                             .inner_margin(egui::Margin::same(18)),
                     )
-                    .show(child_ctx, |ui| {
+                    .show_inside(child_ui, |ui| {
                         let Ok(state) = state_arc.lock() else {
                             ui.label("Task window state is temporarily unavailable.");
                             return;
@@ -442,28 +440,31 @@ impl SupervisorApp {
 }
 
 impl eframe::App for SupervisorApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.render_frame(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.render_frame(ui);
     }
 }
 
 impl SupervisorApp {
-    fn render_frame(&mut self, ctx: &egui::Context) {
-        if self.actions.take_overflowed() {
-            if let Ok(mut snapshot) = self.snapshot.write() {
-                snapshot.connection.detail = Some(
-                    "Action queue is full. The last action was not sent; please try again.".into(),
-                );
-            }
+    fn render_frame(&mut self, root_ui: &mut egui::Ui) {
+        let context = root_ui.ctx().clone();
+        let ctx = &context;
+        if self.actions.take_overflowed()
+            && let Ok(mut snapshot) = self.snapshot.write()
+        {
+            snapshot.connection.detail = Some(
+                "Action queue is full. The last action was not sent; please try again.".into(),
+            );
         }
         let snapshot = self.snapshot();
         let palette = palette_for(self.user_config.theme);
         super::apply_theme(ctx, &palette);
-        ctx.style_mut(|style| {
+        ctx.global_style_mut(|style| {
             style
                 .text_styles
                 .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
         });
+        root_ui.set_style(ctx.global_style());
         let colors = super::pal(&palette);
         let target_options = composer::target_options(&self.view_model);
         self.persist_if_due();
@@ -485,11 +486,11 @@ impl SupervisorApp {
             });
         let collapsed = self.user_config.sidebar_collapsed;
         let mut sidebar_actions = None;
-        egui::SidePanel::left(sidebar::SIDEBAR_PANEL_ID)
-            .exact_width(sidebar::width_for(collapsed))
+        egui::Panel::left(sidebar::SIDEBAR_PANEL_ID)
+            .exact_size(sidebar::width_for(collapsed))
             .resizable(false)
             .frame(egui::Frame::new().fill(colors.surf))
-            .show(ctx, |ui| {
+            .show_inside(root_ui, |ui| {
                 let view = sidebar::SidebarView {
                     snapshot: &snapshot,
                     page: active_page,
@@ -500,12 +501,12 @@ impl SupervisorApp {
                 sidebar_actions = Some(sidebar::render(ui, &colors, &view));
             });
         if let Some(actions) = sidebar_actions {
-            if let Some(page) = actions.page {
-                if let Ok(mut state) = self.ui_state.lock() {
-                    match page {
-                        MainPage::CoordinatorChat => state.show_coordinator_chat(),
-                        MainPage::Agents => state.show_agents(),
-                    }
+            if let Some(page) = actions.page
+                && let Ok(mut state) = self.ui_state.lock()
+            {
+                match page {
+                    MainPage::CoordinatorChat => state.show_coordinator_chat(),
+                    MainPage::Agents => state.show_agents(),
                 }
             }
             if let Some(task_id) = actions.task_id {
@@ -525,8 +526,8 @@ impl SupervisorApp {
             }
         }
 
-        self.render_topbar(ctx, &colors, &snapshot);
-        self.render_drawer(ctx, &colors, &snapshot, viewport_width);
+        self.render_topbar(root_ui, &colors, &snapshot);
+        self.render_drawer(root_ui, &colors, &snapshot, viewport_width);
 
         let page = self
             .ui_state
@@ -546,14 +547,14 @@ impl SupervisorApp {
                 || snapshot.tasks.is_empty());
 
         if page == MainPage::CoordinatorChat && !welcome {
-            let composer_panel = egui::TopBottomPanel::bottom("coordinator_composer")
+            let composer_panel = egui::Panel::bottom("coordinator_composer")
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
                         .fill(colors.bg)
                         .inner_margin(egui::Margin::symmetric(18, 10)),
                 )
-                .show(ctx, |ui| {
+                .show_inside(root_ui, |ui| {
                     if let Ok(mut state) = self.ui_state.lock() {
                         chat::content_column(ui, |ui| {
                             composer::render(ui, &colors, &mut state, &target_options);
@@ -575,7 +576,7 @@ impl SupervisorApp {
                     .fill(colors.bg)
                     .inner_margin(egui::Margin::symmetric(18, 12)),
             )
-            .show(ctx, |ui| match page {
+            .show_inside(root_ui, |ui| match page {
                 MainPage::CoordinatorChat if welcome => {
                     let top_space = (ui.available_height() * 0.22).max(24.0);
                     ui.add_space(top_space);
@@ -616,13 +617,13 @@ impl SupervisorApp {
                     }
                 }
             });
-        if let Some(selected) = selected_agent_change {
-            if let Ok(mut state) = self.ui_state.lock() {
-                if let Some(index) = selected {
-                    state.select_agent(index, self.view_model.agents.len());
-                } else {
-                    state.return_to_agents_list();
-                }
+        if let Some(selected) = selected_agent_change
+            && let Ok(mut state) = self.ui_state.lock()
+        {
+            if let Some(index) = selected {
+                state.select_agent(index, self.view_model.agents.len());
+            } else {
+                state.return_to_agents_list();
             }
         }
 
@@ -962,7 +963,7 @@ mod tests {
         if ime {
             events.push(egui::Event::Ime(egui::ImeEvent::Preedit("输入".into())));
         }
-        let _ = context.run(
+        let _ = context.run_ui(
             egui::RawInput {
                 events,
                 modifiers,
@@ -1034,8 +1035,8 @@ mod tests {
             )),
             ..Default::default()
         };
-        let _ = context.run(raw.clone(), |context| app.render_frame(context));
-        let output = context.run(raw, |context| app.render_frame(context));
+        let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
+        let output = context.run_ui(raw, |context| app.render_frame(context));
         (context, output)
     }
 
@@ -1108,7 +1109,7 @@ mod tests {
             time: Some(time),
             ..Default::default()
         };
-        let _ = context.run(raw, |context| app.render_frame(context));
+        let _ = context.run_ui(raw, |context| app.render_frame(context));
     }
 
     fn focused_composer_app() -> (egui::Context, SupervisorApp) {
@@ -1118,7 +1119,7 @@ mod tests {
             .unwrap()
             .set_composer_draft("draft".to_string());
         let context = egui::Context::default();
-        let _ = context.run(egui::RawInput::default(), |context| {
+        let _ = context.run_ui(egui::RawInput::default(), |context| {
             app.render_frame(context)
         });
         context
@@ -1178,8 +1179,8 @@ mod tests {
             )),
             ..Default::default()
         };
-        let _ = context.run(raw.clone(), |context| app.render_frame(context));
-        let output = context.run(raw, |context| app.render_frame(context));
+        let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
+        let output = context.run_ui(raw, |context| app.render_frame(context));
         let serif_title = output.shapes.iter().any(|shape| match &shape.shape {
             egui::epaint::Shape::Text(text) => {
                 text.galley.job.text == "Second task"
@@ -1268,8 +1269,8 @@ mod tests {
             screen_rect: Some(screen),
             ..Default::default()
         };
-        let _ = context.run(raw.clone(), |context| app.render_frame(context));
-        let output = context.run(raw, |context| app.render_frame(context));
+        let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
+        let output = context.run_ui(raw, |context| app.render_frame(context));
         let send = context
             .read_response(egui::Id::new(composer::SEND_BUTTON_ID))
             .expect("send button");
@@ -1306,9 +1307,9 @@ mod tests {
             )),
             ..Default::default()
         };
-        let _ = context.run(raw.clone(), |context| app.render_frame(context));
+        let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
         context.memory_mut(|memory| memory.request_focus(egui::Id::new(REFRESH_BUTTON_ID)));
-        let output = context.run(raw, |context| app.render_frame(context));
+        let output = context.run_ui(raw, |context| app.render_frame(context));
         let refresh = context
             .read_response(egui::Id::new(REFRESH_BUTTON_ID))
             .expect("refresh button");
@@ -1335,8 +1336,8 @@ mod tests {
             )),
             ..Default::default()
         };
-        let _ = context.run(raw.clone(), |context| app.render_frame(context));
-        let output = context.run(raw, |context| app.render_frame(context));
+        let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
+        let output = context.run_ui(raw, |context| app.render_frame(context));
         let texts: Vec<String> = output
             .shapes
             .iter()
@@ -1371,8 +1372,8 @@ mod tests {
                         .entry(egui::ViewportId::ROOT)
                         .or_default()
                         .native_pixels_per_point = Some(scale);
-                    let _ = context.run(raw.clone(), |context| app.render_frame(context));
-                    let _ = context.run(raw, |context| app.render_frame(context));
+                    let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
+                    let _ = context.run_ui(raw, |context| app.render_frame(context));
                     let send = context
                         .read_response(egui::Id::new(composer::SEND_BUTTON_ID))
                         .expect("send button rendered");

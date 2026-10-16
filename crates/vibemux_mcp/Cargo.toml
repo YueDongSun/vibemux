@@ -1,0 +1,35 @@
+[package]
+name = "vibemux_mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+test_helpers = []
+
+[[bin]]
+name = "vibemux_mcp"
+path = "src/main.rs"
+
+[[bin]]
+name = "vibemux_mcp_fixture"
+path = "src/bin/vibemux_mcp_fixture.rs"
+required-features = ["test_helpers"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+time.workspace = true
+vibemux_platform = { path = "../vibemux_platform" }
+vibemux_types = { path = "../vibemux_types" }
+vibemuxd = { path = "../vibemuxd" }
+
+[dev-dependencies]
+sysinfo.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+vibemux_events = { path = "../vibemux_events" }

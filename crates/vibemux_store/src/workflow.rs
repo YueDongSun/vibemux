@@ -752,10 +752,9 @@ impl SqliteStore {
         }
         let transaction = self.immediate()?;
         if let Some((existing, _)) = workflow_rows::load_slot(&transaction, slot.slot_id.as_str())?
+            && existing == *slot
         {
-            if existing == *slot {
-                return Ok(None);
-            }
+            return Ok(None);
         }
         let digest = Sha256Digest::of(serde_json::to_string(slot)?.as_bytes());
         let (event, sequence) = append(
@@ -1207,13 +1206,12 @@ impl SqliteStore {
             }
             WorkflowReceipt::Selection(selection) => {
                 let candidates = admitted_candidates(&transaction, workflow_id)?;
-                if let Some(winner) = selection.outcome.winner {
-                    if !candidates
+                if let Some(winner) = selection.outcome.winner
+                    && !candidates
                         .iter()
                         .any(|candidate| candidate.candidate.candidate_digest == winner)
-                    {
-                        return Err(workflow_error("store_workflow_selection_unknown_candidate"));
-                    }
+                {
+                    return Err(workflow_error("store_workflow_selection_unknown_candidate"));
                 }
                 json!({"has_winner": selection.outcome.winner.is_some(), "excluded_count": selection.outcome.excluded.len()})
             }
@@ -1614,10 +1612,10 @@ impl SqliteStore {
         next.state = state;
         match change {
             MessageChange::Deliver { attempt } => {
-                if let Some(previous) = message.delivered_in_attempt {
-                    if previous != *attempt {
-                        return Err(workflow_error("store_workflow_message_redelivery"));
-                    }
+                if let Some(previous) = message.delivered_in_attempt
+                    && previous != *attempt
+                {
+                    return Err(workflow_error("store_workflow_message_redelivery"));
                 }
                 next.delivered_in_attempt = Some(*attempt);
             }
@@ -1679,10 +1677,10 @@ impl SqliteStore {
             return Err(workflow_error("store_workflow_content_invalid"));
         }
         let transaction = self.immediate()?;
-        if let Some(existing) = workflow_rows::load_content(&transaction, entry.content_sha256)? {
-            if existing.state == ContentState::Present {
-                return Ok(None);
-            }
+        if let Some(existing) = workflow_rows::load_content(&transaction, entry.content_sha256)?
+            && existing.state == ContentState::Present
+        {
+            return Ok(None);
         }
         let (event, sequence) = append(
             &transaction,

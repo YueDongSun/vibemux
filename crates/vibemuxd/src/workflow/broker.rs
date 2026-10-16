@@ -577,29 +577,26 @@ pub(crate) async fn pending_deliveries(
         let envelope = &message.envelope;
         let mut outbox = vec![envelope.message_id];
         let mut block = None;
-        if envelope.kind == MessageKind::Answer {
-            if let Some(bundle) = envelope.reply_to.and_then(|question| {
+        if envelope.kind == MessageKind::Answer
+            && let Some(bundle) = envelope.reply_to.and_then(|question| {
                 bundles.values().find(|bundle| {
                     bundle.request_message_id == Some(question)
                         && bundle.audience.contains(&participant)
                 })
-            }) {
-                if let Some(text) = read_bundle(context, bundle)? {
-                    outbox.push(bundle.bundle_id);
-                    block = Some(context_block(bundle, text));
-                }
-            }
+            })
+            && let Some(text) = read_bundle(context, bundle)?
+        {
+            outbox.push(bundle.bundle_id);
+            block = Some(context_block(bundle, text));
         }
-        if envelope.kind == MessageKind::ContextGrant {
-            if let Some(bundle) = body
+        if envelope.kind == MessageKind::ContextGrant
+            && let Some(bundle) = body
                 .strip_prefix(GRANT_BODY_PREFIX)
                 .and_then(|id| Uuid::parse_str(id.trim()).ok())
                 .and_then(|id| bundles.get(&id))
-            {
-                if let Some(text) = read_stored_bundle(context, bundle)? {
-                    block = Some(context_block(bundle, text));
-                }
-            }
+            && let Some(text) = read_stored_bundle(context, bundle)?
+        {
+            block = Some(context_block(bundle, text));
         }
         deliveries.push(Delivery {
             record: message.clone(),

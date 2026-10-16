@@ -56,7 +56,14 @@ async fn main() -> ExitCode {
         }
     }
 
-    let report = vibemux_probe::run_probe(&vibemux_probe::ProbeConfig::from_environment()).await;
+    let config = match vibemux_frontend::probe_env::probe_config_from_environment() {
+        Ok(config) => config,
+        Err(code) => {
+            eprintln!("{code}");
+            return ExitCode::from(4);
+        }
+    };
+    let report = vibemux_probe::run_probe(&config).await;
     if json {
         // Machine-readable evidence for scripts and CI; theme selection
         // never affects this output.

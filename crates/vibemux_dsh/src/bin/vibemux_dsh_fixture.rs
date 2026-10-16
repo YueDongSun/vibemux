@@ -40,10 +40,10 @@ const FLOOD_CHUNKS: u64 = 400;
 /// supplies one, else the first positional argument.
 fn mode() -> String {
     let arguments: Vec<String> = std::env::args().collect();
-    if let Some(index) = arguments.iter().position(|value| value == "--profile") {
-        if let Some(profile) = arguments.get(index + 1) {
-            return profile.clone();
-        }
+    if let Some(index) = arguments.iter().position(|value| value == "--profile")
+        && let Some(profile) = arguments.get(index + 1)
+    {
+        return profile.clone();
     }
     arguments
         .get(1)

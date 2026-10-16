@@ -429,14 +429,12 @@ fn tagged<T: Serialize>(outcome: &str, value: &T) -> Result<Value, ControlError>
 fn fit_prompt(mut prompt: Value) -> Value {
     let size = encoded_size(&ControlPayload::Workflow(Box::new(prompt.clone())));
     let fits = size.is_ok_and(|size| size <= MAX_CONTROL_FRAME_BYTES - 2 * RESPONSE_ENVELOPE_BYTES);
-    if !fits {
-        if let Some(object) = prompt.as_object_mut() {
-            object.insert("text".to_string(), Value::Null);
-            object.insert(
-                "unavailable_reason".to_string(),
-                Value::from(PROMPT_EXCEEDS_FRAME_CODE),
-            );
-        }
+    if !fits && let Some(object) = prompt.as_object_mut() {
+        object.insert("text".to_string(), Value::Null);
+        object.insert(
+            "unavailable_reason".to_string(),
+            Value::from(PROMPT_EXCEEDS_FRAME_CODE),
+        );
     }
     prompt
 }

@@ -11,6 +11,7 @@ members = [
     "crates/vibemux_platform",
     "crates/vibemux_plugin_protocol",
     "crates/vibemux_model_peer",
+    "crates/vibemux_mcp",
     "crates/vibemux_plugin_supervisor",
     "crates/vibemux_probe",
     "crates/vibemux_store",
@@ -24,9 +25,9 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 license = "Apache-2.0"
 repository = "https://github.com/YueDongSun/vibemux"
 
@@ -42,9 +43,9 @@ tokio-stream = { version = "=0.1.19", features = ["net"] }
 async-trait = "=0.1.92"
 axum = "=0.8.7"
 base64 = "=0.22.1"
-crossterm = "=0.28.1"
-egui = "=0.32.3"
-eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+crossterm = "=0.29.0"
+egui = "=0.34.3"
+eframe = { version = "=0.34.3", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 futures = "=0.3.31"
 getrandom = "=0.4.3"
 httpdate = "=1.0.3"
@@ -52,7 +53,7 @@ proptest = "=1.11.0"
 prost = "=0.14.4"
 prost-build = "=0.14.4"
 protoc-bin-vendored = "=3.2.0"
-ratatui = { version = "=0.29.0", default-features = false, features = ["crossterm"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 reqwest = { version = "=0.13.1", default-features = false, features = ["json", "stream", "rustls"] }
 rusqlite = { version = "=0.37.0", default-features = false, features = ["bundled"] }
 rustix = { version = "=1.1.4", default-features = false, features = ["process", "std"] }
@@ -71,7 +72,7 @@ fs4 = { version = "=0.13.1", default-features = false, features = ["sync"] }
 sysinfo = { version = "=0.36.1", default-features = false, features = ["system"] }
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
-time = { version = "=0.3.44", features = ["formatting", "parsing", "serde"] }
+time = { version = "=0.3.47", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "=1.47.1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "=0.8.23"
 url = "=2.5.8"

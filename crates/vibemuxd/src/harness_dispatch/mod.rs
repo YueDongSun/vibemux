@@ -138,10 +138,10 @@ impl From<DispatchError> for DispatchServiceError {
 impl From<WriterError> for DispatchServiceError {
     /// A store rejection that carries a dispatch code surfaces as that code.
     fn from(error: WriterError) -> Self {
-        if let WriterError::Store { code } = &error {
-            if let Some(dispatch) = DispatchError::from_code(code) {
-                return Self::Dispatch(dispatch);
-            }
+        if let WriterError::Store { code } = &error
+            && let Some(dispatch) = DispatchError::from_code(code)
+        {
+            return Self::Dispatch(dispatch);
         }
         Self::Writer(error)
     }
@@ -584,10 +584,10 @@ impl HarnessDispatchService {
             writer.cancel_harness_dispatch(request_id, OffsetDateTime::now_utc())
         })
         .await?;
-        if commit.record.phase == DispatchPhase::CancelRequested {
-            if let Some(signal) = self.inner.registry().attempts.get(&request_id) {
-                let _ = signal.send(true);
-            }
+        if commit.record.phase == DispatchPhase::CancelRequested
+            && let Some(signal) = self.inner.registry().attempts.get(&request_id)
+        {
+            let _ = signal.send(true);
         }
         Ok(commit.record)
     }

@@ -147,14 +147,14 @@ mod tests {
     #[test]
     fn display_font_falls_back_until_the_serif_family_is_bound() {
         let context = egui::Context::default();
-        let _ = context.run(egui::RawInput::default(), |context| {
+        let _ = context.run_ui(egui::RawInput::default(), |context| {
             assert_eq!(
                 display_font(context, 20.0).family,
                 egui::FontFamily::Proportional
             );
         });
         context.set_fonts(build_font_definitions(fake_fonts(&[])));
-        let _ = context.run(egui::RawInput::default(), |context| {
+        let _ = context.run_ui(egui::RawInput::default(), |context| {
             assert_eq!(display_font(context, 20.0).family, serif_family());
         });
     }

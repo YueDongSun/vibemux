@@ -7,8 +7,39 @@
 //! even by accident.
 
 use std::env;
+use vibemux_probe::ProbeConfig;
 
 pub use vibemux_probe::PROBE_ENVIRONMENT_ALLOWLIST;
+
+pub const FRONTEND_PROBE_PORT_ENV: &str = "VIBEMUX_FRONTEND_PROBE_PORT";
+
+/// Preserve the probe defaults, with one strict frontend-owned loopback port
+/// override for explicitly isolated observation and CLI fixtures.
+pub fn probe_config_from_environment() -> Result<ProbeConfig, &'static str> {
+    let port = match env::var(FRONTEND_PROBE_PORT_ENV) {
+        Ok(port) => Some(port),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => return Err("frontend_probe_port_invalid"),
+    };
+    apply_probe_port(ProbeConfig::from_environment(), port.as_deref())
+}
+
+fn apply_probe_port(
+    mut config: ProbeConfig,
+    port: Option<&str>,
+) -> Result<ProbeConfig, &'static str> {
+    if let Some(port) = port {
+        if port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("frontend_probe_port_invalid");
+        }
+        config.cc_switch_port = port
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .ok_or("frontend_probe_port_invalid")?;
+    }
+    Ok(config)
+}
 
 /// Read each allowlisted key from the current process environment.
 /// Preserves the order of [`PROBE_ENVIRONMENT_ALLOWLIST`]. Values are
@@ -32,6 +63,29 @@ pub fn collect_allowlisted_env() -> Vec<(String, Option<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_probe_port_is_validated_and_preserves_other_defaults() {
+        let original = ProbeConfig::from_environment();
+        let changed = apply_probe_port(original.clone(), Some("23456")).expect("valid port");
+        assert_eq!(changed.cc_switch_port, 23456);
+        assert!(changed.home_dir == original.home_dir);
+        assert!(changed.path_entries == original.path_entries);
+        assert_eq!(changed.command_timeout, original.command_timeout);
+        assert_eq!(changed.network_timeout, original.network_timeout);
+        assert_eq!(changed.run_a2a_self_test, original.run_a2a_self_test);
+        assert_eq!(
+            apply_probe_port(original.clone(), None)
+                .unwrap()
+                .cc_switch_port,
+            original.cc_switch_port
+        );
+        for invalid in [
+            "", "0", "65536", "-1", "+1", " 23456", "23456 ", "1.2", "example",
+        ] {
+            assert!(apply_probe_port(original.clone(), Some(invalid)).is_err());
+        }
+    }
 
     #[test]
     fn allowlist_has_fifteen_entries() {

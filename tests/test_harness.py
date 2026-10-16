@@ -198,7 +198,10 @@ def test_spawn_records_role_in_registry_and_run(tmp_path: Path) -> None:
     registry = HarnessRegistry.read(harness_registry_path(tmp_path))
     assert "reviewer" in registry.harnesses["mock"].roles
     mock_rows = [row for row in HarnessService(tmp_path).cached() if row["name"] == "mock"]
-    assert mock_rows and "reviewer" in mock_rows[0]["roles"]
+    assert mock_rows
+    roles = mock_rows[0]["roles"]
+    assert isinstance(roles, list)
+    assert "reviewer" in roles
 
 
 def test_spawn_rejects_unknown_role(tmp_path: Path) -> None:

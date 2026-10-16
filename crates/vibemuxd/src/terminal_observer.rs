@@ -128,11 +128,11 @@ impl TerminalObserver {
         if let Some(lease) = leases
             .values_mut()
             .find(|lease| lease.binding.query == request.query)
+            && matching_lease(lease, &inventory, &session_id)
+            && lease.binding.pane == pane
         {
-            if matching_lease(lease, &inventory, &session_id) && lease.binding.pane == pane {
-                lease.touched_at = Instant::now();
-                return Ok(lease.binding.clone());
-            }
+            lease.touched_at = Instant::now();
+            return Ok(lease.binding.clone());
         }
         // Replacement is explicit and cannot create duplicate leases per Run.
         leases.retain(|_, lease| lease.binding.query != request.query);

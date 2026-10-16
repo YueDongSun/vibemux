@@ -322,10 +322,10 @@ fn every_phase_is_reachable_from_admission() {
     let mut queue = VecDeque::from([P::Admitted]);
     while let Some(from) = queue.pop_front() {
         for trigger in TRIGGERS {
-            if let Ok(TransitionResult::Changed(transition)) = apply(from, trigger) {
-                if seen.insert(transition.to.as_str()) {
-                    queue.push_back(transition.to);
-                }
+            if let Ok(TransitionResult::Changed(transition)) = apply(from, trigger)
+                && seen.insert(transition.to.as_str())
+            {
+                queue.push_back(transition.to);
             }
         }
     }

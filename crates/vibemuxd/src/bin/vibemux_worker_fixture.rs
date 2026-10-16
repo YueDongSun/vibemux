@@ -349,10 +349,10 @@ fn turn_facts(prompt: &str) -> Result<TurnFacts> {
             if let (Some(number), Some(purpose), true) = (number, purpose, shaped) {
                 turn = Some((number, purpose));
             }
-        } else if let Some(rest) = line.strip_prefix("bundle ") {
-            if let Some(id) = rest.split_whitespace().next() {
-                bundles.push(id.to_string());
-            }
+        } else if let Some(rest) = line.strip_prefix("bundle ")
+            && let Some(id) = rest.split_whitespace().next()
+        {
+            bundles.push(id.to_string());
         }
     }
     let (turn_number, purpose) = turn.ok_or("fixture_turn_missing")?;

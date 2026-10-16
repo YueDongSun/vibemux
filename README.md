@@ -15,6 +15,7 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Harness dispatch (ADR 029) | `PARTIAL` | Opt-in daemon-owned one-shot Codex and Claude turns, ACP initialize-only probes, contained vendor process trees, schema-4 dispatch records, Control v5, and `vibemuxctl dispatch`; verified with fixture binaries on Windows and Linux and by live initialize-only probes of five vendor CLIs on native Windows | Live execution turns, ACP execution, writable or concurrent dispatch, durable transcripts, and frontend Send |
 | Dual-track workflow (ADR 031) | `PARTIAL — OFFLINE ONLY` | Daemon-owned `cooperate`/`compare` workflows over two owned worktrees, TaskSpec source validation, fenced leases, context broker and shares, independent review, trusted verifier and integration gates, bounded prompt-policy optimizer, schema-5 records, Control v6, `vibemuxctl workflow`, and an offline acceptance runner; verified with fixture workers on native Windows | AAG gateway client, live supervisor/compiler/workers, native TUI sessions and handoff, paused-prompt editing, and any live acceptance |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
+| Native MCP frontend (ADR 035) | `PARTIAL — PRE-ALPHA` | Rust stdio metadata tools over the existing daemon client, explicit default-denied grant, bounded projections and contained reader lifecycle; native Windows fixture coverage | Live deployment, Linux qualification and operator acceptance |
 
 Authoritative milestones, evidence, and release plan: [PROGRESS.md](PROGRESS.md).
 
@@ -41,7 +42,28 @@ The Python behavior reference includes Mock, a WezTerm command adapter, a tmux a
 
 `99d1f8e` is only the original Python audit baseline; it is not the current implementation baseline. The Python package remains the behavior reference and complete prototype workflow entry point, but new orchestration, A2A, event-broker, scheduler, and public plugin behavior must target Rust.
 
-The Rust 2024 workspace (`0.2.0-alpha.0`, MSRV 1.85) implements platform-independent typed IDs and Task/Run state machines, a canonical event envelope, SQLite migrations/WAL and atomic state-plus-event foundations, a dedicated single-writer worker, authenticated Windows named-pipe/POSIX UDS control, standalone `vibemuxd`, the pre-alpha `vibemuxctl` daemon lifecycle, explicit stale-runtime recovery, the declared Windows per-user control-runtime boundary, authenticated loopback A2A v1 HTTP+JSON/JSONRPC/gRPC task services, a bounded supervisor workflow, read-only probe/frontend shells, the M4 plugin foundations/registry, and opt-in daemon-owned harness dispatch (ADR 029).
+The Rust 2024 workspace (`0.2.0-alpha.1`, MSRV 1.92) implements platform-independent typed IDs and Task/Run state machines, a canonical event envelope, SQLite migrations/WAL and atomic state-plus-event foundations, a dedicated single-writer worker, authenticated Windows named-pipe/POSIX UDS control, standalone `vibemuxd`, the pre-alpha `vibemuxctl` daemon lifecycle, explicit stale-runtime recovery, the declared Windows per-user control-runtime boundary, authenticated loopback A2A v1 HTTP+JSON/JSONRPC/gRPC task services, a bounded supervisor workflow, read-only probe/frontend shells, the M4 plugin foundations/registry, and opt-in daemon-owned harness dispatch (ADR 029).
+
+The TUI JSON and plain-text dump entry points retain the default loopback probe
+port. An explicit `VIBEMUX_FRONTEND_PROBE_PORT` override selects an integer port
+from 1 through 65535 on loopback; invalid values exit with code 4 before probing.
+This frontend-only adapter lets CLI verification use an owned ephemeral endpoint
+and disposable configuration instead of the operator's running service.
+
+For MCP clients, run `vibemux_mcp` from the repository root and point it at an
+existing daemon descriptor:
+
+```text
+cargo run --locked -p vibemux_mcp --bin vibemux_mcp -- --descriptor PATH --allow_metadata_read
+```
+
+The host provides `host_status`, `health`, `frontend_tasks`, `frontend_task` and
+`harness_dispatch_status`. Without the explicit metadata grant, only host status
+is available. Initialization and tool discovery perform no producer I/O. The host
+does not start a daemon or expose task mutation, prompts, captures or worktree
+paths. See [the native MCP protocol](docs/native_mcp_protocol.md) for permission
+reduction, bounds, cancellation, restart behavior and compatibility. The Hub MCP
+companion remains the separate multi-producer aggregation surface.
 
 Python `vibemux` remains the complete prototype entry point; Rust `vibemuxctl` provides daemon lifecycle, harness listing/switching, and harness dispatch commands. Complete Rust Task/Run command parity, Python-to-Rust state migration/default cutover, full Rust workspace/terminal parity, real vendor CLI plugins, plugin SDKs, remote A2A and full ITK conformance remain incomplete. Authoritative milestones and verification boundaries live in [PROGRESS.md](PROGRESS.md).
 

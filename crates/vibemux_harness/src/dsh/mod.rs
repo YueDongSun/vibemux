@@ -229,15 +229,15 @@ impl DshSessionSettings {
         if !wire::route_label_is_valid(&self.provider) || !wire::route_label_is_valid(&self.model) {
             return Err(DshError::ConfigInvalid);
         }
-        if let Some(effort) = &self.reasoning_effort {
-            if !reasoning_effort_is_valid(effort) {
-                return Err(DshError::ConfigInvalid);
-            }
+        if let Some(effort) = &self.reasoning_effort
+            && !reasoning_effort_is_valid(effort)
+        {
+            return Err(DshError::ConfigInvalid);
         }
-        if let Some(max_tokens) = self.max_tokens {
-            if max_tokens == 0 || max_tokens > MAX_OUTPUT_TOKENS {
-                return Err(DshError::ConfigInvalid);
-            }
+        if let Some(max_tokens) = self.max_tokens
+            && (max_tokens == 0 || max_tokens > MAX_OUTPUT_TOKENS)
+        {
+            return Err(DshError::ConfigInvalid);
         }
         Ok(())
     }

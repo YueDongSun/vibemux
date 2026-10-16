@@ -352,14 +352,12 @@ pub fn compare_to_baseline(
     if candidate.verified_successes > baseline.verified_successes {
         return Ok(());
     }
-    if candidate.verified_successes == baseline.verified_successes {
-        if let (Some(candidate_cost), Some(baseline_cost)) =
+    if candidate.verified_successes == baseline.verified_successes
+        && let (Some(candidate_cost), Some(baseline_cost)) =
             (candidate.model_requests, baseline.model_requests)
-        {
-            if candidate_cost < baseline_cost {
-                return Ok(());
-            }
-        }
+        && candidate_cost < baseline_cost
+    {
+        return Ok(());
     }
     Err(OptimizerRejection::NoImprovement)
 }

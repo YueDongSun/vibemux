@@ -48,18 +48,18 @@ pub fn run_tui(view_model: &ViewModel, theme: Theme) -> io::Result<()> {
             render::render_debug_dashboard(frame, view_model, theme);
             footer::render_footer(frame, view_model, theme);
         })?;
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('c') => {
-                        snapshot_pending = true;
-                    }
-                    KeyCode::Char('t') => {
-                        theme = theme.next();
-                    }
-                    _ => {}
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('c') => {
+                    snapshot_pending = true;
                 }
+                KeyCode::Char('t') => {
+                    theme = theme.next();
+                }
+                _ => {}
             }
         }
         if snapshot_pending {

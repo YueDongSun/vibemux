@@ -400,28 +400,26 @@ async fn response_error(response: Response) -> TaskGatewayError {
     let Ok(bytes) = read_bounded(response).await else {
         return TaskGatewayError::Protocol;
     };
-    if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-        if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
-            let protocol_code = value
-                .pointer("/error/details")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|detail| {
-                    serde_json::from_value::<a2a::TypedDetail>(detail.clone()).ok()
-                })
-                .find_map(|detail| {
-                    detail
-                        .value
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .and_then(a2a::reason_to_error_code)
-                })
-                .unwrap_or(a2a::error_code::INTERNAL_ERROR);
-            let error = local_error(&a2a::A2AError::new(protocol_code, message));
-            if error != TaskGatewayError::Protocol {
-                return error;
-            }
+    if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+        && let Some(message) = value.pointer("/error/message").and_then(Value::as_str)
+    {
+        let protocol_code = value
+            .pointer("/error/details")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|detail| serde_json::from_value::<a2a::TypedDetail>(detail.clone()).ok())
+            .find_map(|detail| {
+                detail
+                    .value
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .and_then(a2a::reason_to_error_code)
+            })
+            .unwrap_or(a2a::error_code::INTERNAL_ERROR);
+        let error = local_error(&a2a::A2AError::new(protocol_code, message));
+        if error != TaskGatewayError::Protocol {
+            return error;
         }
     }
     match status.as_u16() {

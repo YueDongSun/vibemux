@@ -271,10 +271,10 @@ impl WorkflowService {
         .await
         .unwrap_or(Err(WorkflowError::Internal))
         .map(Arc::new);
-        if let Ok(loaded) = &setup {
-            if let Err(error) = observe_slots(&writer, loaded).await {
-                setup = Err(error);
-            }
+        if let Ok(loaded) = &setup
+            && let Err(error) = observe_slots(&writer, loaded).await
+        {
+            setup = Err(error);
         }
         let heartbeat_ms = setup.as_ref().map_or(FALLBACK_HEARTBEAT_MS, |setup| {
             setup.config.config.heartbeat_ms
@@ -1256,17 +1256,16 @@ fn planned_sessions(
 async fn drive(inner: Weak<ServiceInner>, context: RunContext, units: Vec<Unit>, width: usize) {
     let workflow_id = context.workflow_id;
     let report = coordinator::run(&context, units, width).await;
-    if report.end != RunEnd::Cancelled {
-        if let Ok(record) = context.record().await {
-            if record.phase == WorkflowPhase::CancelRequested {
-                let _ = finish_cancel(
-                    &context.writer,
-                    workflow_id,
-                    context.setup.config.config.heartbeat_ms,
-                )
-                .await;
-            }
-        }
+    if report.end != RunEnd::Cancelled
+        && let Ok(record) = context.record().await
+        && record.phase == WorkflowPhase::CancelRequested
+    {
+        let _ = finish_cancel(
+            &context.writer,
+            workflow_id,
+            context.setup.config.config.heartbeat_ms,
+        )
+        .await;
     }
     if let Some(inner) = inner.upgrade() {
         let mut runs = inner.runs();

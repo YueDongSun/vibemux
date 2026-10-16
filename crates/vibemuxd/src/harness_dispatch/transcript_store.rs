@@ -165,10 +165,10 @@ impl TranscriptState {
     }
 
     fn remove_finished(&mut self, request_id: Uuid) {
-        if let Some(index) = self.finished.iter().position(|(id, _)| *id == request_id) {
-            if let Some((_, removed)) = self.finished.remove(index) {
-                self.finished_bytes -= removed.bytes;
-            }
+        if let Some(index) = self.finished.iter().position(|(id, _)| *id == request_id)
+            && let Some((_, removed)) = self.finished.remove(index)
+        {
+            self.finished_bytes -= removed.bytes;
         }
     }
 }

@@ -27,14 +27,14 @@ impl LiveApp {
 }
 
 impl eframe::App for LiveApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if let Some(client) = self.client.as_mut() {
-            if let Some(snapshot) = client.take_snapshot() {
-                self.snapshot = snapshot;
-                self.app.set_supervisor_snapshot(self.snapshot.clone());
-            }
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if let Some(client) = self.client.as_mut()
+            && let Some(snapshot) = client.take_snapshot()
+        {
+            self.snapshot = snapshot;
+            self.app.set_supervisor_snapshot(self.snapshot.clone());
         }
-        self.app.update(ctx, frame);
+        self.app.ui(ui, frame);
         for action in self.app.take_supervisor_actions() {
             let result = self
                 .client
@@ -44,7 +44,7 @@ impl eframe::App for LiveApp {
             if let Err(detail) = result {
                 self.snapshot.connection.detail = Some(detail.into());
                 self.app.set_supervisor_snapshot(self.snapshot.clone());
-                ctx.request_repaint();
+                ui.ctx().request_repaint();
             }
         }
     }

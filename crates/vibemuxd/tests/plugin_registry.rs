@@ -411,14 +411,13 @@ maximum_protocol_minor = 0
                 child.try_wait().expect("daemon status").is_none(),
                 "daemon exited early"
             );
-            if let Ok(client) = ControlClient::from_descriptor(paths.descriptor_path()) {
-                if client
+            if let Ok(client) = ControlClient::from_descriptor(paths.descriptor_path())
+                && client
                     .health_with_deadline(Duration::from_millis(200))
                     .await
                     .is_ok()
-                {
-                    break client;
-                }
+            {
+                break client;
             }
             sleep(Duration::from_millis(10)).await;
         }

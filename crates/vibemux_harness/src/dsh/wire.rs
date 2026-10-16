@@ -78,10 +78,10 @@ pub struct DshServerInfo {
 /// frame the transport would dispatch, so it is refused rather than ignored.
 pub fn frame_kind(value: &Value) -> Result<DshFrameKind, DshError> {
     let object = value.as_object().ok_or(DshError::InvalidJsonRpc)?;
-    if let Some(version) = object.get("jsonrpc") {
-        if version.as_str() != Some(JSONRPC_VERSION) {
-            return Err(DshError::InvalidJsonRpc);
-        }
+    if let Some(version) = object.get("jsonrpc")
+        && version.as_str() != Some(JSONRPC_VERSION)
+    {
+        return Err(DshError::InvalidJsonRpc);
     }
     let has_id = object.contains_key("id");
     let has_method = object.contains_key("method");

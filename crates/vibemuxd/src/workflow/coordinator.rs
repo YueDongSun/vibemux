@@ -216,10 +216,10 @@ async fn restore_latest(
             tokio::task::spawn_blocking(move || {
                 let mut texts = BTreeMap::new();
                 for entry in entries {
-                    if let SnapshotChange::Write { sha256, .. } = entry.change {
-                        if let Ok(text) = String::from_utf8(blobs.get(sha256)?) {
-                            texts.insert(entry.path, text);
-                        }
+                    if let SnapshotChange::Write { sha256, .. } = entry.change
+                        && let Ok(text) = String::from_utf8(blobs.get(sha256)?)
+                    {
+                        texts.insert(entry.path, text);
                     }
                 }
                 Ok::<_, WorkflowError>(texts)
@@ -681,28 +681,28 @@ async fn compare(context: &RunContext, states: &mut [UnitState]) -> Result<RunEn
     if context.plan.negative_control {
         let mut sources: Vec<&(Unit, CollectedCandidate)> = admitted.iter().collect();
         sources.sort_by_key(|(_, candidate)| candidate.digest());
-        if let Some((unit, source)) = sources.first() {
-            if let Some(control) = negative_control(context, unit, source).await? {
-                let gate = candidate_gate(
-                    &control.record,
-                    None,
-                    Some(&control.verification),
-                    GateRequirements {
-                        required_suites: &task.required_suites,
-                        admitted_verifier_digest: record.verifier_digest,
-                    },
-                );
-                entries.push(ComparisonEntry {
-                    candidate: control.record,
-                    gate,
-                    metrics: CandidateMetrics {
-                        tests_passed: tests_passed(Some(&control.verification)),
-                        model_requests: None,
-                        elapsed_ms: None,
-                        changed_bytes: control.changed_bytes,
-                    },
-                });
-            }
+        if let Some((unit, source)) = sources.first()
+            && let Some(control) = negative_control(context, unit, source).await?
+        {
+            let gate = candidate_gate(
+                &control.record,
+                None,
+                Some(&control.verification),
+                GateRequirements {
+                    required_suites: &task.required_suites,
+                    admitted_verifier_digest: record.verifier_digest,
+                },
+            );
+            entries.push(ComparisonEntry {
+                candidate: control.record,
+                gate,
+                metrics: CandidateMetrics {
+                    tests_passed: tests_passed(Some(&control.verification)),
+                    model_requests: None,
+                    elapsed_ms: None,
+                    changed_bytes: control.changed_bytes,
+                },
+            });
         }
     }
     let outcome = select(&entries, &SelectionPolicy::baseline(), task.contract_id);

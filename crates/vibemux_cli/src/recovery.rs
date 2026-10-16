@@ -222,44 +222,43 @@ async fn build_recovery_plan(paths: &DaemonPaths) -> Result<RecoveryPlan, Daemon
         RuntimeGeneration::Legacy => paths.validate_state_dir()?,
     }
 
-    if descriptor_present {
-        if let Ok(client) = ControlClient::from_descriptor(descriptor_path) {
-            if let Ok(health) = client.health_with_deadline(INSPECTION_HEALTH_TIMEOUT).await {
-                let control_info = inspect_control_artifact(descriptor_path)
-                    .ok()
-                    .flatten()
-                    .map(|snapshot| snapshot.info());
-                let writer_lock_valid = inspect_writer_lock(writer_lock_path)
-                    .ok()
-                    .flatten()
-                    .is_some();
-                let compatibility_lock_valid = compatibility_lock_path
-                    .and_then(|path| inspect_writer_lock(path).ok().flatten())
-                    .is_some();
-                return Ok(RecoveryPlan {
-                    inspection: RecoveryInspection {
-                        ok: true,
-                        status: RecoveryStatus::Running,
-                        reason_code: "daemon_running".to_string(),
-                        descriptor_present: true,
-                        descriptor_valid: control_info.is_some(),
-                        writer_lock_present,
-                        writer_lock_valid,
-                        compatibility_lock_present,
-                        compatibility_lock_valid,
-                        runtime_generation: Some(generation),
-                        protocol_version: control_info.map(|info| info.protocol_version),
-                        endpoint_kind: control_info.map(|info| info.endpoint_kind),
-                        process_id: Some(health.process_id),
-                        process_present: Some(true),
-                        confirmation: None,
-                    },
-                    control: None,
-                    writer_lock: None,
-                    compatibility_lock: None,
-                });
-            }
-        }
+    if descriptor_present
+        && let Ok(client) = ControlClient::from_descriptor(descriptor_path)
+        && let Ok(health) = client.health_with_deadline(INSPECTION_HEALTH_TIMEOUT).await
+    {
+        let control_info = inspect_control_artifact(descriptor_path)
+            .ok()
+            .flatten()
+            .map(|snapshot| snapshot.info());
+        let writer_lock_valid = inspect_writer_lock(writer_lock_path)
+            .ok()
+            .flatten()
+            .is_some();
+        let compatibility_lock_valid = compatibility_lock_path
+            .and_then(|path| inspect_writer_lock(path).ok().flatten())
+            .is_some();
+        return Ok(RecoveryPlan {
+            inspection: RecoveryInspection {
+                ok: true,
+                status: RecoveryStatus::Running,
+                reason_code: "daemon_running".to_string(),
+                descriptor_present: true,
+                descriptor_valid: control_info.is_some(),
+                writer_lock_present,
+                writer_lock_valid,
+                compatibility_lock_present,
+                compatibility_lock_valid,
+                runtime_generation: Some(generation),
+                protocol_version: control_info.map(|info| info.protocol_version),
+                endpoint_kind: control_info.map(|info| info.endpoint_kind),
+                process_id: Some(health.process_id),
+                process_present: Some(true),
+                confirmation: None,
+            },
+            control: None,
+            writer_lock: None,
+            compatibility_lock: None,
+        });
     }
 
     let control = match inspect_control_artifact(descriptor_path) {

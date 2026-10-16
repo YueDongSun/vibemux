@@ -264,23 +264,23 @@ pub fn redact(text: &str) -> (String, u32, Vec<String>) {
     let mut output = text.to_string();
     let mut count = 0;
     let mut rules = Vec::new();
-    if let Some(start) = output.find("-----BEGIN") {
-        if let Some(offset) = output[start..].find("PRIVATE KEY-----") {
-            let header_end = start + offset + "PRIVATE KEY-----".len();
-            let end = output[header_end..]
-                .find("-----END")
-                .and_then(|end_offset| {
-                    let end_start = header_end + end_offset;
-                    output[end_start..]
-                        .find("-----\n")
-                        .map(|tail| end_start + tail + 5)
-                        .or(Some(output.len()))
-                })
-                .unwrap_or(output.len());
-            output.replace_range(start..end, "[redacted:private_key]");
-            count += 1;
-            rules.push("private_key".to_string());
-        }
+    if let Some(start) = output.find("-----BEGIN")
+        && let Some(offset) = output[start..].find("PRIVATE KEY-----")
+    {
+        let header_end = start + offset + "PRIVATE KEY-----".len();
+        let end = output[header_end..]
+            .find("-----END")
+            .and_then(|end_offset| {
+                let end_start = header_end + end_offset;
+                output[end_start..]
+                    .find("-----\n")
+                    .map(|tail| end_start + tail + 5)
+                    .or(Some(output.len()))
+            })
+            .unwrap_or(output.len());
+        output.replace_range(start..end, "[redacted:private_key]");
+        count += 1;
+        rules.push("private_key".to_string());
     }
     for (rule, prefix, minimum, allowed) in TOKEN_RULES {
         let mut search = 0;

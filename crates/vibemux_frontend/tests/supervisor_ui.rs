@@ -117,7 +117,7 @@ fn coordinator_chat_is_the_default_page_and_agent_shortcuts_are_secondary() {
 fn long_unicode_and_path_labels_wrap_in_headless_egui() {
     let context = egui::Context::default();
     let mut measured = (0.0, 0.0);
-    let _full_output = context.run(
+    let _full_output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -127,7 +127,7 @@ fn long_unicode_and_path_labels_wrap_in_headless_egui() {
         },
         |context| {
             egui::CentralPanel::default()
-                .show(context, |ui| {
+                .show_inside(context, |ui| {
                     ui.set_max_width(240.0);
                     let cjk = format!("{}：处理中文路径和更新内容。", "任务详情".repeat(24));
                     let cjk_response = vibemux_frontend::gui::render_wrapped_label(

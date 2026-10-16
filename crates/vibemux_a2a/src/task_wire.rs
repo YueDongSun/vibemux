@@ -57,22 +57,21 @@ pub(crate) fn request_from_wire(
     {
         return Err(TaskGatewayError::Unsupported);
     }
-    if request.message.parts.len() == 1 {
-        if let PartContent::Data(data) = &request.message.parts[0].content {
-            if data.get("contract").is_some() {
-                let envelope: RequestEnvelope = serde_json::from_value(data.clone())
-                    .map_err(|_| TaskGatewayError::InvalidRequest)?;
-                if envelope.contract != TASK_MESSAGE_CONTRACT
-                    || envelope.request.request_id != request.message.message_id
-                    || Some(&envelope.request.context_id) != request.message.context_id.as_ref()
-                    || envelope.request.task_id != request.message.task_id
-                {
-                    return Err(TaskGatewayError::InvalidRequest);
-                }
-                envelope.request.validate()?;
-                return Ok(envelope.request);
-            }
+    if request.message.parts.len() == 1
+        && let PartContent::Data(data) = &request.message.parts[0].content
+        && data.get("contract").is_some()
+    {
+        let envelope: RequestEnvelope =
+            serde_json::from_value(data.clone()).map_err(|_| TaskGatewayError::InvalidRequest)?;
+        if envelope.contract != TASK_MESSAGE_CONTRACT
+            || envelope.request.request_id != request.message.message_id
+            || Some(&envelope.request.context_id) != request.message.context_id.as_ref()
+            || envelope.request.task_id != request.message.task_id
+        {
+            return Err(TaskGatewayError::InvalidRequest);
         }
+        envelope.request.validate()?;
+        return Ok(envelope.request);
     }
     // Native A2A messages are mapped as bounded data; no fixture-specific rules.
     let parts = request
@@ -341,10 +340,10 @@ pub(crate) fn apply_stream_response(
         a2a::StreamResponse::Message(_) => return Err(TaskGatewayError::Protocol),
     };
     next.validate()?;
-    if let Some(previous) = previous {
-        if previous.task_id != next.task_id || previous.context_id != next.context_id {
-            return Err(TaskGatewayError::Protocol);
-        }
+    if let Some(previous) = previous
+        && (previous.task_id != next.task_id || previous.context_id != next.context_id)
+    {
+        return Err(TaskGatewayError::Protocol);
     }
     *previous = Some(next.clone());
     Ok(next)
