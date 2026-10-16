@@ -49,7 +49,7 @@ streams fail explicitly. Public output omits prompts, vendor bodies, endpoint
 details, and local configuration.
 
 ```powershell
-.\target\debug\vibemuxctl.exe harness replay --protocol codex_app_server --input crates/vibemux_harness/tests/fixtures/codex_app_server.jsonl
+.\target\debug\vibemuxctl.exe harness replay --protocol codex_app_server --input crates/vibemux_harness_native/tests/fixtures/codex_app_server.jsonl
 .\target\debug\vibemuxctl.exe help harness
 ```
 

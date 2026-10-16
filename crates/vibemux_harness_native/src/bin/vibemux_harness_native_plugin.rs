@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
-use vibemux_harness::{Error, contract::Harness};
+use vibemux_harness_native::{Error, contract::Harness};
 
 fn main() {
     let result = arguments().and_then(|(config, harness, digest)| {
@@ -8,7 +8,7 @@ fn main() {
             .enable_all()
             .build()
             .map_err(|source| Error::with_source("harness_runtime_failed", source))?;
-        let result = runtime.block_on(vibemux_harness::plugin::serve(&config, harness, &digest));
+        let result = runtime.block_on(vibemux_harness_native::plugin::serve(&config, harness, &digest));
         // Tokio stdin uses a blocking OS read. Native children have already been
         // reaped, and this bound prevents a pending stdin read delaying shutdown.
         runtime.shutdown_timeout(Duration::from_millis(100));

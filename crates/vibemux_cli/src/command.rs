@@ -27,7 +27,7 @@ pub enum Command {
     Help(Topic),
     Version,
     Daemon(CliCommand),
-    Harness(vibemux_harness::cli::Command),
+    Harness(vibemux_harness_native::cli::Command),
     Probe {
         report_path: Option<PathBuf>,
     },
@@ -99,11 +99,11 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
                 .map_err(|source| Failure::with_source("cli_invalid_arguments", source))?,
         ),
         Some("harness") => {
-            match vibemux_harness::cli::parse_arguments(arguments[1..].iter().cloned())
+            match vibemux_harness_native::cli::parse_arguments(arguments[1..].iter().cloned())
                 .map_err(|source| Failure::with_source("cli_invalid_arguments", source))?
             {
-                vibemux_harness::cli::Command::Help => Command::Help(Topic::Harness),
-                vibemux_harness::cli::Command::Version => Command::Version,
+                vibemux_harness_native::cli::Command::Help => Command::Help(Topic::Harness),
+                vibemux_harness_native::cli::Command::Version => Command::Version,
                 command => Command::Harness(command),
             }
         }
@@ -224,7 +224,7 @@ fn usage() -> Failure {
 
 pub fn help(topic: Topic) -> String {
     match topic {
-        Topic::Harness => vibemux_harness::cli::help("vibemuxctl harness"),
+        Topic::Harness => vibemux_harness_native::cli::help("vibemuxctl harness"),
         Topic::Daemon => "Daemon lifecycle (explicit operations)\n\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n\nNo daemon starts automatically. Recovery remains confirmation-gated.\n".to_string(),
         Topic::Workspace => "Workspace inventory (read-only)\n\n  vibemuxctl workspace status [--project-root <path>]\n  vibemuxctl status [--project-root <path>]\n\nShows local branches, worktrees, and cached-ref ancestry; no fetch, merge, or cleanup.\nGlobal output flags go before the command: --format text|json|auto.\n".to_string(),
         Topic::Probe => "Diagnostic metadata\n\n  vibemuxctl probe [--report <saved_report.json>]\n\nSaved reports are bounded, validated and redacted. Without --report, fixed local\nread-only probes run. Authentication and inference are separate, untested claims.\n".to_string(),
@@ -257,7 +257,7 @@ mod tests {
         let invocation =
             parse(["harness", "catalog", "--config", "--format"].map(OsString::from)).unwrap();
         assert!(
-            matches!(invocation.command, Command::Harness(vibemux_harness::cli::Command::Catalog { config_path }) if config_path == PathBuf::from("--format"))
+            matches!(invocation.command, Command::Harness(vibemux_harness_native::cli::Command::Catalog { config_path }) if config_path == PathBuf::from("--format"))
         );
     }
     #[test]

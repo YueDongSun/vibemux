@@ -9,7 +9,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 use uuid::Uuid;
-use vibemux_harness::{
+use vibemux_harness_native::{
     config::{Config, Limits, Route},
     contract::{
         Harness, Kind, MAX_PROMPT_BYTES, Outcome, Protocol, Request, SCHEMA_VERSION, Status,
@@ -63,7 +63,7 @@ impl Fixture {
                 Route {
                     harness: *harness,
                     protocol: protocol(*harness),
-                    executable: PathBuf::from(env!("CARGO_BIN_EXE_vibemux_native_fixture")),
+                    executable: PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_fixture")),
                     arguments,
                     working_directory: working_directory.clone(),
                     environment_names: vec![],
@@ -85,7 +85,7 @@ impl Fixture {
         std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
         let dispatcher = Dispatcher::new(
             &config_path,
-            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_plugin")),
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
         )
         .unwrap();
         Self {
@@ -504,7 +504,7 @@ async fn windows_batch_routes_are_rejected_without_launching_a_shell() {
             std::fs::write(&fixture.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
             fixture.dispatcher = Dispatcher::new(
                 &fixture.config_path,
-                &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_plugin")),
+                &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
             )
             .unwrap();
             let outcome = fixture.execute(Harness::Codex).await;
@@ -629,7 +629,7 @@ async fn plugin_success_without_terminal_evidence_is_rejected() {
         let fixture = Fixture::new("spoof_empty");
         let dispatcher = Dispatcher::new(
             &fixture.config_path,
-            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_native_fixture")),
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_fixture")),
         )
         .unwrap();
         let (_sender, receiver) = watch::channel(false);
@@ -653,7 +653,7 @@ async fn plugin_success_contradicting_failed_vendor_terminal_is_rejected() {
         let fixture = Fixture::new("spoof_failed");
         let dispatcher = Dispatcher::new(
             &fixture.config_path,
-            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_native_fixture")),
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_fixture")),
         )
         .unwrap();
         let (_sender, receiver) = watch::channel(false);

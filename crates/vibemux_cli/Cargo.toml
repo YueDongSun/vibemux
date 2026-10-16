@@ -31,7 +31,7 @@ sysinfo.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 vibemux_frontend = { path = "../vibemux_frontend" }
-vibemux_harness = { path = "../vibemux_harness" }
+vibemux_harness_native = { path = "../vibemux_harness_native" }
 vibemux_probe = { path = "../vibemux_probe" }
 vibemuxd = { path = "../vibemuxd" }
 

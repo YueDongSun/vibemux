@@ -60,7 +60,7 @@ current integration.
 
 ## Structured Harness Slice
 
-`vibemux_harness` now supplies a standalone vendor plugin and dispatcher over
+`vibemux_harness_native` now supplies a standalone vendor plugin and dispatcher over
 that supervisor. Native JSON framing, conservative observations, protocol
 correlation, and OS process ownership are separate modules. Complete vendor
 stdout records remain in bounded private memory; public reports contain only

@@ -2,7 +2,7 @@
 
 ## What Is Available
 
-The Rust `vibemux_harness` crate exposes a local, bounded text-request dispatcher
+The Rust `vibemux_harness_native` crate exposes a local, bounded text-request dispatcher
 and complete vendor JSON record capture. Its CLI has `catalog`, `replay`,
 `probe`, and `dispatch` commands. Native execution is opt-in.
 
@@ -17,10 +17,10 @@ conversation or TUI.
 From the Rust worktree, with its pinned Rust 1.85 toolchain:
 
 ```powershell
-cargo build --locked -p vibemux_harness --bins
-cargo test --locked -p vibemux_harness --all-features
-.\target\debug\vibemux_harness.exe catalog --config examples/harness/harness_config.json
-.\target\debug\vibemux_harness.exe replay --protocol codex_app_server --input crates/vibemux_harness/tests/fixtures/codex_app_server.jsonl
+cargo build --locked -p vibemux_harness_native --bins
+cargo test --locked -p vibemux_harness_native --all-features
+.\target\debug\vibemux_harness_native.exe catalog --config examples/harness/harness_config.json
+.\target\debug\vibemux_harness_native.exe replay --protocol codex_app_server --input crates/vibemux_harness_native/tests/fixtures/codex_app_server.jsonl
 ```
 
 Replay reads records without launching a harness or contacting a model.
@@ -66,7 +66,7 @@ in-flight work.
 ## Probe Before Execution
 
 ```powershell
-.\target\debug\vibemux_harness.exe probe --config .vibemux/harness_config.json --harness codex
+.\target\debug\vibemux_harness_native.exe probe --config .vibemux/harness_config.json --harness codex
 ```
 
 Probe submits initialization only. It does not authenticate, create a vendor
@@ -87,7 +87,7 @@ UUID for each attempt; the public request file is a format example, not a
 reusable production identifier.
 
 ```powershell
-.\target\debug\vibemux_harness.exe dispatch --config .vibemux/harness_config.json --request examples/harness/harness_request.json
+.\target\debug\vibemux_harness_native.exe dispatch --config .vibemux/harness_config.json --request examples/harness/harness_request.json
 ```
 
 The library accepts a cancellation watch channel. The one-shot CLI currently
@@ -104,7 +104,7 @@ deadline expiry, and cleanup failure.
 An optional, real-model example asserts a fixed reply without printing content:
 
 ```powershell
-cargo run --locked -p vibemux_harness --example live_codex_smoke -- .vibemux/harness_config.json .\target\debug\vibemux_harness_plugin.exe
+cargo run --locked -p vibemux_harness_native --example live_codex_smoke -- .vibemux/harness_config.json .\target\debug\vibemux_harness_native_plugin.exe
 ```
 
 This command sends a model request and may consume account usage. It is never

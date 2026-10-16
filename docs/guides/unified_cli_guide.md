@@ -10,7 +10,7 @@ cargo build --locked --workspace --bins
 
 `vibemuxctl` is the common Rust entrypoint. Building the workspace also places
 the daemon and harness plugin beside it. This does not install or start them.
-Python `vibemux`, `vibemux_harness`, `vibemux_probe`, and `vibemux_frontend`
+Python `vibemux`, `vibemux_harness_native`, `vibemux_probe`, and `vibemux_frontend`
 remain available for compatibility.
 
 ## Choose Text or JSON
@@ -93,11 +93,11 @@ observations.
 
 ```powershell
 .\target\debug\vibemuxctl.exe harness catalog --config examples/harness/harness_config.json
-.\target\debug\vibemuxctl.exe harness replay --protocol codex_app_server --input crates/vibemux_harness/tests/fixtures/codex_app_server.jsonl
+.\target\debug\vibemuxctl.exe harness replay --protocol codex_app_server --input crates/vibemux_harness_native/tests/fixtures/codex_app_server.jsonl
 .\target\debug\vibemuxctl.exe help harness
 ```
 
-The unified CLI calls the same command library as `vibemux_harness`. The public
+The unified CLI calls the same command library as `vibemux_harness_native`. The public
 example disables execution. Native probing and generation require a private
 configuration; real model generation also needs separate authorization and may
 consume account usage. See the [harness core guide](harness_core_guide.md).

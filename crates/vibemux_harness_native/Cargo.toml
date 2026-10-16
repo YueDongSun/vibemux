@@ -1,5 +1,5 @@
 [package]
-name = "vibemux_harness"
+name = "vibemux_harness_native"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,16 +10,16 @@ repository.workspace = true
 test_helpers = []
 
 [[bin]]
-name = "vibemux_harness"
-path = "src/bin/vibemux_harness.rs"
+name = "vibemux_harness_native"
+path = "src/bin/vibemux_harness_native.rs"
 
 [[bin]]
-name = "vibemux_harness_plugin"
-path = "src/bin/vibemux_harness_plugin.rs"
+name = "vibemux_harness_native_plugin"
+path = "src/bin/vibemux_harness_native_plugin.rs"
 
 [[bin]]
-name = "vibemux_native_fixture"
-path = "src/bin/vibemux_native_fixture.rs"
+name = "vibemux_harness_native_fixture"
+path = "src/bin/vibemux_harness_native_fixture.rs"
 required-features = ["test_helpers"]
 
 [dependencies]

@@ -15,7 +15,7 @@ a canonical VibeMux task are different facts.
 
 ## Decision
 
-Add `vibemux_harness` as a bounded, standalone integration slice. Keep the
+Add `vibemux_harness_native` as a bounded, standalone integration slice. Keep the
 existing Rust core, Protobuf plugin protocol, supervisor, and Python reference.
 Do not create a second database writer or replace the daemon control protocol.
 

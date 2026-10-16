@@ -1,10 +1,10 @@
-use vibemux_harness::cli::{self, Command};
+use vibemux_harness_native::cli::{self, Command};
 
 #[tokio::main]
 async fn main() {
     let result = match cli::parse_arguments(std::env::args_os().skip(1)) {
         Ok(Command::Help) => {
-            print!("{}", cli::help("vibemux_harness"));
+            print!("{}", cli::help("vibemux_harness_native"));
             return;
         }
         Ok(Command::Version) => {

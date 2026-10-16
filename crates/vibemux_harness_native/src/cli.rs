@@ -194,9 +194,9 @@ fn dispatcher(config_path: &Path, plugin: Option<PathBuf>) -> Result<Dispatcher,
         None => std::env::current_exe()
             .map_err(|source| Error::with_source("harness_executable_unavailable", source))?
             .with_file_name(if cfg!(windows) {
-                "vibemux_harness_plugin.exe"
+                "vibemux_harness_native_plugin.exe"
             } else {
-                "vibemux_harness_plugin"
+                "vibemux_harness_native_plugin"
             }),
     };
     Dispatcher::new(config_path, &plugin)

@@ -2594,7 +2594,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "vibemux_frontend",
- "vibemux_harness",
+ "vibemux_harness_native",
  "vibemux_probe",
  "vibemuxd",
 ]
@@ -2622,7 +2622,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "vibemux_harness"
+name = "vibemux_harness_native"
 version = "0.2.0-alpha.1"
 dependencies = [
  "serde",

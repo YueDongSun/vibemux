@@ -4,7 +4,7 @@ use std::path::Path;
 
 use tokio::sync::watch;
 use uuid::Uuid;
-use vibemux_harness::{
+use vibemux_harness_native::{
     Error,
     contract::{Harness, Kind, Request, SCHEMA_VERSION, Status},
     dispatch::Dispatcher,

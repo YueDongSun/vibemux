@@ -41,7 +41,7 @@ pub async fn run(command: Command, format: Format) -> Result<Outcome, Failure> {
             })
         }
         Command::Harness(command) => {
-            let reply = vibemux_harness::cli::run(command)
+            let reply = vibemux_harness_native::cli::run(command)
                 .await
                 .map_err(|source| Failure::with_source(source.code(), source))?;
             Ok(Outcome::Data {

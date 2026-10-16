@@ -156,7 +156,7 @@ impl Dispatcher {
             plugin_version: "1.0.0".to_string(),
             kind: ManifestPluginKind::Harness,
             entry_point: vec![
-                "vibemux_harness_plugin".to_string(),
+                "vibemux_harness_native_plugin".to_string(),
                 "--config".to_string(),
                 self.config_path.to_string_lossy().into_owned(),
                 "--config_digest".to_string(),

@@ -9,7 +9,7 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use vibemux_harness::{
+use vibemux_harness_native::{
     config::{Config, DEFAULT_FRAME_BYTES},
     contract::{
         Completion, EXECUTE_METHOD, Harness, PROBE_METHOD, Protocol, RECORD_EVENT, Record,

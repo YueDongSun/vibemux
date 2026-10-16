@@ -1,15 +1,15 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
-use vibemux_harness::contract::{
+use vibemux_harness_native::contract::{
     Completion, Harness, Kind, Outcome, Protocol, Record, Request, SCHEMA_VERSION, Status,
 };
-use vibemux_harness::normalize::classify;
+use vibemux_harness_native::normalize::classify;
 
 #[tokio::test]
 async fn fragmented_utf8_frame_survives_a_cancelled_read_future() {
     use std::time::Duration;
     use tokio::io::{AsyncWriteExt, BufReader};
-    use vibemux_harness::json_lines::Reader;
+    use vibemux_harness_native::json_lines::Reader;
 
     let (mut writer, input) = tokio::io::duplex(128);
     let mut reader = Reader::new(BufReader::with_capacity(2, input), 128).unwrap();
@@ -34,7 +34,7 @@ async fn fragmented_utf8_frame_survives_a_cancelled_read_future() {
 #[tokio::test]
 async fn frame_and_trace_limits_reject_without_silent_truncation() {
     use tokio::io::BufReader;
-    use vibemux_harness::{
+    use vibemux_harness_native::{
         config::Limits,
         json_lines::{Reader, replay},
     };
@@ -76,7 +76,7 @@ const TOKEN_SENTINEL: &str = "SYNTHETIC_SECRET_TOKEN";
 async fn probe_request_identity_is_validated_before_any_native_io() {
     use std::path::PathBuf;
     use tokio::sync::{mpsc, watch};
-    use vibemux_harness::{
+    use vibemux_harness_native::{
         config::{Limits, Route},
         native,
     };
