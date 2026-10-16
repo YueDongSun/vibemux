@@ -53,6 +53,12 @@ const TURN_DEADLINE_MS: u64 = 120_000;
 const SHUTDOWN_GRACE_MS: u64 = 2_000;
 const VERIFIER_TIMEOUT_MS: u64 = 300_000;
 const HEARTBEAT_MS: u64 = 30_000;
+/// How long a scripted turn waits for the rest of its rendezvous group. The
+/// daemon revalidates every fixture image before each launch, so on a slow
+/// debug build the turns of one group can start several seconds apart; this
+/// bounds the wait for that skew while still failing a scheduler that never
+/// runs the group together.
+const RENDEZVOUS_TIMEOUT_MS: u64 = 60_000;
 /// Long enough for a run with every TaskBoard suite on a slow runner.
 pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(420);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -720,6 +726,14 @@ impl WorkflowFixture {
             .collect()
     }
 
+    /// Whether a scripted rendezvous gave up waiting for the rest of its
+    /// group, which means the group's turns never ran at the same time.
+    pub fn rendezvous_failed(&self) -> bool {
+        self.log()
+            .iter()
+            .any(|record| record["event"] == "rendezvous_failed")
+    }
+
     pub fn started_keys(&self) -> Vec<String> {
         self.log()
             .into_iter()
@@ -775,10 +789,14 @@ impl WorkflowFixture {
         }
     }
 
-    /// Waits until no coordinator of this daemon drives the workflow.
+    /// Waits until no coordinator of this daemon drives the workflow. A
+    /// failed rendezvous also ends the wait: the group will never run
+    /// together, so the caller should report that instead of waiting out the
+    /// retries.
     pub async fn wait_idle(&self, workflow_id: Uuid) -> Value {
         self.wait_until(workflow_id, |status| {
-            status["running_here"] == false && !status["last_run"].is_null()
+            self.rendezvous_failed()
+                || (status["running_here"] == false && !status["last_run"].is_null())
         })
         .await
     }
@@ -1228,6 +1246,13 @@ pub fn policy(suites: &[&str], max_parallel_slots: u32, content_store_opt_in: bo
         "content_store_opt_in": content_store_opt_in,
         "aag_only": true,
     })
+}
+
+/// A fixture step's `rendezvous`: the turn waits until `parties` turns of
+/// `group` are running at once. Tests use it to require real overlap instead
+/// of comparing wall-clock timestamps that a slow launch can pull apart.
+pub fn rendezvous(group: &str, parties: usize) -> Value {
+    json!({"group": group, "parties": parties, "timeout_ms": RENDEZVOUS_TIMEOUT_MS})
 }
 
 /// A passing review for every task.

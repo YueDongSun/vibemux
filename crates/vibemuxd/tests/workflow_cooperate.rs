@@ -9,23 +9,31 @@ mod workflow_support;
 
 use serde_json::{Value, json};
 use workflow_support::{
-    FixtureOptions, WorkflowFixture, cooperative_request, good_files, phase, policy, review_pass,
-    session_id, task_view, taskboard_file, track_a, track_b, workflow_id,
+    FixtureOptions, WorkflowFixture, cooperative_request, good_files, phase, policy, rendezvous,
+    review_pass, session_id, task_view, taskboard_file, track_a, track_b, workflow_id,
 };
 
 const QUESTION: &str = "Which error code does the store raise for a blank title?";
 const ANSWER: &str = "The store raises invalid_title for a title that is blank after trimming.";
 const STORE_FIRST_LINE: &str = "TaskBoard Lite store: calibration reference implementation";
-const TURN_DELAY_MS: u64 = 1_500;
+/// Both implementation turns wait here for each other, so they overlap
+/// however far apart a slow host launches them.
+const IMPLEMENT_OVERLAP_GROUP: &str = "implement_overlap";
+const IMPLEMENT_PARTIES: usize = 2;
+/// Held after the rendezvous so each turn finishes strictly after the other
+/// one has started.
+const TURN_DELAY_MS: u64 = 100;
 
 fn flagship_script() -> Value {
     json!({"steps": {
         "track_a/implement_1": {
             "write": good_files(&["src/server.mjs", "src/store.mjs"]),
+            "rendezvous": rendezvous(IMPLEMENT_OVERLAP_GROUP, IMPLEMENT_PARTIES),
             "delay_ms": TURN_DELAY_MS,
         },
         "track_b/implement_1": {
             "write": good_files(&["public/app.mjs", "public/index.html", "public/styles.css"]),
+            "rendezvous": rendezvous(IMPLEMENT_OVERLAP_GROUP, IMPLEMENT_PARTIES),
             "delay_ms": TURN_DELAY_MS,
             "checkpoint": {"messages": [{"kind": "question", "to": "track_a", "text": QUESTION}]},
         },
@@ -161,11 +169,23 @@ async fn two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integratio
     let workflow = workflow_id(&prepared);
     let started = fixture.start_workflow(&prepared).await;
     assert_eq!(started["duplicate"], false);
+    // S01: the plan gave the two independent tasks two slots, so the
+    // coordinator was asked to run both implementation turns at once.
+    assert_eq!(
+        started["parallelism"],
+        json!({"plan": "parallel", "width": 2})
+    );
     let status = fixture.wait_idle(workflow).await;
+    assert!(
+        !fixture.rendezvous_failed(),
+        "an implementation turn never saw the other one running: {status:#}"
+    );
     assert_eq!(phase(&status), "accepted", "status: {status:#}");
     assert_eq!(status["last_run"]["end"]["end"], "accepted");
 
     // S01: both implementation turns ran in separate sessions and overlapped.
+    // Each held its turn open until the other had started, so the ordering
+    // below follows from the rendezvous and not from launch timing.
     let log = fixture.log();
     let a_started = started_at(&fixture.started("track_a/implement_1")[0]);
     let b_started = started_at(&fixture.started("track_b/implement_1")[0]);

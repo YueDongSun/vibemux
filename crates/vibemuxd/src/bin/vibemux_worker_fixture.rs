@@ -16,7 +16,10 @@
 //! file, so parallel turns never share an entry. Every turn appends a
 //! `started` record with the prompt and a `finished` record to
 //! `worker_fixture_log.jsonl` next to the executable, so tests can check
-//! what a session was actually sent and whether turns overlapped.
+//! what a session was actually sent and whether turns overlapped. A step's
+//! `rendezvous` holds the turn until the other turns of its group are alive
+//! too, which makes overlap a property the turns prove by meeting rather than
+//! one inferred from how close their wall-clock timestamps happen to be.
 //!
 //! This is synthetic evidence only: it proves the daemon's orchestration,
 //! never a vendor model's behavior.
@@ -27,7 +30,7 @@ use std::{
     fs::OpenOptions,
     io::{self, BufRead, Read, Write},
     path::{Component, Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Deserialize;
@@ -43,6 +46,11 @@ const REVIEW_INFO_STRING: &str = "vibemux_review";
 const SESSION_ID: &str = "worker_fixture_session";
 /// Upper bound on a scripted delay.
 const MAX_DELAY_MS: u64 = 60_000;
+const RENDEZVOUS_DIR_NAME: &str = "worker_fixture_rendezvous";
+/// Upper bound on the turns of one rendezvous group.
+const MAX_RENDEZVOUS_PARTIES: usize = 16;
+/// How often a waiting turn looks for the rest of its group.
+const RENDEZVOUS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -66,6 +74,10 @@ struct Step {
     write: BTreeMap<String, String>,
     #[serde(default)]
     remove: Vec<String>,
+    /// Waits for the other turns of a group before the delay and the
+    /// terminal record.
+    #[serde(default)]
+    rendezvous: Option<Rendezvous>,
     /// Sleeps before the terminal record, so a test can cancel mid-turn.
     #[serde(default)]
     delay_ms: u64,
@@ -86,6 +98,21 @@ struct Step {
     /// Successive invocations of this key take successive entries.
     #[serde(default)]
     sequence: Vec<Step>,
+}
+
+/// A group of turns that must all be running at the same moment. The daemon
+/// may launch them arbitrarily far apart on a slow host; a turn waits here
+/// for the rest and fails if they never arrive, so a scheduler that runs the
+/// group one turn at a time cannot pass.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Rendezvous {
+    /// Lowercase letters, digits, and underscores; names the group.
+    group: String,
+    /// How many distinct turns the group needs, this one included.
+    parties: usize,
+    /// How long this turn waits for the rest.
+    timeout_ms: u64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -366,6 +393,19 @@ fn perform(
             std::fs::remove_file(target)?;
         }
     }
+    if let Some(rendezvous) = &step.rendezvous {
+        let met = wait_for_rendezvous(directory, &key, rendezvous);
+        let event = if met.is_ok() {
+            "rendezvous_met"
+        } else {
+            "rendezvous_failed"
+        };
+        log(
+            directory,
+            json!({"event": event, "key": key, "group": rendezvous.group, "at_ms": now_ms()}),
+        )?;
+        met?;
+    }
     if step.delay_ms > 0 {
         std::thread::sleep(Duration::from_millis(step.delay_ms.min(MAX_DELAY_MS)));
     }
@@ -500,6 +540,43 @@ fn claim_index(directory: &Path, key: &str) -> Result<usize> {
         }
     }
     Err("fixture_claims_exhausted".into())
+}
+
+/// Registers this turn with its group by creating one marker file, then
+/// waits until `parties` markers exist. A repeated key reuses its marker, so
+/// a retried turn cannot stand in for a second party.
+fn wait_for_rendezvous(directory: &Path, key: &str, rendezvous: &Rendezvous) -> Result<()> {
+    let group_name = &rendezvous.group;
+    if group_name.is_empty()
+        || !group_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        || rendezvous.parties == 0
+        || rendezvous.parties > MAX_RENDEZVOUS_PARTIES
+    {
+        return Err("fixture_rendezvous_invalid".into());
+    }
+    let group = directory.join(RENDEZVOUS_DIR_NAME).join(group_name);
+    std::fs::create_dir_all(&group)?;
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(group.join(key.replace('/', "__")))
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let deadline = Instant::now() + Duration::from_millis(rendezvous.timeout_ms.min(MAX_DELAY_MS));
+    loop {
+        if std::fs::read_dir(&group)?.count() >= rendezvous.parties {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("fixture_rendezvous_timeout".into());
+        }
+        std::thread::sleep(RENDEZVOUS_POLL_INTERVAL);
+    }
 }
 
 fn now_ms() -> u128 {
