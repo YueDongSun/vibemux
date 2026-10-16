@@ -36,6 +36,7 @@ Verifier files:
 | `verifier/cdp_client.mjs` | Minimal CDP client over the global `WebSocket` with flattened sessions |
 | `verifier/contract_stub_server.mjs` | Verifier-owned reference backend used only for `browser_frontend_only` |
 | `verifier/candidate_paths.mjs` | Candidate layout, temp directories, process launch, receipt validation, process cleanup |
+| `verifier/process_identity.mjs` | Start-time identity check that must confirm a process id before it is killed |
 
 "Comparison mode" for the store suite means it checks the same semantics as
 the API suite (validation codes, ordering, copies, persistence, corruption,
@@ -116,8 +117,20 @@ Checks: `ui_hooks_present`, `add_via_button`, `add_via_enter_key`,
 
 Cleanup: the browser is closed with `Browser.close`, awaited, and tree-killed
 if it does not exit; the child process ids reported by
-`SystemInfo.getProcessInfo` must exit (survivors are killed and reported in
-`cleanup_errors`); the profile directory is removed.
+`SystemInfo.getProcessInfo` must exit within 5 s; the profile directory is
+removed. A child id that still answers may belong to an unrelated process
+that reused it, so a survivor is killed only when its identity is confirmed:
+its OS start time must lie between the browser launch and the moment the ids
+were sampled, with both bounds moved 100 ms earlier for clock tolerance. A
+process that reuses an id can only start after the original exited, and the
+original was running when it was sampled. On Windows, PowerShell reads
+`Process.StartTime` and kills through one open handle, so the id cannot
+change hands between the check and the kill; PowerShell runs only when a
+survivor exists. On Linux the start time comes from `/proc/<pid>/stat`
+against `/proc/uptime`. Only the confirmed process is killed, never its
+tree. A confirmed survivor is killed and reported in `cleanup_errors`; an
+unconfirmed one (start time outside the window, unreadable, or not read on
+the platform) is left running and reported there with the reason.
 
 ## Calibration
 
