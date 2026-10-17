@@ -1,7 +1,7 @@
 //! Bounded reads of regular files: shared contract text from the project
-//! checkout, a verifier's result file, and the daemon's own workflow state.
-//! The bound holds for the bytes actually read, not only for the size
-//! reported before the read.
+//! checkout, files a worker changed in its worktree, a verifier's result
+//! file, and the daemon's own workflow state. The bound holds for the bytes
+//! actually read, not only for the size reported before the read.
 
 use std::{
     fs::File,
@@ -24,9 +24,10 @@ pub(crate) enum BoundedReadError {
 /// The bytes of the regular file at `path`, at most `maximum` of them.
 ///
 /// The path is checked without following a symlink, so a link, FIFO, or
-/// device is never opened. The opened handle is checked again, and the read
-/// stops one byte past the bound, so a file swapped or grown after the
-/// checks is refused rather than read whole.
+/// device found there is never opened. The open itself still follows a link
+/// swapped in after that check; the handle check and the bounded read keep
+/// whatever was opened to a regular file within the bound, and a source
+/// grown past the bound is refused rather than read whole.
 pub(crate) fn read_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, BoundedReadError> {
     let metadata = std::fs::symlink_metadata(path).map_err(|error| match error.kind() {
         ErrorKind::NotFound => BoundedReadError::Missing,

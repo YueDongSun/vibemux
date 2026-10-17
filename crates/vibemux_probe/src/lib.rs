@@ -559,9 +559,9 @@ fn collect_toml_values(
 }
 
 /// A config file of at most `MAX_CONFIG_FILE_BYTES`. The path is checked
-/// before the open so a FIFO is never opened, the opened handle is checked
-/// again, and the read itself is bounded: a file swapped or grown after the
-/// checks cannot make the probe read more than the bound.
+/// before the open so a FIFO found there is never opened, the opened handle
+/// is checked again, and the read itself is bounded: a file swapped or grown
+/// after the checks cannot make the probe read more than the bound.
 fn read_bounded_config(path: &Path) -> Option<String> {
     if !std::fs::metadata(path).ok()?.is_file() {
         return None;

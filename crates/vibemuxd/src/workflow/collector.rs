@@ -27,7 +27,7 @@ use vibemux_workflow::{
 };
 use vibemux_workspace::WorkspaceManager;
 
-use super::{error::WorkflowError, settings::CandidateLimits};
+use super::{bounded_file::read_regular_file, error::WorkflowError, settings::CandidateLimits};
 
 /// A worker commit moved `HEAD` away from the base commit.
 pub const HEAD_MOVED_CODE: &str = "snapshot_head_moved";
@@ -240,7 +240,8 @@ fn observe(
         });
         return Ok((change, None));
     }
-    let bytes = read_bounded(&full, limits.max_file_bytes)?;
+    let bytes =
+        read_regular_file(&full, limits.max_file_bytes).map_err(|_| WorkflowError::Snapshot)?;
     let is_text = std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0);
     change.content = Some(ObservedContent {
         sha256: Sha256Digest::of(&bytes),
@@ -248,17 +249,6 @@ fn observe(
         is_text,
     });
     Ok((change, Some(bytes)))
-}
-
-fn read_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>, WorkflowError> {
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(maximum + 1).read_to_end(&mut bytes))
-        .map_err(|_| WorkflowError::Snapshot)?;
-    if bytes.len() as u64 > maximum {
-        return Err(WorkflowError::Snapshot);
-    }
-    Ok(bytes)
 }
 
 fn join_relative(root: &Path, path: &str) -> PathBuf {
@@ -442,6 +432,41 @@ mod tests {
         .expect("tamper");
         assert!(blobs.get(digest).is_err());
         assert_eq!(blobs.put(b"export const x = 1;\n").expect("heal"), digest);
+    }
+
+    #[test]
+    fn a_worktree_file_is_read_within_its_bound_and_others_are_classified() {
+        let directory = tempfile::tempdir().expect("dir");
+        std::fs::create_dir(directory.path().join("src")).expect("src");
+        std::fs::write(directory.path().join("src").join("a.txt"), b"hello").expect("write");
+        let limits = CandidateLimits {
+            max_files: 8,
+            max_file_bytes: 5,
+            max_total_bytes: 64,
+        };
+        let mut total = 0;
+        let observe_path = |path: &str, total: &mut u64| {
+            observe(
+                directory.path(),
+                path,
+                ObservedChangeKind::Added,
+                &limits,
+                total,
+            )
+            .expect("observe")
+        };
+        let (change, bytes) = observe_path("src/a.txt", &mut total);
+        assert_eq!(bytes.as_deref(), Some(&b"hello"[..]));
+        assert_eq!(change.content.map(|content| content.byte_count), Some(5));
+        assert_eq!(total, 5);
+        let (change, bytes) = observe_path("src", &mut total);
+        assert_eq!((change.file_type, bytes), (ObservedFileType::Special, None));
+        let (change, bytes) = observe_path("src/missing.txt", &mut total);
+        assert_eq!((change.kind, bytes), (ObservedChangeKind::Deleted, None));
+        std::fs::write(directory.path().join("src").join("b.txt"), b"too long").expect("write");
+        let (change, bytes) = observe_path("src/b.txt", &mut total);
+        assert_eq!(bytes, None);
+        assert_eq!(change.content.map(|content| content.byte_count), Some(8));
     }
 
     #[test]

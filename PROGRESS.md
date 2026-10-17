@@ -5259,7 +5259,7 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Scope:** `vibemux_probe` reads agent config files (Claude and OpenCode JSON, Codex and Grok TOML) to discover endpoints. `read_bounded_config` checked the path's size and then called `read_to_string`, which reads to the end. A file swapped or grown after the check could make the probe read past the 256 KiB `MAX_CONFIG_FILE_BYTES`.
 
 **Implemented:**
-- `read_bounded_config` still checks the path before opening, so a FIFO is never opened. It then checks the opened handle's metadata (a regular file within the bound), as `cache::read_cache` already does.
+- `read_bounded_config` still checks the path before opening, so a FIFO found there is never opened. It then checks the opened handle's metadata (a regular file within the bound), as `cache::read_cache` already does.
 - New private `read_bounded_text(reader, max_bytes)` reads at most one byte past the bound through `take`. It refuses a longer or non-UTF-8 source rather than truncating it.
 - No change to discovered endpoints, the probe report, the cache, or any wire format.
 - Audit only, no change: `snapshot::load` (256 KiB, sanitized, stable codes) and gateway telemetry (the health check reads only the status code; the SQLite query is aggregate-only with `LIMIT 32` and a 64-byte `app_type`).
@@ -5278,7 +5278,7 @@ The file was restored and compared byte for byte after each round. The `supervis
 A file swapped or grown after the size check could be read past its bound: 64 KiB for contracts, 1 MiB for results, or the state file's own bound.
 
 **Implemented:**
-- New private `workflow::bounded_file::read_regular_file(path, maximum)`. It checks the path without following a symlink, so a link, FIFO, or device is never opened. It checks the opened handle again, then reads at most one byte past the bound and refuses rather than truncates.
+- New private `workflow::bounded_file::read_regular_file(path, maximum)`. It checks the path without following a symlink, so a link, FIFO, or device found there is never opened (a link swapped in after that check is still followed by the open). It checks the opened handle again, then reads at most one byte past the bound and refuses rather than truncates.
 - `BoundedReadError` has three variants: `Missing`, `Refused`, and `Io`.
 - The three callers use it and keep their own error codes:
   - A contract that is unreadable, oversized, or not UTF-8 is still `RequestInvalid`.
@@ -5299,3 +5299,23 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 - Two mutations were caught and restored byte-for-byte. Removing the post-read length check failed the bounded-read test. Passing the contract bound minus one failed the shared-contract test.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Read worker worktree files through the shared bounded reader
+
+**Scope:** the ADR 031 candidate collector (`vibemuxd::workflow::collector::observe`) reads the files a worker changed in its worktree. It checked each path with `symlink_metadata` and classified links and special files. It then used its own `read_bounded`: `File::open` plus `take(maximum + 1)` and a post-read check, but with no check of the opened handle.
+
+**Implemented:**
+- `observe` now reads through `workflow::bounded_file::read_regular_file`, and every failure stays `WorkflowError::Snapshot`. The private `collector::read_bounded` is gone, so the workflow has one owner for bounded file reads.
+- The symlink and special-file classification, the manifest's per-file and total bounds (bytes over them are never read), and `BlobStore` are unchanged. `BlobStore::get` still reads a whole blob from the daemon's private state.
+- The `bounded_file` and probe `read_bounded_config` doc comments, and the two earlier 2026-10-18 entries above, now say exactly what the path check prevents. A link, FIFO, or device found by the check is never opened, but a link swapped in between the check and the open is still followed. The size bound holds either way.
+- No change to snapshot manifests, receipts, the control protocol, or the store.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd -p vibemux_probe --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib workflow::`: 26 passed. The new test `a_worktree_file_is_read_within_its_bound_and_others_are_classified` covers a file at the bound being read, a directory classified `Special`, a missing path reported `Deleted`, and an oversized file kept out of the read with its size recorded.
+- `cargo test -p vibemuxd --all-features --test workflow_cooperate --test workflow_compare`: 2 and 2 passed.
+- One mutation was caught and restored byte-for-byte: passing the per-file bound minus one failed the new test.
+
+**Remaining:**
+- Owner decision: whether bounded reads should open without following links. On POSIX that means `O_NOFOLLOW`. On Windows it means `FILE_FLAG_OPEN_REPARSE_POINT`, which also changes how cloud-file and deduplication placeholders read. Until then, the bound, not the path check, is the guarantee against a swapped link.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
