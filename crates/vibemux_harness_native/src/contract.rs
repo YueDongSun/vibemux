@@ -222,3 +222,89 @@ impl fmt::Debug for Outcome {
         self.summary().fmt(formatter)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use vibemux_harness::{
+        AgentKind,
+        dispatch::{NativeProtocol, adapter_capability},
+    };
+
+    use super::{Harness, Protocol};
+
+    const HARNESSES: [Harness; 5] = [
+        Harness::Codex,
+        Harness::Claude,
+        Harness::Opencode,
+        Harness::Copilot,
+        Harness::Grok,
+    ];
+    const PROTOCOLS: [Protocol; 7] = [
+        Protocol::Codex,
+        Protocol::Appserver,
+        Protocol::Claude,
+        Protocol::Opencode,
+        Protocol::Copilot,
+        Protocol::Acp,
+        Protocol::Grok,
+    ];
+
+    fn serde_name<T: serde::Serialize>(value: T) -> String {
+        serde_json::to_value(value)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The native route table drives a harness through the shared engine
+    /// exactly when the shared engine accepts that pair, and it names both
+    /// with the shared vocabulary: the harness by its command name, the
+    /// protocol by the engine's id. So the native configuration, the daemon
+    /// configuration, and the capability table cannot drift apart.
+    #[test]
+    fn native_routes_agree_with_the_shared_engine() {
+        for harness in HARNESSES {
+            assert_eq!(serde_name(harness), harness.agent_kind().command_name());
+        }
+        for protocol in PROTOCOLS {
+            let Some(shared) = protocol.native_protocol() else {
+                continue;
+            };
+            assert_eq!(serde_name(protocol), shared.as_str());
+            for harness in HARNESSES {
+                assert_eq!(
+                    protocol.accepts(harness),
+                    shared.accepts(harness.agent_kind()),
+                    "{protocol:?} {harness:?}"
+                );
+            }
+        }
+    }
+
+    /// Every harness and protocol pair the shared engine can drive in the
+    /// CLI process has a native route, so no harness that the capability
+    /// table lists with a structured adapter is unreachable from
+    /// `vibemuxctl harness`. DSH is driven by `vibemux_dsh` instead.
+    #[test]
+    fn every_shared_adapter_outside_dsh_has_a_native_route() {
+        for kind in AgentKind::all() {
+            for shared in adapter_capability(kind).protocols {
+                if shared == NativeProtocol::DshSdkJsonRpc {
+                    continue;
+                }
+                let routed = HARNESSES.into_iter().any(|harness| {
+                    harness.agent_kind() == kind
+                        && PROTOCOLS.into_iter().any(|protocol| {
+                            protocol.native_protocol() == Some(shared) && protocol.accepts(harness)
+                        })
+                });
+                assert!(
+                    routed,
+                    "{kind:?} via {} has no native route",
+                    shared.as_str()
+                );
+            }
+        }
+    }
+}
