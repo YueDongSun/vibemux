@@ -5253,3 +5253,17 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_cli`: lib 48 passed, integration 5 passed. The reader tests moved to `prompt_input` with an 8-byte bound. The dispatch and DSH tests now check each command's bound and codes end to end. Two mutations were caught and restored byte-for-byte. Refusing a prompt of exactly the bound failed three tests, as did mapping every invalid prompt to `cli_invalid_arguments`.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Bound the probe config read itself, not only the size check before it
+
+**Scope:** `vibemux_probe` reads agent config files (Claude and OpenCode JSON, Codex and Grok TOML) to discover endpoints. `read_bounded_config` checked the path's size and then called `read_to_string`, which reads to the end. A file swapped or grown after the check could make the probe read past the 256 KiB `MAX_CONFIG_FILE_BYTES`.
+
+**Implemented:**
+- `read_bounded_config` still checks the path before opening, so a FIFO is never opened. It then checks the opened handle's metadata (a regular file within the bound), as `cache::read_cache` already does.
+- New private `read_bounded_text(reader, max_bytes)` reads at most one byte past the bound through `take`. It refuses a longer or non-UTF-8 source rather than truncating it.
+- No change to discovered endpoints, the probe report, the cache, or any wire format.
+- Audit only, no change: `snapshot::load` (256 KiB, sanitized, stable codes) and gateway telemetry (the health check reads only the status code; the SQLite query is aggregate-only with `LIMIT 32` and a 64-byte `app_type`).
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_probe --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_probe --all-features`: lib 24 passed. The new test `a_config_read_stops_one_byte_past_the_bound` covers an exact-bound read, an endless `std::io::repeat` source, non-UTF-8 bytes, a directory, and a missing file. One mutation was caught and restored byte-for-byte: removing the post-read length check failed the new test.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

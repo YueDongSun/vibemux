@@ -558,12 +558,35 @@ fn collect_toml_values(
     }
 }
 
+/// A config file of at most `MAX_CONFIG_FILE_BYTES`. The path is checked
+/// before the open so a FIFO is never opened, the opened handle is checked
+/// again, and the read itself is bounded: a file swapped or grown after the
+/// checks cannot make the probe read more than the bound.
 fn read_bounded_config(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
     if !metadata.is_file() || metadata.len() > MAX_CONFIG_FILE_BYTES {
         return None;
     }
-    std::fs::read_to_string(path).ok()
+    read_bounded_text(file, MAX_CONFIG_FILE_BYTES)
+}
+
+/// At most `max_bytes` of UTF-8 text; a longer source is refused, not
+/// truncated, after reading one byte past the bound.
+fn read_bounded_text(reader: impl std::io::Read, max_bytes: u64) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn safe_endpoint(value: &str) -> Option<SafeEndpoint> {
@@ -859,6 +882,23 @@ mod tests {
             run_a2a_self_test: false,
         };
         assert!(discover_endpoints(AgentKind::OpenCode, &config).is_empty());
+    }
+
+    #[test]
+    fn a_config_read_stops_one_byte_past_the_bound() {
+        assert_eq!(
+            read_bounded_text(&b"12345678"[..], 8).as_deref(),
+            Some("12345678")
+        );
+        // An endless source ends at the bound instead of exhausting memory.
+        assert_eq!(read_bounded_text(std::io::repeat(b'x'), 8), None);
+        assert_eq!(read_bounded_text(&[0xff, 0xfe][..], 8), None);
+        let temporary = TempDir::new().expect("temporary directory");
+        assert_eq!(read_bounded_config(temporary.path()), None);
+        assert_eq!(
+            read_bounded_config(&temporary.path().join("missing.json")),
+            None
+        );
     }
 
     #[test]
