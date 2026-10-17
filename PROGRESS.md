@@ -5196,3 +5196,16 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 147 passed and 1 ignored, and every bin and integration target passed. Making `display_line` return its input unchanged failed the existing `runtime_text_is_one_line_without_terminal_controls`, so the TUI now depends on the shared rule. The source was restored byte-for-byte.
 
 **Remaining:** the dashboard's `safe_text` and `task_labels::task_window_title` also cut at a length, so they keep their own chains. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Allowlisted environment values are one display line
+
+**Scope:** text sources of the Ratatui diagnostic TUI and `vibemux_frontend_dump`. Both run the probe live and read no cache. Their probe text is already bounded: agent versions and gateway telemetry `app_type` pass the probe's `sanitize_text`, endpoint hosts come from `Url::host_str`, and the gateway host shown is the fixed `127.0.0.1`. The exception was the allowlisted environment display. The TUI's environment row, its `c` debug snapshot, and `vibemux_frontend_dump` print each value (PATH, HOME, the temp directories, and so on) after only a lossy UTF-8 conversion. On POSIX a directory name may hold a line break or an ANSI escape, so a value could start a new row or reach the terminal raw. The GUI shows set or unset only, and `--json` prints the probe report rather than these values.
+
+**Implemented:**
+
+- `probe_env::collect_allowlisted_env` reads through a new pure `allowlisted_values(read)`, which maps each value through the shared `vibemux_harness::terminal_text::display_line`. The keys, their order, unset values, and empty values are unchanged.
+- The test injects a reader instead of changing the process environment.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 148 passed and 1 ignored, and every bin and integration target passed. Dropping the mapping failed the new test `allowlisted_values_are_one_display_line`, and the source was restored byte-for-byte.
+
+**Remaining:** whether the diagnostics should show these values at all, or set or unset only as the GUI does, is still the owner's decision; this entry does not change what is shown, only how. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.

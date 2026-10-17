@@ -6,7 +6,8 @@
 //! never let the frontend see a secret-bearing environment variable,
 //! even by accident.
 
-use std::env;
+use std::{env, ffi::OsString};
+use vibemux_harness::terminal_text::display_line;
 use vibemux_probe::ProbeConfig;
 
 pub use vibemux_probe::PROBE_ENVIRONMENT_ALLOWLIST;
@@ -51,10 +52,18 @@ fn apply_probe_port(
 /// list inline.
 #[must_use]
 pub fn collect_allowlisted_env() -> Vec<(String, Option<String>)> {
+    allowlisted_values(|key| env::var_os(key))
+}
+
+/// The allowlisted keys in order, each with the value `read` returns as one
+/// display line. The diagnostic TUI and its snapshot print these values to
+/// the terminal, and a directory name in `PATH` or `HOME` may hold a line
+/// break or an ANSI escape.
+fn allowlisted_values(read: impl Fn(&str) -> Option<OsString>) -> Vec<(String, Option<String>)> {
     PROBE_ENVIRONMENT_ALLOWLIST
         .iter()
         .map(|key| {
-            let value = env::var_os(key).map(|raw| raw.to_string_lossy().into_owned());
+            let value = read(key).map(|raw| display_line(&raw.to_string_lossy()));
             ((*key).to_string(), value)
         })
         .collect()
@@ -113,5 +122,26 @@ mod tests {
         for (key, _) in &collected {
             assert!(!key.is_empty());
         }
+    }
+
+    #[test]
+    fn allowlisted_values_are_one_display_line() {
+        let collected = allowlisted_values(|key| match key {
+            "PATH" => Some(OsString::from("C:\\bin\n\u{1b}[2J;\u{202e}x")),
+            "HOME" => Some(OsString::new()),
+            "LANG" => Some(OsString::from("zh_CN.UTF-8")),
+            _ => None,
+        });
+        let value = |wanted: &str| {
+            collected
+                .iter()
+                .find(|(key, _)| key == wanted)
+                .and_then(|(_, value)| value.as_deref())
+        };
+        assert_eq!(value("PATH"), Some("C:\\bin  [2J; x"));
+        assert_eq!(value("HOME"), Some(""));
+        assert_eq!(value("LANG"), Some("zh_CN.UTF-8"));
+        assert_eq!(value("TEMP"), None);
+        assert_eq!(collected.len(), PROBE_ENVIRONMENT_ALLOWLIST.len());
     }
 }
