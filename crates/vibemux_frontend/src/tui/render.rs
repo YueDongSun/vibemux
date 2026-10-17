@@ -17,9 +17,9 @@ use ratatui::{
 use crate::tui::theme::{
     Theme, health_style, muted_style, route_style, state_style, telemetry_style, title_style,
 };
-use crate::view_model::{AgentView, ViewModel};
+use crate::view_model::{AgentView, ViewModel, route_label, state_label};
 use vibemux_harness::dispatch::AdapterSupport;
-use vibemux_probe::{ProbeState, RouteKind};
+use vibemux_probe::ProbeState;
 
 /// Rows the stacked diagnostics block needs for its gateway, A2A, and
 /// telemetry lines between its (collapsed) top border and bottom border.
@@ -208,23 +208,6 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, areas[2]);
-}
-
-const fn state_label(state: ProbeState) -> &'static str {
-    match state {
-        ProbeState::Verified => "verified",
-        ProbeState::Failed => "failed",
-        ProbeState::Unavailable => "unavailable",
-        ProbeState::NotRun => "not_run",
-    }
-}
-
-const fn route_label(route: RouteKind) -> &'static str {
-    match route {
-        RouteKind::Direct => "direct",
-        RouteKind::LocalGateway => "local_gateway",
-        RouteKind::Unknown => "unknown",
-    }
 }
 
 /// Every harness named under the strongest thing this build's structured

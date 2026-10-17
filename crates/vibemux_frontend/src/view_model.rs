@@ -348,26 +348,30 @@ mod tests {
         // ViewModel has no native_tui_slots field (compile-time check).
     }
 
+    /// The TUI table, its copied snapshot, and the dashboard all print these
+    /// labels, so they are pinned exactly rather than by shape.
     #[test]
-    fn state_label_is_lowercase_ascii() {
-        for label in [
-            state_label(ProbeState::Verified),
-            state_label(ProbeState::Failed),
-            state_label(ProbeState::Unavailable),
-            state_label(ProbeState::NotRun),
-        ] {
-            assert!(label.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+    fn state_labels_are_pinned() {
+        let labels = [
+            (ProbeState::Verified, "verified"),
+            (ProbeState::Failed, "failed"),
+            (ProbeState::Unavailable, "unavailable"),
+            (ProbeState::NotRun, "not_run"),
+        ];
+        for (state, expected) in labels {
+            assert_eq!(state_label(state), expected);
         }
     }
 
     #[test]
-    fn route_label_is_lowercase_ascii() {
-        for label in [
-            route_label(RouteKind::Direct),
-            route_label(RouteKind::LocalGateway),
-            route_label(RouteKind::Unknown),
-        ] {
-            assert!(label.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+    fn route_labels_are_pinned() {
+        let labels = [
+            (RouteKind::Direct, "direct"),
+            (RouteKind::LocalGateway, "local_gateway"),
+            (RouteKind::Unknown, "unknown"),
+        ];
+        for (route, expected) in labels {
+            assert_eq!(route_label(route), expected);
         }
     }
 }

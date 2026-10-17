@@ -4769,3 +4769,20 @@ scratch directory outside the repository.
 - completing on `end_turn`.
 
 **Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Frontend probe labels have one source
+
+**Scope:** The `vibemux_frontend` view model, TUI table renderer, and read-only dashboard model. No behavior, output, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The view model's `state_label` and `route_label` are documented as the labels both UIs and the snapshot use. The TUI table renderer and the dashboard model each kept a private copy instead, so the TUI table and its copied snapshot printed the same words from two definitions. The dashboard's placeholder row for a harness with no observation spelled `not_run` and `unknown` as literals.
+- Both copies are removed. The renderer and the dashboard now call the view model's functions, and the placeholder row asks them for the not-run and unknown labels.
+- The view model's tests checked only that each label was lowercase ASCII. They now pin each label exactly, since operators read and copy them from all three views.
+- The GUI's title-case `Not run` style labels are display text, not these machine labels, and are unchanged.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_frontend --all-features` passed (131 unit with 1 pre-existing ignore, plus the integration suites) and `cargo +1.92.0 test -p vibemux_cli --all-features` passed (43 unit, 4 bootstrap process, 6 unified commands). Two mutation probes confirmed the views now share one source:
+- Renaming `not_run` in the view model failed the pinned label test, three dashboard tests, and three TUI render tests, including the golden snapshots.
+- Renaming `local_gateway` failed the pinned label test and three TUI render tests.
+
+**Remaining:** The probe crate's snapshot formatter keeps its own inline state mapping in another crate, and is out of scope here. The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

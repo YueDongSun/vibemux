@@ -1,6 +1,8 @@
 use vibemux_harness::dispatch::{AdapterCapability, adapter_capability};
 use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
 
+use crate::view_model::{route_label, state_label};
+
 const MAX_DISPLAY_CHARACTERS: usize = 160;
 
 pub fn safe_text(value: &str) -> String {
@@ -72,11 +74,11 @@ impl DashboardModel {
                     },
                     None => AgentView {
                         name: agent.display_name().to_string(),
-                        launcher_state: "not_run".to_string(),
-                        authentication_state: "not_run".to_string(),
-                        inference_state: "not_run".to_string(),
+                        launcher_state: state_label(ProbeState::NotRun).to_string(),
+                        authentication_state: state_label(ProbeState::NotRun).to_string(),
+                        inference_state: state_label(ProbeState::NotRun).to_string(),
                         version: "-".to_string(),
-                        route: "unknown".to_string(),
+                        route: route_label(RouteKind::Unknown).to_string(),
                         code: "observation_missing".to_string(),
                         adapter: adapter_capability(agent),
                     },
@@ -182,23 +184,6 @@ impl DashboardModel {
             )
         }));
         lines.join("\n")
-    }
-}
-
-const fn state_label(state: ProbeState) -> &'static str {
-    match state {
-        ProbeState::Verified => "verified",
-        ProbeState::Failed => "failed",
-        ProbeState::Unavailable => "unavailable",
-        ProbeState::NotRun => "not_run",
-    }
-}
-
-const fn route_label(route: RouteKind) -> &'static str {
-    match route {
-        RouteKind::Direct => "direct",
-        RouteKind::LocalGateway => "local_gateway",
-        RouteKind::Unknown => "unknown",
     }
 }
 
