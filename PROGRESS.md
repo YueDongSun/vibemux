@@ -4786,3 +4786,16 @@ scratch directory outside the repository.
 - Renaming `local_gateway` failed the pinned label test and three TUI render tests.
 
 **Remaining:** The probe crate's snapshot formatter keeps its own inline state mapping in another crate, and is out of scope here. The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - One wire name for each probe state
+
+**Scope:** `vibemux_harness` agent vocabulary, the `vibemux_probe` snapshot, and the frontend view model. No wire, store, or protocol change.
+
+**Implemented:**
+
+- `ProbeState::as_str` returns the name serde writes for each state. The existing wire-name test now checks it against the JSON encoding of every variant.
+- The probe snapshot's `reported_<state>` fallback code and the frontend's `state_label`, which the TUI, its copied snapshot, and the dashboard use, now take the name from `as_str` instead of keeping their own copies of the mapping.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_probe -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_probe -p vibemux_frontend --all-features` passed: harness 86 unit, frontend 131 unit with 1 pre-existing ignore, and the probe suites. A mutation that renamed `not_run` in `as_str` failed the harness wire-name test, the frontend label test, and the TUI and dashboard render tests; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet. New open question: the TUI diagnostics pane and its copied snapshot print allowlisted environment values such as `PATH` and `USERPROFILE`, while the GUI shows only whether each is set.

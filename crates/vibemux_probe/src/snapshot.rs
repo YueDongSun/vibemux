@@ -191,15 +191,7 @@ fn public_code(code: &str, state: ProbeState) -> String {
     if CODES.contains(&code) {
         code.to_string()
     } else {
-        format!(
-            "reported_{}",
-            match state {
-                ProbeState::Verified => "verified",
-                ProbeState::Failed => "failed",
-                ProbeState::Unavailable => "unavailable",
-                ProbeState::NotRun => "not_run",
-            }
-        )
+        format!("reported_{}", state.as_str())
     }
 }
 

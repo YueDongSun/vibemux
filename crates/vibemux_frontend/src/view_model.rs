@@ -225,16 +225,11 @@ const fn civil_from_days(days_since_1970: i64) -> (i64, u32, u32) {
     (y, m as u32, d as u32)
 }
 
-/// Stable, lowercase ASCII label for a probe state. Used by both UIs
-/// and by the snapshot formatter.
+/// Stable, lowercase ASCII label for a probe state: the probe JSON's wire
+/// name. Used by both UIs and by the snapshot formatter.
 #[must_use]
 pub const fn state_label(state: ProbeState) -> &'static str {
-    match state {
-        ProbeState::Verified => "verified",
-        ProbeState::Failed => "failed",
-        ProbeState::Unavailable => "unavailable",
-        ProbeState::NotRun => "not_run",
-    }
+    state.as_str()
 }
 
 /// Stable, lowercase ASCII label for a route kind. Used by both UIs

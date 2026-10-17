@@ -97,6 +97,19 @@ pub enum ProbeState {
     NotRun,
 }
 
+impl ProbeState {
+    /// The wire name serde writes for this state. Text views and derived
+    /// codes use it so they never drift from the JSON vocabulary.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+            Self::NotRun => "not_run",
+        }
+    }
+}
+
 /// How a harness launcher is executed on this machine: a direct executable,
 /// a PowerShell companion wrapper around a Windows script shim, or nothing
 /// resolvable at all.
@@ -140,6 +153,7 @@ mod tests {
         assert_eq!(encoded, r#"["verified","failed","unavailable","not_run"]"#);
         for state in states {
             let name = serde_json::to_string(&state).expect("encode state");
+            assert_eq!(name, format!("\"{}\"", state.as_str()));
             assert_eq!(
                 serde_json::from_str::<ProbeState>(&name).expect("decode state"),
                 state
