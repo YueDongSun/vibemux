@@ -672,6 +672,120 @@ async fn plugin_success_contradicting_failed_vendor_terminal_is_rejected() {
     .await;
 }
 
+/// `enabled` and `allow_execution` are the operator's only authorization, and
+/// both the dispatcher and the plugin enforce them before anything starts.
+/// Every route names a missing executable and working directory, so a request
+/// that slipped past a gate would fail later with a different code; the
+/// control rows show that an admitted probe does reach that later step.
+#[tokio::test]
+async fn route_gates_refuse_before_any_plugin_or_vendor_process_starts() {
+    bounded(async {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let route = |harness: Harness, enabled: bool, allow_execution: bool| Route {
+            harness,
+            protocol: protocol(harness),
+            executable: missing.join("vendor.exe"),
+            arguments: vec![],
+            working_directory: missing.clone(),
+            environment_names: vec![],
+            enabled,
+            allow_execution,
+            model: None,
+        };
+        let config = Config {
+            schema_version: SCHEMA_VERSION,
+            limits: Limits::default(),
+            harnesses: vec![
+                route(Harness::Codex, true, false),
+                route(Harness::Claude, false, true),
+            ],
+        };
+        let config_path = directory.path().join("gate_config.json");
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let dispatcher = Dispatcher::new(
+            &config_path,
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
+        )
+        .unwrap();
+        let (_sender, cancellation) = watch::channel(false);
+        let refused = |error: vibemux_harness_native::Error| error.code();
+        let execute = |harness| dispatcher.execute(request(harness), cancellation.clone());
+        assert_eq!(
+            execute(Harness::Codex).await.map_err(refused).err(),
+            Some("harness_execution_disabled")
+        );
+        for outcome in [
+            execute(Harness::Claude).await,
+            dispatcher.probe(Harness::Claude).await,
+            // No route is configured for Grok at all.
+            dispatcher.probe(Harness::Grok).await,
+        ] {
+            assert_eq!(
+                outcome.map_err(refused).err(),
+                Some("harness_route_unavailable")
+            );
+        }
+        // Control: a probe needs no execution grant, so it passes both gates.
+        assert_eq!(
+            dispatcher
+                .probe(Harness::Codex)
+                .await
+                .map_err(refused)
+                .err(),
+            Some("harness_invalid_cwd")
+        );
+
+        // The plugin re-checks the route it was handed, including a route
+        // that belongs to another harness.
+        for (route, harness, probe, expected) in [
+            (
+                route(Harness::Codex, true, false),
+                Harness::Codex,
+                false,
+                "harness_execution_disabled",
+            ),
+            (
+                route(Harness::Claude, false, true),
+                Harness::Claude,
+                false,
+                "harness_route_unavailable",
+            ),
+            (
+                route(Harness::Claude, false, true),
+                Harness::Claude,
+                true,
+                "harness_route_unavailable",
+            ),
+            (
+                route(Harness::Codex, true, true),
+                Harness::Claude,
+                true,
+                "harness_route_unavailable",
+            ),
+            (
+                route(Harness::Codex, true, false),
+                Harness::Codex,
+                true,
+                "harness_invalid_cwd",
+            ),
+        ] {
+            let (records, _receiver) = mpsc::channel(1);
+            let result = native::run(
+                route,
+                Limits::default(),
+                request(harness),
+                probe,
+                records,
+                cancellation.clone(),
+            )
+            .await;
+            assert_eq!(result.map_err(refused).err(), Some(expected));
+        }
+    })
+    .await;
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_timeout_terminates_the_owned_descendant_process() {

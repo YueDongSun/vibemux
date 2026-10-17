@@ -4296,3 +4296,25 @@ scratch directory outside the repository.
 
 **Remaining**
 - No end-to-end `vibemuxctl harness probe` run against the fixture plugin. The plugin binary belongs to another crate, so `vibemux_cli` tests cannot locate it through `CARGO_BIN_EXE_*`.
+
+### 2026-10-17 - Test the native route gates before any process starts
+
+**Scope**
+- Test only. `enabled` and `allow_execution` are the operator's only authorization for the ADR 040 native path. Both layers enforce them: `Dispatcher::run` in the CLI process and `native::run` in the plugin. No test exercised either `harness_route_unavailable` or `harness_execution_disabled`.
+
+**Implemented**
+- New test `route_gates_refuse_before_any_plugin_or_vendor_process_starts` in `crates/vibemux_harness_native/tests/process_dispatch.rs`. Every route names a missing executable and working directory, so a request that slipped past a gate would fail later with `harness_invalid_cwd` instead.
+- Dispatcher cases:
+  - Execute on an enabled route without `allow_execution` gives `harness_execution_disabled`.
+  - Execute or probe on a disabled route, and a probe of a harness with no route, give `harness_route_unavailable`.
+- Plugin cases, through `native::run`, give the same codes. One extra case: a route handed in for another harness gives `harness_route_unavailable`.
+- Control rows: a probe of an enabled route without `allow_execution` passes both gates and reaches `harness_invalid_cwd`.
+- No product code changed.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_harness_native --all-features`: lib 9, normalization 18, and process_dispatch 20 passed.
+- Mutation checks, each restored afterwards. Disabling the `allow_execution` check in `dispatch.rs` failed the test with `harness_invalid_cwd` instead of `harness_execution_disabled`. Disabling the check in `native.rs` did the same.
+- `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Whether native ACP routes should execute at all is still the open policy decision. This test covers the existing gates only.
