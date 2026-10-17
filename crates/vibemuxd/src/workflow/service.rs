@@ -1266,7 +1266,7 @@ impl WorkflowService {
         }
     }
 
-    /// Stops every coordinator, waiting up to [`SHUTDOWN_GRACE`] for them
+    /// Stops every coordinator, waiting up to `SHUTDOWN_GRACE` for them
     /// to reach a turn boundary; the rest are aborted. A workflow left
     /// running is blocked at the next start. Runs before the dispatch
     /// service shuts down.

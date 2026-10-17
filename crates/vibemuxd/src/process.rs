@@ -405,7 +405,7 @@ impl DaemonPaths {
     /// protected control root and the ACL marker. Both must exist. The
     /// CLI's post-mortem verifies only these when the per-project leaf is
     /// absent, because a clean shutdown releases the empty leaf
-    /// ([`Self::release_runtime_dir`]) and a missing directory is not a
+    /// (`release_runtime_dir`) and a missing directory is not a
     /// loosened ACL.
     #[cfg(windows)]
     pub fn verify_control_root_acls(&self) -> Result<(), DaemonPathError> {

@@ -4838,3 +4838,15 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness --all-features capability` passed: 6 tests. With `RUSTDOCFLAGS="-D warnings"`, `cargo doc -p vibemux_harness --no-deps` failed before this change on the private link and passed after it. CI does not build rustdoc. The generated `target/doc` output was removed.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
+
+### 2026-10-18 - Workspace rustdoc builds with warnings denied
+
+**Scope:** documentation comments in `vibemuxd` and `vibemux_platform`. No code, wire, store, or protocol change.
+
+**Implemented:**
+
+- Six public doc comments linked to private items: `WORKFLOW_EVALUATION_DEADLINE`, `SHUTDOWN_JOIN_MARGIN`, `release_runtime_dir`, and `SHUTDOWN_GRACE` in `vibemuxd`, and the `windows_acl_native` and `windows_security` modules in the `vibemux_platform` crate docs. Each link is now a plain code span. The wording is unchanged.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo doc --workspace --exclude vibemux_web --no-deps --all-features` reported these six warnings and no others. After the change, the same command with `RUSTDOCFLAGS="-D warnings"` passed. `cargo fmt --all -- --check` passed, and `cargo clippy -p vibemuxd -p vibemux_platform --all-targets --all-features -- -D warnings` passed. The generated `target/doc` output was removed. CI still has no rustdoc step, so nothing stops a new broken link.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI. Whether CI should build rustdoc with warnings denied is also open.

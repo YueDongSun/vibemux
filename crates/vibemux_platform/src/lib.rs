@@ -2,11 +2,11 @@
 //! Reviewed platform boundaries that remain independent from domain and storage types.
 //!
 //! `unsafe` is denied at this crate root and allowed in exactly two narrow
-//! modules: [`windows_acl_native`], the read-only Win32 ACL verification
+//! modules: `windows_acl_native`, the read-only Win32 ACL verification
 //! surface reviewed and recorded by ADR 025 (amending ADR 020's read path),
 //! and `process_tree::windows_job_object`, the Job Object containment
 //! surface recorded by ADR 029. ACL writes stay on the fixed, reviewed
-//! PowerShell companion in [`windows_security`]; POSIX process-tree
+//! PowerShell companion in `windows_security`; POSIX process-tree
 //! containment is safe code. Every other workspace crate keeps
 //! `#![forbid(unsafe_code)]`.
 
