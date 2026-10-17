@@ -4082,3 +4082,25 @@ scratch directory outside the repository.
 
 **Remaining**
 - Approval method names are pinned only to the ones the engine knows. A vendor that renames its approval request would get `-32601` rather than a decline. That is still a refusal, but its effect on the vendor turn was not verified against a live CLI.
+
+### 2026-10-17 - Show what each native harness route can do in the catalog text
+
+**Scope**
+- CLI text rendering only. `vibemuxctl --format text harness catalog` previously listed each route's `enabled` and `allow_execution` settings, but not whether this build can probe or execute that route's protocol. The JSON catalog contract is unchanged.
+
+**Implemented**
+- `vibemux_cli` `output::route_actions` derives an `Actions` column from fields the catalog already returns:
+  - `disabled` when the route is not enabled, because route lookup skips it.
+  - `probe` when the shared engine has an initialize-only handshake for the protocol (`structured_probe`).
+  - `execute` only when the route has a shared-engine session (`native_execution`) and the operator set `allow_execution`.
+  - `none` for an enabled route that offers neither, such as a direct replay protocol, or a `codex` route without `allow_execution`.
+- A footer states that the column combines route settings with this build's protocol engine and that a probe sends no prompt. The text keeps the "configuration only, not a live readiness check" header.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features`: lib 41 passed (including `output::tests::harness_catalog_text_states_what_each_route_can_do`), `bootstrap_process` 4 passed, `unified_commands` 5 passed.
+- `unified_commands::harness_catalog_stays_metadata_only_through_unified_entrypoint` now also renders the example configuration as text. It checks that every disabled route shows `disabled`, that no row offers `execute`, and that no `native_bin` path appears.
+- `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The column reports configuration and build capability only. It does not check that the vendor CLI is installed, and it does not run a probe.
+- ACP routes still show `execute` under the native CLI when `allow_execution` is set. Whether native ACP execution should follow the daemon's probe-only policy is still an open decision.

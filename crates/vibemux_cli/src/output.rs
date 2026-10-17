@@ -221,21 +221,47 @@ fn adapter_support(agent: &Value) -> &'static str {
         .map_or("unknown", |kind| adapter_capability(kind).support.as_str())
 }
 
+/// What `vibemuxctl harness` would do with one catalog route: only enabled
+/// routes are looked up, a probe needs an initialize-only handshake, and
+/// execution needs both an engine session and the operator's
+/// `allow_execution`. Still a configuration fact, not a readiness check.
+fn route_actions(route: &Value) -> &'static str {
+    if route["enabled"] != true {
+        return "disabled";
+    }
+    let probe = route["structured_probe"] == true;
+    let execute = route["native_execution"] == true && route["allow_execution"] == true;
+    match (execute, probe) {
+        (true, true) => "execute,probe",
+        (true, false) => "execute",
+        (false, true) => "probe",
+        (false, false) => "none",
+    }
+}
+
 fn harness_text(value: &Value) -> String {
     if value["harnesses"].is_array() {
         let mut lines = vec![
             "Harness routes | configuration only, not a live readiness check".to_string(),
-            "  Harness     Protocol               Enabled  Execution".to_string(),
+            format!(
+                "  {:<11} {:<22} {:<8} {:<10} Actions",
+                "Harness", "Protocol", "Enabled", "Execution"
+            ),
         ];
         for route in rows(value, "harnesses").iter().take(MAX_TEXT_ROWS) {
             lines.push(format!(
-                "  {:<11} {:<22} {:<8} {}",
+                "  {:<11} {:<22} {:<8} {:<10} {}",
                 field(route, "harness"),
                 field(route, "protocol"),
                 field(route, "enabled"),
-                field(route, "allow_execution")
+                field(route, "allow_execution"),
+                route_actions(route)
             ));
         }
+        lines.push(
+            "Actions combine each route's settings with this build's protocol engine; a probe sends no prompt."
+                .to_string(),
+        );
         lines.push(
             "Native execution requires explicit local configuration and authorization.".to_string(),
         );
@@ -323,5 +349,34 @@ mod tests {
         assert_eq!(adapter("grok").as_deref(), Some("probe_only"));
         assert_eq!(adapter("kimi").as_deref(), Some("terminal_only"));
         assert_eq!(adapter("future_vendor").as_deref(), Some("unknown"));
+    }
+    #[test]
+    fn harness_catalog_text_states_what_each_route_can_do() {
+        let route = |harness: &str, protocol: &str, enabled, allow, probe, native| {
+            json!({"harness": harness, "protocol": protocol, "enabled": enabled,
+                "allow_execution": allow, "structured_probe": probe,
+                "native_execution": native})
+        };
+        let text = harness_text(&json!({"schema_version": 1, "harnesses": [
+            route("claude", "claude", true, true, true, true),
+            route("codex", "codex", true, true, false, true),
+            route("grok", "acp", true, false, true, true),
+            route("copilot", "acp", false, true, true, true),
+            route("opencode", "opencode", true, true, false, false),
+        ]}));
+        let actions = |harness: &str| {
+            text.lines()
+                .find(|line| line.trim_start().starts_with(harness))
+                .and_then(|line| line.split_whitespace().last())
+                .map(str::to_string)
+        };
+        assert_eq!(actions("claude").as_deref(), Some("execute,probe"));
+        assert_eq!(actions("codex").as_deref(), Some("execute"));
+        assert_eq!(actions("grok").as_deref(), Some("probe"));
+        assert_eq!(actions("copilot").as_deref(), Some("disabled"));
+        assert_eq!(actions("opencode").as_deref(), Some("none"));
+        let header = text.lines().nth(1).unwrap();
+        let claude = text.lines().nth(2).unwrap();
+        assert_eq!(header.find("Actions"), claude.find("execute,probe"));
     }
 }

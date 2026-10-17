@@ -233,5 +233,34 @@ fn harness_catalog_stays_metadata_only_through_unified_entrypoint() {
             .all(|route| route["allow_execution"] == false)
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("native_bin"));
+    let disabled = report["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|route| route["enabled"] != true)
+        .count();
+    let text = run(
+        directory.path(),
+        &[
+            "--format",
+            "text",
+            "harness",
+            "catalog",
+            "--config",
+            config.to_str().unwrap(),
+        ],
+    );
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("Actions"));
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.ends_with(" disabled"))
+            .count(),
+        disabled
+    );
+    // No example route grants execution, so no row may offer it.
+    assert!(!text.contains("execute"));
+    assert!(!text.contains("native_bin"));
     assert!(!directory.path().join(".vibemux").exists());
 }
