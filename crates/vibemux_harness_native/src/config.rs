@@ -18,6 +18,10 @@ use crate::{
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_ROUTES: usize = 16;
 pub const MAX_ENVIRONMENT_NAMES: usize = 24;
+pub const MAX_ENVIRONMENT_NAME_BYTES: usize = 128;
+pub const MAX_ARGUMENTS: usize = 24;
+pub const MAX_ARGUMENT_BYTES: usize = 4096;
+pub const MAX_TOTAL_ARGUMENT_BYTES: usize = 12 * 1024;
 pub const DEFAULT_FRAME_BYTES: usize = 128 * 1024;
 pub const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 /// Approval, sandbox, sharing, and debug-log flags an operator prefix may not
@@ -180,12 +184,12 @@ impl Config {
                 || !route.protocol.accepts(route.harness)
                 || route.executable.as_os_str().is_empty()
                 || route.working_directory.as_os_str().is_empty()
-                || route.arguments.len() > 24
-                || route
-                    .arguments
-                    .iter()
-                    .any(|argument| argument.len() > 4096 || argument.contains('\0'))
-                || route.arguments.iter().map(String::len).sum::<usize>() > 12 * 1024
+                || route.arguments.len() > MAX_ARGUMENTS
+                || route.arguments.iter().any(|argument| {
+                    argument.len() > MAX_ARGUMENT_BYTES || argument.contains('\0')
+                })
+                || route.arguments.iter().map(String::len).sum::<usize>()
+                    > MAX_TOTAL_ARGUMENT_BYTES
                 || route.environment_names.len() > MAX_ENVIRONMENT_NAMES
                 // The model follows `--model` in argv, so a leading dash could
                 // be read as a flag; the daemon's route label check refuses it too.
@@ -201,7 +205,7 @@ impl Config {
             let mut names = BTreeSet::new();
             for name in &route.environment_names {
                 if name.is_empty()
-                    || name.len() > 128
+                    || name.len() > MAX_ENVIRONMENT_NAME_BYTES
                     || !name.bytes().all(|byte| {
                         byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
                     })
@@ -254,8 +258,14 @@ impl Config {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Config, Limits, MAX_ENVIRONMENT_NAMES, MAX_MODEL_BYTES, Route, UNSAFE_ARGUMENTS};
+    use super::{
+        Config, Limits, MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, MAX_ENVIRONMENT_NAME_BYTES,
+        MAX_ENVIRONMENT_NAMES, MAX_MODEL_BYTES, MAX_ROUTES, MAX_TOTAL_ARGUMENT_BYTES, Route,
+        UNSAFE_ARGUMENTS,
+    };
     use crate::contract::{Harness, Protocol, SCHEMA_VERSION};
+
+    type RouteEdit = fn(&mut Route);
 
     fn config(edit: impl FnOnce(&mut Route)) -> Config {
         let mut route = Route {
@@ -281,6 +291,74 @@ mod tests {
         config
             .validate()
             .map_or_else(|error| error.code(), |()| "ok")
+    }
+
+    #[test]
+    fn config_shapes_outside_the_bounds_are_refused() {
+        let mut other_schema = config(|_| {});
+        other_schema.schema_version = SCHEMA_VERSION + 1;
+        assert_eq!(outcome(&other_schema), "harness_invalid_config");
+        let mut no_routes = config(|_| {});
+        no_routes.harnesses.clear();
+        assert_eq!(outcome(&no_routes), "harness_invalid_config");
+        let mut too_many_routes = config(|_| {});
+        too_many_routes.harnesses = vec![too_many_routes.harnesses[0].clone(); MAX_ROUTES + 1];
+        assert_eq!(outcome(&too_many_routes), "harness_invalid_config");
+        let mut no_timeout = config(|_| {});
+        no_timeout.limits.timeout_ms = 0;
+        assert_eq!(outcome(&no_timeout), "harness_invalid_limits");
+        // One route per harness: a second Codex route is refused even
+        // though each route is valid alone.
+        let mut duplicate = config(|_| {});
+        duplicate.harnesses.push(duplicate.harnesses[0].clone());
+        assert_eq!(outcome(&duplicate), "harness_invalid_route");
+        let mut distinct = config(|_| {});
+        distinct.harnesses.push(Route {
+            harness: Harness::Claude,
+            protocol: Protocol::Claude,
+            ..distinct.harnesses[0].clone()
+        });
+        assert_eq!(outcome(&distinct), "ok");
+    }
+
+    #[test]
+    fn route_shapes_outside_the_bounds_are_refused() {
+        let per_argument = MAX_TOTAL_ARGUMENT_BYTES / MAX_ARGUMENTS;
+        let at_bounds = config(|route| {
+            route.arguments = vec!["a".repeat(per_argument); MAX_ARGUMENTS];
+        });
+        assert_eq!(outcome(&at_bounds), "ok");
+        let longest = config(|route| route.arguments = vec!["a".repeat(MAX_ARGUMENT_BYTES)]);
+        assert_eq!(outcome(&longest), "ok");
+        let refusals: [(&str, RouteEdit); 8] = [
+            ("protocol of another harness", |route| {
+                route.protocol = Protocol::Claude
+            }),
+            ("ACP for Codex", |route| route.protocol = Protocol::Acp),
+            ("empty executable", |route| {
+                route.executable = PathBuf::new()
+            }),
+            ("empty working directory", |route| {
+                route.working_directory = PathBuf::new()
+            }),
+            ("too many arguments", |route| {
+                route.arguments = vec!["a".to_string(); MAX_ARGUMENTS + 1]
+            }),
+            ("argument too long", |route| {
+                route.arguments = vec!["a".repeat(MAX_ARGUMENT_BYTES + 1)]
+            }),
+            ("argument with NUL", |route| {
+                route.arguments = vec!["a\0".to_string()]
+            }),
+            ("arguments too long together", |route| {
+                let full = MAX_TOTAL_ARGUMENT_BYTES / MAX_ARGUMENT_BYTES;
+                route.arguments = vec!["a".repeat(MAX_ARGUMENT_BYTES); full];
+                route.arguments.push("a".to_string());
+            }),
+        ];
+        for (label, edit) in refusals {
+            assert_eq!(outcome(&config(edit)), "harness_invalid_route", "{label}");
+        }
     }
 
     #[test]
@@ -339,7 +417,7 @@ mod tests {
             route.environment_names = vec![
                 "OPENAI_API_KEY".to_string(),
                 "HTTPS_PROXY".to_string(),
-                "X".repeat(128),
+                "X".repeat(MAX_ENVIRONMENT_NAME_BYTES),
             ];
         });
         assert_eq!(outcome(&accepted), "ok");
@@ -349,7 +427,7 @@ mod tests {
             vec!["Path".to_string()],
             vec!["MY-NAME".to_string()],
             vec!["NAME=VALUE".to_string()],
-            vec!["X".repeat(129)],
+            vec!["X".repeat(MAX_ENVIRONMENT_NAME_BYTES + 1)],
             vec!["TOKEN".to_string(), "TOKEN".to_string()],
             // The plugin's session identifier never comes from a route.
             vec!["VIBEMUX_PLUGIN_SESSION_ID".to_string()],

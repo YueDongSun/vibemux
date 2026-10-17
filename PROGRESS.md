@@ -4546,3 +4546,17 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (17 unit, 18 normalization, 21 process dispatch). Two mutations each failed the new test: removing the leading-dash check and loosening the bound by one byte.
 
 **Remaining:** Whether native should adopt the daemon's full model alphabet is an owner decision, because it would refuse names the native path accepts today. Native environment names may still start with a digit, which the daemon refuses; that difference is harmless and unchanged.
+
+### 2026-10-18 - Native configuration and route-shape refusals are pinned
+
+**Scope:** `vibemux_harness_native` configuration validation tests. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- Apart from the checks pinned earlier today, no test exercised the native configuration's shape refusals: a wrong schema version, no routes, or more than `MAX_ROUTES` (`harness_invalid_config`); invalid limits (`harness_invalid_limits`); and, per route, a duplicate harness, a protocol that does not accept the harness, an empty executable or working directory, or arguments over the count, per-argument, or total byte bound, or containing NUL (`harness_invalid_route`).
+- The inline bounds are now named constants beside the other configuration bounds, with unchanged values: `MAX_ARGUMENTS` (24), `MAX_ARGUMENT_BYTES` (4096), `MAX_TOTAL_ARGUMENT_BYTES` (12 KiB), and `MAX_ENVIRONMENT_NAME_BYTES` (128).
+- Two unit tests refuse each shape with its code and accept the bounds themselves: 24 arguments totalling exactly 12 KiB, one 4096-byte argument, and a second route for another harness.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (19 unit, 18 normalization, 21 process dispatch). Five mutations each failed a new test: loosening the total argument bound by one byte, dropping the protocol-accepts check, disabling the duplicate-harness check, dropping the route cap, and refusing an argument of exactly 4096 bytes.
+
+**Remaining:** The file-level load refusals (a missing file, a file over `MAX_CONFIG_BYTES`, and malformed JSON or an unknown field) still have no test. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
