@@ -20,7 +20,7 @@
 |---|---|---|
 | Codex | `codex_exec`, `codex_app_server` | `execute` |
 | Claude | `claude_stream_json` | `execute` |
-| DSH | `dsh_sdk_jsonrpc` | `execute` |
+| DSH | `dsh_sdk_json_rpc` | `execute` |
 | OpenCode, Copilot, Grok | `acp` | `probe_only` |
 | Qwen, iFlow, TRAE, CodeBuddy, Kimi | none | `terminal_only` |
 

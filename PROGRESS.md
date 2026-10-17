@@ -4175,3 +4175,23 @@ scratch directory outside the repository.
 **Remaining**
 - On the Harnesses page at 80 columns, the table now shows the adapter instead of the route. The route stays in the selected-harness pane.
 - The overview's stacked agent table is 8 rows high, so at 24 rows only the first five harnesses are visible without scrolling. This is unchanged.
+
+### 2026-10-17 - Pin the documented harness capability table to the code
+
+**Scope**
+- Test plus a one-cell documentation fix. The capability table that `c8512ce` added to `docs/protocol_boundaries.md` had no test, and it already had one error: DSH's protocol id was written as `dsh_sdk_jsonrpc`, but the code uses `dsh_sdk_json_rpc`.
+
+**Implemented**
+- `vibemux_harness` `dispatch::capability::tests::protocol_boundaries_document_every_harness_capability` parses the "Harness adapter capability" table. It requires every `AgentKind` display name exactly once, and the total count rules out stale or extra names. Each harness's row must list exactly the protocols and support that `adapter_capability` derives.
+- `docs/protocol_boundaries.md`: the DSH row now names `dsh_sdk_json_rpc`.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- Before the documentation fix, the new test failed with ``DSH protocols: left "`dsh_sdk_jsonrpc`", right "`dsh_sdk_json_rpc`"``. After the fix it passes.
+- Mutation checks, each restored afterwards:
+  - Documenting ACP as `execute` failed with `OpenCode support`.
+  - Adding an unknown harness to a row failed with `stale or extra harness`.
+- `cargo test -p vibemux_harness --all-features`: lib 86 passed and every integration target passed. `cargo test -p vibemux_harness_native --all-features --lib protocol_boundaries`: 1 passed.
+- `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The prose around both tables is still unchecked.

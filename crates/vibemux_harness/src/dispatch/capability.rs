@@ -186,4 +186,50 @@ mod tests {
             "terminal_only"
         );
     }
+
+    /// The operator documentation's capability table names every harness
+    /// once, with the protocols and support derived here, so a new harness
+    /// or protocol fails this test until the documentation follows.
+    #[test]
+    fn protocol_boundaries_document_every_harness_capability() {
+        let documentation = include_str!("../../../../docs/protocol_boundaries.md");
+        let section = documentation
+            .split("## Harness adapter capability")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("capability section");
+        let rows: Vec<Vec<&str>> = section
+            .lines()
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| Harness |"))
+            .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+            .collect();
+        let documented = rows
+            .iter()
+            .map(|cells| cells[0].split(", ").count())
+            .sum::<usize>();
+        assert_eq!(documented, AgentKind::all().len(), "stale or extra harness");
+        for capability in adapter_capabilities() {
+            let name = capability.harness.display_name();
+            let row = rows
+                .iter()
+                .find(|cells| cells[0].split(", ").any(|entry| entry == name))
+                .unwrap_or_else(|| panic!("{name} is not documented"));
+            let protocols = if capability.protocols.is_empty() {
+                "none".to_string()
+            } else {
+                capability
+                    .protocols
+                    .iter()
+                    .map(|protocol| format!("`{}`", protocol.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            assert_eq!(row[1], protocols, "{name} protocols");
+            assert_eq!(
+                row[2],
+                format!("`{}`", capability.support.as_str()),
+                "{name} support"
+            );
+        }
+    }
 }
