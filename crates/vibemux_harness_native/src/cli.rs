@@ -2,7 +2,7 @@
 use crate::{
     Error,
     config::{Config, Limits, MAX_CAPTURE_BYTES},
-    contract::{Harness, MAX_PROMPT_BYTES, Protocol, Request, Status},
+    contract::{Harness, MAX_REQUEST_BYTES, Protocol, Request, Status},
     dispatch::Dispatcher,
     json_lines,
 };
@@ -165,7 +165,7 @@ pub async fn run(command: Command) -> Result<Reply, Error> {
             plugin,
         } => {
             let (dispatcher, request) = blocking(move || {
-                let bytes = read_bounded(&request_path, MAX_PROMPT_BYTES * 6 + 4096)?;
+                let bytes = read_bounded(&request_path, MAX_REQUEST_BYTES)?;
                 let request: Request = serde_json::from_slice(&bytes)
                     .map_err(|source| Error::with_source("harness_invalid_request", source))?;
                 request.validate()?;
@@ -226,6 +226,7 @@ fn usage() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::MAX_PROMPT_BYTES;
     #[test]
     fn parser_preserves_paths_without_exposing_them_in_debug() {
         let command = parse_arguments(
@@ -439,10 +440,7 @@ mod tests {
                 "harness_invalid_request",
             ),
             (request(" ", uuid::Uuid::new_v4()), "harness_invalid_prompt"),
-            (
-                vec![b' '; MAX_PROMPT_BYTES * 6 + 4097],
-                "harness_input_too_large",
-            ),
+            (vec![b' '; MAX_REQUEST_BYTES + 1], "harness_input_too_large"),
             // Only a valid request reaches the missing configuration.
             (escaped_request, "harness_config_unavailable"),
         ];

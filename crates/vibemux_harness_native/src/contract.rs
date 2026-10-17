@@ -16,6 +16,10 @@ pub const EXECUTE_METHOD: &str = "harness:execute";
 pub const PROBE_METHOD: &str = "harness:probe";
 pub const RECORD_EVENT: &str = "harness:record";
 pub const MAX_PROMPT_BYTES: usize = 128 * 1024;
+/// The largest request JSON a request file or plugin payload may hold: a
+/// maximum prompt with every byte written as a six-byte `\u00XX` escape,
+/// plus room for the other fields.
+pub const MAX_REQUEST_BYTES: usize = MAX_PROMPT_BYTES * 6 + 4096;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]

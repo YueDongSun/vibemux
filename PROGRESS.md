@@ -4680,3 +4680,21 @@ scratch directory outside the repository.
 - rewording the guide.
 
 **Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native plugin request admission is a pure, tested function
+
+**Scope:** `vibemux_harness_native` plugin request admission, the shared request size bound, and their tests. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The plugin's request checks sat inline in its stdio loop and had no test. They guard against a misbehaving core: a second request in one session, an ungranted or unknown method, under 100 ms left before the deadline, an oversized payload, and a payload whose UUID, correlation, or harness does not match. The dispatcher always sends well-formed requests, so the process tests never reach these checks. The response mapping from completion to wire status was untested too.
+- The checks moved unchanged into a pure `admit` function, which the loop now calls. The dispatcher's error code allowlist test still scans that block.
+- The request bound `MAX_PROMPT_BYTES * 6 + 4096` was written out separately in the CLI and the plugin. It is now one documented `MAX_REQUEST_BYTES` constant in the contract.
+- Three unit tests cover the new structure:
+  - **Admission.** An execute request and a blank-prompt probe are admitted; an execute request with a blank prompt is refused. Fourteen edits each yield their fixed code, and the refusal order holds when two checks fail together. A probe still refuses a wrong schema version or a nil UUID, because it skips `Request::validate`. Exactly 100 ms left and a payload of exactly `MAX_REQUEST_BYTES` are admitted.
+  - **Completion mapping.** Completed and probed answer `Ok`, cancelled answers `Cancelled`, and failed or unverified answer `Error`. A failure without a code gets `harness_vendor_failed`, and the payload is the unchanged completion.
+  - **Frame fit.** The largest admitted request fits the default plugin frame that the dispatcher's plugin policy uses.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 32 unit, 18 normalization, 21 process dispatch through the real plugin binary; CLI 43 unit, 4 bootstrap process, 6 unified commands). Twelve mutations each failed a new test. They weakened, in turn, the used-session, method, deadline, size, schema, nil UUID, correlation, harness, and probe-only prompt checks; mapped unverified to cancelled; dropped the failure code fallback; and raised the shared bound past the plugin frame.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
