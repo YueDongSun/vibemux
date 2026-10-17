@@ -4225,3 +4225,23 @@ scratch directory outside the repository.
 
 **Remaining**
 - The guide's "Current Live Boundary" section is the 2026-08-27 record and was not re-validated. No live probe was run.
+
+### 2026-10-17 - Correct the architecture overview's harness statements
+
+**Scope**
+- Documentation only. `docs/architecture.md` had three statements that no longer matched the code:
+  - The overview said ACP execution was unimplemented. The ADR 040 native dispatcher can already run an ACP turn on a route that sets `allow_execution`.
+  - The ADR 040 section listed protocol correlation as a separate native module. Correlation now lives in the shared `ProtocolSession` engine, and the native crate only adapts to it.
+  - It said only the direct OpenCode replay was the native crate's own. It did not say that all three direct JSON routes are replay-only, or that direct Copilot and Grok records stay `opaque`.
+
+**Implemented**
+- The overview now says the daemon uses ACP only for initialize-only probes. It adds that the native dispatcher can run a fixture-verified ACP turn under `allow_execution`, and that whether it should follow the daemon's rule is an open decision. Remote A2A deployment is still listed as unimplemented.
+- The ADR 040 section names the adapter over the shared protocol engine and states which direct routes are replay-only and how each is classified.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- Each corrected statement is backed by an existing test that was run:
+  - `cargo test -p vibemux_harness_native --features test_helpers --test process_dispatch all_five_harnesses`: 1 passed. It runs OpenCode, Copilot, and Grok as fixture ACP turns.
+  - `cargo test -p vibemux_harness_native --test normalization --lib`: 18 and 9 passed. These include `unverified_copilot_and_grok_streams_remain_opaque` and `unsupported_routes_keep_their_native_codes`.
+
+**Remaining**
+- No test pins `docs/architecture.md` prose, so it can drift again.

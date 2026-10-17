@@ -48,7 +48,7 @@ Git worktree                  WezTerm / tmux / mock
         injected shell-free CommandRunner
 ```
 
-Git, WezTerm, and tmux share one injected `CommandRunner`; `agent_host` only receives controlled argv/environment and never executes a shell command string. The Rust daemon's structured harness dispatch (ADR 029, below) executes Codex and Claude one-shot turns; ACP is used only for initialize-only probes. ACP execution and remote A2A deployment remain unimplemented. Native MCP exposes read-only daemon metadata through the separate frontend described below (ADR 035). The local stateful A2A gateway and supervisor use the Rust daemon writer, independent model-peer processes and owned Run worktrees; see [ADR 024](adr/024_stateful_a2a_supervisor.md).
+Git, WezTerm, and tmux share one injected `CommandRunner`; `agent_host` only receives controlled argv/environment and never executes a shell command string. The Rust daemon's structured harness dispatch (ADR 029, below) executes Codex and Claude one-shot turns and uses ACP only for initialize-only probes. The CLI-process native dispatcher (ADR 040, below) can run an ACP turn on a route that sets `allow_execution`; that path is fixture-verified only, and whether it should follow the daemon's probe-only rule is an open decision. Remote A2A deployment remains unimplemented. Native MCP exposes read-only daemon metadata through the separate frontend described below (ADR 035). The local stateful A2A gateway and supervisor use the Rust daemon writer, independent model-peer processes and owned Run worktrees; see [ADR 024](adr/024_stateful_a2a_supervisor.md).
 
 ## Process topology
 
@@ -255,7 +255,7 @@ Live vendor CLIs have been exercised only through initialize-only probes on nati
 
 ## Native harness request dispatch (ADR 040)
 
-`vibemux_harness_native` is a second, independent dispatch path next to the daemon-owned one (ADR 029). It is a standalone vendor plugin and dispatcher over `vibemux_plugin_supervisor`: native JSON framing, conservative observations, protocol correlation, and OS process ownership are separate modules, and it supports Codex app-server and exec JSONL, Claude stream-json, and ACP (OpenCode, Copilot, Grok). Complete vendor stdout records stay in bounded private memory; public reports contain only metadata. The dispatcher revalidates terminal evidence and configuration identity (SHA-256 pinning) without writing canonical Task/Run state, and it never talks to `vibemuxd`.
+`vibemux_harness_native` is a second, independent dispatch path next to the daemon-owned one (ADR 029). It is a standalone vendor plugin and dispatcher over `vibemux_plugin_supervisor`: native JSON framing, conservative observations, the adapter over the shared protocol engine, and OS process ownership are separate modules, and it supports Codex app-server and exec JSONL, Claude stream-json, and ACP (OpenCode, Copilot, Grok). Complete vendor stdout records stay in bounded private memory; public reports contain only metadata. The dispatcher revalidates terminal evidence and configuration identity (SHA-256 pinning) without writing canonical Task/Run state, and it never talks to `vibemuxd`.
 
 The two paths differ on purpose:
 
@@ -267,7 +267,7 @@ The two paths differ on purpose:
 | ACP | probe only | probe and dispatch |
 | Crate | `vibemux_harness::dispatch` (pure logic) plus daemon I/O | `vibemux_harness_native` (I/O) over the same `vibemux_harness::dispatch` engine |
 
-Both paths drive one vendor posture: `vibemux_harness_native` builds its argv with `launch_spec::structured_arguments`, runs its handshake through `ProtocolSession`, and classifies Codex, Claude, and ACP records with the shared `observation::classify`. Only its replay of direct OpenCode JSON output is its own. `dispatch::capability` derives, from `NativeProtocol`, which structured adapters exist for each harness and whether the daemon path can execute through them. The dashboard, GUI, TUI snapshot, and `vibemuxctl probe` text all display that table.
+Both paths drive one vendor posture: `vibemux_harness_native` builds its argv with `launch_spec::structured_arguments`, runs its handshake through `ProtocolSession`, and classifies Codex, Claude, and ACP records with the shared `observation::classify`. Direct OpenCode, Copilot, and Grok JSON routes are replay-only. This crate classifies direct OpenCode records itself; direct Copilot and Grok records stay `opaque`. `dispatch::capability` derives, from `NativeProtocol`, which structured adapters exist for each harness and whether the daemon path can execute through them. The dashboard, GUI, TUI snapshot, and `vibemuxctl probe` text all display that table.
 
 Their configuration files, error namespaces, and protocol versions are separate; do not conflate them with each other or with the A2A wire version `1.0` or the internal plugin envelope version. See [ADR 040](adr/040_native_harness_request_dispatch.md) for the trust boundary and [the core guide](guides/harness_core_guide.md) for commands and live limits.
 
