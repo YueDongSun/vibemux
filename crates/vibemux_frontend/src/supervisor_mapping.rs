@@ -131,16 +131,27 @@ pub fn terminal_snapshot(source: TerminalSnapshot, plugin_id: &str) -> TerminalV
             plugin_id: plugin_id.into(),
             pane_id: pane.pane_id.clone(),
             instance_id: source.inventory.instance_id.clone(),
-            display_name: format!(
-                "Pane {} · window {} · {}",
-                pane.pane_id, pane.window_id, pane.workspace
-            ),
+            display_name: pane_display_name(&pane.pane_id, &pane.window_id, &pane.workspace),
         })
         .collect();
     if terminal.binding_id.is_none() && terminal.candidates.is_empty() {
         terminal.status = "No native pane matches this Run's worktree".into();
     }
     terminal
+}
+
+/// A terminal candidate's caption. The plugin protocol refuses control
+/// characters in a WezTerm workspace name, but not bidirectional controls or
+/// line and paragraph separators, so the name passes through the display rule
+/// too. A blank workspace leaves no trailing separator.
+fn pane_display_name(pane_id: &str, window_id: &str, workspace: &str) -> String {
+    let workspace = display_line(workspace);
+    let caption = format!("Pane {pane_id} · window {window_id}");
+    if workspace.trim().is_empty() {
+        caption
+    } else {
+        format!("{caption} · {workspace}")
+    }
 }
 
 pub fn binding_view(binding: &TerminalBinding) -> TerminalView {
@@ -177,6 +188,44 @@ mod tests {
         let view = terminal_snapshot(snapshot, "wezterm_observer");
         assert!(view.binding_id.is_none());
         assert!(!view.status.contains("succeeded"));
+    }
+
+    #[test]
+    fn a_terminal_candidate_caption_is_one_display_line() {
+        let mut snapshot = TerminalSnapshot {
+            inventory: Default::default(),
+            binding: None,
+            checked_at_epoch_ms: 0,
+        };
+        for (pane_id, workspace) in [
+            ("3", "dev\u{202e}txt.exe\u{2028}x"),
+            ("4", ""),
+            ("5", "\u{2066}\u{2029}"),
+            ("6", "default"),
+        ] {
+            snapshot.inventory.panes.push(Default::default());
+            let pane = snapshot.inventory.panes.last_mut().expect("pushed");
+            pane.pane_id = pane_id.into();
+            pane.window_id = "1".into();
+            pane.workspace = workspace.into();
+        }
+        let view = terminal_snapshot(snapshot, "wezterm_observer");
+        let captions: Vec<&str> = view
+            .candidates
+            .iter()
+            .map(|candidate| candidate.display_name.as_str())
+            .collect();
+        assert_eq!(
+            captions,
+            [
+                "Pane 3 · window 1 · dev txt.exe x",
+                "Pane 4 · window 1",
+                "Pane 5 · window 1",
+                "Pane 6 · window 1 · default",
+            ]
+        );
+        // The identifiers a link request echoes back stay as reported.
+        assert_eq!(view.candidates[0].pane_id, "3");
     }
 
     fn detail(

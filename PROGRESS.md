@@ -5145,3 +5145,17 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 144 passed and 1 ignored, and every bin and integration target passed. The new test `task_and_run_text_becomes_one_display_line` failed under each of four separate mutations that dropped the mapping on the title, on the harness, on the worktree path, and on the branch; the source was restored byte-for-byte after each.
 
 **Remaining:** the mapping replaces unsafe characters; it does not bound them further than the daemon already does. `task_labels::task_title` still keeps text verbatim, because the rule now applies one step earlier. Event types and artifact media types were not changed. How egui itself draws bidirectional text was not examined. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Terminal candidate captions are one display line
+
+**Scope:** the WezTerm workspace name the terminal observer reports for each candidate pane, which the GUI shows as the candidate's caption in the Run's terminal panel. WezTerm lets the user name a workspace freely. `vibemux_plugin_protocol::terminal::valid_pane` refuses `char::is_control` characters in it, but bidirectional controls and the line and paragraph separators U+2028 and U+2029 are not control characters, so they reached the caption. Pane and window IDs must be ASCII digits, and the instance ID comes from the observer's own process-identity check, so neither needed a change.
+
+**Implemented:**
+
+- `supervisor_mapping::pane_display_name` builds the caption and maps the workspace through the same `display_character` rule the previous entry applied to task and Run text.
+- A workspace that is blank, or blank after mapping, no longer leaves a trailing ` · ` after `Pane N · window M`.
+- The pane, plugin, and instance IDs a link request sends back are unchanged.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 145 passed and 1 ignored, and every bin and integration target passed. The new test `a_terminal_candidate_caption_is_one_display_line` failed under each of three separate mutations: restoring the old inline caption, dropping the mapping, and dropping the blank-workspace branch. The source was restored byte-for-byte after each.
+
+**Remaining:** the plugin protocol's own validation was not tightened, because that would change the plugin wire contract. No other surface renders the pane inventory: `vibemuxctl` has no terminal command, the dashboard's workspace tab lists Git branches, and `vibemux_mcp` and `vibemux_web` have no pane fields. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
