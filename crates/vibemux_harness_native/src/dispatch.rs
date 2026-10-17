@@ -280,7 +280,9 @@ impl Dispatcher {
                     }
                     Some(envelope::Body::Response(response)) => {
                         if response.request_id != request_id { return Err(Error::new("harness_uncorrelated_response")); }
-                        if response.payload.is_empty() { return Err(Error::new("harness_plugin_rejected")); }
+                        if response.payload.is_empty() {
+                            return Err(Error::new(rejection_code(response.status, response.error_code.as_deref())));
+                        }
                         let mut completion: Completion = serde_json::from_slice(&response.payload)
                             .map_err(|source| Error::with_source("harness_invalid_completion", source))?;
                         let expected_status = match completion.status {
@@ -407,9 +409,74 @@ fn safe_error_code(code: &str) -> bool {
     ) || crate::session::is_protocol_error_code(code)
 }
 
+/// The codes a plugin answers with, and no completion, when it refuses the
+/// request or its runner fails before the vendor process yields one. They
+/// are fixed and content-free, and they say why nothing ran, which
+/// `harness_plugin_rejected` alone does not.
+const REJECTION_CODES: &[&str] = &[
+    // The plugin's own request checks.
+    "harness_session_used",
+    "harness_capability_denied",
+    "harness_deadline_exceeded",
+    "harness_request_too_large",
+    "harness_invalid_request",
+    // The runner's checks before it launches the vendor.
+    "harness_invalid_limits",
+    "harness_route_unavailable",
+    "harness_execution_disabled",
+    "harness_invalid_prompt",
+    "harness_invalid_cwd",
+    "harness_native_execution_unsupported",
+    "harness_acp_model_selection_unsupported",
+    "harness_unsupported_protocol",
+    "harness_session_internal",
+    // Launching, containing, and reaping the vendor process.
+    "harness_environment_unavailable",
+    "harness_invalid_launch",
+    "harness_native_executable_required",
+    "harness_spawn_failed",
+    "harness_child_exited",
+    "harness_containment_failed",
+    "harness_missing_pipe",
+    "harness_stderr_read_failed",
+    "harness_wait_failed",
+    "harness_kill_failed",
+    "harness_reap_timeout",
+    "harness_missing_stderr",
+    "harness_stderr_failed",
+    "harness_stderr_timeout",
+];
+
+/// Keeps a completion-less error answer's code only when it is one of the
+/// fixed rejection codes; anything else is `harness_plugin_rejected`.
+fn rejection_code(status: i32, code: Option<&str>) -> &'static str {
+    code.filter(|_| status == i32::from(ResponseStatus::Error))
+        .and_then(|code| REJECTION_CODES.iter().copied().find(|known| *known == code))
+        .unwrap_or("harness_plugin_rejected")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::safe_error_code;
+    use vibemux_plugin_protocol::wire::ResponseStatus;
+
+    use super::{rejection_code, safe_error_code};
+
+    /// Every `"harness_..."` string literal in `source`.
+    fn literal_codes(source: &str) -> Vec<&str> {
+        source
+            .match_indices("\"harness_")
+            .map(|(start, _)| {
+                let literal = &source[start + 1..];
+                &literal[..literal.find('"').unwrap_or(literal.len())]
+            })
+            .collect()
+    }
+
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let start = source.find(start).unwrap();
+        let end = start + source[start..].find(end).unwrap();
+        &source[start..end]
+    }
 
     /// A plugin completion keeps its error code only when the code is fixed
     /// and content-free; anything else is reported as `harness_vendor_failed`.
@@ -465,13 +532,7 @@ mod tests {
             "harness_invalid_cwd",
         ];
         for source in [include_str!("native.rs"), include_str!("json_lines.rs")] {
-            let codes: Vec<&str> = source
-                .match_indices("\"harness_")
-                .map(|(start, _)| {
-                    let literal = &source[start + 1..];
-                    &literal[..literal.find('"').unwrap_or(literal.len())]
-                })
-                .collect();
+            let codes = literal_codes(source);
             assert!(!codes.is_empty());
             for code in codes {
                 assert!(
@@ -479,6 +540,61 @@ mod tests {
                     "{code} would be reported as harness_vendor_failed"
                 );
             }
+        }
+    }
+    /// Every fixed code a plugin answers with before a completion exists
+    /// keeps its name: the plugin's request checks, the runner's checks
+    /// before launch, and every launch, containment, and reaping failure.
+    /// A new one fails here instead of becoming `harness_plugin_rejected`.
+    #[test]
+    fn every_code_before_a_completion_survives_the_rejection_list() {
+        let error = i32::from(ResponseStatus::Error);
+        let native = include_str!("native.rs");
+        let sources = [
+            include_str!("process.rs"),
+            &native[..native.find("Process::spawn(").unwrap()],
+            between(
+                include_str!("session.rs"),
+                "pub fn new(",
+                "pub fn arguments(",
+            ),
+            between(
+                include_str!("plugin.rs"),
+                "let rejection = if used",
+                "let request = match",
+            ),
+        ];
+        let mut codes: Vec<&str> = sources.into_iter().flat_map(literal_codes).collect();
+        assert!(codes.len() > 20);
+        // `Limits::validate`, `Request::validate`, and the engine-error
+        // mapping serve other callers too, so their codes are named here.
+        codes.extend([
+            "harness_invalid_limits",
+            "harness_invalid_prompt",
+            "harness_unsupported_protocol",
+            "harness_session_internal",
+        ]);
+        for code in codes {
+            assert_eq!(
+                rejection_code(error, Some(code)),
+                code,
+                "{code} would be reported as harness_plugin_rejected"
+            );
+        }
+        for (status, code) in [
+            (error, None),
+            (error, Some("")),
+            (error, Some("HARNESS_SPAWN_FAILED")),
+            (error, Some("harness_spawn_failed ")),
+            (error, Some("harness_spawn_failed: SYNTHETIC_SECRET_TOKEN")),
+            (error, Some("harness_vendor_failed")),
+            (i32::from(ResponseStatus::Ok), Some("harness_spawn_failed")),
+        ] {
+            assert_eq!(
+                rejection_code(status, code),
+                "harness_plugin_rejected",
+                "{code:?}"
+            );
         }
     }
 }

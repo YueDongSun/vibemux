@@ -4476,3 +4476,13 @@ scratch directory outside the repository.
 - Mutation checks: dropping `harness_read_failed` from the allowlist fails both allowlist tests. Dropping `harness_missing_pipe`, which only the scan covers, fails the new test.
 
 **Remaining**: The scan covers the runner and its line reader. Codes from `process.rs` and `contract.rs` that are reachable mid-exchange (`harness_wait_failed`, `harness_invalid_json`, `harness_invalid_record`) are pinned by the explicit list only. No live vendor run.
+
+### 2026-10-18 - Native dispatcher keeps the plugin's pre-completion code
+
+**Scope:** `vibemux_harness_native` dispatcher (ADR 040) and `docs/protocol_boundaries.md`. No wire, schema, or control change.
+
+**Implemented:** when the native plugin answers without a completion, because it refused the request or its runner failed before the vendor process yielded one, the dispatcher discarded the plugin's code and reported `harness_plugin_rejected`. A route pointing at a missing vendor executable or a Windows `.cmd` shim therefore did not say why nothing ran. The dispatcher now keeps the plugin's code when the answer is an error and the code is on a fixed list (`REJECTION_CODES`: the plugin's request checks, the runner's checks before launch, and its launch, containment, and reaping failures); any other code, including a case-changed, padded, or content-bearing one, stays `harness_plugin_rejected`. The protocol boundary documents the second list.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. New `every_code_before_a_completion_survives_the_rejection_list` scans the runner's process code, its pre-launch checks, `Session::new`, and the plugin's request checks; new `launch_failures_keep_the_runner_code` probes and executes a missing executable through the real plugin (`harness_invalid_launch`); the Windows batch-route test now asserts `harness_native_executable_required`. Mutations (always `harness_plugin_rejected`, dropping `harness_spawn_failed` from the list, ignoring the response status) each failed the new tests. Fixture vendors only.
+
+**Remaining:** a dispatcher-built completion for a failed exchange still sets `forced_termination`, even when the plugin answered cleanly and no vendor process was killed.

@@ -97,6 +97,25 @@ impl Fixture {
         }
     }
 
+    /// Points one route at another vendor executable and reloads the
+    /// dispatcher, whose configuration digest the plugin checks.
+    fn replace_executable(&mut self, harness: Harness, executable: PathBuf) {
+        let mut config: Config =
+            serde_json::from_slice(&std::fs::read(&self.config_path).unwrap()).unwrap();
+        config
+            .harnesses
+            .iter_mut()
+            .find(|route| route.harness == harness)
+            .unwrap()
+            .executable = executable;
+        std::fs::write(&self.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        self.dispatcher = Dispatcher::new(
+            &self.config_path,
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
+        )
+        .unwrap();
+    }
+
     async fn execute(&self, harness: Harness) -> Outcome {
         let (_sender, receiver) = watch::channel(false);
         self.dispatcher
@@ -479,6 +498,30 @@ async fn changed_config_is_rejected_before_probe_or_prompt() {
     .await;
 }
 
+/// A vendor executable that cannot launch fails in the plugin's runner,
+/// before any completion exists. The report names that launch failure
+/// rather than `harness_plugin_rejected`, for a probe and an execution.
+#[tokio::test]
+async fn launch_failures_keep_the_runner_code() {
+    bounded(async {
+        let mut fixture = Fixture::new("normal");
+        let missing = fixture.working_directory.join("missing_vendor_executable");
+        fixture.replace_executable(Harness::Codex, missing);
+        let probe = fixture.dispatcher.probe(Harness::Codex).await.unwrap();
+        let execution = fixture.execute(Harness::Codex).await;
+        for outcome in [probe, execution] {
+            assert_eq!(outcome.completion.status, Status::Failed, "{outcome:?}");
+            assert_eq!(
+                outcome.completion.error_code.as_deref(),
+                Some("harness_invalid_launch")
+            );
+            assert!(outcome.records.is_empty());
+            assert_eq!(outcome.completion.exit_code, None);
+        }
+    })
+    .await;
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_batch_routes_are_rejected_without_launching_a_shell() {
@@ -493,22 +536,13 @@ async fn windows_batch_routes_are_rejected_without_launching_a_shell() {
                 b"@echo off\r\necho executed>synthetic_script_executed\r\n",
             )
             .unwrap();
-            let mut config: Config =
-                serde_json::from_slice(&std::fs::read(&fixture.config_path).unwrap()).unwrap();
-            config
-                .harnesses
-                .iter_mut()
-                .find(|route| route.harness == Harness::Codex)
-                .unwrap()
-                .executable = executable;
-            std::fs::write(&fixture.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
-            fixture.dispatcher = Dispatcher::new(
-                &fixture.config_path,
-                &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
-            )
-            .unwrap();
+            fixture.replace_executable(Harness::Codex, executable);
             let outcome = fixture.execute(Harness::Codex).await;
             assert_eq!(outcome.completion.status, Status::Failed, "{outcome:?}");
+            assert_eq!(
+                outcome.completion.error_code.as_deref(),
+                Some("harness_native_executable_required")
+            );
             assert!(outcome.records.is_empty());
             assert_eq!(outcome.completion.exit_code, None);
             assert!(
