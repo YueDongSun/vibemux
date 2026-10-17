@@ -27,6 +27,9 @@ use vibemux_mcp::{
 const FIXTURE: &str = env!("CARGO_BIN_EXE_vibemux_mcp_fixture");
 const CALL_DEADLINE: Duration = Duration::from_secs(3);
 const RESPONSIVE_DEADLINE: Duration = Duration::from_millis(700);
+/// Bound on a real OS launch reaching its gate. A freshly linked fixture can
+/// take over a second to start cold, which is not a responsiveness guarantee.
+const LAUNCH_ENTRY_DEADLINE: Duration = Duration::from_secs(10);
 
 fn config(granted: bool) -> HostConfig {
     HostConfig {
@@ -313,7 +316,7 @@ async fn slow_os_launch_keeps_ping_responsive() {
 }
 
 async fn entered_gate(gate: &LaunchGate) -> bool {
-    timeout(RESPONSIVE_DEADLINE, async {
+    timeout(LAUNCH_ENTRY_DEADLINE, async {
         while !gate.entered() {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
