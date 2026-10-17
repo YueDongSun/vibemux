@@ -71,14 +71,8 @@ pub fn render(
                     if view_model.env_allowlist.is_empty() {
                         ui.label(RichText::new("No allowlisted environment values were reported.").size(12.0).color(colors.muted));
                     } else {
-                        for (key, value) in &view_model.env_allowlist {
-                            value_row(
-                                ui,
-                                colors,
-                                key,
-                                if value.is_some() { "set" } else { "unset" },
-                                colors.muted,
-                            );
+                        for (key, presence) in environment_presence(&view_model.env_allowlist) {
+                            value_row(ui, colors, key, presence, colors.muted);
                         }
                     }
                     ui.add_space(12.0);
@@ -90,6 +84,15 @@ pub fn render(
                     );
                 });
         });
+}
+
+/// The rows of the allowlisted environment section: each name with only
+/// whether it is set. A value never reaches the window.
+fn environment_presence(env_allowlist: &[(String, Option<String>)]) -> Vec<(&str, &'static str)> {
+    env_allowlist
+        .iter()
+        .map(|(key, value)| (key.as_str(), if value.is_some() { "set" } else { "unset" }))
+        .collect()
 }
 
 fn section(ui: &mut Ui, colors: &C, label: &str) {
@@ -126,5 +129,24 @@ fn health_color(colors: &C, health: Health) -> egui::Color32 {
         Health::Ok => colors.ok,
         Health::Warning => colors.warn,
         Health::Failure => colors.danger,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::environment_presence;
+
+    #[test]
+    fn the_environment_section_shows_presence_and_never_a_value() {
+        let allowlist = vec![
+            ("PATH".to_string(), Some("C:\\private\\tools".to_string())),
+            ("HOME".to_string(), None),
+            ("USERPROFILE".to_string(), Some(String::new())),
+        ];
+        assert_eq!(
+            environment_presence(&allowlist),
+            [("PATH", "set"), ("HOME", "unset"), ("USERPROFILE", "set")]
+        );
+        assert!(environment_presence(&[]).is_empty());
     }
 }

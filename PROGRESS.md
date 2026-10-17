@@ -4850,3 +4850,16 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo doc --workspace --exclude vibemux_web --no-deps --all-features` reported these six warnings and no others. After the change, the same command with `RUSTDOCFLAGS="-D warnings"` passed. `cargo fmt --all -- --check` passed, and `cargo clippy -p vibemuxd -p vibemux_platform --all-targets --all-features -- -D warnings` passed. The generated `target/doc` output was removed. CI still has no rustdoc step, so nothing stops a new broken link.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI. Whether CI should build rustdoc with warnings denied is also open.
+
+### 2026-10-18 - Pin the GUI's presence-only environment display
+
+**Scope:** the egui Diagnostics window in `vibemux_frontend`. No wire, store, or protocol change.
+
+**Implemented:**
+
+- The rows of the allowlisted environment section are now built by a pure `environment_presence` function instead of inline in the egui layout. The window still shows each name with only `set` or `unset`.
+- The window's footnote promises that variable values are not displayed. A new unit test, the first for this window, pins that promise: a set `PATH` value, an unset `HOME`, and an empty `USERPROFILE` produce only names and `set` or `unset`, in order.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 134 unit with 1 pre-existing ignore, plus the integration suites. A mutation that swapped `set` and `unset` failed the new test; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should also show allowlisted environment variables as set or unset only.
