@@ -5047,3 +5047,32 @@ Both files were restored and compared byte for byte.
 **Remaining:**
 - `vibemux_frontend_preview`, `vibemux_harness_native_plugin`, the fixture binaries, and the `live_codex_smoke` example still read `std::env::args`.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Native harness plugin refuses non-Unicode arguments with its usage code
+
+**Scope:** the command line of `vibemux_harness_native_plugin`, the out-of-process plugin that the native dispatcher launches. The options, the `harness_plugin_usage` code, exit code 1, and the plugin wire are unchanged.
+
+**Implemented:**
+- The plugin read its options with `std::env::args`, which panics on an argument that is not valid Unicode. Run by hand with such an argument, it exited 101 with a panic message instead of its `harness_plugin_usage` code.
+- It now parses `std::env::args_os` in a pure `parse_arguments` function. A non-Unicode option name, harness name, or digest returns `harness_plugin_usage`. The `--config` value is kept as an operating-system path.
+- The parser had no direct tests; only the dispatcher's process tests exercised it. It now has four bin tests, covering:
+  - options in any order;
+  - a non-Unicode config path;
+  - non-Unicode names and values;
+  - a wrong count, a duplicate or unknown option, a short or non-hex digest, and an unknown harness.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness_native --all-features` passed: 36 lib, 4 plugin bin (new), 19 normalization, and 21 process dispatch. The process dispatch tests launch the real plugin through the dispatcher.
+
+The built plugin was run with a lone UTF-16 surrogate, once as an option name and once as the harness name. Both runs exited 1 with `harness_plugin_usage`.
+
+Three mutations were each caught by their test:
+- Reading a non-Unicode option name as `--config` failed the non-Unicode test.
+- Converting the config path through lossy text failed the path test.
+- Dropping the digest's hex check failed the malformed-command-line test.
+
+The file was restored and compared byte for byte.
+
+**Remaining:**
+- The dispatcher still passes the config path to the plugin as lossy text, because the plugin manifest's entry point is a list of strings. A config under a non-Unicode path therefore fails closed when the plugin reads it, rather than being misread. Changing that needs a plugin wire decision.
+- `vibemux_frontend_preview`, the fixture binaries, and the `live_codex_smoke` example still read `std::env::args`.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
