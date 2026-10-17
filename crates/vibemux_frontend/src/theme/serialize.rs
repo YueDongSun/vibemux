@@ -29,6 +29,23 @@ pub struct WindowSize {
     pub height: u32,
 }
 
+impl WindowSize {
+    pub const MIN_WIDTH: u32 = 800;
+    pub const MAX_WIDTH: u32 = 3840;
+    pub const MIN_HEIGHT: u32 = 600;
+    pub const MAX_HEIGHT: u32 = 2160;
+
+    /// This size moved into the range the settings dialog offers, which is
+    /// the only range the GUI ever saves or opens a window at.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            width: self.width.clamp(Self::MIN_WIDTH, Self::MAX_WIDTH),
+            height: self.height.clamp(Self::MIN_HEIGHT, Self::MAX_HEIGHT),
+        }
+    }
+}
+
 /// Persisted across launches. Only `theme` and `window_size` are
 /// honored on write today; backend choice and telemetry opt-in are
 /// deliberately not persisted in this slice.
@@ -77,7 +94,9 @@ pub fn config_path() -> PathBuf {
 
 /// Load the persisted user config. On any failure (missing file,
 /// unreadable, parse error, unknown schema version), return
-/// [`UserConfig::default`]. Never panics.
+/// [`UserConfig::default`]. A window size outside the settings range is
+/// clamped into it, so a hand-edited file cannot open a zero-sized or
+/// oversized window. Never panics.
 #[must_use]
 pub fn load_user_config() -> UserConfig {
     load_user_config_at(&config_path())
@@ -95,7 +114,10 @@ pub fn load_user_config_at(path: &Path) -> UserConfig {
     let stripped = bytes.strip_prefix('\u{FEFF}').unwrap_or(&bytes);
     let parsed: Result<UserConfig, _> = serde_json::from_str(stripped);
     match parsed {
-        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => cfg,
+        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => UserConfig {
+            window_size: cfg.window_size.clamped(),
+            ..cfg
+        },
         Ok(_) => UserConfig::default(),
         Err(_) => UserConfig::default(),
     }
@@ -235,6 +257,38 @@ mod tests {
         let back = load_user_config_at(&path);
         assert_eq!(back, cfg);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_out_of_range_window_size_is_clamped_on_load() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        for (stored, loaded) in [
+            ((0, 0), (800, 600)),
+            ((100_000, 1), (3840, 600)),
+            ((1, 100_000), (800, 2160)),
+            ((1024, 768), (1024, 768)),
+            ((800, 2160), (800, 2160)),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "theme": "github",
+                    "window_size": {"width": stored.0, "height": stored.1}
+                })
+                .to_string(),
+            )
+            .expect("write");
+            let config = load_user_config_at(&path);
+            assert_eq!(
+                (config.window_size.width, config.window_size.height),
+                loaded,
+                "{stored:?}"
+            );
+            // Clamping touches only the size.
+            assert_eq!(config.theme, ThemeId::Github);
+        }
     }
 
     #[test]

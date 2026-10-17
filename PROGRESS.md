@@ -4994,3 +4994,22 @@ Three mutations were each caught by their test:
 Both files were restored and compared byte for byte.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - GUI window size has one bounded owner
+
+**Scope:** the GUI's persisted startup window size in `vibemux_frontend` (`theme/serialize.rs`, `gui/settings.rs`, `gui/supervisor_app.rs`). The `frontend.json` layout and schema version are unchanged.
+
+An audit of `vibemuxctl`'s text output found nothing to change. Every daemon- or vendor-supplied string in the text views passes through `safe_text`, and so does the `ui --once` dashboard snapshot. Every other kind falls back to escaped JSON. The diagnostic TUI renders a live probe, whose text the probe already sanitizes.
+
+**Implemented:**
+- `WindowSize` now owns the settings range of 800-3840 by 600-2160 as constants, plus a `clamped` method. Before, three places repeated those literals: the settings dialog's two ranges and the two clamps in `supervisor_app.rs`. All of them now use the shared bounds.
+- `load_user_config_at` clamps a loaded window size into that range. Before, a hand-edited or corrupt `frontend.json` with a width of 0 or 100000 passed straight to the viewport builder at startup, although the GUI never saves such a size. Only the size is touched; the theme and the sidebar setting load as before.
+- The resize tracker no longer clamps on its own; `set_window_size` clamps once.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 142 lib (2 new, 1 ignored), 6 cli, 2 palette parity, 10 supervisor UI. Two mutations were each caught by their test:
+- Dropping the clamp on load failed the load test.
+- Dropping the clamp in `set_window_size` failed the saved-size test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** the window's minimum inner width is still 960, above the settings minimum of 800, so a saved width below 960 opens at 960. Changing either bound is a layout decision left to the owner. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.

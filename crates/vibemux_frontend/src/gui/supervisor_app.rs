@@ -198,9 +198,7 @@ impl SupervisorApp {
     }
 
     fn set_window_size(&mut self, size: WindowSize) {
-        let width = size.width.clamp(800, 3840);
-        let height = size.height.clamp(600, 2160);
-        let size = WindowSize { width, height };
+        let size = size.clamped();
         if self.user_config.window_size != size {
             self.user_config.window_size = size;
             self.pending_resize = Some(Instant::now());
@@ -509,8 +507,8 @@ impl SupervisorApp {
             .map_or([0.0, 0.0], |rect| [rect.width(), rect.height()]);
         if self.last_size[0] > 0.0 && size != self.last_size {
             self.set_window_size(WindowSize {
-                width: (size[0] as u32).clamp(800, 3840),
-                height: (size[1] as u32).clamp(600, 2160),
+                width: size[0] as u32,
+                height: size[1] as u32,
             });
         }
         self.last_size = size;
@@ -1258,6 +1256,31 @@ mod tests {
             .expect("sidebar panel");
             assert!((panel.rect.width() - expected).abs() < 1.0, "{collapsed}");
         }
+    }
+
+    /// A size from the settings dialog or a manual resize is saved inside the
+    /// range `load_user_config` clamps to, and only a real change is saved.
+    #[test]
+    fn a_saved_window_size_stays_in_the_settings_range() {
+        let mut app = test_app();
+        app.set_window_size(WindowSize {
+            width: 100_000,
+            height: 1,
+        });
+        assert_eq!(
+            app.user_config.window_size,
+            WindowSize {
+                width: 3840,
+                height: 600
+            }
+        );
+        assert!(app.pending_resize.is_some());
+        app.pending_resize = None;
+        app.set_window_size(WindowSize {
+            width: 3841,
+            height: 599,
+        });
+        assert!(app.pending_resize.is_none(), "same clamped size, no write");
     }
 
     #[test]

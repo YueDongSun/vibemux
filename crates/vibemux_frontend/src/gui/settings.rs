@@ -71,10 +71,16 @@ pub fn render(
             let mut height = window_size.height;
             ui.horizontal(|ui| {
                 ui.label("Width");
-                ui.add(egui::DragValue::new(&mut width).range(800..=3840));
+                ui.add(
+                    egui::DragValue::new(&mut width)
+                        .range(WindowSize::MIN_WIDTH..=WindowSize::MAX_WIDTH),
+                );
                 ui.add_space(8.0);
                 ui.label("Height");
-                ui.add(egui::DragValue::new(&mut height).range(600..=2160));
+                ui.add(
+                    egui::DragValue::new(&mut height)
+                        .range(WindowSize::MIN_HEIGHT..=WindowSize::MAX_HEIGHT),
+                );
             });
             if width != window_size.width || height != window_size.height {
                 changes.window_size = Some(WindowSize { width, height });
