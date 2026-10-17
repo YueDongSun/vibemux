@@ -4339,3 +4339,28 @@ scratch directory outside the repository.
 
 **Remaining**
 - The ADR 041 dashboard's agent table scrolls with the selection, but at 80x24 it shows five of eleven harnesses and gives no hint that more rows exist.
+
+### 2026-10-17 - Dashboard names the harnesses outside its 80x24 view
+
+**Scope**
+- The ADR 041 read-only dashboard (`vibemuxctl ui`, `vibemux_dashboard`; `dashboard/render.rs`). No model, snapshot text, or navigation change.
+
+**Implemented**
+- At 80x24 the overview's agent table holds five of the eleven harnesses and scrolls with the selection. Nothing said the other six existed. When rows are hidden, the table title now names the rows in view, for example `Agent probes 7-11/11`.
+- The table now owns its scroll window (`agent_window`), so the title and the rows always agree.
+- Below the two-pane width, the Harnesses page shows no table. Its details title now gives the selection's position, for example `Selected harness 4/11 / j,k`.
+- The native-TUI slot panel printed one `name [state]` label per harness. At 80 columns it overflowed after TRAE and hid CodeBuddy, Kimi, and DSH. It now prints one line per state, naming that state's harnesses (`reserved: ...`, `unavailable: ...`), so every name fits from 30 columns up.
+- Replaced `narrow_windows_terminal_keeps_all_agents_and_slots_visible`, which checked five names only. The replacement checks the first and scrolled range titles, the selected DSH row, the narrow details position, and both slot lines.
+- A new test requires every harness name inside the slot panel at 30, 59, 60, and 80 columns. A unit test pins the scroll window, including clamping and the empty cases.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 126 passed (1 ignored generator); cli 6, palette_parity 2, and supervisor_ui 10 passed.
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- Mutation checks, each restored afterwards:
+  - A window that never scrolls failed the window unit test and the narrow test.
+  - Per-slot labels instead of grouped names failed the slot panel test (`CodeBuddy missing` at 30 columns) and the narrow test.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- At 80x24 the overview's diagnostics panel shows the gateway and A2A lines but not telemetry.
+- The details pane says `Reserved is not running.` even when the harness's slot is `unavailable`.

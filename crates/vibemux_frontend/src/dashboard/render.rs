@@ -1,5 +1,7 @@
+use std::ops::Range;
+
 use super::{
-    AgentView, Context, DashboardModel, State, Tab, Workspace,
+    AgentView, Context, DashboardModel, NativeTuiSlot, NativeTuiSlotState, State, Tab, Workspace,
     model::{safe_text, slot_state_label},
 };
 use ratatui::{
@@ -19,6 +21,9 @@ const AGENT_FULL_WIDTH: u16 = 72;
 /// `local_gateway` beside the agent, launcher, and adapter columns.
 const AGENT_ROUTE_WIDTH: u16 = 50;
 const WORKTREE_PANEL_HEIGHT: u16 = 16;
+/// Agent table rows that hold no agent: the top border, the header, and the
+/// bottom border.
+const AGENT_TABLE_CHROME_ROWS: u16 = 3;
 
 pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
     render_with_state(frame, model, &State::default(), &Context::default());
@@ -80,20 +85,8 @@ pub fn render_with_state(
         Tab::Harnesses => harnesses(frame, areas[2], model, state),
         Tab::Workspace => workspace_view(frame, areas[2], context.workspace.as_ref(), state),
     }
-    let slot_labels = model
-        .native_tui_slots
-        .iter()
-        .map(|slot| {
-            format!(
-                "{} [{}]",
-                slot.agent.display_name(),
-                slot_state_label(slot.state)
-            )
-        })
-        .collect::<Vec<_>>();
-    let labels = slot_labels.join(if areas[3].width < 60 { "\n" } else { " | " });
     frame.render_widget(
-        Paragraph::new(labels)
+        Paragraph::new(slot_lines(&model.native_tui_slots))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(Color::Yellow))
             .block(
@@ -126,6 +119,29 @@ pub fn render_with_state(
     }
 }
 
+/// One line per slot state, in first-seen order, naming its harnesses. One
+/// `name [state]` label per harness overflowed the panel at 80 columns and
+/// hid the last harnesses; grouping keeps every name in two lines.
+fn slot_lines(slots: &[NativeTuiSlot]) -> Vec<Line<'static>> {
+    let mut states: Vec<NativeTuiSlotState> = Vec::new();
+    for slot in slots {
+        if !states.contains(&slot.state) {
+            states.push(slot.state);
+        }
+    }
+    states
+        .into_iter()
+        .map(|state| {
+            let names = slots
+                .iter()
+                .filter(|slot| slot.state == state)
+                .map(|slot| slot.agent.display_name())
+                .collect::<Vec<_>>();
+            Line::from(format!("{}: {}", slot_state_label(state), names.join(", ")))
+        })
+        .collect()
+}
+
 fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &State) {
     let body = if area.width >= WIDE_LAYOUT {
         Layout::default()
@@ -154,7 +170,29 @@ fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &S
     );
 }
 
+/// The agent rows a bordered table of `height` rows shows around the
+/// selected agent, as an index range. The range starts at zero until the
+/// selection would leave it, then keeps the selection on the last row.
+fn agent_window(total: usize, selected: usize, height: u16) -> Range<usize> {
+    let visible = usize::from(height.saturating_sub(AGENT_TABLE_CHROME_ROWS)).min(total);
+    if visible == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(total - 1);
+    let first = (selected + 1).saturating_sub(visible);
+    first..first + visible
+}
+
 fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, selected: usize) {
+    let total = model.agents.len();
+    let window = agent_window(total, selected, area.height);
+    // A short table scrolls with the selection; the title names the rows in
+    // view so the harnesses below the fold are never silently absent.
+    let title = if window.is_empty() || window.len() == total {
+        "Agent probes".to_string()
+    } else {
+        format!("Agent probes {}-{}/{total}", window.start + 1, window.end)
+    };
     let layout = AgentColumns::for_width(area.width);
     let rows = model.agents.iter().map(|agent| {
         Row::new(
@@ -169,11 +207,10 @@ fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, select
         .header(Row::new(header).style(Style::default().add_modifier(Modifier::BOLD)))
         .row_highlight_style(Style::default().fg(Color::Cyan))
         .highlight_symbol("> ")
-        .block(Block::default().title("Agent probes").borders(Borders::ALL));
-    let mut selection = TableState::default();
-    selection.select(
-        (!model.agents.is_empty()).then(|| selected.min(model.agents.len().saturating_sub(1))),
-    );
+        .block(Block::default().title(title).borders(Borders::ALL));
+    let mut selection = TableState::default()
+        .with_offset(window.start)
+        .with_selected((total > 0).then(|| selected.min(total - 1)));
     frame.render_stateful_widget(table, area, &mut selection);
 }
 
@@ -285,11 +322,21 @@ fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &
         // Overview lists every agent; this page keeps selected details readable.
         area
     };
-    let details = match model.agents.get(
-        state
-            .selected_agent
-            .min(model.agents.len().saturating_sub(1)),
-    ) {
+    let selected = state
+        .selected_agent
+        .min(model.agents.len().saturating_sub(1));
+    // Below the two-pane width no table is shown, so the title carries the
+    // selection's position among every harness.
+    let title = if model.agents.is_empty() {
+        "Selected harness / j,k".to_string()
+    } else {
+        format!(
+            "Selected harness {}/{} / j,k",
+            selected + 1,
+            model.agents.len()
+        )
+    };
+    let details = match model.agents.get(selected) {
         Some(agent) => format!(
             "{} / version {}\nLauncher: {}\nAuth: {} | Inference: {}\nAdapter: {}\nRoute: {}\nCode: {}\nNative attach: disabled\nReserved is not running.",
             safe_text(&agent.name),
@@ -304,11 +351,9 @@ fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &
         None => "No verified agent observation supplied.".to_string(),
     };
     frame.render_widget(
-        Paragraph::new(details).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .title("Selected harness / j,k")
-                .borders(Borders::ALL),
-        ),
+        Paragraph::new(details)
+            .wrap(Wrap { trim: true })
+            .block(Block::default().title(title).borders(Borders::ALL)),
         details_area,
     );
 }
@@ -427,4 +472,24 @@ fn workspace_view(frame: &mut Frame<'_>, area: Rect, workspace: Option<&Workspac
         ),
         areas[2],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_window_keeps_the_selection_in_view() {
+        // Eleven agents in an eight-row table: five rows hold agents.
+        assert_eq!(agent_window(11, 0, 8), 0..5);
+        assert_eq!(agent_window(11, 4, 8), 0..5);
+        assert_eq!(agent_window(11, 5, 8), 1..6);
+        assert_eq!(agent_window(11, 10, 8), 6..11);
+        // An out-of-range selection clamps to the last agent.
+        assert_eq!(agent_window(11, 99, 8), 6..11);
+        // Everything fits, nothing fits, or there is nothing to show.
+        assert_eq!(agent_window(3, 2, 8), 0..3);
+        assert_eq!(agent_window(11, 4, 3), 0..0);
+        assert_eq!(agent_window(0, 0, 8), 0..0);
+    }
 }

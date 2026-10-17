@@ -102,22 +102,78 @@ mod tests {
     }
 
     #[test]
-    fn narrow_windows_terminal_keeps_all_agents_and_slots_visible() {
+    fn narrow_windows_terminal_names_every_harness_and_the_rows_in_view() {
+        // Regression: at 80x24 the overview table showed five of eleven
+        // harnesses with no sign of the rest, and the slot panel's
+        // `name [state]` labels overflowed before CodeBuddy, Kimi, and DSH.
+        let mut report = report();
+        for probe in report.agents.iter_mut().skip(5) {
+            probe.launcher_state = ProbeState::Unavailable;
+        }
+        let model = DashboardModel::from_report(&report);
+        let total = AgentKind::all().len();
+        let context = Context::default();
+        let first = snapshot(&model, &State::default(), &context, 80, 24).unwrap();
+        assert!(
+            first.contains(&format!("Agent probes 1-5/{total}")),
+            "{first}"
+        );
+        assert!(first.contains("> Claude"));
+        assert!(first.contains("reserved: Claude, Codex, OpenCode, Copilot, Grok"));
+        assert!(first.contains("unavailable: Qwen, iFlow, TRAE, CodeBuddy, Kimi, DSH"));
+        let last = State {
+            selected_agent: total - 1,
+            ..State::default()
+        };
+        let scrolled = snapshot(&model, &last, &context, 80, 24).unwrap();
+        assert!(
+            scrolled.contains(&format!("Agent probes {}-{total}/{total}", total - 4)),
+            "{scrolled}"
+        );
+        assert!(scrolled.contains("> DSH"));
+        assert!(!scrolled.contains("> Claude"));
+        // Below the two-pane width the Harnesses page has no table, so the
+        // details title carries the position.
+        let details = State {
+            tab: Tab::Harnesses,
+            selected_agent: 3,
+            ..State::default()
+        };
+        let narrow = snapshot(&model, &details, &context, 70, 24).unwrap();
+        assert!(narrow.contains(&format!("Selected harness 4/{total} / j,k")));
+        assert!(narrow.contains("Copilot / version"));
+    }
+
+    #[test]
+    fn every_slot_name_fits_the_slot_panel_at_every_supported_width() {
         let model = DashboardModel::from_report(&report());
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|frame| render_dashboard(frame, &model))
-            .expect("render dashboard");
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        for expected in ["Claude", "Codex", "OpenCode", "Copilot", "Grok", "reserved"] {
-            assert!(rendered.contains(expected), "missing {expected}");
+        for (width, height) in [(30u16, 24u16), (59, 24), (60, 24), (80, 24)] {
+            let rendered = snapshot(
+                &model,
+                &State::default(),
+                &Context::default(),
+                width,
+                height,
+            )
+            .unwrap();
+            let rows = rendered.lines().collect::<Vec<_>>();
+            let top = rows
+                .iter()
+                .position(|row| row.contains("Native CLI TUI surfaces"))
+                .unwrap_or_else(|| panic!("no slot panel at width {width}"));
+            let bottom = top
+                + rows[top..]
+                    .iter()
+                    .position(|row| row.contains('└'))
+                    .expect("slot panel bottom border");
+            let panel = rows[top + 1..bottom].join(" ");
+            for agent in AgentKind::all() {
+                assert!(
+                    panel.contains(agent.display_name()),
+                    "width {width}: {} missing from {panel}",
+                    agent.display_name()
+                );
+            }
         }
     }
 
