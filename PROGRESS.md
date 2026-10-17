@@ -2699,6 +2699,43 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 ---
 
+### 2026-10-06 - DSH prerequisite provisioning and live runtime re-verification
+
+**Scope and resulting contracts**
+- Add the DeepSeek Harness runtime to the repository's prerequisite path: a checkable, provisionable setup step for the npm-global `@deepseek-ai/dsh` runtime, the `sdk` profile the ADR 032 adapter drives, and the optional out-of-tree `tui` profile.
+- Re-verify the ADR 032 wire binding against the current vendor release, because `docs/dsh_session_protocol.md` bound the adapter to shapes read from `0.1.2-rc.1` and required re-verification before a later release is claimed to work.
+- No canonical state, store schema, control protocol, event, or plugin contract changed, and no Rust source changed.
+
+**Implemented**
+- `scripts/setup_dsh_prereq.ps1`: read-only by default (exit 0 ready, 2 not ready, 1 unusable); `-Apply` performs only the documented operator commands (`npm install -g @deepseek-ai/dsh@<version>`, `dsh --profile sdk --help`, `dsh plugin --profile tui add <bundle>`); `-Json` emits one machine-readable object; `-SkipTui` limits the check to the `sdk` profile; `-WriteSessionConfig` writes `.vibemux\dsh_session.json` as UTF-8 without a BOM, refuses to replace it without `-Force`, and refuses a launcher path that resolves inside the project root; `-SkipProbes` runs the structural checks only. Tools are launched as `node <javascript entry>`, never through a command interpreter; the script prints no secret and no environment dump and deletes nothing.
+- The launcher-pair trust rule is mirrored rather than assumed: the installed package must declare `"name": "@deepseek-ai/dsh"` and map its own `dsh` bin entry to the script that would be launched.
+- `tests/test_dsh_prereq.py`: 17 fixture-driven tests (skipped with an explicit reason when `pwsh` is absent) covering the missing install, the version floor with prerelease ordering, a foreign package with the same layout, the ready path, a `tui` profile without its bundle, `-SkipTui`, the read-only guarantee, `-Apply -WriteSessionConfig` (BOM-free write, no clobber without `-Force`), and the `-Apply`/`-SkipProbes` refusal.
+- The prerequisite is documented in README's DSH section and as CONTRIBUTING step 7.
+- `crates/vibemux_harness/src/dispatch/launch_spec.rs`: `interpreter_script_path` restores the classic spelling of a Windows verbatim path for the launcher-pair script argument only (`\\?\C:\x` → `C:\x`, `\\?\UNC\s\share\x` → `\\s\share\x`; a volume GUID path is left unchanged so it fails loudly). The admitted canonical path stays the trust anchor, and the image argument is untouched because `CreateProcess` accepts the verbatim form.
+
+**Evidence**
+- commands (native Windows, PowerShell 7.6.6, Node v24.18.0): `python -m pytest` 128 passed; `python -m ruff format --check .` clean (109 files); `python -m ruff check .` clean; `mypy tests/test_dsh_prereq.py` clean; repository-wide `python -m mypy .` still reports the same 20 errors in three untouched `tools/` modules.
+- `scripts\setup_dsh_prereq.ps1` on the reference host: `READY`, exit 0, ten checks (node, npm, pnpm, DSH install, DSH version, `sdk` profile, `tui` profile, `tui` composition, session configuration, API-key presence).
+- Live wire re-verification against `@deepseek-ai/dsh` `0.2.0-rc.2`, initialize-only with no prompt on any path: `initialize` returned `serverInfo.name == "deepseek-harness-sdk-runtime"` and `serverInfo.version == "0.0.1"`, `shutdown` returned `{}`, the runtime exited 0 with empty stderr, and five runs — including the adapter's environment allowlist, its creation posture, and a verbatim `cwd` — produced byte-identical output. No difference from the documented shapes. Full record: [docs/evidence/dsh_runtime_validation.md](docs/evidence/dsh_runtime_validation.md).
+- First live exercise of the adapter itself (`vibemux_dsh_tui` in a real ConPTY, and the Control v7 path through `vibemuxd`) failed before the handshake completed: `dsh_driver_transport_closed` (exit 1) and `dsh_session_refused` (exit 4). `--print-config` still returns the documented content-free projection with exit 0.
+- `cargo test -p vibemux_harness -p vibemux_dsh --all-features`: every suite green, including three new unit tests for the path transformation and one Windows-gated integration test proving that a route whose `entry_script` is `\\?\C:\tools\dsh-package\lib\bin.js` yields the argv `["C:\\tools\\dsh-package\\lib\\bin.js", "--profile", "sdk"]` with no `\\?\` prefix. `cargo clippy -p vibemux_harness -p vibemux_dsh --all-targets --all-features -- -D warnings` clean.
+- Live re-probe after the repair (rebuilt `vibemux_dsh_tui`, node-pty 120x32, real `dsh` 0.2.0-rc.2): the surface reaches `phase ready` with `1 handshake ok: deepseek-harness-sdk-runtime 0.0.1`, renders its status and record panels, and `Ctrl-Q` exits `0` after 21.1 s. The same probe exited `1` after ~1.16 s with no status line before the repair. This is the first live DSH session this adapter has completed.
+
+**Defect found and repaired**
+- `crates/vibemux_dsh/src/config.rs` (`canonical_outside_root`) stores the entry script in `std::fs::canonicalize` form — on Windows the verbatim `\\?\C:\...` form — and `crates/vibemux_harness/src/dispatch/launch_spec.rs` passed that string as Node's first argument. Node's loader refuses a verbatim script path (`EISDIR: illegal operation on a directory, lstat 'C:'`) and exits 1 before loading anything, and because the driver discards the child's stderr the failure surfaced as a closed transport. Reproduced directly: `node <plain path>` runs the script, `node \\?\<same path>` fails.
+- The defect was version-independent — no DSH code ran — so it was not caused by the `0.2.0-rc.2` upgrade and would have failed identically on `0.1.2-rc.1`. It is repaired at the argv boundary, and `docs/dsh_session_protocol.md` §1 and §10 plus the validation record now carry both the defect and the repair.
+
+**Remaining**
+- Turn-level behavior against `0.2.0-rc.2` is unverified: no prompt was sent before or after the repair, so `session.event`/`session.status` handling, `turn/end` mapping, record paging, and the completion-authority table remain fixture-verified only. Sending one is the next live step and needs explicit authorization for vendor inference.
+- The Control v7 daemon path (`vibemuxctl dsh open`) was not re-run against the repaired driver; it shares `build_launch_spec` with the terminal surface, which now completes the handshake.
+- `vibemuxctl daemon start` reported `daemon_spawn_failed` while `vibemuxd.exe --project-root ...` started correctly; not root-caused.
+
+**Known risks**
+- `-Apply` installs third-party packages; the default check mode does not. CI never exercises a real install: the tests use fixture trees with `-SkipProbes`.
+- The `tui` profile comes from a third-party community bundle. The script checks composition, not behavior, and never launches an interactive surface.
+
+---
+
 ### 2026-10-04 - Dual-track workflow and DSH integration on main
 
 **Scope and resulting contracts**

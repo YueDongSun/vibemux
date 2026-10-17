@@ -42,6 +42,40 @@ impl fmt::Debug for LaunchSpec {
     }
 }
 
+/// Restore the classic spelling of a Windows verbatim path that is handed to an
+/// interpreter as an argument.
+///
+/// `std::fs::canonicalize` returns `\\?\C:\...` on Windows. `CreateProcess`
+/// accepts that spelling for the image, but Node's CommonJS loader does not: it
+/// mis-splits the verbatim form, tries `lstat("C:")`, and exits before loading
+/// the script, so a launcher-pair session dies before its first frame and the
+/// driver reports a closed transport. The canonical form stays the trust
+/// anchor — `canonical_outside_root` decides what is admissible — and only the
+/// argument the interpreter receives is restored to the spelling its loader can
+/// open.
+///
+/// `\\?\UNC\server\share\x` maps back to `\\server\share\x`. A verbatim path
+/// with no classic equivalent (a volume GUID path) is returned unchanged,
+/// because inventing a spelling would be worse than failing loudly.
+#[must_use]
+pub fn interpreter_script_path(script: &str) -> String {
+    const VERBATIM: &str = r"\\?\";
+    let Some(rest) = script.strip_prefix(VERBATIM) else {
+        return script.to_string();
+    };
+    let bytes = rest.as_bytes();
+    // `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`.
+    if bytes.len() >= 4 && bytes[..4].eq_ignore_ascii_case(b"UNC\\") {
+        return format!(r"\\{}", &rest[4..]);
+    }
+    // Only a drive path has a classic equivalent: `\\?\C:\dir\script.js`.
+    // A bare volume root (`\\?\C:`) is not the same path as `C:`, so it stays.
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
+        return rest.to_string();
+    }
+    script.to_string()
+}
+
 pub fn build_launch_spec(
     route: &DispatchRoute,
     mode: SessionMode,
@@ -94,20 +128,26 @@ fn protocol_arguments(
         // provider, model, and reasoning effort travel in `initialize`
         // params, and the prompt travels in `session/prompt` params, so no
         // prompt text can reach a command line (ADR 032 Decision 3).
+        //
+        // The script is canonicalized when the route is admitted, which on
+        // Windows yields a verbatim `\\?\` path. Node cannot load a script from
+        // that spelling, so the argument is de-verbatimized while the admitted
+        // canonical form remains the trust anchor.
         NativeProtocol::DshSdkJsonRpc => {
             let script = route
                 .entry_script
                 .as_ref()
                 .ok_or(DispatchError::ConfigRouteInvalid)?;
-            let script = script
-                .to_str()
-                .ok_or(DispatchError::ConfigRouteInvalid)?
-                .to_string();
+            let script = script.to_str().ok_or(DispatchError::ConfigRouteInvalid)?;
             let profile = route.effective_profile().to_string();
             if !route_config::profile_is_valid(&profile) {
                 return Err(DispatchError::ConfigRouteInvalid);
             }
-            vec![script, "--profile".to_string(), profile]
+            vec![
+                interpreter_script_path(script),
+                "--profile".to_string(),
+                profile,
+            ]
         }
         // `--tools=` removes every built-in tool, `--strict-mcp-config` skips
         // project and user MCP servers, and `--restricted` ignores project and
@@ -149,4 +189,56 @@ fn protocol_arguments(
         }
     };
     Ok(arguments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interpreter_script_path;
+
+    #[test]
+    fn verbatim_drive_paths_lose_the_prefix() {
+        assert_eq!(
+            interpreter_script_path(
+                r"\\?\C:\Users\user\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js"
+            ),
+            r"C:\Users\user\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js"
+        );
+        assert_eq!(
+            interpreter_script_path(r"\\?\c:\dsh\bin.js"),
+            r"c:\dsh\bin.js"
+        );
+        assert_eq!(interpreter_script_path(r"\\?\C:\"), r"C:\");
+    }
+
+    #[test]
+    fn verbatim_unc_paths_return_to_the_share_spelling() {
+        assert_eq!(
+            interpreter_script_path(r"\\?\UNC\server\share\bin.js"),
+            r"\\server\share\bin.js"
+        );
+        assert_eq!(
+            interpreter_script_path(r"\\?\unc\server\share\bin.js"),
+            r"\\server\share\bin.js"
+        );
+    }
+
+    #[test]
+    fn classic_paths_are_unchanged() {
+        assert_eq!(interpreter_script_path(r"C:\dsh\bin.js"), r"C:\dsh\bin.js");
+        assert_eq!(
+            interpreter_script_path("/usr/local/lib/dsh/bin.js"),
+            "/usr/local/lib/dsh/bin.js"
+        );
+        assert_eq!(interpreter_script_path("bin.js"), "bin.js");
+        assert_eq!(interpreter_script_path(""), "");
+    }
+
+    #[test]
+    fn verbatim_paths_without_a_classic_equivalent_are_unchanged() {
+        let volume = r"\\?\Volume{1e0f0e2a-0000-0000-0000-100000000000}\dsh\bin.js";
+        assert_eq!(interpreter_script_path(volume), volume);
+        // The verbatim volume root is not the drive-relative path `C:`.
+        assert_eq!(interpreter_script_path(r"\\?\C:"), r"\\?\C:");
+        assert_eq!(interpreter_script_path(r"\\?\UNC"), r"\\?\UNC");
+    }
 }

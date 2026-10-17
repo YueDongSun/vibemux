@@ -154,7 +154,7 @@ DSH sessions (ADR 032, pre-alpha, needs control protocol v7) are off until the o
 .\target\debug\vibemuxctl.exe dsh close  --project-root .
 ```
 
-At most one DSH session is live per project, and it lives in daemon memory: there is no canonical Task/Run record and a daemon restart loses it. Never treat `session.status: idle` as completion. Live validation against a real DSH runtime has not run; tests use the `vibemux_dsh_fixture` binary.
+At most one DSH session is live per project, and it lives in daemon memory: there is no canonical Task/Run record and a daemon restart loses it. Never treat `session.status: idle` as completion. Live validation against a real DSH runtime now covers an initialize-only session that reaches `ready` (see [docs/evidence/dsh_runtime_validation.md](docs/evidence/dsh_runtime_validation.md)); no turn has been sent, so prompt execution remains fixture-verified only.
 
 Dual-track workflows (ADR 031, pre-alpha, needs control protocol v6) are off until the operator creates `.vibemux\workflow_config.json` (schema 1; fields in README "Dual-track workflows") plus dispatch routes for the slots' harnesses, and restarts the daemon:
 
