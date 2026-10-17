@@ -4245,3 +4245,29 @@ scratch directory outside the repository.
 
 **Remaining**
 - No test pins `docs/architecture.md` prose, so it can drift again.
+
+### 2026-10-17 - State which plugins speak the plugin wire
+
+**Scope**
+- Documentation only. In `docs/protocol_boundaries.md`, the plugin stdio bullet said real plugins were unimplemented, and the supervisor bullet said real vendor plugins were absent. Two first-party plugins already speak the Protobuf v1 wire under `vibemux_plugin_supervisor`:
+  - `vibemux_terminal_observer` (plugin id `wezterm_observer`, kind terminal).
+  - `vibemux_harness_native_plugin` (plugin id `vibemux.harness`).
+
+**Implemented**
+- The plugin stdio bullet names both plugins and says who starts each:
+  - The daemon's plugin registry starts the observer from the operator's startup configuration.
+  - The ADR 040 dispatcher starts the harness plugin once per probe or execution, in the CLI process.
+- It says neither is live-validated, and that plugin SDKs and third-party plugins are still unimplemented.
+- The supervisor bullet now says plugin SDKs and third-party plugins remain absent. Status rows and the "Real vendor plugins" checklist item are unchanged.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- Each statement was checked against the code and existing records:
+  - `vibemux_terminal_observer/src/main.rs` and `vibemux_harness_native/src/plugin.rs` both use `vibemux_plugin_protocol` framing.
+  - `vibemux_harness_native::dispatch` calls `spawn_plugin` from its per-request `run`.
+  - The observer's "not live-verified" status comes from the PROGRESS status table.
+- Both tests that read this document still pass:
+  - `cargo test -p vibemux_harness --lib protocol_boundaries`: 1 passed.
+  - `cargo test -p vibemux_harness_native --lib protocol_boundaries`: 1 passed.
+
+**Remaining**
+- The A2A and workflow bullets were not re-audited in this change.
