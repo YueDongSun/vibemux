@@ -4427,3 +4427,20 @@ scratch directory outside the repository.
 - Mutation checks: dropping the line's content fails the render test and the goldens. Ordering the groups weakest first fails the grouping test as well.
 
 **Remaining**: No live terminal run. The line is hidden at 80x24 for lack of rows.
+
+### 2026-10-17 - Correct the dual-track protocol boundary
+
+**Scope**: The dual-track workflow bullet in `docs/protocol_boundaries.md`, with a `vibemuxd` guard test. The A2A bullet was re-audited and left unchanged.
+
+**Implemented**:
+- The bullet said "There is no AAG gateway client". Since ADR 036, the daemon has a bounded loopback AAG transport, and its AAG adapter is the only production `ModelGateway`. The bullet now says that this transport refuses every live call before submission (`gateway_live_attestation_unavailable`). It also says that only `test_helpers` builds can construct the permit its fake-server calls need, so no model call is made.
+- The bullet listed only the 15 Control v6 operations. It now names the v9 `workflow_supervisor_start` and `workflow_supervisor_status` (ADR 037) and the v10 `workflow_contract_edit` (ADR 039). Both newer answers were checked to be content-free (digests, versions, codes, IDs, and the prepare response), so "content-free except `workflow_session_prompt`" still holds.
+- A2A audit: the information-share peer, the authenticated HTTP+JSON, JSON-RPC, and gRPC task gateway, and the stated non-claims all match `vibemux_a2a` and `docs/a2a_supervisor_protocol.md`.
+- `protocol_boundaries_dual_track_bullet_matches_the_daemon` reads the bullet. It requires the v6 count to equal the test's `WORKFLOW_OPERATIONS` list, each later workflow operation's wire name to appear, and the refusal code to equal `Aag_Gateway_Error::LiveAttestationUnavailable.code()`.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemuxd --all-features --lib control::tests`: 21 pass. The other two tests that read this document, the `vibemux_harness` capability-table check and the `vibemux_harness_native` error-code check, still pass.
+- Mutation checks: dropping the v9 names, stating 14 operations, and renaming the refusal code each fail the new test at their own assertions.
+
+**Remaining**: The guard's list of later operations is maintained by hand, like the existing per-version lists. `README.md`, `CLAUDE.md`, and ADR 031 still use the shorthand "no AAG gateway client", meaning no live-capable client. They were left for the owner to reword.
