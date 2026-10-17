@@ -5,7 +5,7 @@ use super::{
     C,
     design::{self, Icon},
     supervisor_state::MainPage,
-    typography,
+    task_labels, typography,
 };
 use crate::supervisor_model::SupervisorSnapshot;
 use egui::{self, RichText, Sense, Ui, vec2};
@@ -182,11 +182,7 @@ fn new_task_row(ui: &mut Ui, c: &C) -> bool {
 }
 
 fn recent_row(ui: &mut Ui, c: &C, title: &str, state: &str, selected: bool) -> egui::Response {
-    let title = if title.trim().is_empty() {
-        "Untitled task"
-    } else {
-        title
-    };
+    let title = task_labels::task_title(title);
     let (rect, response) = ui.allocate_exact_size(
         vec2(ui.available_width(), RECENT_ROW_HEIGHT),
         Sense::click(),

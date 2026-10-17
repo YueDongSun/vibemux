@@ -4903,3 +4903,26 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_cli --all-features --lib` passed: 44 tests. A mutation that respelled `--session-id` as `--session_id` inside the `dsh open` synopsis's optional group failed the test on the group's present variant. The document was restored and compared byte for byte.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - One owner for GUI task labels
+
+**Scope:** `crates/vibemux_frontend/src/gui/` display text only. No wire, schema, control, or canonical state change.
+
+**Implemented:**
+- The new `gui/task_labels.rs` owns the task title, state, and executor labels and the blank-text rule behind them. The chat task rows, the sidebar recents, the task window title, and the detail drawer all call it. Before, four copies disagreed:
+  - The chat rows treated only an empty string as blank, and the other views also treated whitespace as blank.
+  - The chat rows showed `Unassigned` for a blank executor, while the detail drawer fell back to the first Run's harness.
+  - The chat rows passed a blank state straight to the status chip, while the detail drawer showed `Unknown state`.
+- The shared rule:
+  - A title, state, executor, or harness that is empty or only whitespace counts as missing.
+  - The executor falls back to the first Run's harness, then to `Unassigned`.
+  - Real text is shown verbatim.
+- A test keeps the views from restating the `Untitled task` and `Unassigned` fallbacks themselves.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 137 lib (1 ignored), 6 cli, 2 palette parity, 10 supervisor UI. Two mutations were each caught by their test:
+- Restoring the chat row's own `Unassigned` fallback failed the view guard.
+- Dropping the harness fallback from `executor_label` failed the executor test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.

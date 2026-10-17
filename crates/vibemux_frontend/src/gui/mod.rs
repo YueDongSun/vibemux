@@ -13,6 +13,7 @@ mod sidebar;
 mod supervisor_app;
 mod supervisor_state;
 mod task_detail;
+mod task_labels;
 mod theme;
 mod typography;
 mod welcome;

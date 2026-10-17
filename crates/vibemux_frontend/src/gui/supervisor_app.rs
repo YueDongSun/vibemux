@@ -24,7 +24,7 @@ use crate::{
 use super::{
     C, agents, chat, composer, design, diagnostics, settings, sidebar,
     supervisor_state::{MainPage, SupervisorUiState, UiActionQueue},
-    task_detail,
+    task_detail, task_labels,
 };
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -427,7 +427,7 @@ impl SupervisorApp {
                     .find(|task| task.task_id == task_id)
                     .map_or_else(
                         || "Task observation".to_owned(),
-                        |task| window_task_title(task).to_owned(),
+                        |task| task_labels::task_title(&task.title).to_owned(),
                     )
             });
             let viewport_id = chat::task_viewport_id(&task_id);
@@ -831,7 +831,7 @@ fn drawer_contents(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(window_task_title(task))
+                        RichText::new(task_labels::task_title(&task.title))
                             .font(super::typography::display_font(
                                 ui.ctx(),
                                 super::typography::TITLE_SIZE,
@@ -921,14 +921,6 @@ fn freshness_label(observed_at: Option<&str>) -> Option<String> {
         local.minute(),
         local.second()
     ))
-}
-
-fn window_task_title(task: &TaskView) -> &str {
-    if task.title.trim().is_empty() {
-        "Untitled task"
-    } else {
-        &task.title
-    }
 }
 
 /// Height of everything in the welcome block that is not the composer: the

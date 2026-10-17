@@ -12,6 +12,7 @@ use super::{
     chat::{demo_badge, wrapped_label},
     design,
     supervisor_state::{TaskDetailSelection, TaskDetailTab, UiActionQueue},
+    task_labels::{executor_label, nonempty, task_state, task_title},
 };
 
 /// Whether the detail view draws the task title itself (detached window) or
@@ -43,7 +44,7 @@ pub fn render(
             if title == TitleDisplay::Shown {
                 wrapped_label(
                     ui,
-                    RichText::new(task_title(task))
+                    RichText::new(task_title(&task.title))
                         .font(super::typography::display_font(
                             ui.ctx(),
                             super::typography::TITLE_SIZE,
@@ -53,7 +54,7 @@ pub fn render(
                 ui.add_space(3.0);
             }
             ui.horizontal_wrapped(|ui| {
-                design::status(ui, colors, task_state(task));
+                design::status(ui, colors, task_state(&task.state));
                 ui.label(
                     RichText::new(executor_label(task))
                         .size(13.0)
@@ -497,25 +498,6 @@ fn section_label(ui: &mut Ui, colors: &C, label: &str) {
     ui.add_space(5.0);
 }
 
-fn task_title(task: &TaskView) -> &str {
-    nonempty(&task.title, "Untitled task")
-}
-
-fn task_state(task: &TaskView) -> &str {
-    nonempty(&task.state, "Unknown state")
-}
-
-fn executor_label(task: &TaskView) -> &str {
-    if !task.executor.is_empty() {
-        return &task.executor;
-    }
-    task.runs
-        .first()
-        .map(|run| run.harness.as_str())
-        .filter(|label| !label.is_empty())
-        .unwrap_or("Unassigned")
-}
-
 fn run_label(run: &RunView) -> String {
     format!(
         "{} · {} · {}",
@@ -523,12 +505,4 @@ fn run_label(run: &RunView) -> String {
         nonempty(&run.role, "Run"),
         run.run_id
     )
-}
-
-fn nonempty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.trim().is_empty() {
-        fallback
-    } else {
-        value
-    }
 }
