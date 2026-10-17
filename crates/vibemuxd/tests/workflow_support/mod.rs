@@ -771,20 +771,30 @@ impl WorkflowFixture {
             .expect("status")
     }
 
-    /// Polls status until `done` holds.
+    /// Polls status until `done` holds. One status poll that misses the
+    /// control deadline on a loaded host is retried; the settle timeout still
+    /// bounds the wait, and every other control error fails the test.
     pub async fn wait_until(&self, workflow_id: Uuid, done: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + SETTLE_TIMEOUT;
         loop {
-            let status = self.status(workflow_id).await;
-            if done(&status) {
-                return status;
+            match self.client.workflow_status(workflow_id).await {
+                Ok(status) => {
+                    if done(&status) {
+                        return status;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "the workflow never settled: phase {} running_here {}",
+                        status["phase"],
+                        status["running_here"]
+                    );
+                }
+                Err(ControlError::Deadline) => assert!(
+                    Instant::now() < deadline,
+                    "the workflow never settled: every status poll missed the control deadline"
+                ),
+                Err(error) => panic!("status: {error:?}"),
             }
-            assert!(
-                Instant::now() < deadline,
-                "the workflow never settled: phase {} running_here {}",
-                status["phase"],
-                status["running_here"]
-            );
             sleep(POLL_INTERVAL).await;
         }
     }
