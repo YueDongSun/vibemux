@@ -4516,3 +4516,18 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. Three mutations each failed the tests: dropping native ACP for Grok, adding Qwen to the shared ACP harnesses, and mapping native `acp` to the Claude engine. Backlog checks with no change: the daemon-backed `vibemuxctl dispatch` verbs deliberately have no text view (their JSON is the contract), and the MCP host has no harness listing tool, which would be an ADR 035 tool-contract change.
 
 **Remaining:** the native `HARNESSES` and `PROTOCOLS` test arrays are maintained by hand, so a new native variant must be added to them. The shared-to-native direction is exhaustive through `AgentKind::all()` and `NativeProtocol::ALL`.
+
+### 2026-10-18 - Native route argument and environment refusals are pinned
+
+**Scope:** `vibemux_harness_native` configuration validation and the harness core guide. No wire, schema, control protocol, or policy change.
+
+**Implemented:**
+
+- The native configuration's two security-relevant refusals had no test: a route prefix carrying an approval, sandbox, sharing, or debug-log flag (`harness_unsafe_arguments`), and a bad environment name (`harness_invalid_environment`). Removing either check would not have failed any test.
+- The inline flag list is now the documented `UNSAFE_ARGUMENTS` constant near the top of `config.rs`, with unchanged contents and matching.
+- New unit tests refuse every listed flag alone and as `flag=value`, keep the Codex, Claude, and Copilot bypass flags on the list, and accept a plain launcher prefix. Environment names must be non-empty, at most 128 bytes, uppercase ASCII letters, digits, and `_`, distinct, and not `VIBEMUX_PLUGIN_SESSION_ID`; 24 names are accepted and a 25th fails the route (`harness_invalid_route`).
+- `docs/guides/harness_core_guide.md` now names both codes and says the flag list guards against mistakes and is not a sandbox.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (16 unit, 18 normalization, 21 process dispatch). Four mutations each failed a new test: dropping `--yolo` from the list, matching `flag:` instead of `flag=`, removing the reserved-name check, and ignoring duplicate names.
+
+**Remaining:** The native model field accepts a value that starts with `-`, which the daemon's shared route label check refuses; that parity fix is a separate change. The flag list is a deny list, not an allow list, so an operator prefix stays operator-trusted.

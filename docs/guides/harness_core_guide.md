@@ -59,12 +59,18 @@ unknown fields and invalid limits are rejected.
 path when no native vendor binary exists. User messages are never substituted
 into it. On Windows the executable must resolve to a native `.exe`; do not point
 the route at `.cmd`, `.bat`, or `.ps1`. Standard protocol arguments are supplied
-by the adapter.
+by the adapter after the prefix. A prefix that carries a known approval,
+sandbox, sharing, or debug-log flag, such as `--yolo` or
+`--dangerously-skip-permissions`, alone or as `flag=value`, is rejected with
+`harness_unsafe_arguments`. That list guards against mistakes and is not a
+sandbox, so keep the prefix to launcher arguments.
 
 Only the named `environment_names` plus a small OS startup set are inherited.
-Variable names must be uppercase. Secret values stay in the local environment
-or the vendor's existing authentication mechanism, never in this JSON. VibeMux
-does not copy vendor authentication files into the project.
+Variable names must be distinct, at most 128 bytes, and use only uppercase
+ASCII letters, digits, and `_`; `VIBEMUX_PLUGIN_SESSION_ID` is reserved. A bad
+name is rejected with `harness_invalid_environment`. Secret values stay in the
+local environment or the vendor's existing authentication mechanism, never in
+this JSON. VibeMux does not copy vendor authentication files into the project.
 
 `model: null` preserves the vendor's selection. A configured Codex or Claude
 model is passed explicitly; ACP model selection is not implemented and a
