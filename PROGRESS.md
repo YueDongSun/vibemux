@@ -4054,3 +4054,31 @@ scratch directory outside the repository.
 
 **Remaining**
 - Without `test_helpers`, the filter test no longer runs. A filter path that contains a space or another shell metacharacter would make Git use `sh -c` again.
+
+### 2026-10-17 - Pin the vendor-request refusal posture and the native completion-code allowlist
+
+**Scope**
+- Test-only. Coverage review of how both dispatch paths answer vendor-to-client requests, and of which plugin error codes the native dispatcher passes through. No behavior change.
+
+**Findings**
+- The native fixture already checks end to end that an ACP `session/request_permission` is answered `cancelled`, a Codex `item/commandExecution/requestApproval` is answered `decline`, and a Claude permission control request is answered with an error.
+- Untested shared-engine branches before this change:
+  - The Codex `item/fileChange/requestApproval` decline.
+  - The JSON-RPC `-32601` refusal for every other vendor request, which covers the filesystem and terminal requests behind ACP's disabled client capabilities.
+  - Rejection of a request whose id cannot be echoed back.
+- The native `safe_error_code` allowlist had no test. Removing a mapped protocol code from it would have silently relabeled that violation as `harness_vendor_failed`.
+
+**Implemented**
+- `vibemux_harness` `dispatch_protocols::every_vendor_request_is_refused_and_none_is_granted`:
+  - A Codex app-server session declines a `fileChange` approval and refuses an unknown request without a `jsonrpc` member.
+  - An ACP session refuses `fs/read_text_file`, `fs/write_text_file`, `terminal/create`, and an unknown request with a `jsonrpc: "2.0"` `-32601` error that echoes no request parameters.
+  - Both reject a non-scalar or empty request id with `InvalidRpcId` and leave the session non-terminal.
+- `vibemux_harness_native` `dispatch::tests::completion_codes_survive_only_when_fixed_and_content_free`: all 13 mapped protocol codes plus representative transport codes are accepted. Empty, case-changed, padded, content-bearing, and vendor-defined codes are rejected.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_harness --all-features --test dispatch_protocols`: 15 passed.
+- `cargo test -p vibemux_harness_native --all-features --lib`: 8 passed.
+- `cargo clippy -p vibemux_harness -p vibemux_harness_native --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Approval method names are pinned only to the ones the engine knows. A vendor that renames its approval request would get `-32601` rather than a decline. That is still a refusal, but its effect on the vendor turn was not verified against a live CLI.

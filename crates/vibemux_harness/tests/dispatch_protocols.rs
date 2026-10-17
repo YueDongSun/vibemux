@@ -353,6 +353,83 @@ fn acp_session_offers_no_client_capabilities_and_cancels_permission_requests() {
     assert_eq!(session.terminal(), Some(SessionTerminal::Completed));
 }
 
+/// Every vendor-to-client request gets a refusal: the known approval methods
+/// get their protocol's decline result, and anything else, including the
+/// filesystem and terminal requests behind ACP's disabled client
+/// capabilities, gets JSON-RPC "method not found". No request is answered with
+/// a grant, and a request whose id cannot be echoed back safely is a
+/// protocol violation rather than an ignored line.
+#[test]
+fn every_vendor_request_is_refused_and_none_is_granted() {
+    let refused = |protocol: NativeProtocol, id: i64| {
+        let mut response = json!({"id": id,
+            "error": {"code": -32601, "message": "Client capability not granted"}});
+        if protocol == NativeProtocol::Acp {
+            response["jsonrpc"] = json!("2.0");
+        }
+        vec![response]
+    };
+
+    let mut codex = execution(AgentKind::Codex, NativeProtocol::CodexAppServer);
+    for (index, line) in CODEX_APP_SERVER.lines().take(4).enumerate() {
+        let (record, value) = parse(NativeProtocol::CodexAppServer, index as u64 + 1, line);
+        codex.receive(&value, record.kind()).expect("prefix");
+    }
+    assert_eq!(
+        feed(
+            &mut codex,
+            json!({"id": 20, "method": "item/fileChange/requestApproval",
+                "params": {"threadId": "synthetic_thread", "turnId": "synthetic_turn",
+                    "itemId": "tool_three"}})
+        ),
+        Ok(vec![json!({"id": 20, "result": {"decision": "decline"}})])
+    );
+    assert_eq!(
+        feed(
+            &mut codex,
+            json!({"id": 21, "method": "synthetic/unknownRequest", "params": {}})
+        ),
+        Ok(refused(NativeProtocol::CodexAppServer, 21))
+    );
+    assert_eq!(
+        feed(
+            &mut codex,
+            json!({"id": {"nested": 1}, "method": "item/fileChange/requestApproval"})
+        ),
+        Err(DispatchError::InvalidRpcId)
+    );
+
+    let mut acp = execution(AgentKind::OpenCode, NativeProtocol::Acp);
+    for (index, line) in ACP_STREAM.lines().take(2).enumerate() {
+        let (record, value) = parse(NativeProtocol::Acp, index as u64 + 1, line);
+        acp.receive(&value, record.kind()).expect("prefix");
+    }
+    for (id, method) in [
+        (30, "fs/read_text_file"),
+        (31, "fs/write_text_file"),
+        (32, "terminal/create"),
+        (33, "synthetic/unknownRequest"),
+    ] {
+        let request = json!({"jsonrpc": "2.0", "id": id, "method": method,
+            "params": {"sessionId": "synthetic_session", "path": WORKING_DIRECTORY}});
+        let replies = feed(&mut acp, request).expect("refusal");
+        assert_eq!(replies, refused(NativeProtocol::Acp, id), "{method}");
+        assert!(
+            !serde_json::to_string(&replies)
+                .unwrap()
+                .contains(WORKING_DIRECTORY)
+        );
+    }
+    assert_eq!(
+        feed(
+            &mut acp,
+            json!({"jsonrpc": "2.0", "id": "", "method": "session/request_permission"})
+        ),
+        Err(DispatchError::InvalidRpcId)
+    );
+    assert_eq!(acp.terminal(), None);
+}
+
 #[test]
 fn claude_session_initializes_then_sends_one_user_message() {
     let mut session = execution(AgentKind::Claude, NativeProtocol::ClaudeStreamJson);

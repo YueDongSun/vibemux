@@ -397,3 +397,45 @@ fn safe_error_code(code: &str) -> bool {
             | "harness_stdin_closed"
     ) || crate::session::is_protocol_error_code(code)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::safe_error_code;
+
+    /// A plugin completion keeps its error code only when the code is fixed
+    /// and content-free; anything else is reported as `harness_vendor_failed`.
+    /// Every protocol code the shared engine maps to must survive, or a
+    /// protocol violation would be misreported as a vendor failure.
+    #[test]
+    fn completion_codes_survive_only_when_fixed_and_content_free() {
+        for code in [
+            "harness_invalid_jsonrpc",
+            "harness_invalid_rpc_id",
+            "harness_invalid_rpc_result",
+            "harness_rpc_error",
+            "harness_invalid_identifier",
+            "harness_invalid_initialize",
+            "harness_unsupported_protocol_version",
+            "harness_uncorrelated_response",
+            "harness_unexpected_response",
+            "harness_uncorrelated_session",
+            "harness_uncorrelated_turn",
+            "harness_unexpected_terminal",
+            "harness_invalid_terminal",
+            "harness_cancelled",
+            "harness_eof_without_terminal",
+            "harness_vendor_failed",
+        ] {
+            assert!(safe_error_code(code), "{code}");
+        }
+        for code in [
+            "",
+            "HARNESS_CANCELLED",
+            "harness_cancelled ",
+            "harness_vendor_failed: SYNTHETIC_SECRET_TOKEN",
+            "vendor_defined_failure",
+        ] {
+            assert!(!safe_error_code(code), "{code:?}");
+        }
+    }
+}
