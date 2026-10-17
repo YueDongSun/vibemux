@@ -9,6 +9,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
 };
+use vibemux_harness::dispatch::AdapterSupport;
 
 const WIDE_LAYOUT: u16 = 110;
 const HARNESS_COLUMNS_WIDTH: u16 = 72;
@@ -164,6 +165,7 @@ fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, select
                 agent.authentication_state.as_str(),
                 agent.inference_state.as_str(),
                 agent.version.as_str(),
+                adapter_column_label(agent.adapter.support),
                 agent.route.as_str(),
             ]
         };
@@ -186,9 +188,18 @@ fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, select
                 Constraint::Length(9),
                 Constraint::Length(9),
                 Constraint::Length(11),
+                Constraint::Length(8),
                 Constraint::Min(10),
             ],
-            vec!["Agent", "Launcher", "Auth", "Inference", "Version", "Route"],
+            vec![
+                "Agent",
+                "Launcher",
+                "Auth",
+                "Inference",
+                "Version",
+                "Adapter",
+                "Route",
+            ],
         )
     };
     let table = Table::new(rows, columns)
@@ -201,6 +212,16 @@ fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, select
         (!model.agents.is_empty()).then(|| selected.min(model.agents.len().saturating_sub(1))),
     );
     frame.render_stateful_widget(table, area, &mut selection);
+}
+
+/// Short table label; the details pane and snapshots spell out the full
+/// support level and protocol list.
+const fn adapter_column_label(support: AdapterSupport) -> &'static str {
+    match support {
+        AdapterSupport::Execute => "execute",
+        AdapterSupport::ProbeOnly => "probe",
+        AdapterSupport::TerminalOnly => "terminal",
+    }
 }
 
 fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &State) {
@@ -221,12 +242,13 @@ fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &
             .min(model.agents.len().saturating_sub(1)),
     ) {
         Some(agent) => format!(
-            "{} / version {}\nLauncher: {}\nAuth: {} | Inference: {}\nRoute: {}\nCode: {}\nNative attach: disabled\nReserved is not running.",
+            "{} / version {}\nLauncher: {}\nAuth: {} | Inference: {}\nAdapter: {}\nRoute: {}\nCode: {}\nNative attach: disabled\nReserved is not running.",
             safe_text(&agent.name),
             safe_text(&agent.version),
             safe_text(&agent.launcher_state),
             safe_text(&agent.authentication_state),
             safe_text(&agent.inference_state),
+            agent.adapter.summary(),
             safe_text(&agent.route),
             safe_text(&agent.code)
         ),

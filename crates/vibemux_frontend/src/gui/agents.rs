@@ -67,9 +67,10 @@ fn render_list(ui: &mut Ui, c: &C, view_model: &ViewModel, actions: &mut AgentsA
                         ui.add_space(3.0);
                         ui.label(
                             RichText::new(format!(
-                                "Launcher: {}  ·  Route: {}",
+                                "Launcher: {}  ·  Route: {}  ·  Adapter: {}",
                                 probe_state_label(agent.launcher_state),
-                                route_label(agent.route)
+                                route_label(agent.route),
+                                agent.adapter.support.as_str()
                             ))
                             .size(12.0)
                             .color(c.muted),
@@ -122,6 +123,7 @@ fn render_detail(ui: &mut Ui, c: &C, view_model: &ViewModel, index: usize) -> bo
             );
             detail_row(ui, c, "Version", &agent.version);
             detail_row(ui, c, "Route", route_label(agent.route));
+            detail_row(ui, c, "Structured adapter", &agent.adapter.summary());
             detail_row(ui, c, "Result code", &agent.code);
         });
     ui.add_space(14.0);

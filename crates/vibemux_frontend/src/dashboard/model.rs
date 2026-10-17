@@ -1,3 +1,4 @@
+use vibemux_harness::dispatch::{AdapterCapability, adapter_capability};
 use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
 
 const MAX_DISPLAY_CHARACTERS: usize = 160;
@@ -32,6 +33,9 @@ pub struct AgentView {
     pub version: String,
     pub route: String,
     pub code: String,
+    /// Structured adapter support compiled into this build; independent of
+    /// whether the harness was observed.
+    pub adapter: AdapterCapability,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,6 +68,7 @@ impl DashboardModel {
                             .unwrap_or_else(|| "-".to_string()),
                         route: route_label(probe.route).to_string(),
                         code: safe_text(&probe.code),
+                        adapter: adapter_capability(agent),
                     },
                     None => AgentView {
                         name: agent.display_name().to_string(),
@@ -73,6 +78,7 @@ impl DashboardModel {
                         version: "-".to_string(),
                         route: "unknown".to_string(),
                         code: "observation_missing".to_string(),
+                        adapter: adapter_capability(agent),
                     },
                 },
             )
@@ -154,14 +160,16 @@ impl DashboardModel {
         ];
         lines.extend(self.agents.iter().map(|agent| {
             format!(
-                "- {} launcher={} auth={} inference={} version={} route={} code={}",
+                "- {} launcher={} auth={} inference={} version={} route={} code={} adapter={} protocols={}",
                 agent.name,
                 agent.launcher_state,
                 agent.authentication_state,
                 agent.inference_state,
                 agent.version,
                 agent.route,
-                agent.code
+                agent.code,
+                agent.adapter.support.as_str(),
+                agent.adapter.protocol_list()
             )
         }));
         lines.push("native_tui_slots:".to_string());

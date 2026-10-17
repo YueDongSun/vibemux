@@ -46,8 +46,8 @@ pub async fn run(
         .working_directory
         .canonicalize()
         .map_err(|source| Error::with_source("harness_invalid_cwd", source))?;
-    let mut session = Session::new(route.clone(), request.clone(), probe);
-    let arguments = session.arguments()?;
+    let mut session = Session::new(&route, &request, probe)?;
+    let arguments = session.arguments().to_vec();
     let mut completion = Completion {
         schema_version: SCHEMA_VERSION,
         status: Status::Unverified,
@@ -91,7 +91,7 @@ pub async fn run(
                     }
                     continue;
                 }
-                exited = process.observe_exit(), if session.status.is_some() && !parent_exited => {
+                exited = process.observe_exit(), if session.status().is_some() && !parent_exited => {
                     exited?;
                     parent_exited = true;
                     continue;
@@ -131,7 +131,7 @@ pub async fn run(
                 let cancel = if cancel_sent { None } else { Some(&mut cancellation) };
                 write_json(&mut process.input, &response, read_deadline, cancel).await?;
             }
-            if session.status.is_some() {
+            if session.status().is_some() {
                 process.input.take();
                 read_deadline = read_deadline.min(Instant::now() + Duration::from_millis(limits.shutdown_ms));
             }
@@ -146,7 +146,7 @@ pub async fn run(
     completion.exit_code = exit.code;
     completion.stderr_bytes = exit.stderr_bytes;
     completion.forced_termination = exit.forced;
-    completion.status = session.status.unwrap_or(Status::Unverified);
+    completion.status = session.status().unwrap_or(Status::Unverified);
     if let Err(error) = exchange {
         completion.status = if error.code() == "harness_cancelled" {
             Status::Cancelled

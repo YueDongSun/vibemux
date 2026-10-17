@@ -123,6 +123,10 @@ impl Dispatcher {
         if !probe && !route.allow_execution {
             return Err(Error::new("harness_execution_disabled"));
         }
+        // The core replays every record through its own copy of the shared
+        // protocol engine. Building it first also refuses a route the engine
+        // cannot drive before any plugin process exists.
+        let mut validator = crate::session::Session::new(route, &request, probe)?;
         let _slot = self
             .slots
             .clone()
@@ -222,7 +226,6 @@ impl Dispatcher {
             .map_err(|source| Error::with_source("harness_encode_failed", source))?;
         let mut records = Vec::<Record>::new();
         let mut captured_bytes = 0_usize;
-        let mut validator = crate::session::Session::new(route.clone(), request.clone(), probe);
         let exchange = async {
             session.try_send(envelope("harness_request".to_string(), Some(request_id.clone()),
                 envelope::Body::Request(WireRequest {
@@ -293,10 +296,10 @@ impl Dispatcher {
                             || (matches!(completion.status, Status::Completed | Status::Probed)
                                 && (completion.exit_code != Some(0) || completion.forced_termination
                                     || completion.stdout_bytes != captured_bytes as u64
-                                    || validator.status != Some(completion.status)
+                                    || validator.status() != Some(completion.status)
                                     || completion.error_code.is_some()))
                             || (completion.status == Status::Cancelled
-                                && validator.status != Some(Status::Cancelled) && !cancel_sent)
+                                && validator.status() != Some(Status::Cancelled) && !cancel_sent)
                         {
                             return Err(Error::new("harness_invalid_completion"));
                         }
@@ -389,16 +392,8 @@ fn safe_error_code(code: &str) -> bool {
             | "harness_process_failed"
             | "harness_eof_without_terminal"
             | "harness_vendor_failed"
-            | "harness_rpc_error"
-            | "harness_invalid_terminal"
-            | "harness_uncorrelated_response"
-            | "harness_uncorrelated_session"
-            | "harness_uncorrelated_turn"
-            | "harness_invalid_initialize"
-            | "harness_unsupported_protocol_version"
-            | "harness_unexpected_terminal"
             | "harness_write_timeout"
             | "harness_write_failed"
             | "harness_stdin_closed"
-    )
+    ) || crate::session::is_protocol_error_code(code)
 }

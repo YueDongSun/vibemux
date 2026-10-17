@@ -75,6 +75,30 @@ impl fmt::Debug for InitialInput {
     }
 }
 
+/// The route facts a session reads. The daemon derives it from a
+/// [`DispatchRoute`]; a caller with its own route format (the standalone
+/// native dispatcher of ADR 040) builds it directly, so both drive the same
+/// vendor handshake.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionRoute {
+    pub harness: AgentKind,
+    pub protocol: NativeProtocol,
+    pub model: Option<String>,
+    /// DSH provider route; ignored by every other protocol.
+    pub provider: Option<String>,
+}
+
+impl From<&DispatchRoute> for SessionRoute {
+    fn from(route: &DispatchRoute) -> Self {
+        Self {
+            harness: route.harness,
+            protocol: route.protocol,
+            model: route.model.clone(),
+            provider: route.provider.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Phase {
     Initialize,
@@ -121,10 +145,7 @@ impl ProtocolSession {
         route: &DispatchRoute,
         working_directory: String,
     ) -> Result<Self, DispatchError> {
-        if !route.protocol.supports_probe() {
-            return Err(DispatchError::ProbeUnsupported);
-        }
-        Self::new(route, true, String::new(), working_directory)
+        Self::probe(SessionRoute::from(route), working_directory)
     }
 
     /// One-prompt session. `working_directory` is the canonical project root
@@ -134,14 +155,38 @@ impl ProtocolSession {
         prompt: String,
         working_directory: String,
     ) -> Result<Self, DispatchError> {
-        if prompt.trim().is_empty() || prompt.len() > MAX_PROMPT_BYTES {
+        Self::execution(
+            SessionRoute::from(route),
+            prompt,
+            working_directory,
+            MAX_PROMPT_BYTES,
+        )
+    }
+
+    /// [`Self::for_probe`] for a caller that owns its own route format.
+    pub fn probe(route: SessionRoute, working_directory: String) -> Result<Self, DispatchError> {
+        if !route.protocol.supports_probe() {
+            return Err(DispatchError::ProbeUnsupported);
+        }
+        Self::new(route, true, String::new(), working_directory)
+    }
+
+    /// [`Self::for_execution`] for a caller that owns its own route format
+    /// and prompt-size policy. The daemon's policy is [`MAX_PROMPT_BYTES`].
+    pub fn execution(
+        route: SessionRoute,
+        prompt: String,
+        working_directory: String,
+        max_prompt_bytes: usize,
+    ) -> Result<Self, DispatchError> {
+        if prompt.trim().is_empty() || prompt.len() > max_prompt_bytes {
             return Err(DispatchError::InvalidPrompt);
         }
         Self::new(route, false, prompt, working_directory)
     }
 
     fn new(
-        route: &DispatchRoute,
+        route: SessionRoute,
         probe: bool,
         prompt: String,
         working_directory: String,
@@ -171,8 +216,8 @@ impl ProtocolSession {
             harness: route.harness,
             protocol: route.protocol,
             probe,
-            model: route.model.clone(),
-            provider: route.provider.clone(),
+            model: route.model,
+            provider: route.provider,
             prompt,
             working_directory,
             dsh_session_id,

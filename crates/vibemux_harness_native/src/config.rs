@@ -220,17 +220,23 @@ impl Config {
             .ok_or_else(|| Error::new("harness_route_unavailable"))
     }
 
+    /// Both capability flags come from the shared protocol engine: a route
+    /// executes when an engine session drives it, and probes when that
+    /// engine has an initialize-only handshake.
     pub fn catalog(&self) -> serde_json::Value {
         serde_json::json!({
             "schema_version": SCHEMA_VERSION,
-            "harnesses": self.harnesses.iter().map(|route| serde_json::json!({
-                "harness": route.harness,
-                "protocol": route.protocol,
-                "enabled": route.enabled,
-                "allow_execution": route.allow_execution,
-                "structured_probe": matches!(route.protocol, Protocol::Appserver | Protocol::Acp | Protocol::Claude),
-                "native_execution": matches!(route.protocol, Protocol::Appserver | Protocol::Acp | Protocol::Claude | Protocol::Codex)
-            })).collect::<Vec<_>>()
+            "harnesses": self.harnesses.iter().map(|route| {
+                let shared = route.protocol.native_protocol();
+                serde_json::json!({
+                    "harness": route.harness,
+                    "protocol": route.protocol,
+                    "enabled": route.enabled,
+                    "allow_execution": route.allow_execution,
+                    "structured_probe": shared.is_some_and(|protocol| protocol.supports_probe()),
+                    "native_execution": shared.is_some()
+                })
+            }).collect::<Vec<_>>()
         })
     }
 }

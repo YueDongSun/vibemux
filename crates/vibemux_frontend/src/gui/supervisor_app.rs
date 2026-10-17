@@ -974,6 +974,7 @@ fn test_view_model() -> ViewModel {
                 version: "-".to_string(),
                 route: RouteKind::Unknown,
                 code: "not_probed".to_string(),
+                adapter: vibemux_harness::dispatch::adapter_capability(agent),
             })
             .collect(),
         gateway_summary: "unavailable".to_string(),

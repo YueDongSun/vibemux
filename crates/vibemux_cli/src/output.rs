@@ -3,6 +3,7 @@ use crate::{command::Format, failure::Failure};
 use serde_json::{Value, json};
 use std::fmt::Write;
 use vibemux_frontend::dashboard::safe_text;
+use vibemux_harness::{AgentKind, dispatch::adapter_capability};
 
 const MAX_TEXT_ROWS: usize = 32;
 
@@ -193,11 +194,12 @@ fn probe_text(value: &Value) -> String {
     ];
     for agent in rows(value, "agents").iter().take(MAX_TEXT_ROWS) {
         lines.push(format!(
-            "  {:<10} launcher={:<11} auth={:<11} inference={:<11} version={}",
+            "  {:<10} launcher={:<11} auth={:<11} inference={:<11} adapter={:<13} version={}",
             field(agent, "agent"),
             field(agent, "launcher_state"),
             field(agent, "authentication_state"),
             field(agent, "inference_state"),
+            adapter_support(agent),
             field(agent, "version")
         ));
     }
@@ -210,6 +212,13 @@ fn probe_text(value: &Value) -> String {
         "Endpoint details are withheld. This is not model-generation verification.".to_string(),
     );
     lines.join("\n")
+}
+
+/// The build's structured adapter support for a probe row's agent; an agent
+/// name this build does not know reads `unknown` rather than a guess.
+fn adapter_support(agent: &Value) -> &'static str {
+    serde_json::from_value::<AgentKind>(agent["agent"].clone())
+        .map_or("unknown", |kind| adapter_capability(kind).support.as_str())
 }
 
 fn harness_text(value: &Value) -> String {
@@ -288,5 +297,31 @@ mod tests {
         assert!(!encoded.contains('\u{009b}'));
         assert!(!encoded.contains('\u{202e}'));
         assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), value);
+    }
+    #[test]
+    fn probe_text_names_adapter_support_per_agent() {
+        let text = probe_text(&json!({
+            "source": "local_probe",
+            "platform": "windows",
+            "agents": [
+                {"agent": "claude", "launcher_state": "verified"},
+                {"agent": "grok", "launcher_state": "verified"},
+                {"agent": "kimi", "launcher_state": "unavailable"},
+                {"agent": "future_vendor", "launcher_state": "verified"}
+            ],
+            "gateway": {"state": "not_run"},
+            "a2a": {"state": "not_run"}
+        }));
+        let adapter = |agent: &str| {
+            text.lines()
+                .find(|line| line.trim_start().starts_with(agent))
+                .and_then(|line| line.split("adapter=").nth(1))
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_string)
+        };
+        assert_eq!(adapter("claude").as_deref(), Some("execute"));
+        assert_eq!(adapter("grok").as_deref(), Some("probe_only"));
+        assert_eq!(adapter("kimi").as_deref(), Some("terminal_only"));
+        assert_eq!(adapter("future_vendor").as_deref(), Some("unknown"));
     }
 }

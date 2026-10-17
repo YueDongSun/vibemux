@@ -111,17 +111,7 @@ fn protocol_arguments(
     route: &DispatchRoute,
     mode: SessionMode,
 ) -> Result<Vec<String>, DispatchError> {
-    let owned = |values: &[&str]| values.iter().map(|value| (*value).to_string()).collect();
-    let model = route.model.as_deref();
-    let arguments: Vec<String> = match route.protocol {
-        // The model, if any, travels in thread/start params, not argv.
-        NativeProtocol::CodexAppServer => owned(&["app-server", "--stdio"]),
-        NativeProtocol::Acp => match route.harness {
-            AgentKind::OpenCode => owned(&["acp"]),
-            AgentKind::Copilot => owned(&["--acp", "--no-auto-update"]),
-            AgentKind::Grok => owned(&["agent", "stdio"]),
-            _ => return Err(DispatchError::ConfigRouteInvalid),
-        },
+    match route.protocol {
         // The launcher pair: `node <entry script> --profile <profile>`. The
         // entry script is the interpreter's first argument, the profile comes
         // from the validated route config, and nothing else reaches argv. The
@@ -143,12 +133,49 @@ fn protocol_arguments(
             if !route_config::profile_is_valid(&profile) {
                 return Err(DispatchError::ConfigRouteInvalid);
             }
-            vec![
+            Ok(vec![
                 interpreter_script_path(script),
                 "--profile".to_string(),
                 profile,
-            ]
+            ])
         }
+        protocol => structured_arguments(route.harness, protocol, mode, route.model.as_deref()),
+    }
+}
+
+/// The fixed argv of a structured adapter that runs the vendor executable
+/// directly (every protocol except the DSH launcher pair).
+///
+/// This is the one place that pins each vendor's structured transport and its
+/// read-only, no-approval posture, so the daemon (ADR 029) and the standalone
+/// native dispatcher (ADR 040) launch a vendor CLI with the same hardening.
+/// The prompt never appears here: it travels on stdin or in a protocol frame.
+pub fn structured_arguments(
+    harness: AgentKind,
+    protocol: NativeProtocol,
+    mode: SessionMode,
+    model: Option<&str>,
+) -> Result<Vec<String>, DispatchError> {
+    if !protocol.accepts(harness) {
+        return Err(DispatchError::ConfigRouteInvalid);
+    }
+    let owned = |values: &[&str]| values.iter().map(|value| (*value).to_string()).collect();
+    let arguments: Vec<String> = match protocol {
+        // The model, if any, travels in thread/start params, not argv.
+        NativeProtocol::CodexAppServer => owned(&["app-server", "--stdio"]),
+        NativeProtocol::Acp => {
+            // ACP v1 has no standard model selection; refuse rather than ignore.
+            if model.is_some() {
+                return Err(DispatchError::ConfigRouteInvalid);
+            }
+            match harness {
+                AgentKind::OpenCode => owned(&["acp"]),
+                AgentKind::Copilot => owned(&["--acp", "--no-auto-update"]),
+                AgentKind::Grok => owned(&["agent", "stdio"]),
+                _ => return Err(DispatchError::ConfigRouteInvalid),
+            }
+        }
+        NativeProtocol::DshSdkJsonRpc => return Err(DispatchError::ConfigRouteInvalid),
         // `--tools=` removes every built-in tool, `--strict-mcp-config` skips
         // project and user MCP servers, and `--restricted` ignores project and
         // user settings files, so a repository cannot re-enable tools.
@@ -193,7 +220,79 @@ fn protocol_arguments(
 
 #[cfg(test)]
 mod tests {
-    use super::interpreter_script_path;
+    use super::{SessionMode, interpreter_script_path, structured_arguments};
+    use crate::{
+        AgentKind,
+        dispatch::{DispatchError, NativeProtocol},
+    };
+
+    #[test]
+    fn claude_argv_pins_the_tool_free_restricted_posture() {
+        let arguments = structured_arguments(
+            AgentKind::Claude,
+            NativeProtocol::ClaudeStreamJson,
+            SessionMode::Execute,
+            Some("sonnet"),
+        )
+        .expect("claude argv");
+        for flag in [
+            "--bare",
+            "--tools=",
+            "--strict-mcp-config",
+            "--restricted",
+            "--no-session-persistence",
+        ] {
+            assert!(arguments.iter().any(|argument| argument == flag), "{flag}");
+        }
+        assert_eq!(arguments[arguments.len() - 2..], ["--model", "sonnet"]);
+    }
+
+    #[test]
+    fn codex_exec_keeps_the_stdin_marker_last() {
+        let arguments = structured_arguments(
+            AgentKind::Codex,
+            NativeProtocol::CodexExec,
+            SessionMode::Execute,
+            Some("gpt-5"),
+        )
+        .expect("codex argv");
+        assert_eq!(arguments.last().map(String::as_str), Some("-"));
+        assert_eq!(arguments[arguments.len() - 3..], ["--model", "gpt-5", "-"]);
+        assert_eq!(
+            structured_arguments(
+                AgentKind::Codex,
+                NativeProtocol::CodexExec,
+                SessionMode::Probe,
+                None
+            ),
+            Err(DispatchError::ProbeUnsupported)
+        );
+    }
+
+    #[test]
+    fn mismatched_launcher_pair_and_acp_model_routes_are_refused() {
+        let refused = |harness, protocol, model| {
+            structured_arguments(harness, protocol, SessionMode::Probe, model)
+                == Err(DispatchError::ConfigRouteInvalid)
+        };
+        assert!(refused(AgentKind::Qwen, NativeProtocol::Acp, None));
+        assert!(refused(
+            AgentKind::Codex,
+            NativeProtocol::ClaudeStreamJson,
+            None
+        ));
+        assert!(refused(AgentKind::Dsh, NativeProtocol::DshSdkJsonRpc, None));
+        assert!(refused(AgentKind::OpenCode, NativeProtocol::Acp, Some("m")));
+        assert_eq!(
+            structured_arguments(
+                AgentKind::Copilot,
+                NativeProtocol::Acp,
+                SessionMode::Probe,
+                None
+            ),
+            Ok(vec!["--acp".to_string(), "--no-auto-update".to_string()])
+        );
+    }
 
     #[test]
     fn verbatim_drive_paths_lose_the_prefix() {

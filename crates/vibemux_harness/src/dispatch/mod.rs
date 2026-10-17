@@ -9,6 +9,8 @@
 //!
 //! - [`request`] and [`route_config`] validate the typed request and the
 //!   trusted operator route config;
+//! - [`capability`] states which structured adapters exist for each harness
+//!   and whether any of them can execute;
 //! - [`launch_spec`] builds the shell-free argv for one route;
 //! - [`json_line_framer`], [`capture_budget`], and [`observation`] turn stdout
 //!   bytes into bounded, classified, byte-exact records;
@@ -19,6 +21,7 @@
 //! - [`events`] builds the content-free canonical event drafts.
 
 pub mod attempt;
+pub mod capability;
 pub mod capture_budget;
 pub mod digest;
 pub mod error_code;
@@ -36,6 +39,7 @@ pub mod route_config;
 pub mod writable_profile;
 
 pub use attempt::{DispatchPhase, DispatchTrigger, PhaseTransition, TransitionResult};
+pub use capability::{AdapterCapability, AdapterSupport, adapter_capabilities, adapter_capability};
 pub use digest::Sha256Digest;
 pub use error_code::DispatchError;
 #[cfg(feature = "test_helpers")]
@@ -44,6 +48,6 @@ pub use fixture_guard::{
 };
 pub use observation::{ObservationKind, ObservedRecord};
 pub use outcome::{AttemptOutcome, OutcomeDecision, ProcessExit};
-pub use protocol_session::{ProtocolSession, SessionTerminal};
+pub use protocol_session::{ProtocolSession, SessionRoute, SessionTerminal};
 pub use request::{DispatchRequest, PromptDigest};
 pub use route_config::{DispatchConfig, DispatchLimits, DispatchRoute, NativeProtocol};

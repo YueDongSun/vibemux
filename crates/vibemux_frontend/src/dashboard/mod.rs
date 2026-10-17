@@ -129,6 +129,33 @@ mod tests {
     }
 
     #[test]
+    fn adapter_support_is_a_build_fact_shown_even_without_an_observation() {
+        let mut report = report();
+        report.agents.clear();
+        let model = DashboardModel::from_report(&report);
+        let snapshot = model.plain_snapshot();
+        assert!(snapshot.contains("launcher=not_run"));
+        assert!(snapshot.contains("adapter=execute protocols=claude_stream_json"));
+        assert!(snapshot.contains("adapter=probe_only protocols=acp"));
+        assert!(snapshot.contains("adapter=terminal_only protocols=-"));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| render_dashboard(frame, &model))
+            .expect("render dashboard");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for expected in ["Adapter", "execute", "probe", "terminal"] {
+            assert!(rendered.contains(expected), "missing {expected}");
+        }
+    }
+
+    #[test]
     fn navigation_views_and_small_terminals_render_without_authority_changes() {
         let model = DashboardModel::from_report(&report());
         let workspace = Workspace {
@@ -166,6 +193,7 @@ mod tests {
                 if tab == Tab::Harnesses {
                     assert!(rendered.contains("Native attach: disabled"));
                     assert!(rendered.contains("Inference: not_run"));
+                    assert!(rendered.contains("Adapter: "));
                 }
             }
             assert!(snapshot(&model, &state, &context, 20, 6).is_ok());

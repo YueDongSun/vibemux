@@ -38,14 +38,16 @@ pub fn debug_snapshot(model: &ViewModel) -> String {
     lines.push("agents:".to_string());
     for agent in &model.agents {
         lines.push(format!(
-            "- {} launcher={} auth={} inference={} version={} route={} code={}",
+            "- {} launcher={} auth={} inference={} version={} route={} code={} adapter={} protocols={}",
             agent.name,
             view_state_label(agent.launcher_state),
             view_state_label(agent.authentication_state),
             view_state_label(agent.inference_state),
             agent.version,
             view_route_label(agent.route),
-            agent.code
+            agent.code,
+            agent.adapter.support.as_str(),
+            agent.adapter.protocol_list()
         ));
     }
     lines.join("\n")
@@ -125,6 +127,21 @@ mod tests {
         assert!(codex < opencode);
         assert!(opencode < copilot);
         assert!(copilot < grok);
+    }
+
+    #[test]
+    fn debug_snapshot_states_each_harness_adapter_support() {
+        let snapshot = debug_snapshot(&ViewModel::from_report(&fixture()));
+        let line = |name: &str| {
+            snapshot
+                .lines()
+                .find(|line| line.starts_with(&format!("- {name} launcher=")))
+                .unwrap_or_else(|| panic!("{name} line"))
+                .to_string()
+        };
+        assert!(line("Codex").ends_with("adapter=execute protocols=codex_exec,codex_app_server"));
+        assert!(line("Grok").ends_with("adapter=probe_only protocols=acp"));
+        assert!(line("Kimi").ends_with("adapter=terminal_only protocols=-"));
     }
 
     #[test]

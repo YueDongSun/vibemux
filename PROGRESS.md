@@ -3977,3 +3977,57 @@ scratch directory outside the repository.
   nextest, cargo-deny, or cargo-audit. The native dispatch's live evidence above
   is the branch-time record and was not repeated. `vibemux_web` is outside these
   workspace gates.
+
+### 2026-10-17 - Shared harness protocol engine and adapter capability display
+
+**Scope**
+- A harness-design review of the two dispatch paths and of the frontends. After the ADR 040 port, `vibemux_harness_native` carried its own copy of the Codex, Claude, and ACP state machines and vendor argv, so the two paths could drift apart, and Claude ran under a weaker posture on the native path. No frontend showed which harnesses VibeMux can drive through a structured adapter.
+- Backend: `vibemux_harness` (shared argv and session constructors, new `dispatch::capability` table) and `vibemux_harness_native` (now a thin wrapper over the shared engine). Frontend: `vibemux_frontend` (dashboard, TUI debug snapshot, egui Agents view and composer) and `vibemux_cli` (`probe` text). Docs: [docs/architecture.md](docs/architecture.md) and the "Integration with main" section of [ADR 040](docs/adr/040_native_harness_request_dispatch.md).
+- No store schema, control protocol, plugin wire, `HarnessRow` wire, or route-config schema change. No milestone status moves.
+
+**Implemented**
+- `vibemux_harness::dispatch::structured_arguments` is now the only place that defines each vendor's structured argv: Codex app-server and exec, Claude stream-json, and ACP for OpenCode, Copilot, and Grok. The daemon's `build_launch_spec` delegates to it, and DSH keeps its launcher pair. ACP model selection is refused there as well as in route config.
+- `SessionRoute` with `ProtocolSession::probe` and `ProtocolSession::execution` builds a session from route facts without a daemon `DispatchRoute`. The daemon's `for_probe` and `for_execution` keep their signatures and the 128 KiB prompt limit.
+- `vibemux_harness_native` drives Codex, Claude, and ACP routes through the shared `ProtocolSession` and `observation::classify`, and its observation `Kind` is now the shared `ObservationKind`.
+  - Only the direct OpenCode JSON classifier stays local; direct Copilot and Grok JSON stay opaque and non-executable as before.
+  - A fixed 13-entry table maps shared protocol errors to the crate's existing `harness_*` codes and keeps the source error.
+- `vibemux_harness::dispatch::capability` (`AdapterSupport`, `AdapterCapability`, `adapter_capability`, `adapter_capabilities`) derives each harness's support from `NativeProtocol`. The value is `execute`, `probe_only`, or `terminal_only`. It describes what this build can do, not what the operator has configured or authorized.
+- The frontends show it:
+  - Dashboard: an Adapter column in the wide Harnesses table, and an `Adapter:` line in the details pane.
+  - Plain snapshot and TUI debug snapshot: `adapter=… protocols=…` per agent.
+  - GUI: the support level in the Agents list and the full summary in its detail view.
+  - GUI composer: a detected harness that cannot take a prompt now says why ("Structured adapter is probe-only", "No structured adapter (terminal UI only)") instead of appearing available.
+  - `vibemuxctl probe` text: `adapter=` per row, and `unknown` for an agent this build does not know.
+
+**Behavior changes on the native path (ADR 040)**
+- Native Claude routes also get `--strict-mcp-config` and `--restricted`, so project and user MCP servers and settings files cannot re-enable tools. The bare, tool-free `dontAsk` profile is unchanged.
+- Native Codex exec puts `--model` before the stdin marker `-`, which stays last.
+- A duplicate Codex exec terminal record reports `harness_unexpected_terminal` instead of `harness_duplicate_terminal`.
+- `clientInfo.version` in initialize frames is the workspace version `0.2.0-alpha.1` instead of `0.2.0`.
+- The plugin error allowlist accepts all 13 mapped protocol codes. Five of them used to be masked as `harness_vendor_failed`.
+- The dispatcher builds its validator session before it takes a slot or lease or spawns the plugin, so a route the engine cannot drive is refused without starting a process.
+
+**Evidence** (native Windows, Rust 1.92.0, `-j 4`, no vendor CLI, Jev, or paid API invoked)
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy -p vibemux_harness -p vibemux_harness_native -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings`: clean.
+- `cargo test -p vibemux_harness -p vibemux_harness_native -p vibemux_cli -p vibemux_frontend --all-features --no-fail-fast`, every target passes except one:
+  - `vibemux_harness`: lib 85, `dispatch_attempt` 12, `dispatch_config` 22, `dispatch_framing` 8, `dispatch_protocols` 14, `writable_fixture_guard` 4.
+  - `vibemux_harness_native`: lib 7, `normalization` 18, `process_dispatch` 19.
+  - `vibemux_frontend`: lib 123 (1 ignored), `cli` 6, `palette_parity` 2, `supervisor_ui` 10.
+  - `vibemux_cli`: lib 40, `bootstrap_process` 4, `unified_commands` 4 of 5.
+  - The exception is `unified_commands::workspace_inventory_disables_external_git_filters_and_labels_the_comparison`. It fails at a fixture `git` call (`unified_commands.rs:40`), and it fails identically on unmodified `HEAD` `5f82aa7` in a scratch worktree, so it predates this change. Its root cause in this environment was not found.
+- `cargo test -p vibemuxd --all-features --lib --test harness_dispatch --test control_harness_dispatch --test dsh_session --test launch_trampoline --test decision_route`: lib 123, `harness_dispatch` 23, `control_harness_dispatch` 3, `dsh_session` 10, `launch_trampoline` 6, `decision_route` 10, all passed.
+- New tests:
+  - Shared Claude argv posture and Codex exec stdin-marker order.
+  - Refused mismatched, launcher-pair, and ACP-model routes.
+  - Capability table order, ownership, and summaries.
+  - Native argv composition, error-code mapping, and duplicate-terminal handling.
+  - Composer reasons, dashboard and TUI adapter display (including with no probe observation), and CLI `probe` text.
+
+**Remaining**
+- Policy split, not changed: ADR 040's native path still executes ACP routes, while ADR 029 keeps ACP probe-only because some ACP vendors grant their own tool permissions. The shared engine declines every `session/request_permission` it sees, but that cannot restrain a vendor that never asks. An operator decision is needed: align the native path with ADR 029, or record a deny posture per vendor.
+- Not done: multi-turn or resumed sessions, an approval bridge for vendor permission requests, contract-drift telemetry for unknown vendor event types, and the vendor CLI version on dispatch records.
+- Live vendor evidence is unchanged: initialize-only probes on the daemon path, and the 2026-08-27 branch record on the native path. No real prompt turn was run.
+
+**Known risks**
+- The stricter native Claude argv and the shared Codex exec argv were checked against fixtures only. A vendor release that rejects `--restricted` or `--strict-mcp-config` would now fail on both paths, not just the daemon path.

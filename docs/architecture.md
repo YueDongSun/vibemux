@@ -265,7 +265,9 @@ The two paths differ on purpose:
 | Canonical state | records Run outcome via the single writer | none |
 | Config | `.vibemux/harness_dispatch.json` | `.vibemux/harness_config.json` (`examples/harness/`) |
 | ACP | probe only | probe and dispatch |
-| Crate | `vibemux_harness::dispatch` (pure logic) plus daemon I/O | `vibemux_harness_native` (I/O) |
+| Crate | `vibemux_harness::dispatch` (pure logic) plus daemon I/O | `vibemux_harness_native` (I/O) over the same `vibemux_harness::dispatch` engine |
+
+Both paths drive one vendor posture: `vibemux_harness_native` builds its argv with `launch_spec::structured_arguments`, runs its handshake through `ProtocolSession`, and classifies Codex, Claude, and ACP records with the shared `observation::classify`. Only its replay of direct OpenCode JSON output is its own. `dispatch::capability` derives, from `NativeProtocol`, which structured adapters exist for each harness and whether the daemon path can execute through them. The dashboard, GUI, TUI snapshot, and `vibemuxctl probe` text all display that table.
 
 Their configuration files, error namespaces, and protocol versions are separate; do not conflate them with each other or with the A2A wire version `1.0` or the internal plugin envelope version. See [ADR 040](adr/040_native_harness_request_dispatch.md) for the trust boundary and [the core guide](guides/harness_core_guide.md) for commands and live limits.
 

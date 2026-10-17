@@ -3,8 +3,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+use vibemux_harness::{AgentKind, dispatch::NativeProtocol};
 
 use crate::Error;
+
+/// Observation kinds are the shared ADR 029 vocabulary, so a record classified
+/// here and one classified by the daemon mean the same thing.
+pub use vibemux_harness::dispatch::ObservationKind as Kind;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const EXECUTE_METHOD: &str = "harness:execute";
@@ -20,6 +25,20 @@ pub enum Harness {
     Opencode,
     Copilot,
     Grok,
+}
+
+impl Harness {
+    /// The shared registry identity of this harness.
+    #[must_use]
+    pub const fn agent_kind(self) -> AgentKind {
+        match self {
+            Self::Codex => AgentKind::Codex,
+            Self::Claude => AgentKind::Claude,
+            Self::Opencode => AgentKind::OpenCode,
+            Self::Copilot => AgentKind::Copilot,
+            Self::Grok => AgentKind::Grok,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,20 +70,20 @@ impl Protocol {
                 | (Self::Grok | Self::Acp, Harness::Grok)
         )
     }
-}
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    Started,
-    Text,
-    Tool,
-    Approval,
-    Usage,
-    Completed,
-    Failed,
-    Cancelled,
-    Opaque,
+    /// The shared protocol engine that drives this route, if any. Direct
+    /// OpenCode, Copilot, and Grok JSON output is replay-only: no session
+    /// adapter exists for it.
+    #[must_use]
+    pub const fn native_protocol(self) -> Option<NativeProtocol> {
+        match self {
+            Self::Codex => Some(NativeProtocol::CodexExec),
+            Self::Appserver => Some(NativeProtocol::CodexAppServer),
+            Self::Claude => Some(NativeProtocol::ClaudeStreamJson),
+            Self::Acp => Some(NativeProtocol::Acp),
+            Self::Opencode | Self::Copilot | Self::Grok => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

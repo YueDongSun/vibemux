@@ -4,6 +4,7 @@
 //! `ViewModel::from_report` is the only place that knows the shape of
 //! `vibemux_probe::ProbeReport`. Both UIs consume a `ViewModel`.
 
+use vibemux_harness::dispatch::{AdapterCapability, adapter_capability};
 use vibemux_probe::{
     A2aSelfTestProbe, AgentKind, AgentProbe, GatewayProbe, ProbeReport, ProbeState, RouteKind,
 };
@@ -21,6 +22,9 @@ pub struct AgentView {
     pub version: String,
     pub route: RouteKind,
     pub code: String,
+    /// What this build's structured adapters can do for the harness. A
+    /// build fact, not an observation: it says nothing about detection.
+    pub adapter: AdapterCapability,
 }
 
 impl From<&AgentProbe> for AgentView {
@@ -33,6 +37,7 @@ impl From<&AgentProbe> for AgentView {
             version: probe.version.clone().unwrap_or_else(|| "-".to_string()),
             route: probe.route,
             code: probe.code.clone(),
+            adapter: adapter_capability(probe.agent),
         }
     }
 }

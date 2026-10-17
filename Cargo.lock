@@ -5841,6 +5841,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "vibemux_harness",
  "vibemux_platform",
  "vibemux_plugin_protocol",
  "vibemux_plugin_supervisor",
