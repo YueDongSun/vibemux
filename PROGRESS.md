@@ -4195,3 +4195,33 @@ scratch directory outside the repository.
 
 **Remaining**
 - The prose around both tables is still unchecked.
+
+### 2026-10-17 - Bring the native harness guide and README table up to date
+
+**Scope**
+- Documentation only, from a re-audit of the harness surfaces. `docs/guides/harness_core_guide.md` was stale:
+  - It named a pinned Rust 1.85 toolchain, but `rust-toolchain.toml` pins 1.92.0.
+  - It did not mention `vibemuxctl harness`, `codex_exec`, the shared protocol engine, or that the direct JSON protocols are replay-only.
+  - It did not mention the daemon/native ACP difference.
+- The README's ADR 029 / ADR 040 table did not say that native ACP routes can execute.
+
+**Implemented**
+- The guide now says:
+  - All four structured protocols run on the shared `ProtocolSession` engine that the daemon also uses.
+  - `opencode_json`, `copilot_json`, and `grok_stream_json` can be replayed but not run.
+  - The native CLI can run an ACP prompt where the daemon only probes, and this is an open decision.
+  - `vibemuxctl --format text` adds the catalog `Actions` column and the per-kind tally.
+  - A Codex probe needs a `codex_app_server` route.
+- The guide also names Rust 1.92.0 and links protocol boundaries.
+- The README table's Routes row states native ACP execution under `allow_execution`, and a new Protocol engine row says both paths share the engine.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- The guide's offline commands ran from the repository root:
+  - `cargo build -p vibemux_harness_native --bins`.
+  - `vibemux_harness_native.exe catalog --config examples/harness/harness_config.json` and the documented `replay`.
+  - `vibemuxctl help harness`.
+- `vibemuxctl --format text harness replay --protocol copilot_json --input .../unverified_stream.jsonl` showed `Kinds: opaque 3`.
+- Each new statement was checked against `rust-toolchain.toml`, `contract::Protocol::native_protocol`, `session::Session::new`, and `ProtocolSession`'s probe handling.
+
+**Remaining**
+- The guide's "Current Live Boundary" section is the 2026-08-27 record and was not re-validated. No live probe was run.

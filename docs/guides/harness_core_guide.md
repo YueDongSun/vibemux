@@ -4,17 +4,26 @@
 
 The Rust `vibemux_harness_native` crate exposes a local, bounded text-request dispatcher
 and complete vendor JSON record capture. Its CLI has `catalog`, `replay`,
-`probe`, and `dispatch` commands. Native execution is opt-in.
+`probe`, and `dispatch` commands, also available as `vibemuxctl harness <command>`.
+Native execution is opt-in.
 
-Codex app-server, Claude stream-json, and ACP are separate protocol adapters.
-OpenCode, Copilot, and Grok share ACP framing and lifecycle, not proprietary
-headless event schemas. This captures what a managed process exposes; it does
-not intercept private provider HTTP traffic or attach to an existing desktop
-conversation or TUI.
+Codex exec, Codex app-server, Claude stream-json, and ACP routes run on the
+shared `vibemux_harness::dispatch::ProtocolSession` engine, the same engine the
+daemon's ADR 029 dispatch uses. That engine owns the handshake, the approval and
+permission declines, identifier correlation, and the launch arguments, so both
+paths treat a vendor the same way. OpenCode, Copilot, and Grok share ACP framing
+and lifecycle, not proprietary headless event schemas. Their direct JSON
+protocols (`opencode_json`, `copilot_json`, `grok_stream_json`) can be replayed
+but not run. The daemon allows only ACP probes; this CLI can also run an ACP
+prompt on a route with `allow_execution`, and whether it should is an open
+decision. [Protocol boundaries](../protocol_boundaries.md) lists each harness's
+adapter support and the error codes. This captures what a managed process
+exposes; it does not intercept private provider HTTP traffic or attach to an
+existing desktop conversation or TUI.
 
 ## Offline First
 
-From the Rust worktree, with its pinned Rust 1.85 toolchain:
+From the repository root, with the pinned Rust 1.92.0 toolchain:
 
 ```powershell
 cargo build --locked -p vibemux_harness_native --bins
@@ -25,6 +34,9 @@ cargo test --locked -p vibemux_harness_native --all-features
 
 Replay reads records without launching a harness or contacting a model.
 Its successful exit means the stream was read, not that a task completed.
+With `vibemuxctl --format text`, `catalog` adds an `Actions` column (`disabled`,
+`probe`, `execute`, or `none`) and reports add a per-kind record tally. Both
+are derived from the JSON report, which stays the contract.
 
 The tests use a real local synthetic executable for all five routes. They cover
 native stdin/stdout, Protobuf transport, permission denial, unknown records,
@@ -70,7 +82,8 @@ in-flight work.
 ```
 
 Probe submits initialization only. It does not authenticate, create a vendor
-session, or send a model prompt. The vendor executable may perform its normal
+session, or send a model prompt. `codex_exec` has no initialization handshake,
+so probe Codex through a `codex_app_server` route. The vendor executable may perform its normal
 startup and local configuration discovery. A clean `probed` result requires
 the expected reply and successful owned-process shutdown. Launcher presence,
 initialization, authentication, and generation are separate verification levels.

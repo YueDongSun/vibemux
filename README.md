@@ -183,7 +183,8 @@ cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemu
 |---|---|---|
 | Owner | `vibemuxd` (needs a running daemon) | the CLI process |
 | Records | canonical Task/Run, schema-4 dispatch records | none; content-free JSON report |
-| Routes | Codex and Claude execute; ACP is probe-only | Codex app-server/exec, Claude stream-json, ACP for OpenCode, Copilot, and Grok |
+| Routes | Codex and Claude execute; ACP is probe-only | Codex app-server/exec and Claude stream-json execute; ACP for OpenCode, Copilot, and Grok also executes when `allow_execution` is set (an open policy decision) |
+| Protocol engine | shared `vibemux_harness::dispatch::ProtocolSession` | the same shared engine |
 | Configuration | `.vibemux/harness_dispatch.json` | a private `--config` file, pinned by SHA-256 |
 
 ```powershell
