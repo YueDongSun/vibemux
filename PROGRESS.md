@@ -5132,3 +5132,16 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Remaining:**
 - Task titles inside egui are still drawn verbatim, so a line break in a title still makes a multi-line row there. How egui draws bidirectional controls was not examined.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - GUI task and Run text is one display line
+
+**Scope:** the free text the daemon returns for a task and its Runs, as it enters the GUI. The domain checks a task title, harness, role, branch, and worktree path only for blankness and size (`vibemux_types`), and the store's frontend projection only bounds bytes. So a line break split a chat row, a sidebar entry, or a detail-drawer field across lines, and a bidirectional control could reorder the text after it. The task window title was already one line (previous entry); the in-window views were not.
+
+**Implemented:**
+
+- `supervisor_mapping` maps the task title (before the truncation ellipsis), Run harness, role, branch, and worktree path through the shared `vibemux_harness::terminal_text::display_character` rule as it builds `TaskView` and `RunView`. This covers every view that reads them: chat task rows, sidebar recents, the task window, and the detail drawer. The executor label is formatted from the mapped harness and role.
+- Ordinary text, including non-Latin script, is unchanged, and an absent worktree or branch keeps its placeholder.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 144 passed and 1 ignored, and every bin and integration target passed. The new test `task_and_run_text_becomes_one_display_line` failed under each of four separate mutations that dropped the mapping on the title, on the harness, on the worktree path, and on the branch; the source was restored byte-for-byte after each.
+
+**Remaining:** the mapping replaces unsafe characters; it does not bound them further than the daemon already does. `task_labels::task_title` still keeps text verbatim, because the rule now applies one step earlier. Event types and artifact media types were not changed. How egui itself draws bidirectional text was not examined. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.

@@ -1,15 +1,24 @@
 //! Explicit conversion from sanitized control responses to display-only state.
 
 use crate::supervisor_model::*;
+use vibemux_harness::terminal_text::display_character;
 use vibemux_types::frontend::{FrontendTaskDetail, FrontendTaskSummary};
 use vibemuxd::terminal_observer::{TerminalBinding, TerminalSnapshot};
+
+/// One display line of the daemon's free text. The domain checks a task title,
+/// harness, role, branch, or worktree path only for blankness and size, so a
+/// line break, tab, or bidirectional control would otherwise split a row or
+/// reorder what follows it in every view that shows the task.
+fn display_line(value: &str) -> String {
+    value.chars().map(display_character).collect()
+}
 
 pub fn task_summary(source: FrontendTaskSummary) -> TaskView {
     TaskView {
         task_id: source.task_id.to_string(),
         title: format!(
             "{}{}",
-            source.title,
+            display_line(&source.title),
             if source.title_truncated { "…" } else { "" }
         ),
         state: source.status.as_str().into(),
@@ -61,19 +70,21 @@ pub fn task_detail(source: FrontendTaskDetail, previous: Option<&TaskView>) -> T
                 });
             RunView {
                 run_id: run_id.clone(),
-                harness: run.harness,
-                role: run.role,
+                harness: display_line(&run.harness),
+                role: display_line(&run.role),
                 state: run.status.as_str().into(),
                 worktree: format!(
                     "{}{}",
-                    run.worktree_path.unwrap_or_else(|| "Not recorded".into()),
+                    run.worktree_path
+                        .as_deref()
+                        .map_or_else(|| "Not recorded".into(), display_line),
                     if run.worktree_path_truncated {
                         "… (display truncated)"
                     } else {
                         ""
                     }
                 ),
-                branch: run.branch.unwrap_or_default(),
+                branch: run.branch.as_deref().map(display_line).unwrap_or_default(),
                 terminal,
                 artifacts: source
                     .artifacts
@@ -166,5 +177,85 @@ mod tests {
         let view = terminal_snapshot(snapshot, "wezterm_observer");
         assert!(view.binding_id.is_none());
         assert!(!view.status.contains("succeeded"));
+    }
+
+    fn detail(
+        title: &str,
+        title_truncated: bool,
+        harness: &str,
+        role: &str,
+        worktree_path: Option<&str>,
+        branch: Option<&str>,
+    ) -> FrontendTaskDetail {
+        use vibemux_types::{
+            ProjectId, RunId, RunStatus, TaskId, TaskStatus,
+            frontend::{FrontendRunSummary, FrontendTaskSummary},
+        };
+        let task_id = TaskId::new();
+        FrontendTaskDetail {
+            task: FrontendTaskSummary {
+                task_id,
+                project_id: ProjectId::new(),
+                title: title.into(),
+                title_truncated,
+                status: TaskStatus::InProgress,
+                latest_sequence: 1,
+                detail_revision: 1,
+            },
+            runs: vec![FrontendRunSummary {
+                run_id: RunId::new(),
+                task_id,
+                harness: harness.into(),
+                role: role.into(),
+                status: RunStatus::Running,
+                worktree_path: worktree_path.map(Into::into),
+                worktree_path_truncated: false,
+                branch: branch.map(Into::into),
+            }],
+            has_more_runs: false,
+            events: Vec::new(),
+            has_more_events: false,
+            artifacts: Vec::new(),
+            has_more_artifacts: false,
+        }
+    }
+
+    #[test]
+    fn task_and_run_text_becomes_one_display_line() {
+        let view = task_detail(
+            detail(
+                "Fix\nthe\tparser\u{202e}gpj.exe",
+                true,
+                "co\rdex",
+                "wor\u{2066}ker",
+                Some("C:\\work\u{2028}tree"),
+                Some("feat/\u{200f}x\ny"),
+            ),
+            None,
+        );
+        assert_eq!(view.title, "Fix the parser gpj.exe…");
+        let run = &view.runs[0];
+        assert_eq!(
+            (run.harness.as_str(), run.role.as_str()),
+            ("co dex", "wor ker")
+        );
+        assert_eq!(run.worktree, "C:\\work tree");
+        assert_eq!(run.branch, "feat/ x y");
+        assert_eq!(view.executor, "co dex · wor ker");
+
+        // Ordinary text, including non-Latin script, passes through unchanged,
+        // and absent fields keep their placeholders.
+        let view = task_detail(
+            detail("修复解析器", false, "claude", "worker", None, None),
+            None,
+        );
+        assert_eq!(view.title, "修复解析器");
+        let run = &view.runs[0];
+        assert_eq!(
+            (run.harness.as_str(), run.role.as_str()),
+            ("claude", "worker")
+        );
+        assert_eq!(run.worktree, "Not recorded");
+        assert_eq!(run.branch, "");
     }
 }
