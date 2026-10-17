@@ -232,15 +232,11 @@ pub const fn state_label(state: ProbeState) -> &'static str {
     state.as_str()
 }
 
-/// Stable, lowercase ASCII label for a route kind. Used by both UIs
-/// and the snapshot formatter.
+/// Stable, lowercase ASCII label for a route kind: the probe JSON's wire
+/// name. Used by both UIs and the snapshot formatter.
 #[must_use]
 pub const fn route_label(route: RouteKind) -> &'static str {
-    match route {
-        RouteKind::Direct => "direct",
-        RouteKind::LocalGateway => "local_gateway",
-        RouteKind::Unknown => "unknown",
-    }
+    route.as_str()
 }
 
 /// Stable, lowercase ASCII label for an agent kind's command name.

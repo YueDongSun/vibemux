@@ -4799,3 +4799,16 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_probe -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_probe -p vibemux_frontend --all-features` passed: harness 86 unit, frontend 131 unit with 1 pre-existing ignore, and the probe suites. A mutation that renamed `not_run` in `as_str` failed the harness wire-name test, the frontend label test, and the TUI and dashboard render tests; the file was restored.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet. New open question: the TUI diagnostics pane and its copied snapshot print allowlisted environment values such as `PATH` and `USERPROFILE`, while the GUI shows only whether each is set.
+
+### 2026-10-18 - One wire name for each route kind
+
+**Scope:** `vibemux_probe` route vocabulary and the frontend view model. No wire, cache, or protocol change.
+
+**Implemented:**
+
+- `RouteKind::as_str` returns the name serde writes for each route kind. A new probe test pins the JSON names (`direct`, `local_gateway`, `unknown`), which the probe report and its trusted cache both carry and no test had pinned, and checks `as_str` against them.
+- The frontend's `route_label`, which the TUI, its copied snapshot, and the dashboard use, now takes the name from `as_str` instead of keeping its own copy of the mapping.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_probe -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_probe -p vibemux_frontend --all-features` passed: probe 22 unit plus its integration suites, frontend 131 unit with 1 pre-existing ignore. A mutation that renamed `local_gateway` in `as_str` failed the new probe test, the frontend label test, and the TUI render tests; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.

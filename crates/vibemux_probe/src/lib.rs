@@ -68,6 +68,18 @@ pub enum RouteKind {
     Unknown,
 }
 
+impl RouteKind {
+    /// The wire name serde writes for this route kind. Text views use it so
+    /// they never drift from the probe JSON and its cache.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::LocalGateway => "local_gateway",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SafeEndpoint {
     pub scheme: String,
@@ -744,6 +756,25 @@ mod tests {
     use super::*;
 
     const PROBE_REPORT_FIXTURE: &str = include_str!("../tests/fixtures/probe_report_v1.json");
+
+    #[test]
+    fn route_kind_wire_names_are_pinned() {
+        let kinds = [
+            RouteKind::Direct,
+            RouteKind::LocalGateway,
+            RouteKind::Unknown,
+        ];
+        let encoded = serde_json::to_string(&kinds).expect("encode route kinds");
+        assert_eq!(encoded, r#"["direct","local_gateway","unknown"]"#);
+        for kind in kinds {
+            let name = serde_json::to_string(&kind).expect("encode route kind");
+            assert_eq!(name, format!("\"{}\"", kind.as_str()));
+            assert_eq!(
+                serde_json::from_str::<RouteKind>(&name).expect("decode route kind"),
+                kind
+            );
+        }
+    }
 
     #[test]
     fn safe_endpoint_rejects_credentials() {
