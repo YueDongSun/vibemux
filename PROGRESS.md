@@ -5267,3 +5267,35 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_probe --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_probe --all-features`: lib 24 passed. The new test `a_config_read_stops_one_byte_past_the_bound` covers an exact-bound read, an endless `std::io::repeat` source, non-UTF-8 bytes, a directory, and a missing file. One mutation was caught and restored byte-for-byte: removing the post-read length check failed the new test.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - One bounded regular-file read for workflow contracts, verifier results, and state files
+
+**Scope:** three ADR 031 workflow reads in `vibemuxd` checked a file's size on the path, then read it:
+- `prepare::read_shared_contracts` read shared contract text from the project checkout with `read_to_string`.
+- `verifier_runner::read_result` read the result file a verifier child process writes with `fs::read`.
+- `state_files::read_bounded` read through `take(maximum + 1)` but never refused the extra byte.
+
+A file swapped or grown after the size check could be read past its bound: 64 KiB for contracts, 1 MiB for results, or the state file's own bound.
+
+**Implemented:**
+- New private `workflow::bounded_file::read_regular_file(path, maximum)`. It checks the path without following a symlink, so a link, FIFO, or device is never opened. It checks the opened handle again, then reads at most one byte past the bound and refuses rather than truncates.
+- `BoundedReadError` has three variants: `Missing`, `Refused`, and `Io`.
+- The three callers use it and keep their own error codes:
+  - A contract that is unreadable, oversized, or not UTF-8 is still `RequestInvalid`.
+  - An unreadable verifier result is still no result.
+  - A state file that does not exist yet is still `None`, and every other failure is `Internal`.
+- `prepare` keeps its symlink check before `canonicalize` and its containment check after it.
+- No change to request, contract, receipt, or state-file formats, the control protocol, or the store.
+- Not changed: the daemon lifecycle lock (`LifecycleLock::is_held`) and the Windows control ACL marker read whole files in the daemon's private runtime paths. They are left for a later pass.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib workflow::`: 25 passed. New tests:
+  - `a_read_stops_one_byte_past_the_bound`: an endless `std::io::repeat` source.
+  - `only_a_regular_file_within_the_bound_is_read`: exact bound, one byte over, a directory, and a missing file.
+  - `a_shared_contract_is_bounded_utf8_text_inside_the_root`: a 64 KiB contract is read, while one byte over, non-UTF-8 bytes, a missing file, a directory, and `../outside.md` are refused.
+  - A Unix-only test checks that a symlink is refused without being followed. It was not run here.
+- `cargo test -p vibemuxd --all-features --test workflow_gates --test workflow_control --test workflow_admission`: 4, 5, and 6 passed. These ran on the final production code, before the `prepare` test was added.
+- Two mutations were caught and restored byte-for-byte. Removing the post-read length check failed the bounded-read test. Passing the contract bound minus one failed the shared-contract test.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

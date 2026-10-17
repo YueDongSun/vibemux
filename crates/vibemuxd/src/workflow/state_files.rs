@@ -25,7 +25,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -36,7 +36,12 @@ use uuid::Uuid;
 use vibemux_types::a2a::RunWorkspace;
 use vibemux_workflow::{Sha256Digest, SpecIdentifier};
 
-use super::{collector::BlobStore, error::WorkflowError, prepare::WorkflowPlan};
+use super::{
+    bounded_file::{BoundedReadError, read_regular_file},
+    collector::BlobStore,
+    error::WorkflowError,
+    prepare::WorkflowPlan,
+};
 
 pub const WORKFLOW_STATE_DIR_NAME: &str = "workflow_state";
 const LEDGER_SCHEMA_VERSION: u32 = 1;
@@ -445,20 +450,13 @@ impl StateFiles {
     }
 }
 
+/// A state file, or `None` when it does not exist yet.
 fn read_bounded(path: &Path, maximum: u64) -> Result<Option<Vec<u8>>, WorkflowError> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(WorkflowError::Internal),
-    };
-    if !metadata.is_file() || metadata.len() > maximum {
-        return Err(WorkflowError::Internal);
+    match read_regular_file(path, maximum) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(BoundedReadError::Missing) => Ok(None),
+        Err(BoundedReadError::Refused | BoundedReadError::Io) => Err(WorkflowError::Internal),
     }
-    let mut bytes = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(maximum + 1).read_to_end(&mut bytes))
-        .map_err(|_| WorkflowError::Internal)?;
-    Ok(Some(bytes))
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, WorkflowError> {

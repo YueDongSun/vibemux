@@ -1,6 +1,7 @@
 //! The dual-track workflow service (ADR 031).
 
 pub mod aag_gateway;
+pub(crate) mod bounded_file;
 pub(crate) mod broker;
 pub(crate) mod candidate;
 pub(crate) mod collector;

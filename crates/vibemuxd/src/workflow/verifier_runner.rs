@@ -22,6 +22,7 @@ use vibemux_workflow::{
 };
 
 use super::{
+    bounded_file::read_regular_file,
     error::WorkflowError,
     settings::{
         CANDIDATE_PLACEHOLDER, LoadedWorkflowConfig, OUT_PLACEHOLDER, VERIFIER_DIR_PLACEHOLDER,
@@ -177,11 +178,7 @@ async fn run_one(
 }
 
 fn read_result(path: &Path) -> Option<(VerifierOutput, Sha256Digest)> {
-    let metadata = std::fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_RESULT_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = read_regular_file(path, MAX_RESULT_BYTES).ok()?;
     let output: VerifierOutput = serde_json::from_slice(&bytes).ok()?;
     Some((output, Sha256Digest::of(&bytes)))
 }
