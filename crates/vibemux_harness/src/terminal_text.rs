@@ -16,9 +16,36 @@ pub fn is_terminal_unsafe(character: char) -> bool {
         )
 }
 
+/// What a one-line display shows for `character`: a space for whitespace,
+/// so a line break cannot start a new row, or for a terminal-unsafe
+/// character; otherwise the character itself.
+#[must_use]
+pub fn display_character(character: char) -> char {
+    if character.is_whitespace() || is_terminal_unsafe(character) {
+        ' '
+    } else {
+        character
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_terminal_unsafe;
+    use super::{display_character, is_terminal_unsafe};
+
+    #[test]
+    fn a_display_line_shows_whitespace_and_unsafe_characters_as_spaces() {
+        for blanked in ['\n', '\r', '\t', '\u{1b}', '\u{a0}', '\u{2028}', '\u{202e}'] {
+            assert_eq!(
+                display_character(blanked),
+                ' ',
+                "U+{:04X}",
+                u32::from(blanked)
+            );
+        }
+        for kept in ['a', '.', 'é', '中', '\u{200d}'] {
+            assert_eq!(display_character(kept), kept);
+        }
+    }
 
     #[test]
     fn controls_and_bidirectional_marks_are_unsafe() {

@@ -1,6 +1,6 @@
 use vibemux_harness::{
     dispatch::{AdapterCapability, adapter_capability},
-    terminal_text::is_terminal_unsafe,
+    terminal_text::display_character,
 };
 use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
 
@@ -14,13 +14,7 @@ pub fn safe_text(value: &str) -> String {
     value
         .chars()
         .take(MAX_DISPLAY_CHARACTERS)
-        .map(|character| {
-            if character.is_whitespace() || is_terminal_unsafe(character) {
-                ' '
-            } else {
-                character
-            }
-        })
+        .map(display_character)
         .collect()
 }
 

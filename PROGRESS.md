@@ -4968,3 +4968,29 @@ Two mutations were each caught:
 Both files were restored and compared byte for byte.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - DSH terminal surface shows runtime text as one safe line
+
+**Scope:** `vibemux_dsh_tui` rendering and the shared one-line display rule, for `vibemux_harness` and `vibemux_frontend`. No DSH wire, store schema, control protocol, or plugin wire changes. The handshake still accepts the same `serverInfo.version` strings.
+
+**Implemented:**
+- `vibemux_harness::terminal_text::display_character` now owns the one-line display rule: whitespace and terminal-unsafe characters show as a space. The dashboard's `safe_text` calls it in place of its own copy, with unchanged behaviour.
+- The DSH surface's `display_text` reduces each runtime record to one display line before truncating it. Assistant text, tool names, approval tool names, status values, and error messages come from the runtime. A line break in them used to reach ratatui as text, and so did an ANSI escape or a bidirectional override. Each now shows as a space.
+- The status line applies the same rule to the runtime's `serverInfo.version`. The handshake bounds that string's length but not its characters.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_frontend -p vibemux_cli` passed:
+
+| Crate | Tests passed |
+|---|---|
+| `vibemux_harness` | 89 lib (1 new), plus 12, 22, 8, 15, and 4 integration |
+| `vibemux_frontend` | 140 lib (1 new, 1 ignored), 6 cli, 2 palette parity, 10 supervisor UI |
+| `vibemux_cli` | 44 lib, 5 unified commands |
+
+Three mutations were each caught by their test:
+- Truncating the raw record text failed the new DSH test's record assertion.
+- Passing the raw version to the status line failed its status-line assertion.
+- Dropping the whitespace check from `display_character` failed the harness test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
