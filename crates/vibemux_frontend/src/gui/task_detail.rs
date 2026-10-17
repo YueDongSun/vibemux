@@ -12,7 +12,7 @@ use super::{
     chat::{demo_badge, wrapped_label},
     design,
     supervisor_state::{TaskDetailSelection, TaskDetailTab, UiActionQueue},
-    task_labels::{executor_label, nonempty, task_state, task_title},
+    task_labels::{executor_label, nonempty, run_label, single_run_label, task_state, task_title},
 };
 
 /// Whether the detail view draws the task title itself (detached window) or
@@ -117,7 +117,7 @@ fn select_run(ui: &mut Ui, colors: &C, task: &TaskView, selection: &mut TaskDeta
         [run] => {
             wrapped_label(
                 ui,
-                RichText::new(format!("Run · {} · {}", run.harness, run.run_id))
+                RichText::new(single_run_label(run))
                     .size(12.0)
                     .color(colors.muted),
             );
@@ -426,9 +426,7 @@ fn terminal_candidate(
                 ui,
                 colors,
                 "Link terminal",
-                !candidate.plugin_id.is_empty()
-                    && !candidate.pane_id.is_empty()
-                    && !candidate.instance_id.is_empty(),
+                candidate_is_linkable(candidate),
             )
             .on_hover_text("Link this exact reported terminal candidate to the selected Run.");
             if link.clicked() {
@@ -498,11 +496,37 @@ fn section_label(ui: &mut Ui, colors: &C, label: &str) {
     ui.add_space(5.0);
 }
 
-fn run_label(run: &RunView) -> String {
-    format!(
-        "{} · {} · {}",
-        nonempty(&run.harness, "Harness"),
-        nonempty(&run.role, "Run"),
-        run.run_id
-    )
+/// Linking needs the exact reported candidate, so every identifier must be
+/// present; one that is empty or only whitespace counts as missing.
+fn candidate_is_linkable(candidate: &TerminalCandidate) -> bool {
+    [
+        &candidate.plugin_id,
+        &candidate.pane_id,
+        &candidate.instance_id,
+    ]
+    .iter()
+    .all(|id| !id.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_candidate_is_linkable_only_with_every_identifier() {
+        let candidate = |plugin_id: &str, pane_id: &str, instance_id: &str| TerminalCandidate {
+            plugin_id: plugin_id.to_string(),
+            pane_id: pane_id.to_string(),
+            instance_id: instance_id.to_string(),
+            ..TerminalCandidate::default()
+        };
+        assert!(candidate_is_linkable(&candidate("wezterm", "3", "gui_1")));
+        for missing in [
+            candidate("", "3", "gui_1"),
+            candidate("wezterm", " ", "gui_1"),
+            candidate("wezterm", "3", "\t"),
+        ] {
+            assert!(!candidate_is_linkable(&missing), "{missing:?}");
+        }
+    }
 }

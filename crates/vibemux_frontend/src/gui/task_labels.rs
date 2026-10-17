@@ -3,7 +3,7 @@
 //! the task window, and the detail drawer so they all name one task the same
 //! way. Text only: no egui, and nothing here is canonical state.
 
-use crate::supervisor_model::TaskView;
+use crate::supervisor_model::{RunView, TaskView};
 
 const UNTITLED_TASK: &str = "Untitled task";
 const UNKNOWN_STATE: &str = "Unknown state";
@@ -32,10 +32,28 @@ pub fn executor_label(task: &TaskView) -> &str {
     nonempty(&task.executor, nonempty(first_harness, UNASSIGNED))
 }
 
+/// The caption for a task's only Run.
+pub fn single_run_label(run: &RunView) -> String {
+    format!(
+        "Run · {} · {}",
+        nonempty(&run.harness, "Harness"),
+        run.run_id
+    )
+}
+
+/// One entry in the Run picker of a task with several Runs.
+pub fn run_label(run: &RunView) -> String {
+    format!(
+        "{} · {} · {}",
+        nonempty(&run.harness, "Harness"),
+        nonempty(&run.role, "Run"),
+        run.run_id
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::supervisor_model::RunView;
 
     fn task(executor: &str, harnesses: &[&str]) -> TaskView {
         TaskView {
@@ -72,6 +90,26 @@ mod tests {
         assert_eq!(executor_label(&task("  ", &["claude"])), "claude");
         assert_eq!(executor_label(&task("", &[" ", "codex"])), "Unassigned");
         assert_eq!(executor_label(&task("", &[])), "Unassigned");
+    }
+
+    #[test]
+    fn run_labels_name_a_blank_harness_or_role_by_its_fallback() {
+        let run = |harness: &str, role: &str| RunView {
+            run_id: "run_1".to_string(),
+            harness: harness.to_string(),
+            role: role.to_string(),
+            ..RunView::default()
+        };
+        assert_eq!(
+            single_run_label(&run("codex", "worker")),
+            "Run · codex · run_1"
+        );
+        assert_eq!(
+            single_run_label(&run(" ", "worker")),
+            "Run · Harness · run_1"
+        );
+        assert_eq!(run_label(&run("codex", "worker")), "codex · worker · run_1");
+        assert_eq!(run_label(&run("", "\t")), "Harness · Run · run_1");
     }
 
     /// The views call these helpers instead of keeping their own copy of a

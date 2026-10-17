@@ -4926,3 +4926,19 @@ scratch directory outside the repository.
 Both files were restored and compared byte for byte.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - GUI Run labels and terminal link enablement follow the blank-text rule
+
+**Scope:** `crates/vibemux_frontend/src/gui/task_labels.rs` and `task_detail.rs` display text and button enablement only. No wire, schema, control, or canonical state change.
+
+**Implemented:**
+- `task_labels.rs` now also owns the Run labels. `single_run_label` is the caption for a task's only Run. Before, it printed a blank harness as an empty gap (`Run ·  · <id>`); now it shows the same `Harness` fallback as `run_label`, the Run picker entry that moved here from `task_detail.rs`.
+- The detail drawer's `Link terminal` button is enabled by `candidate_is_linkable`. It requires the plugin, pane, and instance identifiers of the exact reported candidate, and an identifier that is only whitespace now counts as missing, as everywhere else in the GUI. The daemon's `link` still refuses a malformed pane or instance identifier with `terminal_invalid_request` and requires the instance and pane to match its live inventory; this change only stops the GUI from offering a link it cannot name.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 139 lib (1 ignored), 6 cli, 2 palette parity, 10 supervisor UI. Two mutations were each caught by their test:
+- Dropping the trim from `candidate_is_linkable` failed the linkability test.
+- Dropping the fallback from `single_run_label` failed the Run label test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
