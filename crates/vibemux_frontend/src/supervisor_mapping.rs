@@ -6,9 +6,10 @@ use vibemux_types::frontend::{FrontendTaskDetail, FrontendTaskSummary};
 use vibemuxd::terminal_observer::{TerminalBinding, TerminalSnapshot};
 
 /// One display line of the daemon's free text. The domain checks a task title,
-/// harness, role, branch, or worktree path only for blankness and size, so a
-/// line break, tab, or bidirectional control would otherwise split a row or
-/// reorder what follows it in every view that shows the task.
+/// harness, role, branch, or worktree path only for blankness and size, and an
+/// artifact media type only for control characters, so a line break, tab, or
+/// bidirectional control would otherwise split a row or reorder what follows
+/// it in every view that shows the task.
 fn display_line(value: &str) -> String {
     value.chars().map(display_character).collect()
 }
@@ -90,14 +91,17 @@ pub fn task_detail(source: FrontendTaskDetail, previous: Option<&TaskView>) -> T
                     .artifacts
                     .iter()
                     .filter(|artifact| artifact.run_id.to_string() == run_id)
-                    .map(|artifact| ArtifactView {
-                        artifact_id: artifact.artifact_id.to_string(),
-                        name: artifact.artifact_id.to_string(),
-                        kind: artifact.media_type.clone(),
-                        state: "Recorded reference".into(),
-                        sha256: Some(artifact.sha256.clone()),
-                        size_bytes: Some(artifact.size_bytes),
-                        media_type: Some(artifact.media_type.clone()),
+                    .map(|artifact| {
+                        let media_type = display_line(&artifact.media_type);
+                        ArtifactView {
+                            artifact_id: artifact.artifact_id.to_string(),
+                            name: artifact.artifact_id.to_string(),
+                            kind: media_type.clone(),
+                            state: "Recorded reference".into(),
+                            sha256: Some(artifact.sha256.clone()),
+                            size_bytes: Some(artifact.size_bytes),
+                            media_type: Some(media_type),
+                        }
                     })
                     .collect(),
             }
@@ -306,5 +310,36 @@ mod tests {
         );
         assert_eq!(run.worktree, "Not recorded");
         assert_eq!(run.branch, "");
+    }
+
+    #[test]
+    fn an_artifact_media_type_becomes_one_display_line() {
+        use vibemux_types::{ArtifactId, frontend::FrontendArtifactSummary};
+        let mut source = detail("Task", false, "codex", "worker", None, None);
+        let run_id = source.runs[0].run_id;
+        // The A2A artifact rule refuses control characters but not a line
+        // separator or a right-to-left override.
+        for media_type in ["text/plain\u{2028}\u{202e}lmth", "application/json"] {
+            source.artifacts.push(FrontendArtifactSummary {
+                run_id,
+                artifact_id: ArtifactId::new(),
+                sha256: "0".repeat(64),
+                size_bytes: 1,
+                media_type: media_type.into(),
+            });
+        }
+        let view = task_detail(source, None);
+        let types: Vec<(&str, Option<&str>)> = view.runs[0]
+            .artifacts
+            .iter()
+            .map(|artifact| (artifact.kind.as_str(), artifact.media_type.as_deref()))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("text/plain  lmth", Some("text/plain  lmth")),
+                ("application/json", Some("application/json")),
+            ]
+        );
     }
 }
