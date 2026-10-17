@@ -4863,3 +4863,16 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 134 unit with 1 pre-existing ignore, plus the integration suites. A mutation that swapped `set` and `unset` failed the new test; the file was restored.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should also show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Test the documented native harness commands
+
+**Scope:** `vibemux_harness_native` CLI tests. No code, wire, store, or protocol change.
+
+**Implemented:**
+
+- A new unit test reads the README, `docs/guides/harness_core_guide.md`, and `docs/guides/unified_cli_guide.md`, finds each `vibemux_harness_native.exe` and `vibemuxctl.exe harness` command line, and parses it with the real CLI parser. There are eight such lines today, and the test pins that count.
+- The documented `catalog` and `replay` commands run against the public example configuration and fixture and must succeed. The documented `dispatch` command's public example request must pass every request check, so that only a missing configuration stops it. The probe and dispatch configurations the docs name are private `.vibemux/` paths, and the test never opens them; no vendor process starts.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness_native --all-features` passed: 36 unit, 19 normalization, 21 process dispatch. A README mutation that misspelled the replay protocol failed the test with `harness_cli_usage`. An example request mutated to schema version 2 failed it with `harness_invalid_request`. Both files were restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.

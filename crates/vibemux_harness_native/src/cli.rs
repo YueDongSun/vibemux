@@ -460,4 +460,68 @@ mod tests {
         let guide = include_str!("../../../docs/guides/harness_core_guide.md");
         assert!(guide.contains("six-byte"));
     }
+
+    /// Every native command the README and the guides show parses, and the
+    /// public examples they name work: `catalog` and `replay` succeed, and
+    /// the example request passes every request check, so only the missing
+    /// configuration stops it. A private `.vibemux/` path is never opened.
+    #[tokio::test]
+    async fn every_documented_command_parses_and_its_public_examples_work() {
+        let documents = [
+            include_str!("../../../README.md"),
+            include_str!("../../../docs/guides/harness_core_guide.md"),
+            include_str!("../../../docs/guides/unified_cli_guide.md"),
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = tempfile::tempdir().unwrap();
+        let mut commands = 0;
+        for line in documents.iter().flat_map(|document| document.lines()) {
+            let Some(arguments) = ["vibemux_harness_native.exe ", "vibemuxctl.exe harness "]
+                .iter()
+                .find_map(|program| line.split_once(program).map(|(_, rest)| rest))
+            else {
+                continue;
+            };
+            let command = parse_arguments(arguments.split_whitespace().map(|argument| {
+                if argument.starts_with("examples/") || argument.starts_with("crates/") {
+                    root.join(argument).into_os_string()
+                } else {
+                    OsString::from(argument)
+                }
+            }))
+            .unwrap_or_else(|error| panic!("{line}: {}", error.code()));
+            commands += 1;
+            match command {
+                Command::Catalog { .. } | Command::Replay { .. } => {
+                    let reply = run(command)
+                        .await
+                        .unwrap_or_else(|error| panic!("{line}: {}", error.code()));
+                    assert!(reply.success, "{line}");
+                }
+                Command::Probe { config_path, .. } => {
+                    assert!(config_path.starts_with(".vibemux"), "{line}");
+                }
+                Command::Dispatch {
+                    config_path,
+                    request_path,
+                    ..
+                } => {
+                    assert!(config_path.starts_with(".vibemux"), "{line}");
+                    let outcome = run(Command::Dispatch {
+                        config_path: directory.path().join("missing_config.json"),
+                        request_path,
+                        plugin: Some(directory.path().join("missing_plugin.exe")),
+                    })
+                    .await;
+                    assert_eq!(
+                        outcome.err().map(|error| error.code()),
+                        Some("harness_config_unavailable"),
+                        "{line}"
+                    );
+                }
+                Command::Help | Command::Version => panic!("{line}"),
+            }
+        }
+        assert_eq!(commands, 8);
+    }
 }
