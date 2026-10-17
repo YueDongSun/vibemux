@@ -5013,3 +5013,37 @@ An audit of `vibemuxctl`'s text output found nothing to change. Every daemon- or
 Both files were restored and compared byte for byte.
 
 **Remaining:** the window's minimum inner width is still 960, above the settings minimum of 800, so a saved width below 960 opens at 960. Changing either bound is a layout decision left to the owner. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - TUI binaries refuse non-Unicode arguments with the usage exit
+
+**Scope:** the flag parsing of the two operator TUI binaries in `vibemux_frontend`: `vibemux_frontend_tui` and `vibemux_dsh_tui`. The flags, their messages, and exit code 4 are unchanged.
+
+**Implemented:**
+- Both binaries read their flags with `std::env::args`, which panics on an argument that is not valid Unicode. That meant exit code 101 and a panic message instead of the documented usage exit 4. Both now read `std::env::args_os` into a pure `parse_arguments` function, as `vibemuxctl` already does.
+- A non-Unicode flag is reported as `unknown argument: ...` (lossy text), and a non-Unicode `--theme` value gets the existing theme error. Both exit 4.
+- `vibemux_dsh_tui` keeps `--project-root` and `--config` values as `OsString` paths, so a project under a non-Unicode Windows path can be opened. Before, such a path panicked before the configuration was read.
+- `vibemux_dsh_tui` now takes the working directory and the environment theme as parser inputs, so its tests read no process state.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed:
+
+| Target | Tests |
+|---|---|
+| lib | 142 (1 ignored) |
+| `vibemux_dsh_tui` bin | 4 (new) |
+| `vibemux_frontend_tui` bin | 2 (new) |
+| cli | 6 (exit code 4 and stderr text unchanged) |
+| palette parity | 2 |
+| supervisor UI | 10 |
+
+The built binaries were run with an argument holding a lone UTF-16 surrogate, both as a flag and as a `--theme` value. Each of the four runs exited 4 with the usage message.
+
+Three mutations were each caught by their test:
+- Converting the `--project-root` path through lossy text failed the path test.
+- Accepting any non-Unicode `--theme` value failed the DSH usage-error test.
+- Treating a non-Unicode flag as `--json` failed the diagnostic TUI usage-error test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:**
+- `vibemux_frontend_preview`, `vibemux_harness_native_plugin`, the fixture binaries, and the `live_codex_smoke` example still read `std::env::args`.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.

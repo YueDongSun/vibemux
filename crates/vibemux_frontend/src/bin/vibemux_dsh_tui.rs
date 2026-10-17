@@ -15,7 +15,11 @@
 //! never opens the core database and writes no canonical state. The daemon
 //! exposes the same shared driver through its separate DSH control operations.
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use vibemux_dsh::{DSH_SESSION_CONFIG_FILE_NAME, DshSessionConfigSummary, load_session_config};
 use vibemux_frontend::dsh_tui;
@@ -24,6 +28,7 @@ use vibemux_frontend::tui::Theme;
 /// Exit code for a usage error, matching the diagnostic TUI.
 const USAGE_EXIT: u8 = 4;
 
+#[derive(Debug)]
 struct Arguments {
     project_root: PathBuf,
     config_path: Option<PathBuf>,
@@ -40,41 +45,48 @@ fn expected_themes() -> String {
         .join(", ")
 }
 
-fn parse_arguments() -> Result<Arguments, String> {
-    let mut project_root =
-        std::env::current_dir().map_err(|_| "no working directory".to_string())?;
+/// Parse the flags after the program name. The arguments stay `OsString`s,
+/// so a path flag keeps a path that is not valid Unicode, and any other
+/// argument that is not valid Unicode is a usage error rather than a panic.
+fn parse_arguments(
+    arguments: impl IntoIterator<Item = OsString>,
+    current_dir: PathBuf,
+    default_theme: Theme,
+) -> Result<Arguments, String> {
+    let mut project_root = current_dir;
     let mut config_path = None;
-    let mut theme = Theme::from_environment();
+    let mut theme = default_theme;
     let mut print_config = false;
     let mut json = false;
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
-        match argument.as_str() {
-            "--project-root" => {
+        match argument.to_str() {
+            Some("--project-root") => {
                 let value = arguments.next().ok_or("--project-root needs a path")?;
                 project_root = PathBuf::from(value);
             }
-            "--config" => {
+            Some("--config") => {
                 let value = arguments.next().ok_or("--config needs a path")?;
                 config_path = Some(PathBuf::from(value));
             }
-            "--theme" => {
-                let value = arguments.next().ok_or_else(|| {
-                    format!(
-                        "unknown or missing --theme value (expected one of: {})",
-                        expected_themes()
-                    )
-                })?;
-                theme = Theme::from_name(&value).ok_or_else(|| {
-                    format!(
-                        "unknown or missing --theme value (expected one of: {})",
-                        expected_themes()
-                    )
-                })?;
+            Some("--theme") => {
+                theme = arguments
+                    .next()
+                    .as_deref()
+                    .and_then(OsStr::to_str)
+                    .and_then(Theme::from_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown or missing --theme value (expected one of: {})",
+                            expected_themes()
+                        )
+                    })?;
             }
-            "--print-config" => print_config = true,
-            "--json" => json = true,
-            other => return Err(format!("unknown argument: {other}")),
+            Some("--print-config") => print_config = true,
+            Some("--json") => json = true,
+            _ => {
+                return Err(format!("unknown argument: {}", argument.to_string_lossy()));
+            }
         }
     }
     Ok(Arguments {
@@ -87,7 +99,15 @@ fn parse_arguments() -> Result<Arguments, String> {
 }
 
 fn main() -> ExitCode {
-    let arguments = match parse_arguments() {
+    let Ok(current_dir) = std::env::current_dir() else {
+        eprintln!("no working directory");
+        return ExitCode::from(USAGE_EXIT);
+    };
+    let arguments = match parse_arguments(
+        std::env::args_os().skip(1),
+        current_dir,
+        Theme::from_environment(),
+    ) {
         Ok(arguments) => arguments,
         Err(message) => {
             eprintln!("{message}");
@@ -234,4 +254,90 @@ fn session_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     format!("vibemux_tui_{}_{}", std::process::id(), epochs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    fn non_unicode() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0x61, 0xD800])
+    }
+
+    #[cfg(unix)]
+    fn non_unicode() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![b'a', 0xff])
+    }
+
+    fn parse(arguments: Vec<OsString>) -> Result<Arguments, String> {
+        parse_arguments(arguments, PathBuf::from("cwd"), Theme::Classic)
+    }
+
+    fn strings(arguments: &[&str]) -> Vec<OsString> {
+        arguments.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn flags_parse_and_defaults_come_from_the_caller() {
+        let defaults = parse(Vec::new()).expect("no flags");
+        assert_eq!(defaults.project_root, PathBuf::from("cwd"));
+        assert_eq!(defaults.config_path, None);
+        assert_eq!(defaults.theme, Theme::Classic);
+        assert!(!defaults.print_config && !defaults.json);
+
+        let parsed = parse(strings(&[
+            "--project-root",
+            "root",
+            "--config",
+            "session.json",
+            "--theme",
+            "nord",
+            "--print-config",
+            "--json",
+        ]))
+        .expect("all flags");
+        assert_eq!(parsed.project_root, PathBuf::from("root"));
+        assert_eq!(parsed.config_path, Some(PathBuf::from("session.json")));
+        assert_eq!(parsed.theme, Theme::Nord);
+        assert!(parsed.print_config && parsed.json);
+    }
+
+    #[test]
+    fn a_path_flag_keeps_a_non_unicode_path() {
+        let parsed = parse([strings(&["--project-root"]), vec![non_unicode()]].concat())
+            .expect("project root");
+        assert_eq!(parsed.project_root.as_os_str(), non_unicode());
+        let parsed = parse([strings(&["--config"]), vec![non_unicode()]].concat()).expect("config");
+        assert_eq!(
+            parsed.config_path.as_deref().map(|path| path.as_os_str()),
+            Some(non_unicode().as_os_str())
+        );
+    }
+
+    #[test]
+    fn a_non_unicode_flag_or_theme_is_a_usage_error() {
+        let flag = parse(vec![non_unicode()]).expect_err("flag refused");
+        assert!(flag.starts_with("unknown argument: a"), "{flag}");
+        let theme = parse([strings(&["--theme"]), vec![non_unicode()]].concat())
+            .expect_err("theme refused");
+        assert!(
+            theme.starts_with("unknown or missing --theme value"),
+            "{theme}"
+        );
+    }
+
+    #[test]
+    fn a_missing_value_is_a_usage_error() {
+        for (flag, message) in [
+            ("--project-root", "--project-root needs a path"),
+            ("--config", "--config needs a path"),
+            ("--theme", "unknown or missing --theme value"),
+        ] {
+            let error = parse(strings(&[flag])).expect_err("refused");
+            assert!(error.starts_with(message), "{flag}: {error}");
+        }
+    }
 }
