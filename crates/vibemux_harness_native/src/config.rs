@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
+use vibemux_harness::dispatch::route_config::MAX_MODEL_BYTES;
 
 use crate::{
     Error,
@@ -186,8 +187,13 @@ impl Config {
                     .any(|argument| argument.len() > 4096 || argument.contains('\0'))
                 || route.arguments.iter().map(String::len).sum::<usize>() > 12 * 1024
                 || route.environment_names.len() > MAX_ENVIRONMENT_NAMES
+                // The model follows `--model` in argv, so a leading dash could
+                // be read as a flag; the daemon's route label check refuses it too.
                 || route.model.as_ref().is_some_and(|model| {
-                    model.is_empty() || model.len() > 256 || model.contains('\0')
+                    model.is_empty()
+                        || model.len() > MAX_MODEL_BYTES
+                        || model.starts_with('-')
+                        || model.contains('\0')
                 })
             {
                 return Err(Error::new("harness_invalid_route"));
@@ -248,7 +254,7 @@ impl Config {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Config, Limits, MAX_ENVIRONMENT_NAMES, Route, UNSAFE_ARGUMENTS};
+    use super::{Config, Limits, MAX_ENVIRONMENT_NAMES, MAX_MODEL_BYTES, Route, UNSAFE_ARGUMENTS};
     use crate::contract::{Harness, Protocol, SCHEMA_VERSION};
 
     fn config(edit: impl FnOnce(&mut Route)) -> Config {
@@ -302,6 +308,29 @@ mod tests {
             ];
         });
         assert_eq!(outcome(&launcher), "ok");
+    }
+
+    #[test]
+    fn a_model_name_can_never_be_read_as_a_flag() {
+        for model in [
+            "sonnet",
+            "gpt-5.1-codex",
+            "claude-sonnet-4-5",
+            "openai/gpt-5",
+        ] {
+            let accepted = config(|route| route.model = Some(model.to_string()));
+            assert_eq!(outcome(&accepted), "ok", "{model}");
+        }
+        for model in [
+            String::new(),
+            "-m".to_string(),
+            "--dangerously-skip-permissions".to_string(),
+            "x".repeat(MAX_MODEL_BYTES + 1),
+            "model\0".to_string(),
+        ] {
+            let refused = config(|route| route.model = Some(model.clone()));
+            assert_eq!(outcome(&refused), "harness_invalid_route", "{model:?}");
+        }
     }
 
     #[test]

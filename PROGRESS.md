@@ -4531,3 +4531,18 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (16 unit, 18 normalization, 21 process dispatch). Four mutations each failed a new test: dropping `--yolo` from the list, matching `flag:` instead of `flag=`, removing the reserved-name check, and ignoring duplicate names.
 
 **Remaining:** The native model field accepts a value that starts with `-`, which the daemon's shared route label check refuses; that parity fix is a separate change. The flag list is a deny list, not an allow list, so an operator prefix stays operator-trusted.
+
+### 2026-10-18 - Native model names can no longer be read as a flag
+
+**Scope:** `vibemux_harness_native` route validation and the harness core guide. No wire, schema, control protocol, or ACP policy change.
+
+**Implemented:**
+
+- A native route's `model` follows `--model` in the Claude stream-json and Codex exec argv. The daemon's shared route label check refuses a model that starts with `-`, but native validation checked only emptiness, a 256-byte bound, and NUL, so a model such as `--dangerously-skip-permissions` loaded and reached argv outside the `UNSAFE_ARGUMENTS` check.
+- Native validation now also refuses a leading `-` (`harness_invalid_route` at load, like the other model checks) and takes its length bound from the shared `MAX_MODEL_BYTES`.
+- The native check does not adopt the daemon's full label alphabet, so a model the native path accepted before still loads unless it starts with `-`.
+- A unit test accepts `sonnet`, `gpt-5.1-codex`, `claude-sonnet-4-5`, and `openai/gpt-5`, and refuses an empty name, `-m`, `--dangerously-skip-permissions`, a name one byte over the bound, and a name with NUL. The guide states the rule.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (17 unit, 18 normalization, 21 process dispatch). Two mutations each failed the new test: removing the leading-dash check and loosening the bound by one byte.
+
+**Remaining:** Whether native should adopt the daemon's full model alphabet is an owner decision, because it would refuse names the native path accepts today. Native environment names may still start with a digit, which the daemon refuses; that difference is harmless and unchanged.

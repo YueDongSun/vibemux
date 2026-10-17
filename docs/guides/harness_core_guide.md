@@ -74,7 +74,9 @@ this JSON. VibeMux does not copy vendor authentication files into the project.
 
 `model: null` preserves the vendor's selection. A configured Codex or Claude
 model is passed explicitly; ACP model selection is not implemented and a
-non-null override is rejected rather than silently ignored. The external task
+non-null override is rejected rather than silently ignored. A model name must
+not start with `-`, so it is never read as a flag; such a route is rejected
+with `harness_invalid_route`, as the daemon rejects it. The external task
 router's GPT-5.6 policy is independent of the harness wire protocol.
 
 Changing configuration invalidates an existing dispatcher. Construct a new
