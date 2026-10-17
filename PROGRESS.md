@@ -4812,3 +4812,16 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_probe -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_probe -p vibemux_frontend --all-features` passed: probe 22 unit plus its integration suites, frontend 131 unit with 1 pre-existing ignore. A mutation that renamed `local_gateway` in `as_str` failed the new probe test, the frontend label test, and the TUI render tests; the file was restored.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
+
+### 2026-10-18 - Test the GUI agent view text
+
+**Scope:** the egui Agents view in `vibemux_frontend`. No wire, store, or protocol change.
+
+**Implemented:**
+
+- The agent list's summary line and the agent detail rows are now built by two pure functions, `agent_summary` and `agent_details`, instead of inline in the egui layout. The rendered text is unchanged.
+- New unit tests, the first for this view, pin the summary line and all seven detail rows in order for Codex, check that Kimi still shows its `terminal_only` adapter as a build fact, and pin the GUI's title-case probe state labels.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 133 unit with 1 pre-existing ignore, plus the integration suites. A mutation that showed the result code in the Version row failed the new test; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
