@@ -3,7 +3,10 @@ use crate::{command::Format, failure::Failure};
 use serde_json::{Value, json};
 use std::fmt::Write;
 use vibemux_frontend::dashboard::safe_text;
-use vibemux_harness::{AgentKind, dispatch::adapter_capability};
+use vibemux_harness::{
+    AgentKind,
+    dispatch::{ObservationKind, adapter_capability},
+};
 
 const MAX_TEXT_ROWS: usize = 32;
 
@@ -239,6 +242,36 @@ fn route_actions(route: &Value) -> &'static str {
     }
 }
 
+/// Per-kind totals over every observation, including rows the text view
+/// truncates, in the shared ADR 029 kind order. A kind outside that
+/// vocabulary is counted as `unrecognized`, never echoed.
+fn kind_tally(observations: &[&Value]) -> Option<String> {
+    if observations.is_empty() {
+        return None;
+    }
+    let mut counts = [0_usize; ObservationKind::ALL.len()];
+    let mut unrecognized = 0_usize;
+    for observation in observations {
+        match ObservationKind::ALL
+            .iter()
+            .position(|kind| observation["kind"] == kind.as_str())
+        {
+            Some(index) => counts[index] += 1,
+            None => unrecognized += 1,
+        }
+    }
+    let mut parts = ObservationKind::ALL
+        .iter()
+        .zip(counts)
+        .filter(|(_, count)| *count > 0)
+        .map(|(kind, count)| format!("{} {count}", kind.as_str()))
+        .collect::<Vec<_>>();
+    if unrecognized > 0 {
+        parts.push(format!("unrecognized {unrecognized}"));
+    }
+    Some(format!("Kinds: {}", parts.join(", ")))
+}
+
 fn harness_text(value: &Value) -> String {
     if value["harnesses"].is_array() {
         let mut lines = vec![
@@ -267,28 +300,55 @@ fn harness_text(value: &Value) -> String {
         );
         return lines.join("\n");
     }
+    // A replay report has no harness process: name the protocol and omit the
+    // process fields rather than printing placeholders for them.
+    let mut lines = if value["completion"].is_object() {
+        let completion = &value["completion"];
+        vec![
+            format!(
+                "Harness {} | {}",
+                field(value, "harness"),
+                field(completion, "status")
+            ),
+            format!(
+                "Records: {}   Bytes: {}   Native exit: {}",
+                field(completion, "record_count"),
+                field(completion, "stdout_bytes"),
+                field(completion, "exit_code")
+            ),
+        ]
+    } else {
+        vec![
+            format!(
+                "Replay {} | {}",
+                field(value, "protocol"),
+                field(value, "status")
+            ),
+            format!("Records: {}", field(value, "record_count")),
+        ]
+    };
     let completion = if value["completion"].is_object() {
         &value["completion"]
     } else {
         value
     };
-    let mut lines = vec![
-        format!(
-            "Harness {} | {}",
-            field(value, "harness"),
-            field(completion, "status")
-        ),
-        format!(
-            "Records: {}   Bytes: {}   Native exit: {}",
-            field(completion, "record_count"),
-            field(completion, "stdout_bytes"),
-            field(completion, "exit_code")
-        ),
-    ];
     if !completion["error_code"].is_null() {
         lines.push(format!("Error: {}", field(completion, "error_code")));
     }
-    for observation in rows(value, "observations").iter().take(MAX_TEXT_ROWS) {
+    let observations = rows(value, "observations");
+    if let Some(tally) = kind_tally(&observations) {
+        lines.push(tally);
+    }
+    if observations
+        .iter()
+        .any(|observation| observation["kind"] == ObservationKind::Opaque.as_str())
+    {
+        lines.push(
+            "Opaque records are kept intact but not classified by this build: RPC replies, or vendor events without a verified contract. A growing share can mean the vendor output changed."
+                .to_string(),
+        );
+    }
+    for observation in observations.iter().take(MAX_TEXT_ROWS) {
         lines.push(format!(
             "  {:>4} {:<12} {} bytes",
             field(observation, "sequence"),
@@ -296,7 +356,7 @@ fn harness_text(value: &Value) -> String {
             field(observation, "bytes")
         ));
     }
-    let count = rows(value, "observations").len();
+    let count = observations.len();
     if count > MAX_TEXT_ROWS {
         lines.push(format!(
             "  {} more metadata records; use --format json",
@@ -378,5 +438,51 @@ mod tests {
         let header = text.lines().nth(1).unwrap();
         let claude = text.lines().nth(2).unwrap();
         assert_eq!(header.find("Actions"), claude.find("execute,probe"));
+    }
+    #[test]
+    fn harness_report_text_tallies_every_kind_including_truncated_rows() {
+        let observation =
+            |sequence: usize, kind: &str| json!({"sequence": sequence, "kind": kind, "bytes": 10});
+        let mut observations = vec![observation(1, "started")];
+        observations.extend((2..=36).map(|sequence| observation(sequence, "text")));
+        // Rows past the 32-row text limit still count.
+        observations.push(observation(37, "opaque"));
+        observations.push(observation(38, "opaque"));
+        observations.push(observation(39, "SYNTHETIC_KIND\u{1b}[31m"));
+        observations.push(observation(40, "completed"));
+        let report = |observations: Vec<Value>| {
+            harness_text(&json!({"schema_version": 1, "harness": "codex",
+                "completion": {"status": "completed", "record_count": observations.len(),
+                    "stdout_bytes": 400, "exit_code": 0, "error_code": null},
+                "observations": observations}))
+        };
+        let text = report(observations);
+        assert!(
+            text.lines()
+                .any(|line| line
+                    == "Kinds: started 1, text 35, completed 1, opaque 2, unrecognized 1"),
+            "{text}"
+        );
+        assert!(text.contains("Opaque records are kept intact"));
+        assert!(text.contains("8 more metadata records"));
+        assert!(!text.contains("SYNTHETIC_KIND"));
+        assert!(!text.contains('\u{1b}'));
+
+        let text = report(vec![observation(1, "started"), observation(2, "completed")]);
+        assert!(
+            text.lines()
+                .any(|line| line == "Kinds: started 1, completed 1")
+        );
+        assert!(!text.contains("Opaque records"));
+        let text = report(Vec::new());
+        assert!(!text.contains("Kinds:"));
+
+        let replay = harness_text(&json!({"schema_version": 1, "status": "replayed",
+            "protocol": "acp", "record_count": 1, "observations": [observation(1, "opaque")]}));
+        assert!(
+            replay.starts_with("Replay acp | replayed\nRecords: 1\nKinds: opaque 1\n"),
+            "{replay}"
+        );
+        assert!(!replay.contains("Native exit"));
     }
 }

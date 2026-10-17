@@ -4104,3 +4104,22 @@ scratch directory outside the repository.
 **Remaining**
 - The column reports configuration and build capability only. It does not check that the vendor CLI is installed, and it does not run a probe.
 - ACP routes still show `execute` under the native CLI when `allow_execution` is set. Whether native ACP execution should follow the daemon's probe-only policy is still an open decision.
+
+### 2026-10-17 - Tally observation kinds in the native harness report text
+
+**Scope**
+- CLI text rendering only. The `vibemuxctl harness` probe, dispatch, and replay reports list at most 32 observation rows in text mode. A run with more records hid how many records the classifier left `opaque`, which is the earliest sign that a vendor changed its output. The JSON reports are unchanged and already carry every observation.
+
+**Implemented**
+- `vibemux_cli` `output::kind_tally` adds a `Kinds:` line that counts every observation, including the truncated rows. It uses the shared ADR 029 kind order. A kind outside that vocabulary is counted as `unrecognized` and is never echoed.
+- When any record is `opaque`, the text says that such records are kept intact but not classified: RPC replies, or vendor events without a verified contract. It also says that a growing share can mean the vendor output changed.
+- A replay report now starts with `Replay <protocol> | replayed` and `Records: <n>`. It no longer prints `Harness -` and placeholder process fields for a replay that ran no process.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features`: lib 42 passed (including `output::tests::harness_report_text_tallies_every_kind_including_truncated_rows`), `bootstrap_process` 4 passed, `unified_commands` 6 passed.
+- New `unified_commands::harness_replay_text_tallies_kinds_without_vendor_content` replays the native `codex_app_server.jsonl` fixture through `vibemuxctl --format text harness replay`. It checks the header, `Records: 10`, and `Kinds: started 1, text 2, tool 1, approval 1, usage 1, completed 1, opaque 3`, and that no fixture content appears.
+- `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The tally is a count, not a drift detector. Some opaque records are expected for every protocol (RPC replies), and every record of a direct `copilot_json` or `grok_stream_json` replay is opaque. No baseline share is recorded or compared.
+- The daemon dispatch status already returns per-kind counts (`CaptureSummary.kinds`). This change does not touch the daemon or its control protocol.

@@ -264,3 +264,39 @@ fn harness_catalog_stays_metadata_only_through_unified_entrypoint() {
     assert!(!text.contains("native_bin"));
     assert!(!directory.path().join(".vibemux").exists());
 }
+
+#[test]
+fn harness_replay_text_tallies_kinds_without_vendor_content() {
+    let directory = repository();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../vibemux_harness_native/tests/fixtures/codex_app_server.jsonl")
+        .canonicalize()
+        .unwrap();
+    let output = run(
+        directory.path(),
+        &[
+            "--format",
+            "text",
+            "harness",
+            "replay",
+            "--protocol",
+            "codex_app_server",
+            "--input",
+            fixture.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    // The three RPC replies stay opaque; every vendor event is classified.
+    let expected = [
+        "Replay codex_app_server | replayed",
+        "Records: 10",
+        "Kinds: started 1, text 2, tool 1, approval 1, usage 1, completed 1, opaque 3",
+    ];
+    assert_eq!(text.lines().take(3).collect::<Vec<_>>(), expected, "{text}");
+    assert!(text.contains("Opaque records are kept intact"));
+    for vendor_content in ["synthetic_agent", "synthetic_thread", "first chunk"] {
+        assert!(!text.contains(vendor_content), "{vendor_content} leaked");
+    }
+    assert!(!directory.path().join(".vibemux").exists());
+}
