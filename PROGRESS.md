@@ -4410,3 +4410,20 @@ scratch directory outside the repository.
 
 **Remaining**
 - Below about 35 columns, the wrapped diagnostics lines can still exceed the space the table leaves.
+
+### 2026-10-17 - State adapter support in the diagnostic TUI
+
+**Scope**: Ratatui diagnostic TUI (`vibemux_frontend` `tui/render.rs`), with `docs/protocol_boundaries.md` and `docs/architecture.md`.
+
+**Implemented**:
+- The diagnostics panel gains an `Adapters:` line. It groups every probed harness under the strongest thing this build's structured adapters can do for it, strongest support first and probe order within a group, for example `execute: Claude, Codex, DSH; probe_only: OpenCode, Copilot, Grok; terminal_only: ...`. `protocol_boundaries.md` already said the TUI showed adapter support, but only the copied snapshot carried it.
+- It is a line, not a table column. At 80 columns the six-column table has no free cells. At 160 columns, a 13-cell column would clip the real Grok version string that the existing test keeps whole.
+- The line follows the gateway, A2A, and telemetry lines, so the minimum 80x24 layout keeps every probe line and does not change. At 80x24 the line has no row, and the snapshot's `adapter=` field is the record there. The two docs now name the diagnostics line and the snapshot.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemux_frontend -p vibemux_harness --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemux_frontend --all-features`: 131 library tests pass, with 1 ignored generator, plus the crate's integration tests. `cargo test -p vibemux_harness --lib capability`: 6 pass, including the documentation-table check.
+- Two new tests pin the exact grouping and the empty case, and the line at 120x32 and 160x40. The six 120x32 golden fixtures were regenerated; the 80x24 fixtures are byte-identical.
+- Mutation checks: dropping the line's content fails the render test and the goldens. Ordering the groups weakest first fails the grouping test as well.
+
+**Remaining**: No live terminal run. The line is hidden at 80x24 for lack of rows.

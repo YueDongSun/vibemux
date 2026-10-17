@@ -14,7 +14,7 @@
 
 ## Harness adapter capability
 
-`vibemux_harness::dispatch::adapter_capability` derives, per harness, which structured adapters this build has and the strongest thing any of them can do. The dashboard, the TUI, the GUI, and `vibemuxctl probe` text all show this one answer. It describes the build, not the operator's configuration: a route still needs dispatch configuration, detection, and `allow_execution` before anything runs.
+`vibemux_harness::dispatch::adapter_capability` derives, per harness, which structured adapters this build has and the strongest thing any of them can do. The dashboard, the TUI (an `Adapters:` diagnostics line where the panel has room, and `adapter=` in its copied snapshot), the GUI, and `vibemuxctl probe` text all show this one answer. It describes the build, not the operator's configuration: a route still needs dispatch configuration, detection, and `allow_execution` before anything runs.
 
 | Harness | Structured protocols | Support |
 |---|---|---|

@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 //! TUI dashboard renderer: audited themes, the six-column agent table
-//! (one row per probed harness) ported from the single-shell frontend, and
-//! the per-theme golden fixture machinery. No per-harness detail; that
+//! (one row per probed harness) ported from the single-shell frontend, a
+//! diagnostics line grouping the harnesses by structured-adapter support,
+//! and the per-theme golden fixture machinery. No per-harness detail; that
 //! lives in the GUI now.
 
 use ratatui::{
@@ -16,7 +17,8 @@ use ratatui::{
 use crate::tui::theme::{
     Theme, health_style, muted_style, route_style, state_style, telemetry_style, title_style,
 };
-use crate::view_model::ViewModel;
+use crate::view_model::{AgentView, ViewModel};
+use vibemux_harness::dispatch::AdapterSupport;
 use vibemux_probe::{ProbeState, RouteKind};
 
 /// Rows the stacked diagnostics block needs for its gateway, A2A, and
@@ -154,6 +156,12 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
                 telemetry_style(theme, model.telemetry_available, model.telemetry_failures),
             ),
         ]),
+        // A build fact, not a probe result: it follows the probe lines, so
+        // the minimum-height layout never trades a probe line for it.
+        Line::from(vec![
+            Span::raw("Adapters:  "),
+            Span::raw(adapter_support_summary(&model.agents)),
+        ]),
         Line::from(Span::styled(
             "env        (allowlisted only)",
             muted_style(theme),
@@ -217,6 +225,33 @@ const fn route_label(route: RouteKind) -> &'static str {
         RouteKind::LocalGateway => "local_gateway",
         RouteKind::Unknown => "unknown",
     }
+}
+
+/// Every harness named under the strongest thing this build's structured
+/// adapters can do for it, strongest support first and probe order within
+/// a group: the answer the dashboard's Adapter column and the snapshot's
+/// `adapter=` field give, without a column the 80-cell table has no room
+/// for.
+fn adapter_support_summary(agents: &[AgentView]) -> String {
+    let mut supports: Vec<AdapterSupport> =
+        agents.iter().map(|agent| agent.adapter.support).collect();
+    supports.sort_unstable();
+    supports.dedup();
+    if supports.is_empty() {
+        return "-".to_string();
+    }
+    supports
+        .into_iter()
+        .map(|support| {
+            let names: Vec<&str> = agents
+                .iter()
+                .filter(|agent| agent.adapter.support == support)
+                .map(|agent| agent.name.as_str())
+                .collect();
+            format!("{}: {}", support.as_str(), names.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Truncate `text` to `max_width` visible cells with an ellipsis so a
@@ -429,6 +464,32 @@ mod tests {
                     "missing diagnostics line {line} at {width}x{height}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn adapter_support_groups_every_harness_strongest_first() {
+        let model = ViewModel::from_report(&real_report());
+        assert_eq!(
+            adapter_support_summary(&model.agents),
+            "execute: Claude, Codex, DSH; probe_only: OpenCode, Copilot, Grok; \
+             terminal_only: Qwen, iFlow, TRAE, CodeBuddy, Kimi"
+        );
+        assert_eq!(adapter_support_summary(&[]), "-");
+    }
+
+    #[test]
+    fn diagnostics_state_adapter_support_wherever_the_panel_has_room() {
+        let model = ViewModel::from_report(&real_report());
+        // Stacked at 120x32 and side by side at 160x40 the first group
+        // starts on the line's own row. 80x24 has rows for the probe lines
+        // only; the copied snapshot carries `adapter=` for every row there.
+        for (width, height) in [(120u16, 32u16), (160, 40)] {
+            let rendered = render_text(&model, width, height);
+            assert!(
+                rendered.contains("Adapters:  execute: Claude, Codex, DSH;"),
+                "missing adapter support at {width}x{height}"
+            );
         }
     }
 
