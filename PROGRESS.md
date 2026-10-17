@@ -4318,3 +4318,24 @@ scratch directory outside the repository.
 
 **Remaining**
 - Whether native ACP routes should execute at all is still the open policy decision. This test covers the existing gates only.
+
+### 2026-10-17 - Diagnostic TUI shows every probed harness row
+
+**Scope**
+- The read-only diagnostic TUI (`vibemux_frontend_tui`, `tui/render.rs`). The ADR 041 dashboard is unchanged.
+
+**Implemented**
+- Bug: the probe reports eleven harnesses, including DSH, but the stacked agent table had a fixed `Min(13)` height. That fit ten rows, so DSH was cut at 80x24 and 120x32 even while the status line counted it. The golden fixtures had pinned the cut table.
+- The stacked table's height now follows the agent count: top border, header, and one row per agent.
+- Its bottom edge is now the diagnostics block's collapsed top border (`├Diagnostics┤`). At 80x24 all eleven rows and the gateway, A2A, and telemetry lines still fit.
+- The side-by-side layout (160 columns and wider) keeps full borders.
+- New test `every_probed_agent_row_and_diagnostic_line_renders_at_every_size`. At 80x24, 120x32, and 160x40 it requires one table row per `AgentKind::all()` harness and all three diagnostics lines, so a twelfth harness without room fails it. It replaces the ten-name check.
+- Regenerated the twelve golden fixtures; each changed only by the DSH row and the collapsed border. Corrected the stale "ten-agent" module comments.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 124 passed (1 ignored generator); integration 6, 2, and 10 passed.
+- Mutation check, restored afterwards: restoring the stacked table's full bottom border failed the new test with `missing agent row DSH at 80x24`.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The ADR 041 dashboard's agent table scrolls with the selection, but at 80x24 it shows five of eleven harnesses and gives no hint that more rows exist.

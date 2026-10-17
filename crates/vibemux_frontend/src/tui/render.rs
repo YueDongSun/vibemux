@@ -1,13 +1,14 @@
 #![forbid(unsafe_code)]
-//! TUI dashboard renderer: audited themes, the six-column ten-agent
-//! table ported from the single-shell frontend, and the per-theme
-//! golden fixture machinery. No per-harness detail; that lives in the
-//! GUI now.
+//! TUI dashboard renderer: audited themes, the six-column agent table
+//! (one row per probed harness) ported from the single-shell frontend, and
+//! the per-theme golden fixture machinery. No per-harness detail; that
+//! lives in the GUI now.
 
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
+    symbols,
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
@@ -18,16 +19,26 @@ use crate::tui::theme::{
 use crate::view_model::ViewModel;
 use vibemux_probe::{ProbeState, RouteKind};
 
+/// Rows the stacked diagnostics block needs for its gateway, A2A, and
+/// telemetry lines between its (collapsed) top border and bottom border.
+const DIAGNOSTICS_MIN_HEIGHT: u16 = 5;
+
 pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: Theme) {
+    // Stacked, the agent table holds its top border, the header, and one row
+    // per probed agent; its bottom edge is the diagnostics block's collapsed
+    // top border. Sizing it from the agent count keeps every harness row
+    // visible: a fixed height silently cut the eleventh harness (DSH).
+    let table_height = u16::try_from(model.agents.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2);
     let areas = Layout::default()
         .direction(Direction::Vertical)
         // Title + diagnostics + agent table; per-harness detail (slots)
-        // stays in the GUI. The stacked body needs 13 rows for ten agent
-        // rows + header + borders plus 5 for diagnostics, so 18 guarantees
-        // none of the ten rows is cut.
+        // stays in the GUI. The body minimum is the stacked table plus the
+        // diagnostics lines, so no agent row is cut at 80x24.
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(18),
+            Constraint::Min(table_height.saturating_add(DIAGNOSTICS_MIN_HEIGHT)),
             Constraint::Length(3),
         ])
         .split(frame.area());
@@ -48,7 +59,8 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
     // Side-by-side only when the table keeps enough width for the longest
     // real version strings; narrower terminals stack vertically so the table
     // spans the full width and no state text is clipped.
-    let body = if areas[1].width >= 160 {
+    let side_by_side = areas[1].width >= 160;
+    let body = if side_by_side {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
@@ -56,8 +68,20 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(13), Constraint::Min(5)])
+            .constraints([Constraint::Length(table_height), Constraint::Min(0)])
             .split(areas[1])
+    };
+    let (table_borders, diagnostics_border_set) = if side_by_side {
+        (Borders::ALL, symbols::border::PLAIN)
+    } else {
+        (
+            Borders::TOP | Borders::LEFT | Borders::RIGHT,
+            symbols::border::Set {
+                top_left: symbols::line::NORMAL.vertical_right,
+                top_right: symbols::line::NORMAL.vertical_left,
+                ..symbols::border::PLAIN
+            },
+        )
     };
     // Fixed columns (agent + three state columns + route) take 55 cells and
     // the six columns consume five 1-cell gaps inside the bordered table
@@ -101,7 +125,11 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
         Row::new(["Agent", "Launcher", "Auth", "Infer", "Version", "Route"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .block(Block::default().title("Agent probes").borders(Borders::ALL));
+    .block(
+        Block::default()
+            .title("Agent probes")
+            .borders(table_borders),
+    );
     frame.render_widget(table, body[0]);
 
     let diagnostics = Paragraph::new(vec![
@@ -147,7 +175,12 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
         },
     ])
     .wrap(Wrap { trim: true })
-    .block(Block::default().title("Diagnostics").borders(Borders::ALL));
+    .block(
+        Block::default()
+            .title("Diagnostics")
+            .borders(Borders::ALL)
+            .border_set(diagnostics_border_set),
+    );
     frame.render_widget(diagnostics, body[1]);
 
     let footer = Paragraph::new(Line::from(vec![
@@ -369,28 +402,31 @@ mod tests {
     }
 
     #[test]
-    fn stacked_layout_renders_all_ten_agent_rows() {
-        // Regression: Min(12) fit only nine data rows (header + borders), so
-        // the tenth agent (Kimi) was silently cut. The Min(13) table plus
-        // the Min(18) outer body guarantee all ten rows at the golden sizes.
+    fn every_probed_agent_row_and_diagnostic_line_renders_at_every_size() {
+        // Regression: a fixed Min(13) table fit ten data rows, so the
+        // eleventh harness (DSH) was silently cut at every stacked size. The
+        // table height now follows the agent count, so adding a harness
+        // without room for it fails here.
         let model = ViewModel::from_report(&real_report());
-        for (width, height) in [(80u16, 24u16), (120, 32)] {
-            let rendered = render_text(&model, width, height);
-            for name in [
-                "Claude",
-                "Codex",
-                "OpenCode",
-                "Copilot",
-                "Grok",
-                "Qwen",
-                "iFlow",
-                "TRAE",
-                "CodeBuddy",
-                "Kimi",
-            ] {
+        assert_eq!(model.agents.len(), AgentKind::all().len());
+        for (width, height) in [(80u16, 24u16), (120, 32), (160, 40)] {
+            let rows = render_text(&model, width, height)
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(width as usize)
+                .map(|row| row.iter().collect::<String>())
+                .collect::<Vec<_>>();
+            for agent in AgentKind::all() {
+                let name = agent.display_name();
                 assert!(
-                    rendered.contains(name),
-                    "missing agent {name} at {width}x{height}"
+                    rows.iter().any(|row| row.starts_with(&format!("│{name} "))),
+                    "missing agent row {name} at {width}x{height}"
+                );
+            }
+            for line in ["Gateway:", "A2A:", "Telemetry:"] {
+                assert!(
+                    rows.iter().any(|row| row.contains(line)),
+                    "missing diagnostics line {line} at {width}x{height}"
                 );
             }
         }
