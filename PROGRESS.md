@@ -4031,3 +4031,26 @@ scratch directory outside the repository.
 
 **Known risks**
 - The stricter native Claude argv and the shared Codex exec argv were checked against fixtures only. A vendor release that rejects `--restricted` or `--strict-mcp-config` would now fail on both paths, not just the daemon path.
+
+### 2026-10-17 - Hermetic Git filter fixture for the workspace inventory test
+
+**Scope**
+- Fixes the pre-existing `vibemux_cli` failure recorded in the previous entry: `unified_commands::workspace_inventory_disables_external_git_filters_and_labels_the_comparison`. Test-only change: a new `test_helpers` fixture binary, the test, and its fixture helper. No product code changed.
+
+**Cause**
+- The test configured the shell filter `echo invoked > filter_marker; cat`. Git for Windows runs such a command through MSYS `sh.exe`. Launched from the Rust test process, that `sh.exe` aborted before running anything with `NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022` (access denied), so `git add` failed with filter exit 66.
+- The same sequence succeeded from Git Bash and from PowerShell, with inherited or redirected stdio. It also failed outside the tool sandbox, so the sandbox is not the cause. Why this one launch context is denied was not determined.
+- The flaw that matters: the test's "no filter ran" assertions only prove something while that shell can start.
+
+**Implemented**
+- New `vibemux_git_filter_fixture` binary (`required-features = ["test_helpers"]`, like the other CLI fixtures). It writes `filter_marker` in its working directory and copies stdin to stdout.
+- The test configures the fixture's forward-slash path as both the `clean` and the `process` filter. With no shell metacharacters, Git runs it directly instead of through `sh -c`. The positive control (`git add` must leave the marker) and the negative checks (inventory must not run a clean or a process filter, and must not change the index) are kept. The test is now gated on `test_helpers`, which CI and the documented `--all-features` commands enable.
+- The test's `git()` helper now reports the failing fixture arguments and Git's stderr. The arguments are constants, so no private data is printed.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 5 passed, including the previously failing test.
+- `cargo test -p vibemux_cli --test unified_commands` with default features: 4 passed, and the gated test compiles out cleanly.
+- `cargo clippy -p vibemux_cli --all-targets -- -D warnings`, with and without `--all-features`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Without `test_helpers`, the filter test no longer runs. A filter path that contains a space or another shell metacharacter would make Git use `sh -c` again.

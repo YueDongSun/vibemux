@@ -37,7 +37,13 @@ fn git(root: &Path, arguments: &[&str]) {
         .current_dir(root)
         .output()
         .unwrap();
-    assert!(output.status.success(), "fixture git operation failed");
+    // Fixture arguments are constants, so naming them and Git's own stderr
+    // exposes no private data and makes a setup failure diagnosable.
+    assert!(
+        output.status.success(),
+        "fixture git operation failed: git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
 }
 
 fn run(root: &Path, arguments: &[&str]) -> Output {
@@ -99,22 +105,25 @@ fn workspace_inventory_reads_local_graph_without_urls_subjects_or_index_changes(
     assert!(!directory.path().join(".vibemux").exists());
 }
 
+/// The filter fixture's path as a Git filter command. Forward slashes keep
+/// the path free of shell metacharacters, so Git executes it directly instead
+/// of through `sh -c`.
+#[cfg(feature = "test_helpers")]
+fn filter_command() -> String {
+    env!("CARGO_BIN_EXE_vibemux_git_filter_fixture").replace('\\', "/")
+}
+
+#[cfg(feature = "test_helpers")]
 #[test]
 fn workspace_inventory_disables_external_git_filters_and_labels_the_comparison() {
     let directory = repository();
     let root = directory.path();
     std::fs::write(root.join(".gitattributes"), "tracked.txt filter=fixture\n").unwrap();
     std::fs::write(root.join("tracked.txt"), "fixture content\n").unwrap();
-    // This constant, synthetic Git filter demonstrates the side effect under test.
-    // Neither the command nor its paths contain user input.
-    git(
-        root,
-        &[
-            "config",
-            "filter.fixture.clean",
-            "echo invoked > filter_marker; cat",
-        ],
-    );
+    // This synthetic Git filter demonstrates the side effect under test. Its
+    // command is the fixture's build path, with no user input.
+    let filter = filter_command();
+    git(root, &["config", "filter.fixture.clean", &filter]);
     git(root, &["config", "filter.fixture.required", "true"]);
     git(root, &["add", ".gitattributes", "tracked.txt"]);
     let marker = root.join("filter_marker");
@@ -141,18 +150,15 @@ fn workspace_inventory_disables_external_git_filters_and_labels_the_comparison()
         index_before
     );
 
-    git(
-        root,
-        &[
-            "config",
-            "filter.fixture.process",
-            "echo invoked > process_marker; exit 1",
-        ],
-    );
+    // A long-running process filter takes precedence over `clean`. The same
+    // fixture would leave the marker if Git started it.
+    git(root, &["config", "filter.fixture.process", &filter]);
     let output = run(root, &["workspace", "status"]);
     assert!(output.status.success());
-    assert!(!marker.exists());
-    assert!(!root.join("process_marker").exists());
+    assert!(
+        !marker.exists(),
+        "inventory must not start a process filter"
+    );
     let text = run(root, &["--format", "text", "workspace", "status"]);
     assert!(
         String::from_utf8(text.stdout)
