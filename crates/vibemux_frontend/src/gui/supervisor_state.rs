@@ -84,6 +84,59 @@ pub enum NewTaskOutcome {
     NeedsConfirmation,
 }
 
+/// Presentational bucket applied to the workspace task list.
+///
+/// Purely a view filter: it never changes what the daemon stores, which tasks
+/// are loaded, or what any action does. The buckets are exhaustive and mutually
+/// exclusive over every state token the snapshot can carry, and the UI shows a
+/// per-bucket count, so no task is ever hidden silently.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TaskFilter {
+    #[default]
+    All,
+    /// States that can still change.
+    Active,
+    /// States that reached a successful terminal result.
+    Done,
+    /// States that stopped without a successful result.
+    Failed,
+}
+
+impl TaskFilter {
+    /// Every bucket, in display order.
+    pub const ALL: [Self; 4] = [Self::All, Self::Active, Self::Done, Self::Failed];
+
+    /// States that ended without a successful result.
+    const STOPPED: [&'static str; 3] = ["failed", "cancelled", "stopped"];
+    /// States that reached a successful terminal result.
+    const SUCCEEDED: [&'static str; 2] = ["done", "succeeded"];
+
+    /// The buckets partition the state space by construction: any token that is
+    /// neither terminal-successful nor terminal-stopped counts as `Active`.
+    /// A state this build has never heard of therefore lands in `Active` and
+    /// stays visible, instead of silently disappearing behind a narrow filter.
+    /// That is the safe direction for an unknown future status.
+    #[must_use]
+    pub fn matches(self, state: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Done => Self::SUCCEEDED.contains(&state),
+            Self::Failed => Self::STOPPED.contains(&state),
+            Self::Active => !Self::SUCCEEDED.contains(&state) && !Self::STOPPED.contains(&state),
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Active => "Active",
+            Self::Done => "Done",
+            Self::Failed => "Stopped",
+        }
+    }
+}
+
 /// Local UI state. Closing a native task window only removes its window
 /// selection; it never changes the immutable supervisor snapshot.
 #[derive(Clone, Debug, Default)]
@@ -101,6 +154,7 @@ pub struct SupervisorUiState {
     composer_focus_requested: bool,
     composer_target: ComposerTarget,
     not_sent_hint_started: Option<f64>,
+    task_filter: TaskFilter,
 }
 
 impl SupervisorUiState {
@@ -284,6 +338,8 @@ impl SupervisorUiState {
         self.close_details();
         self.welcome_active = true;
         self.composer_focus_requested = true;
+        // A new task starts from the whole workspace, not a leftover filter.
+        self.task_filter = TaskFilter::All;
     }
 
     #[must_use]
@@ -323,6 +379,16 @@ impl SupervisorUiState {
     #[must_use]
     pub const fn send_disabled_reason(&self) -> &'static str {
         CHAT_UNAVAILABLE_REASON
+    }
+
+    /// The active workspace-list filter. Defaults to showing every task.
+    #[must_use]
+    pub const fn task_filter(&self) -> TaskFilter {
+        self.task_filter
+    }
+
+    pub fn set_task_filter(&mut self, filter: TaskFilter) {
+        self.task_filter = filter;
     }
 
     /// A disabled send never mutates the draft or emits a fake message.
@@ -421,6 +487,82 @@ impl UiActionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every state token the snapshot can carry must land in exactly one
+    /// bucket, otherwise a filter could hide a task with no way to find it.
+    const KNOWN_STATES: [&str; 13] = [
+        "open",
+        "in_progress",
+        "blocked",
+        "input_required",
+        "done",
+        "cancelled",
+        "preparing",
+        "running",
+        "stopped",
+        "failed",
+        "succeeded",
+        "stale",
+        "unknown_future_state",
+    ];
+
+    #[test]
+    fn every_state_lands_in_exactly_one_specific_bucket() {
+        const SPECIFIC: [TaskFilter; 3] =
+            [TaskFilter::Active, TaskFilter::Done, TaskFilter::Failed];
+        for state in KNOWN_STATES {
+            // `All` is the inclusive super-set, so exclusivity is asserted over
+            // the three buckets that actually partition the space. A state in
+            // none of them would be unreachable behind any narrow filter.
+            let hits: Vec<TaskFilter> = SPECIFIC
+                .into_iter()
+                .filter(|filter| filter.matches(state))
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "state {state:?} matched {hits:?}; it must match exactly one bucket"
+            );
+            assert!(
+                TaskFilter::All.matches(state),
+                "All must always include {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn buckets_separate_live_work_from_successful_and_stopped_runs() {
+        for state in [
+            "open",
+            "in_progress",
+            "blocked",
+            "running",
+            "preparing",
+            "stale",
+        ] {
+            assert!(TaskFilter::Active.matches(state), "{state} is still live");
+        }
+        for state in ["done", "succeeded"] {
+            assert!(TaskFilter::Done.matches(state), "{state} finished cleanly");
+        }
+        for state in ["cancelled", "stopped", "failed"] {
+            assert!(TaskFilter::Failed.matches(state), "{state} stopped");
+            assert!(!TaskFilter::Done.matches(state), "{state} is not a success");
+        }
+    }
+
+    #[test]
+    fn a_new_task_clears_a_leftover_filter() {
+        let mut state = SupervisorUiState::default();
+        state.set_task_filter(TaskFilter::Active);
+        assert_eq!(state.task_filter(), TaskFilter::Active);
+        let _ = state.request_new_task();
+        assert_eq!(
+            state.task_filter(),
+            TaskFilter::All,
+            "starting a new task must not inherit a narrowed view"
+        );
+    }
 
     #[test]
     fn action_queue_is_bounded_and_reports_overflow() {

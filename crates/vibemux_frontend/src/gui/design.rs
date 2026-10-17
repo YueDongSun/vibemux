@@ -14,6 +14,7 @@ pub enum Icon {
     SidebarToggle,
     Send,
     Close,
+    Pulse,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -81,6 +82,27 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
             painter.line_segment([position(0.2, 0.2), position(0.8, 0.8)], stroke);
             painter.line_segment([position(0.8, 0.2), position(0.2, 0.8)], stroke);
         }
+        Icon::Pulse => {
+            // A health trace: flat, one excursion, flat. Reads as "vitals" at
+            // 18 px without borrowing another product's mark.
+            let points = [
+                (0.06, 0.62),
+                (0.32, 0.62),
+                (0.44, 0.26),
+                (0.58, 0.80),
+                (0.70, 0.62),
+                (0.94, 0.62),
+            ];
+            for pair in points.windows(2) {
+                painter.line_segment(
+                    [
+                        position(pair[0].0, pair[0].1),
+                        position(pair[1].0, pair[1].1),
+                    ],
+                    stroke,
+                );
+            }
+        }
     }
 }
 
@@ -100,6 +122,9 @@ pub fn paint_bottom_fade(painter: &Painter, rect: Rect, color: Color32) {
     painter.add(egui::Shape::mesh(mesh));
 }
 const ICON_BUTTON_SIZE: f32 = 30.0;
+/// Height of a bordered action button, matched to `ICON_BUTTON_SIZE` so the
+/// action row in the terminal tab lines up with the rest of the chrome.
+const ACTION_BUTTON_HEIGHT: f32 = 28.0;
 const SPARK_SHORT_RAY: f32 = 0.62;
 const SPARK_INNER_GAP: f32 = 0.16;
 const SPARK_STROKE: f32 = 0.2;
@@ -227,6 +252,25 @@ pub fn quiet_button(ui: &mut Ui, c: &C, label: &str) -> Response {
             .frame(false)
             .corner_radius(6),
     )
+}
+
+/// A bordered action for controls that change real state (link, focus, unlink,
+/// re-inspect). The default egui button borrows the platform chrome and reads as
+/// a different product next to the quiet custom controls, so terminal actions
+/// use this instead.
+pub fn action_button(ui: &mut Ui, c: &C, label: &str, enabled: bool) -> Response {
+    let button = egui::Button::new(RichText::new(label).size(13.0).color(c.txt))
+        .fill(c.raised)
+        .stroke(Stroke::new(1.0, c.border))
+        .corner_radius(BUTTON_RADIUS)
+        .min_size(vec2(0.0, ACTION_BUTTON_HEIGHT));
+    let response = if enabled {
+        ui.add(button)
+    } else {
+        ui.add_enabled(false, button)
+    };
+    paint_focus_ring(ui, &response, BUTTON_RADIUS, c);
+    response
 }
 
 pub fn status(ui: &mut Ui, c: &C, state: &str) {

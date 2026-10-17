@@ -193,6 +193,7 @@ mod tests {
                 title_truncated: false,
                 status: TaskStatus::Open,
                 latest_sequence: 7,
+                detail_revision: 7,
             },
             runs: vec![
                 FrontendRunSummary {
@@ -284,6 +285,7 @@ mod tests {
             title_truncated: false,
             status: TaskStatus::Open,
             latest_sequence: 1,
+            detail_revision: 1,
         };
         let projected = tasks(
             FrontendTasksPage {

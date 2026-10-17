@@ -340,7 +340,9 @@ fn render_terminal(
         return;
     };
     let terminal = &run.terminal;
-    detail_row(
+    // Status is a human sentence, not an identifier, so it keeps the reading
+    // face; the rows below it are ids and stay monospace.
+    detail_row_prose(
         ui,
         colors,
         "Status",
@@ -349,12 +351,12 @@ fn render_terminal(
     if let Some(binding_id) = terminal.binding_id.as_deref() {
         detail_row(ui, colors, "Binding", binding_id);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Focus terminal").clicked() {
+            if design::action_button(ui, colors, "Focus terminal", true).clicked() {
                 actions.enqueue(SupervisorAction::FocusTerminal {
                     binding_id: binding_id.to_string(),
                 });
             }
-            if ui.button("Unlink terminal").clicked() {
+            if design::action_button(ui, colors, "Unlink terminal", true).clicked() {
                 actions.enqueue(SupervisorAction::UnlinkTerminal {
                     binding_id: binding_id.to_string(),
                 });
@@ -366,7 +368,7 @@ fn render_terminal(
     }
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Inspect terminal").clicked() {
+        if design::action_button(ui, colors, "Inspect terminal", true).clicked() {
             actions.enqueue(SupervisorAction::InspectTerminal {
                 task_id: task.task_id.clone(),
                 run_id: run.run_id.clone(),
@@ -419,12 +421,15 @@ fn terminal_candidate(
             detail_row(ui, colors, "Plugin", &candidate.plugin_id);
             detail_row(ui, colors, "Pane", &candidate.pane_id);
             detail_row(ui, colors, "Instance", &candidate.instance_id);
-            let can_link = !candidate.plugin_id.is_empty()
-                && !candidate.pane_id.is_empty()
-                && !candidate.instance_id.is_empty();
-            let link = ui
-                .add_enabled(can_link, egui::Button::new("Link terminal"))
-                .on_hover_text("Link this exact reported terminal candidate to the selected Run.");
+            let link = design::action_button(
+                ui,
+                colors,
+                "Link terminal",
+                !candidate.plugin_id.is_empty()
+                    && !candidate.pane_id.is_empty()
+                    && !candidate.instance_id.is_empty(),
+            )
+            .on_hover_text("Link this exact reported terminal candidate to the selected Run.");
             if link.clicked() {
                 actions.enqueue(SupervisorAction::LinkTerminal {
                     task_id: task_id.to_string(),
@@ -472,6 +477,17 @@ fn detail_row(ui: &mut Ui, colors: &C, label: &str, value: &str) {
                 .color(colors.txt)
                 .monospace(),
         );
+    });
+    ui.add_space(4.0);
+}
+
+/// A label/value row whose value is prose rather than an identifier.
+fn detail_row_prose(ui: &mut Ui, colors: &C, label: &str, value: &str) {
+    ui.horizontal_top(|ui| {
+        ui.set_min_width(ui.available_width());
+        ui.label(RichText::new(label).size(12.0).color(colors.muted));
+        ui.add_space(8.0);
+        wrapped_label(ui, RichText::new(value).size(13.0).color(colors.txt));
     });
     ui.add_space(4.0);
 }

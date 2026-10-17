@@ -1,9 +1,11 @@
 //! Read-only frontend snapshots over the authoritative writer connection.
 
+use std::collections::BTreeMap;
+
 use rusqlite::{OptionalExtension, params};
 use vibemux_events::EventEnvelope;
 use vibemux_types::{
-    Run, Task, TaskId,
+    ProjectId, Run, Task, TaskId,
     a2a::A2aRunRecord,
     frontend::{
         FrontendArtifactSummary, FrontendEventSummary, FrontendRunSummary, FrontendTaskDetail,
@@ -58,10 +60,13 @@ impl SqliteStore {
             if task.project_id() != project_id || task.task_id().to_string() != entity_id {
                 return Err(StoreError::FrontendProjectionMismatch);
             }
-            tasks.push(task_summary(&task, sequence)?);
+            tasks.push(task_summary(&task, sequence, 0)?);
         }
         let has_more = tasks.len() > query.limit as usize;
         tasks.truncate(query.limit as usize);
+        // One bounded pass resolves every listed task's detail revision, so the
+        // caller can skip unchanged detail fetches without a query per task.
+        self.resolve_detail_revisions(project_id, &mut tasks)?;
         let next_cursor = has_more
             .then(|| tasks.last().map(|task| task.task_id))
             .flatten();
@@ -70,6 +75,115 @@ impl SqliteStore {
             tasks,
             next_cursor,
         })
+    }
+
+    /// Fill `detail_revision` for an already-bounded task page.
+    ///
+    /// The revision is the highest sequence across the three sources a detail
+    /// read observes: the Task projection, the Run projections owned by the
+    /// task, and the events carrying its `task_id`. Run and event movement is
+    /// what `latest_sequence` cannot see, so both are included here.
+    ///
+    /// Two grouped scans cover the whole page, so the page path never costs
+    /// more than the per-task reads it replaces.
+    fn resolve_detail_revisions(
+        &self,
+        project_id: ProjectId,
+        tasks: &mut [FrontendTaskSummary],
+    ) -> Result<(), StoreError> {
+        if tasks.is_empty() {
+            return Ok(());
+        }
+        let mut revisions: BTreeMap<TaskId, u64> = tasks
+            .iter()
+            .map(|task| (task.task_id, task.latest_sequence))
+            .collect();
+        for (owner, sequence) in self.grouped_max_by_task(project_id, true)? {
+            if let Some(current) = revisions.get_mut(&owner) {
+                *current = (*current).max(sequence);
+            }
+        }
+        for (owner, sequence) in self.grouped_max_by_task(project_id, false)? {
+            if let Some(current) = revisions.get_mut(&owner) {
+                *current = (*current).max(sequence);
+            }
+        }
+        for task in tasks {
+            task.detail_revision = revisions.get(&task.task_id).copied().unwrap_or(0);
+        }
+        Ok(())
+    }
+
+    /// One task's revision, for the single-task detail read.
+    ///
+    /// Scoped to that task rather than reusing the page-wide grouped scans: a
+    /// project-wide `GROUP BY` here would cost more than the detail read it is
+    /// attached to, and the detail path runs once per changed task.
+    fn resolve_one_detail_revision(
+        &self,
+        project_id: ProjectId,
+        task: &mut FrontendTaskSummary,
+    ) -> Result<(), StoreError> {
+        let mut revision = task.latest_sequence;
+        let owner = task.task_id.to_string();
+        let mut statement = self.connection.prepare(
+            "SELECT MAX(updated_sequence) FROM projections \
+             WHERE entity_kind='run' AND project_id=?1 \
+             AND json_extract(state_json, '$.task_id')=?2",
+        )?;
+        let run_sequence: Option<i64> =
+            statement.query_row(params![project_id.to_string(), owner], |row| row.get(0))?;
+        let mut statement = self.connection.prepare(
+            "SELECT MAX(sequence) FROM events \
+             WHERE json_extract(envelope_json, '$.project_id')=?1 \
+             AND json_extract(envelope_json, '$.task_id')=?2",
+        )?;
+        let event_sequence: Option<i64> =
+            statement.query_row(params![project_id.to_string(), owner], |row| row.get(0))?;
+        for sequence in [run_sequence, event_sequence].into_iter().flatten() {
+            let sequence =
+                u64::try_from(sequence).map_err(|_| StoreError::FrontendProjectionMismatch)?;
+            revision = revision.max(sequence);
+        }
+        task.detail_revision = revision;
+        Ok(())
+    }
+
+    /// `task_id -> max(sequence)` over either Run projections (`runs = true`)
+    /// or events (`runs = false`) for one project.
+    fn grouped_max_by_task(
+        &self,
+        project_id: ProjectId,
+        runs: bool,
+    ) -> Result<Vec<(TaskId, u64)>, StoreError> {
+        let sql = if runs {
+            "SELECT json_extract(p.state_json, '$.task_id'), MAX(p.updated_sequence) \
+             FROM projections p WHERE p.entity_kind='run' AND p.project_id=?1 \
+             GROUP BY json_extract(p.state_json, '$.task_id')"
+        } else {
+            "SELECT json_extract(envelope_json, '$.task_id'), MAX(sequence) \
+             FROM events WHERE json_extract(envelope_json, '$.project_id')=?1 \
+             AND json_extract(envelope_json, '$.task_id') IS NOT NULL \
+             GROUP BY json_extract(envelope_json, '$.task_id')"
+        };
+        let mut statement = self.connection.prepare(sql)?;
+        let rows = statement.query_map(params![project_id.to_string()], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut maxima = Vec::new();
+        for row in rows {
+            let (owner, sequence) = row?;
+            // A NULL owner cannot belong to a listed task, so it is not an
+            // error; a non-NULL owner that is not a valid id is.
+            let Some(owner) = owner else { continue };
+            let task_id = owner
+                .parse::<TaskId>()
+                .map_err(|_| StoreError::FrontendProjectionMismatch)?;
+            let sequence =
+                u64::try_from(sequence).map_err(|_| StoreError::FrontendProjectionMismatch)?;
+            maxima.push((task_id, sequence));
+        }
+        Ok(maxima)
     }
 
     pub fn frontend_task(&self, task_id: TaskId) -> Result<Option<FrontendTaskDetail>, StoreError> {
@@ -92,7 +206,11 @@ impl SqliteStore {
         if task.task_id() != task_id || task.project_id() != project_id {
             return Err(StoreError::FrontendProjectionMismatch);
         }
-        let task = task_summary(&task, sequence)?;
+        let mut task = task_summary(&task, sequence, 0)?;
+        // The detail read observes Runs and events too, so it must publish the
+        // same revision the list path does or a client's skip check would
+        // compare two different meanings of "changed".
+        self.resolve_one_detail_revision(project_id, &mut task)?;
 
         let mut statement = self.connection.prepare(
             "SELECT p.entity_id, p.state_json, a.record_json FROM projections p \
@@ -211,7 +329,11 @@ impl SqliteStore {
     }
 }
 
-fn task_summary(task: &Task, sequence: i64) -> Result<FrontendTaskSummary, StoreError> {
+fn task_summary(
+    task: &Task,
+    sequence: i64,
+    detail_revision: u64,
+) -> Result<FrontendTaskSummary, StoreError> {
     let latest_sequence = u64::try_from(sequence)
         .ok()
         .filter(|value| *value > 0)
@@ -223,6 +345,7 @@ fn task_summary(task: &Task, sequence: i64) -> Result<FrontendTaskSummary, Store
         title_truncated: task.title().len() > MAX_FRONTEND_TITLE_BYTES,
         status: task.status(),
         latest_sequence,
+        detail_revision: detail_revision.max(latest_sequence),
     })
 }
 
@@ -239,7 +362,7 @@ mod tests {
     use super::*;
     use vibemux_events::{ActorName, EventDraft, EventPayload, EventType};
     use vibemux_types::{
-        ArtifactId, EventId, ProjectId, RunSpec, TaskSpec,
+        ArtifactId, EventId, ProjectId, RunSpec, RunStatus, TaskSpec,
         a2a::{
             A2aRemoteState, A2aRunAction, A2aRunStart, A2aRunUpdate, ArtifactReference,
             RunWorkspace,
@@ -457,6 +580,134 @@ mod tests {
             !serde_json::to_string(&detail)
                 .expect("json")
                 .contains("private_owner_token")
+        );
+    }
+
+    fn page_revision(store: &SqliteStore, task_id: TaskId) -> u64 {
+        store
+            .frontend_tasks(&FrontendTasksQuery::default())
+            .expect("page")
+            .tasks
+            .iter()
+            .find(|task| task.task_id == task_id)
+            .expect("listed task")
+            .detail_revision
+    }
+
+    #[test]
+    fn detail_revision_is_stable_when_nothing_changes_and_moves_when_a_run_changes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut store = SqliteStore::open(&temp.path().join("state.sqlite3")).expect("store");
+        let project_id = store.project_id().expect("project").expect("seed project");
+        let task = commit_task(&mut store, project_id, "revision task".to_string());
+        let run = Run::new(RunSpec {
+            project_id,
+            task_id: task.task_id(),
+            harness: "mock".to_string(),
+            role: "worker".to_string(),
+            protocol: "a2a".to_string(),
+            base_commit: "a".repeat(40),
+        })
+        .expect("run");
+        let before = page_revision(&store, task.task_id());
+        assert!(before > 0, "a listed task always carries a usable revision");
+        // Re-reading an unchanged page must not invent movement, otherwise a
+        // polling client refetches every detail on every tick forever.
+        assert_eq!(before, page_revision(&store, task.task_id()));
+
+        let detail = store
+            .frontend_task(task.task_id())
+            .expect("detail")
+            .expect("found");
+        assert_eq!(
+            detail.task.detail_revision, before,
+            "list and detail must publish the same revision for the same task"
+        );
+        let task_sequence = detail.task.latest_sequence;
+
+        // A Run-only commit: the Run projection moves, the Task projection does
+        // not. `latest_sequence` stays put, so only the detail revision can
+        // reveal the change the detail view renders.
+        let claimed = run
+            .transitioned(RunStatus::Running, None)
+            .expect("run transition");
+        store
+            .commit_run(
+                &claimed,
+                EventDraft {
+                    event_id: EventId::new(),
+                    event_type: EventType::new("run_started").expect("type"),
+                    project_id,
+                    task_id: Some(task.task_id()),
+                    run_id: Some(run.run_id()),
+                    causation_id: None,
+                    actor: ActorName::new("test").expect("actor"),
+                    timestamp: time::OffsetDateTime::now_utc(),
+                    idempotency_key: Some(format!("revision-{}", run.run_id())),
+                    payload: EventPayload::new(serde_json::json!({})).expect("payload"),
+                },
+            )
+            .expect("commit run");
+        let after = page_revision(&store, task.task_id());
+        assert!(
+            after > before,
+            "a run transition must move the detail revision ({before} -> {after})"
+        );
+        assert_eq!(
+            task_sequence,
+            store
+                .frontend_task(task.task_id())
+                .expect("detail")
+                .expect("found")
+                .task
+                .latest_sequence,
+            "the task projection must not have moved, which is the whole reason \
+             latest_sequence alone is not a usable change signal"
+        );
+        assert!(
+            after > task_sequence,
+            "the revision must exceed the task sequence it did not move"
+        );
+        assert_eq!(
+            store
+                .frontend_task(task.task_id())
+                .expect("detail")
+                .expect("found")
+                .task
+                .detail_revision,
+            after
+        );
+    }
+
+    #[test]
+    fn detail_revision_ignores_other_projects_and_unrelated_tasks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut store = SqliteStore::open(&temp.path().join("state.sqlite3")).expect("store");
+        let project_id = store.project_id().expect("project").expect("seed project");
+        let first = commit_task(&mut store, project_id, "first".to_string());
+        let second = commit_task(&mut store, project_id, "second".to_string());
+        let before_second = page_revision(&store, second.task_id());
+
+        // Moving an unrelated task must not disturb a sibling's revision.
+        let third = commit_task(&mut store, project_id, "third".to_string());
+        assert!(page_revision(&store, third.task_id()) > 0);
+        assert_eq!(page_revision(&store, second.task_id()), before_second);
+
+        // A task in another project shares no revision with this one.
+        let other_project = commit_task(&mut store, ProjectId::new(), "other".to_string());
+        let page = store
+            .frontend_tasks(&FrontendTasksQuery::default())
+            .expect("page");
+        assert!(
+            page.tasks
+                .iter()
+                .all(|task| task.task_id != other_project.task_id()),
+            "the page stays project scoped"
+        );
+        assert!(
+            page.tasks
+                .iter()
+                .any(|task| task.task_id == first.task_id())
         );
     }
 }

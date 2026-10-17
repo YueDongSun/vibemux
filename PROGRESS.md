@@ -1049,6 +1049,55 @@ Use this template in pull requests that update this document:
 
 A status must not move to `VERIFIED` without a repeatable evidence path.
 
+### 2026-10-01 — Frontend daemon-call efficiency (Supervisor Chat)
+
+**Status change**
+- Supervisor Chat daemon-call path: unchanged behavior, materially fewer control round-trips and no per-frame snapshot copy. The GUI remains `PARTIAL`; this changes no milestone gate, adds no capability, and changes no user-visible surface.
+
+**Problem**
+Three costs scaled with workspace size rather than with what actually changed:
+1. **Every poll re-verified the runtime.** `apply_action` called `connect()` per action, and on Windows that re-walked the protected control root, the runtime leaf, the ACL marker, the descriptor, and the writer lock through native `GetNamedSecurityInfoW`, then re-read the descriptor — on every 5 s tick and every user click.
+2. **Every poll refetched every task detail.** The refresh path issued one `frontend_task` read per listed task (bounded at 256) regardless of whether anything had changed, sequentially.
+3. **Every frame deep-copied the whole snapshot.** `render_frame` cloned the entire `SupervisorSnapshot` — all tasks, runs, events, and terminal candidates — and `render_task_viewports` cloned it again per open window per frame, at the existing 100 ms repaint cadence. `persist_if_due` performed a second full clone merely to read `mode`.
+
+**Implemented**
+- **`vibemux_types` / `vibemux_store` — a complete change signal.** `FrontendTaskSummary` gains `detail_revision` (`#[serde(default)]`): the highest sequence across the Task projection, every Run projection belonging to the task, and every event carrying its `task_id`. `latest_sequence` alone is provably insufficient — `commit_transition` writes the Task projection only when the transition carries a `task_status`, so an admitted dispatch claiming its Run (`attempt.rs`, `task_status: None`) moves the Run projection and leaves the task sequence untouched. `resolve_detail_revisions` fills the field for a whole page in two grouped scans instead of one query per task, and the list and detail paths publish the same value for the same task so a client never compares two different meanings of "changed". `0` means "unknown" and forces a fetch, so a client meeting an older daemon degrades to the previous unconditional behavior.
+- **`vibemuxd` — non-secret generation.** `ControlClient::generation()` returns `ControlGeneration { version, process_id, endpoint }` (a local IPC name, never a credential) so a client can detect that the daemon behind the descriptor was replaced. `same_generation` is unchanged.
+- **`vibemux_frontend::supervisor_client` — reuse, skip, bound.** A `ClientSession` carries the verified client and its generation across polls: an unchanged generation keeps its existing verification, a republished descriptor forces re-verification, and any failed call invalidates the cache. Detail reads are gated on `detail_revision` (a carried-forward view with an unchanged revision is not refetched) and run through a `MAX_CONCURRENT_DETAIL_READS = 8` semaphore, applying results in task order so the view never depends on completion order. `harness_snapshot` / `plugin_status` moved to a 12-tick cadence (still forced on the first successful poll and after any failure). The reader publishes `Arc<SupervisorSnapshot>` and mutates through `Arc::make_mut`, so an idle poll moves the existing allocation instead of rebuilding the task tree.
+- **`vibemux_frontend::gui` — no per-frame copy.** The app holds `Arc<RwLock<Arc<SupervisorSnapshot>>>`; `render_frame` takes one shared borrow for the whole frame and hands it to the sidebar, top bar, drawer, conversation, and diagnostics, and each deferred task window clones the handle rather than the body. `persist_if_due` reads `mode` in place. `LiveApp` publishes by moving the shared handle.
+
+**Behavior preserved**
+- No new capability, no new wire operation, and no protocol version bump: `detail_revision` is an additive field on an existing v4 payload, and the control surface, sanitization rules, and content-free event/status/output contracts are untouched.
+- An explicit `LoadTask` still always reads the detail even when the revision is unchanged, because the operator asked for that task specifically.
+- The optimistic-concurrency guards are unchanged: a detail never moves a task backwards, a cross-project detail is refused, and a missing task is still dropped.
+- A daemon restart is still detected and still clears terminal associations and the observed-terminal set.
+
+**Evidence**
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean (exit 0).
+- `cargo test --workspace --all-features` — the crates this change touches are green: `--exclude vibemux_cli` exits 0 with no failures. `vibemux_frontend` alone is 93 unit tests (1 pre-existing ignored) + 17 integration across `cli`, `palette_parity`, and `supervisor_ui`; the `vibemux_store` frontend module is 7. See the pre-existing `vibemux_cli` failures recorded below.
+- New tests: `vibemux_store` `detail_revision_is_stable_when_nothing_changes_and_moves_when_a_run_changes` (pins revision stability across identical reads, asserts the run-only commit leaves `latest_sequence` pinned while the revision moves, and asserts list/detail agreement), `detail_revision_ignores_other_projects_and_unrelated_tasks`; `vibemux_frontend` `unchanged_tasks_keep_their_detail_and_changed_ones_are_refetched` (end-to-end against a real `DaemonControlServer`: idle refresh does not move the revision, a recorded transition does, and the new run state reaches the view across a daemon restart), `client_session_reuses_one_verified_generation_and_reverifies_after_a_change` (same generation is retained; a republished descriptor yields a new generation; a failure clears the cache).
+- Not measured: no wall-clock or round-trip-count benchmark was captured. The reduction is structural (an idle poll performs zero detail reads instead of one per task, and one runtime verification instead of one per tick) and is argued from the code path, not from a timing run.
+
+**Pre-existing failures observed in `vibemux_cli` (not caused by this change)**
+`vibemux_cli` is not modified by this change, and the rest of the workspace is green: `cargo test --workspace --all-features --exclude vibemux_cli` exits 0 with no failures. The full `--workspace --all-features` run does not reach green on this machine, for reasons in `vibemux_cli` only:
+- `vibemux_cli --test bootstrap_process` / `startup_timeout_terminates_only_the_spawned_fixture` fails at `assertion failed: started.is_file()` (`crates/vibemux_cli/tests/bootstrap_process.rs:54`). Reproduced **3/3 on the stashed clean tree**, and 1/3 with the change applied — a load-sensitive assertion against a 150 ms startup deadline and a spawned hang fixture, not a regression.
+- `vibemux_cli --lib` `recovery::tests::{descriptor_only_recovery_and_pid_mismatch_fail_closed, live_daemon_is_never_recoverable}` fails intermittently during a full parallel workspace run. The failing **set is not stable**: one run failed 2 of them, a later run failed only 1. Both pass **3/3 in isolation on the clean tree and 3/3 in isolation with this change applied**, matching the documented load-sensitive recovery/ACL-marker test class.
+
+Conclusion: the frontend, store, types, and control-path changes are green. The remaining red is confined to the pre-existing `vibemux_cli` timing/ACL-marker flake class and belongs on its own branch; the current workaround is `--test-threads=1` or re-running those two binaries.
+
+**Remaining**
+- The per-task detail read is still one round-trip per changed task; a batched v4 detail query would remove the remaining N+1 when many tasks change at once. That is a protocol change and is deferred.
+- `MAX_LOADED_TASKS` remains 256 with a "first N tasks" notice; there is no virtualized list, so a very large workspace still builds 256 rows per frame.
+- Terminal observation is still re-inspected on every poll for each observed run.
+
+#### Integration into main (2026-10-17, native Windows, Rust 1.92.0)
+- Ported onto main's egui 0.34 shell: `eframe::App::ui`, `egui::Panel::*::show_inside`, and `render_topbar`/`render_drawer` taking the root `Ui`. `vibemux_mcp` test fixtures gained the new `detail_revision` field. The Control version is unchanged by this entry: `detail_revision` is additive on the existing frontend payload, and main's `CONTROL_PROTOCOL_VERSION` stays V10.
+- `cargo fmt --all -- --check` and `cargo clippy --locked --workspace --exclude vibemux_web --all-targets --all-features -- -D warnings` are clean.
+- `cargo test --all-features` for `vibemux_types`, `vibemux_store`, `vibemux_frontend`, `vibemux_mcp`, `vibemuxd`, and `vibemux_cli` passed with 0 failures (`vibemux_frontend` lib: 120 passed, 1 ignored; `vibemuxd` plus `vibemux_cli`: 310 passed, 1 ignored). The first parallel build hit rustc allocation failures under memory pressure; it was rerun with `-j 4`.
+- `vibemuxd` `workflow_cooperate` (which needs `test_helpers`, enabled by `--all-features`) passed, including `two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration`. That test failed on main before the rendezvous fixture step from `feba1cb` was merged with this entry.
+- Not run: `vibemux_web`, the Python suite for this entry, and any interactive GUI session. The GUI is verified only by the egui frame tests.
+
 ### 2026-08-23 — M0 governance baseline
 
 **Status change**

@@ -14,6 +14,10 @@ pub fn task_summary(source: FrontendTaskSummary) -> TaskView {
         ),
         state: source.status.as_str().into(),
         latest_sequence: source.latest_sequence,
+        // A summary alone carries no runs or events, so the view is explicitly
+        // incomplete until a detail read fills it in.
+        detail_revision: source.detail_revision,
+        needs_detail_refresh: true,
         executor: "No execution details loaded".into(),
         latest_update: "Task observed in the daemon".into(),
         ..Default::default()
@@ -22,6 +26,7 @@ pub fn task_summary(source: FrontendTaskSummary) -> TaskView {
 
 pub fn task_detail(source: FrontendTaskDetail, previous: Option<&TaskView>) -> TaskView {
     let mut task = task_summary(source.task);
+    task.needs_detail_refresh = false;
     task.has_more_runs = source.has_more_runs;
     task.has_more_artifacts = source.has_more_artifacts;
     task.has_more_events = source.has_more_events;

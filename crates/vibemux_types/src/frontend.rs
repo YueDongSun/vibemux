@@ -39,6 +39,17 @@ pub struct FrontendTaskSummary {
     pub title_truncated: bool,
     pub status: TaskStatus,
     pub latest_sequence: u64,
+    /// Monotonic revision covering everything `FrontendTaskDetail` renders for
+    /// this task: the Task projection, every Run projection that belongs to it,
+    /// and every event carrying its `task_id`. A Run-only transition (an
+    /// admitted dispatch claiming its Run, for example) does not touch the Task
+    /// projection, so `latest_sequence` alone cannot detect it; this field can.
+    ///
+    /// `0` means "unknown" and always forces a detail fetch, so a client that
+    /// meets an older daemon degrades to the unfetched-per-tick behavior
+    /// instead of trusting a revision it cannot interpret.
+    #[serde(default)]
+    pub detail_revision: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

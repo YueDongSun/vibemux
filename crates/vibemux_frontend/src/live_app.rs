@@ -1,4 +1,6 @@
 //! Native application adapter joining presentation with the control reader.
+use std::sync::Arc;
+
 use crate::{
     gui::VibeMuxApp, supervisor_client::FrontendClient, supervisor_model::SupervisorSnapshot,
 };
@@ -6,7 +8,9 @@ use crate::{
 pub struct LiveApp {
     app: VibeMuxApp,
     client: Option<FrontendClient>,
-    snapshot: SupervisorSnapshot,
+    /// Shared handle to the last observation. Publishing moves this instead of
+    /// deep-copying the snapshot, so a poll costs one atomic increment.
+    snapshot: Arc<SupervisorSnapshot>,
 }
 
 impl LiveApp {
@@ -17,7 +21,8 @@ impl LiveApp {
             snapshot.connection.detail =
                 Some("Unable to start the workspace observation client.".into());
         }
-        app.set_supervisor_snapshot(snapshot.clone());
+        let snapshot = Arc::new(snapshot);
+        app.replace_snapshot(Arc::clone(&snapshot));
         Self {
             app,
             client: client.ok(),
@@ -32,7 +37,7 @@ impl eframe::App for LiveApp {
             && let Some(snapshot) = client.take_snapshot()
         {
             self.snapshot = snapshot;
-            self.app.set_supervisor_snapshot(self.snapshot.clone());
+            self.app.replace_snapshot(Arc::clone(&self.snapshot));
         }
         self.app.ui(ui, frame);
         for action in self.app.take_supervisor_actions() {
@@ -42,8 +47,9 @@ impl eframe::App for LiveApp {
                 .ok_or("The workspace client is unavailable.")
                 .and_then(|client| client.submit(action));
             if let Err(detail) = result {
-                self.snapshot.connection.detail = Some(detail.into());
-                self.app.set_supervisor_snapshot(self.snapshot.clone());
+                let snapshot = Arc::make_mut(&mut self.snapshot);
+                snapshot.connection.detail = Some(detail.into());
+                self.app.replace_snapshot(Arc::clone(&self.snapshot));
                 ui.ctx().request_repaint();
             }
         }
