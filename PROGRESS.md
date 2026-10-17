@@ -4740,3 +4740,32 @@ scratch directory outside the repository.
 - coding vendor failures.
 
 **Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - OpenCode replay classification is pinned record by record
+
+**Scope:** The `vibemux_harness_native` normalization tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The direct `opencode_json` protocol is the only stream this crate classifies itself; every other protocol uses the shared ADR 029 classifiers. Its only test was one fixture, and that fixture had no `reasoning` or `error` record, no cost-only usage, and no malformed usage data.
+- A table test now pins every classifier branch:
+  - `step_start` is started.
+  - `text` and `reasoning` are text.
+  - `tool_use` is tool activity.
+  - `error` is a failure.
+  - A `step_finish` is usage only when its part carries an object `tokens` field or a numeric `cost`.
+- The test also pins the opaque cases:
+  - a step ending with no usage data, string or non-object usage, or usage outside `part`;
+  - near-miss discriminants (case, padding, a shorter name, an array, a nested type);
+  - final-sounding records such as `step_finish` with `end_turn`, `session.idle`, and `done`. No OpenCode record completes a request.
+- The guide's replay paragraph now says this, and the test checks the guide for it.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 35 unit, 19 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Six classifier mutations failed only the new test:
+- dropping `reasoning`;
+- accepting any non-null `tokens`;
+- accepting any non-null `cost`;
+- dropping cost-only usage;
+- making `error` opaque;
+- completing on `end_turn`.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

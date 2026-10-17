@@ -34,6 +34,9 @@ cargo test --locked -p vibemux_harness_native --all-features
 
 Replay reads records without launching a harness or contacting a model.
 Its successful exit means the stream was read, not that a task completed.
+No `opencode_json` record reads as a completion: a `step_finish` ends one
+step, not the request, and reads as usage only when it carries token or cost
+data.
 `catalog` lists every configured route, enabled or not, with its `harness`,
 `protocol`, `enabled`, and `allow_execution` settings and two build facts:
 `structured_probe` (the protocol has an initialize-only handshake) and
