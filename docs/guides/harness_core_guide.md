@@ -75,6 +75,13 @@ its range rejects the whole configuration with `harness_invalid_limits`.
 | `timeout_ms` | 60000 | 100 – 600000 |
 | `shutdown_ms` | 2000 | 100 – 10000 |
 
+`frame_bytes` bounds each record's line including its line ending, so a CRLF
+record has one byte less room than an LF record. `capture_bytes` bounds the
+JSON text of all of a request's records, without line endings. A longer line
+fails the request with `harness_frame_too_large`, and going past
+`capture_bytes` or `record_count` fails it with `harness_capture_too_large`;
+no record is truncated.
+
 `arguments` is a fixed, operator-trusted launcher prefix, such as a Node script
 path when no native vendor binary exists. User messages are never substituted
 into it. On Windows the executable must resolve to a native `.exe`; do not point

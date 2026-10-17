@@ -4616,3 +4616,30 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 24 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Seven mutations each failed a test: gating `native_execution` on the shared engine's execution support, reporting a probe for every engine protocol, adding the executable to a row, dropping disabled routes, reporting `enabled` as `allow_execution`, and removing `execute,probe` from either document.
 
 **Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native frame and capture bounds are pinned at their edges
+
+**Scope:** `vibemux_harness_native` JSON-lines reader tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The integration tests covered an oversized frame, invalid UTF-8, a blank line, a final line without a newline, CRLF, cancellation safety, and the record count refusal. Nothing pinned the exact edges: `frame_bytes` counts a record's line including its line ending, so the same JSON fits a bound with LF that it overruns with CRLF, while `capture_bytes` counts only the JSON text. The guide did not state either rule.
+- Two unit tests in `json_lines.rs` check these edges:
+  - LF and CRLF records at and one byte over the frame bound, and a final unterminated line that fills the whole bound.
+  - A CRLF-only line refused as empty, and a zero bound refused as invalid limits.
+  - A replay that reaches `capture_bytes` and `record_count` exactly and is refused one byte or one record past them, with the records returned whole and numbered from 1.
+  - A replay whose limits are invalid, refused before anything is read.
+- The guide now explains how `frame_bytes` and `capture_bytes` count, names the two refusal codes, and states that no record is truncated. The frame test asserts the guide's wording.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (26 unit, 18 normalization, 21 process dispatch). The runner error code allowlist test, which scans `json_lines.rs`, still passes. Eight mutations each failed a new test:
+
+- refusing a line of exactly the frame bound;
+- not counting the LF;
+- not stripping the CR;
+- accepting a zero bound;
+- refusing a capture of exactly the bound;
+- allowing one record past `record_count`;
+- ignoring invalid limits in replay;
+- rewording the guide.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
