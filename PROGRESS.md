@@ -4643,3 +4643,40 @@ scratch directory outside the repository.
 - rewording the guide.
 
 **Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native CLI parsing and request file bounds are pinned
+
+**Scope:** `vibemux_harness_native` command-line tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The native parser, which `vibemuxctl harness` also uses, had two tests. They covered a missing option, a duplicate option, an unknown harness, and an unknown option.
+- Nothing tested the following:
+  - the help forms and `--version`;
+  - an unknown command;
+  - a missing or empty option value, or a stray trailing argument;
+  - an option that belongs to another command;
+  - protocol and harness names in the wrong case;
+  - option order;
+  - arguments that are not Unicode;
+  - the bounded file reader;
+  - the request file bound, `6 × MAX_PROMPT_BYTES + 4096`, which exists so that a maximum prompt written entirely in six-byte `\u00XX` escapes still fits;
+  - the rule that a dispatch request is validated before its configuration is opened.
+- Three unit tests now cover each of these:
+  - **Parsing.** Six help forms and `--version` parse. Fourteen malformed commands are usage errors. Replay, probe, and dispatch options parse in any order, with an optional plugin.
+  - **Non-Unicode arguments.** A configuration path that is not Unicode is kept as given. A command, option name, or harness id that is not Unicode is refused.
+  - **Request files.** The reader accepts a file of exactly its bound and refuses one byte more or a missing file. A dispatch request is refused for malformed JSON, a nil UUID, a blank prompt, or a file one byte over its bound. A maximum prompt of escaped control characters reaches the missing configuration, which shows the bound fits it.
+- The guide states that the request file is checked before the configuration is opened, and why its bound fits an all-escaped maximum prompt; the test pins that sentence.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (29 unit, 18 normalization, 21 process dispatch). Nine mutations each failed a new test:
+
+- accepting an empty value;
+- skipping the per-command option list;
+- ignoring argument parity;
+- dropping `-h` after a command;
+- refusing a file of exactly the bound;
+- shrinking or growing the request bound;
+- skipping request validation;
+- rewording the guide.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
