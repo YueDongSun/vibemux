@@ -4876,3 +4876,16 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness_native --all-features` passed: 36 unit, 19 normalization, 21 process dispatch. A README mutation that misspelled the replay protocol failed the test with `harness_cli_usage`. An example request mutated to schema version 2 failed it with `harness_invalid_request`. Both files were restored.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Test the documented vibemuxctl commands
+
+**Scope:** `crates/vibemux_cli/src/command.rs` tests only. No behavior, wire, schema, or documentation change.
+
+**Implemented:**
+- `every_documented_command_line_parses` reads `CLAUDE.md`, the README, `docs/guides/unified_cli_guide.md`, and `docs/workflow/branch_workflow.md`. It finds every `vibemuxctl.exe` command line (90 today) and parses each one with the real `vibemuxctl` parser, which is pure, so nothing runs and no path or daemon is touched. Each document must contain at least one such line.
+- A `status|pause|cancel` token expands to each alternative, a `[--prompts]` token is tried present and absent, and each `<placeholder>` gets a well-formed value: a 64-character hex digest for `<sha256>` and `<confirmation_from_inspect>`, a UUID for the id placeholders, and a name for `<new_dir>`. A placeholder the test does not know fails it, so a new documented argument has to be classified.
+- Every documented line parses today, so no document changed.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_cli --all-features --lib` passed: 44 tests. A README mutation that respelled `--prompt-file` as `--prompt_file` on a `dispatch submit` line failed the test and named the line's arguments. The README was restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
