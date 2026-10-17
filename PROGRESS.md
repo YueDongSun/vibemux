@@ -4889,3 +4889,17 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_cli --all-features --lib` passed: 44 tests. A README mutation that respelled `--prompt-file` as `--prompt_file` on a `dispatch submit` line failed the test and named the line's arguments. The README was restored and compared byte for byte.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Test the DSH CLI synopsis
+
+**Scope:** `crates/vibemux_cli/src/command.rs` tests only. No behavior, wire, schema, or documentation change.
+
+**Implemented:**
+- `every_documented_command_line_parses` now also reads `docs/dsh_session_protocol.md`. Besides each `vibemuxctl.exe` invocation, it parses each line that starts with a `vibemuxctl` synopsis, which covers the six `vibemuxctl dsh` synopsis lines there. Prose that only mentions `vibemuxctl` inside a sentence is not a command and is skipped.
+- The synopsis grammar is expanded faithfully. An optional group that spans tokens, such as `[--after-sequence <n>]`, is tried present and absent as a whole. A placeholder that contains a bar, such as `<path|->`, is one argument and not two alternatives. The new placeholders are `<path>`, `<path|->`, and `<n>`.
+- ADR synopses, such as ADR 029's dispatch grammar, are dated decision records and stay out of this check.
+- Every line still parses, so no document changed.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_cli --all-features --lib` passed: 44 tests. A mutation that respelled `--session-id` as `--session_id` inside the `dsh open` synopsis's optional group failed the test on the group's present variant. The document was restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
