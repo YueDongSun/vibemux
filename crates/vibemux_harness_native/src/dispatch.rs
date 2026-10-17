@@ -395,6 +395,15 @@ fn safe_error_code(code: &str) -> bool {
             | "harness_write_timeout"
             | "harness_write_failed"
             | "harness_stdin_closed"
+            // The runner's own mid-exchange failures: fixed and content-free,
+            // and not the vendor's to answer for.
+            | "harness_read_failed"
+            | "harness_wait_failed"
+            | "harness_missing_pipe"
+            | "harness_receiver_closed"
+            | "harness_encode_failed"
+            | "harness_invalid_limits"
+            | "harness_session_internal"
     ) || crate::session::is_protocol_error_code(code)
 }
 
@@ -425,6 +434,10 @@ mod tests {
             "harness_cancelled",
             "harness_eof_without_terminal",
             "harness_vendor_failed",
+            "harness_read_failed",
+            "harness_wait_failed",
+            "harness_receiver_closed",
+            "harness_session_internal",
         ] {
             assert!(safe_error_code(code), "{code}");
         }
@@ -436,6 +449,36 @@ mod tests {
             "vendor_defined_failure",
         ] {
             assert!(!safe_error_code(code), "{code:?}");
+        }
+    }
+
+    /// Every fixed code the runner and its line reader record survives the
+    /// allowlist, except the runner's checks before a vendor process exists,
+    /// which end the request without a completion. A new runner failure code
+    /// therefore fails here instead of being reported as the vendor's.
+    #[test]
+    fn every_runner_code_after_spawn_survives_the_allowlist() {
+        const BEFORE_SPAWN: [&str; 4] = [
+            "harness_invalid_request",
+            "harness_route_unavailable",
+            "harness_execution_disabled",
+            "harness_invalid_cwd",
+        ];
+        for source in [include_str!("native.rs"), include_str!("json_lines.rs")] {
+            let codes: Vec<&str> = source
+                .match_indices("\"harness_")
+                .map(|(start, _)| {
+                    let literal = &source[start + 1..];
+                    &literal[..literal.find('"').unwrap_or(literal.len())]
+                })
+                .collect();
+            assert!(!codes.is_empty());
+            for code in codes {
+                assert!(
+                    safe_error_code(code) || BEFORE_SPAWN.contains(&code),
+                    "{code} would be reported as harness_vendor_failed"
+                );
+            }
         }
     }
 }

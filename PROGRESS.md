@@ -4460,3 +4460,19 @@ scratch directory outside the repository.
 - Mutation checks: a stale current version, a stale range, and a dropped v7 clause each fail the new test at their own assertions.
 
 **Remaining**: The test checks that each version is named, not the operation names listed for it. Those come from `minimum_protocol_version`, which has no enumerable operation list.
+
+### 2026-10-17 - Stop reporting native runner failures as vendor failures
+
+**Scope**: `vibemux_harness_native` plugin completion error-code allowlist (`dispatch.rs` `safe_error_code`) and its paragraph in `docs/protocol_boundaries.md`. The "Harness dispatch" and "Native harness CLI" bullets were audited and left unchanged.
+
+**Implemented**:
+- The ADR 040 dispatcher keeps a plugin completion's `error_code` only if it is on a fixed allowlist, and otherwise reports `harness_vendor_failed`. Tracing `native::run` showed seven fixed, content-free codes that the runner can record after the vendor process starts but that were not on the list: `harness_read_failed`, `harness_wait_failed`, `harness_missing_pipe`, `harness_receiver_closed`, `harness_encode_failed`, `harness_invalid_limits`, and `harness_session_internal`. A stdout read error, a closed record channel, or an engine-internal error was therefore blamed on the vendor. They are now allowlisted. The list still admits only fixed constants, so vendor text still cannot pass through.
+- `every_runner_code_after_spawn_survives_the_allowlist` scans `native.rs` and `json_lines.rs` for code literals. Each one must survive the allowlist unless it is one of the four checks the runner makes before a vendor process exists, which end the request without a completion. A new runner failure code fails this test instead of silently becoming `harness_vendor_failed`.
+- Audit: the dispatch bullet's claims match `vibemuxd`: the trampoline, at most one dispatch per project, raw records only from `harness_dispatch_output`, and initialize-only live evidence. The native CLI bullet's commands (`catalog`, `replay`, `probe`, `dispatch`) match `vibemux_harness_native::cli::Command`.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemux_harness_native --all-features`: 10 library tests and the 18- and 20-test integration suites pass. These include the fixture-binary process dispatch tests and the protocol error-code documentation check.
+- Mutation checks: dropping `harness_read_failed` from the allowlist fails both allowlist tests. Dropping `harness_missing_pipe`, which only the scan covers, fails the new test.
+
+**Remaining**: The scan covers the runner and its line reader. Codes from `process.rs` and `contract.rs` that are reachable mid-exchange (`harness_wait_failed`, `harness_invalid_json`, `harness_invalid_record`) are pinned by the explicit list only. No live vendor run.
