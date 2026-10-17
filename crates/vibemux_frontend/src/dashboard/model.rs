@@ -1,15 +1,27 @@
-use vibemux_harness::dispatch::{AdapterCapability, adapter_capability};
+use vibemux_harness::{
+    dispatch::{AdapterCapability, adapter_capability},
+    terminal_text::is_terminal_unsafe,
+};
 use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
 
 use crate::view_model::{route_label, state_label};
 
 const MAX_DISPLAY_CHARACTERS: usize = 160;
 
+/// One display line: every whitespace or terminal-unsafe character becomes a
+/// space, and the text is cut at `MAX_DISPLAY_CHARACTERS`.
 pub fn safe_text(value: &str) -> String {
-    value.chars().take(MAX_DISPLAY_CHARACTERS).map(|character| {
-        if character.is_control() || character.is_whitespace() || matches!(character, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' }
-        else { character }
-    }).collect()
+    value
+        .chars()
+        .take(MAX_DISPLAY_CHARACTERS)
+        .map(|character| {
+            if character.is_whitespace() || is_terminal_unsafe(character) {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

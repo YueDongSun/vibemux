@@ -24,6 +24,7 @@ use tokio::{
 use toml::Value as TomlValue;
 use url::Url;
 use vibemux_a2a::{InformationShare, LocalInformationServer, share_information};
+use vibemux_harness::terminal_text::is_terminal_unsafe;
 
 // The agent/launcher/probe-state vocabulary is owned by `vibemux_harness`
 // (pure logic, no I/O) and re-exported here so every consumer of the
@@ -730,9 +731,17 @@ async fn probe_a2a() -> A2aSelfTestProbe {
     }
 }
 
+/// Drops every terminal-unsafe character, which covers ANSI escapes and
+/// bidirectional overrides as well as plain controls, then bounds the
+/// result to `max_bytes` without splitting a character. Vendor `--version`
+/// output and launcher paths reach the probe report, its cache, and every
+/// frontend through here.
 fn sanitize_text(value: &str, max_bytes: usize) -> String {
     let mut sanitized = String::new();
-    for character in value.chars().filter(|character| !character.is_control()) {
+    for character in value
+        .chars()
+        .filter(|character| !is_terminal_unsafe(*character))
+    {
         if sanitized.len() + character.len_utf8() > max_bytes {
             break;
         }
@@ -780,6 +789,24 @@ mod tests {
     fn safe_endpoint_rejects_credentials() {
         assert!(safe_endpoint("https://token@example.com/v1").is_none());
         assert!(safe_endpoint("https://example.com/v1").is_some());
+    }
+
+    /// A vendor `--version` line or launcher path can carry an ANSI escape or
+    /// a bidirectional override that would reorder what the operator reads;
+    /// both are dropped before the text reaches the report or the cache.
+    #[test]
+    fn sanitized_text_drops_controls_and_bidirectional_marks() {
+        assert_eq!(
+            sanitize_text("codex\u{202e} 1.2.3\u{1b}[0m\u{2066}\u{200f}\u{061c}", 256),
+            "codex 1.2.3[0m"
+        );
+        assert_eq!(
+            sanitize_text("C:\\tools\\\u{2067}exe.claude\u{2069}", 256),
+            "C:\\tools\\exe.claude"
+        );
+        // The bound counts kept bytes only and never splits a character.
+        assert_eq!(sanitize_text("\u{202e}1.é", 3), "1.");
+        assert_eq!(sanitize_text("1.é\u{9b}", 4), "1.é");
     }
 
     #[test]

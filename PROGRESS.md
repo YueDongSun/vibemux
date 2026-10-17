@@ -4942,3 +4942,29 @@ Both files were restored and compared byte for byte.
 Both files were restored and compared byte for byte.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Probe text drops bidirectional marks
+
+**Scope:** probe text sanitization and the one definition of terminal-unsafe characters, for `vibemux_harness`, `vibemux_probe`, `vibemux_cli`, and `vibemux_frontend`. No store schema, control protocol, plugin wire, or `HarnessRow` field changes.
+
+**Implemented:**
+- `vibemux_harness::terminal_text::is_terminal_unsafe` now owns the set of characters a terminal must never receive raw from untrusted text. The set is C0 and C1 controls, DEL, U+061C, U+200E-U+200F, U+2028-U+202E, and U+2066-U+2069. The module is pure logic, like the rest of the crate.
+- The probe's `sanitize_text` used to drop only `char::is_control` characters, so a bidirectional override or isolate passed through. It now drops every terminal-unsafe character. A vendor `--version` line, a resolved launcher path, or a cc-switch `app_type` with such a mark now reaches the probe report, the probe cache, `vibemux_probe` stdout, the TUI, and the GUI without it. The byte bound still counts kept bytes and never splits a character.
+- The CLI's JSON escaping and the dashboard's `safe_text` call the same predicate instead of keeping their own copies of the ranges. Their behaviour is unchanged: the CLI already escaped this set, and the dashboard's narrower range left out only U+2028 and U+2029, which `safe_text` already blanks as whitespace.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_probe -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_probe -p vibemux_frontend -p vibemux_cli` passed:
+
+| Crate | Tests passed |
+|---|---|
+| `vibemux_harness` | 88 lib (2 new), plus 12, 22, 8, 15, and 4 integration |
+| `vibemux_probe` | 23 lib (1 new) |
+| `vibemux_frontend` | 139 lib (1 ignored), 6 cli, 2 palette parity, 10 supervisor UI |
+| `vibemux_cli` | 44 lib, 5 unified commands |
+
+Two mutations were each caught:
+- Restoring the probe filter to `!character.is_control()` failed the new probe test.
+- Narrowing the predicate's range to end at U+202D failed one test in each of the four crates: the harness predicate test, the probe sanitize test, the CLI JSON escaping test, and the dashboard control-character test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.

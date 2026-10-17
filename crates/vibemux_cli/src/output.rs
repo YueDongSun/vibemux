@@ -6,6 +6,7 @@ use vibemux_frontend::dashboard::safe_text;
 use vibemux_harness::{
     AgentKind,
     dispatch::{ObservationKind, adapter_capability},
+    terminal_text::is_terminal_unsafe,
 };
 
 const MAX_TEXT_ROWS: usize = 32;
@@ -29,9 +30,7 @@ pub fn json_text(value: &Value) -> Result<String, Failure> {
 fn escape_controls(encoded: &str) -> String {
     let mut output = String::with_capacity(encoded.len());
     for character in encoded.chars() {
-        if character.is_control()
-            || matches!(character, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        {
+        if is_terminal_unsafe(character) {
             // String formatting cannot fail; escapes preserve the JSON value exactly.
             write!(&mut output, "\\u{:04x}", u32::from(character))
                 .expect("String writes are infallible");
