@@ -11,6 +11,7 @@ pub mod dsh_commands;
 pub mod failure;
 pub mod output;
 pub use vibemux_probe::snapshot as probe;
+mod prompt_input;
 pub mod recovery;
 pub mod workflow_commands;
 pub mod workspace;

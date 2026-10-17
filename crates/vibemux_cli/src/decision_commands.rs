@@ -17,10 +17,9 @@ use vibemuxd::{
 
 use crate::{
     CliCommand, DaemonCliError,
-    dispatch_commands::{
-        PromptSource, map_dispatch_error, parse_id, prompt_source, read_valid_prompt, text_value,
-    },
+    dispatch_commands::{map_dispatch_error, parse_id, read_valid_prompt, text_value},
     harness_client,
+    prompt_input::{PromptSource, prompt_source},
 };
 
 /// Decisions one `decisions list` asks for unless `--limit` says otherwise;

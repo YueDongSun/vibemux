@@ -7,7 +7,7 @@
 //! byte reaches the daemon. Output pages are reassembled into whole,
 //! byte-exact vendor records.
 
-use std::{ffi::OsString, io::Read, path::PathBuf};
+use std::{ffi::OsString, path::PathBuf};
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -24,19 +24,15 @@ use vibemuxd::{
     process::DaemonPaths,
 };
 
-use crate::{CliCommand, DaemonCliError, harness_client, map_control_error};
+pub use crate::prompt_input::PromptSource;
+use crate::{
+    CliCommand, DaemonCliError, harness_client, map_control_error,
+    prompt_input::{prompt_source, read_prompt},
+};
 
 /// Pages one `dispatch output` call reads at most; a transcript at the
 /// 16 MiB capture bound needs fewer than 1024.
 const MAX_OUTPUT_PAGES: usize = 4096;
-/// `--prompt-file` value that reads the prompt from stdin.
-const STDIN_PROMPT_SOURCE: &str = "-";
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PromptSource {
-    Stdin,
-    File(PathBuf),
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DispatchCommand {
@@ -307,44 +303,13 @@ async fn read_request(
     Ok(request)
 }
 
-/// Reads a prompt off the async runtime and refuses a blank one, before
-/// any byte reaches the daemon. Decision commands read theirs here too.
+/// Reads a dispatch-bounded prompt off the async runtime and refuses a
+/// blank, oversized, or non-UTF-8 one before any byte reaches the daemon.
+/// Decision commands read theirs here too.
 pub(crate) async fn read_valid_prompt(source: PromptSource) -> Result<String, DaemonCliError> {
-    let prompt = tokio::task::spawn_blocking(move || read_prompt(&source))
+    read_prompt(source, MAX_PROMPT_BYTES)
         .await
-        .map_err(|_| DaemonCliError::PromptUnavailable)??;
-    if prompt.trim().is_empty() {
-        return Err(DaemonCliError::InvalidPrompt);
-    }
-    Ok(prompt)
-}
-
-/// A `--prompt-file` value: a path, or `-` for stdin.
-pub(crate) fn prompt_source(value: Option<&OsString>) -> Result<PromptSource, DaemonCliError> {
-    let value = value.ok_or(DaemonCliError::InvalidArguments)?;
-    Ok(if value.as_os_str() == STDIN_PROMPT_SOURCE {
-        PromptSource::Stdin
-    } else {
-        PromptSource::File(PathBuf::from(value))
-    })
-}
-
-/// Reads at most one byte beyond the prompt bound, so an oversized source
-/// is refused without being read whole.
-fn read_prompt(source: &PromptSource) -> Result<String, DaemonCliError> {
-    let limit = MAX_PROMPT_BYTES as u64 + 1;
-    let mut bytes = Vec::new();
-    let read = match source {
-        PromptSource::Stdin => std::io::stdin().lock().take(limit).read_to_end(&mut bytes),
-        PromptSource::File(path) => {
-            std::fs::File::open(path).and_then(|file| file.take(limit).read_to_end(&mut bytes))
-        }
-    };
-    read.map_err(|_| DaemonCliError::PromptUnavailable)?;
-    if bytes.len() > MAX_PROMPT_BYTES {
-        return Err(DaemonCliError::InvalidPrompt);
-    }
-    String::from_utf8(bytes).map_err(|_| DaemonCliError::InvalidPrompt)
+        .map_err(|error| error.into_cli_error(DaemonCliError::InvalidPrompt))
 }
 
 /// A daemon older than the control version an operation needs lacks it;
@@ -529,24 +494,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prompts_are_bounded_utf8_and_non_blank() {
+    #[tokio::test]
+    async fn a_dispatch_prompt_is_bounded_utf8_and_readable() {
         let temp = tempfile::tempdir().expect("temp");
         let path = temp.path().join("prompt.txt");
-        let read = |content: &[u8]| {
-            std::fs::write(&path, content).expect("write prompt");
-            read_prompt(&PromptSource::File(path.clone()))
-        };
-        assert_eq!(read("é prompt".as_bytes()), Ok("é prompt".to_string()));
         let largest = "p".repeat(MAX_PROMPT_BYTES);
-        assert_eq!(read(largest.as_bytes()), Ok(largest));
+        std::fs::write(&path, &largest).expect("write prompt");
         assert_eq!(
-            read("p".repeat(MAX_PROMPT_BYTES + 1).as_bytes()),
-            Err(DaemonCliError::InvalidPrompt)
+            read_valid_prompt(PromptSource::File(path.clone())).await,
+            Ok(largest)
         );
-        assert_eq!(read(&[0xff, 0xfe]), Err(DaemonCliError::InvalidPrompt));
+        for invalid in [
+            "p".repeat(MAX_PROMPT_BYTES + 1).into_bytes(),
+            vec![0xff, 0xfe],
+        ] {
+            std::fs::write(&path, invalid).expect("write prompt");
+            assert_eq!(
+                read_valid_prompt(PromptSource::File(path.clone())).await,
+                Err(DaemonCliError::InvalidPrompt)
+            );
+        }
         assert_eq!(
-            read_prompt(&PromptSource::File(temp.path().join("missing.txt"))),
+            read_valid_prompt(PromptSource::File(temp.path().join("missing.txt"))).await,
             Err(DaemonCliError::PromptUnavailable)
         );
     }

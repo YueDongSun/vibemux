@@ -5238,3 +5238,18 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_mcp --all-features`: lib 5, framing 5, ipc 3, lifecycle 22, and stdio 5 passed. The I: drive was full (4.9 MB free), so the `ipc` test failed to link under the repository's `target`. The full run used a scratch target directory on C:. Restoring `char::is_control` failed the new test `a_title_loses_bidirectional_controls_and_separators_but_keeps_its_text`, and the source was restored byte-for-byte.
 
 **Remaining:** the I: drive needs space before the repository `target` can build again; its existing build caches were not removed. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - One CLI module reads every `--prompt-file`
+
+**Scope:** the follow-up named by the `dsh prompt` entry above. `dispatch_commands` and `dsh_commands` each held a `PromptSource` type, a stdin marker, and a bounded reader. The readers had become near copies; only the bound and the error code for an invalid prompt differed.
+
+**Implemented:**
+
+- New private module `vibemux_cli::prompt_input` owns `PromptSource`, the `--prompt-file` argument rule (`-` reads stdin), and `read_prompt(source, max_bytes)`. The reader runs on a blocking thread and reads at most one byte beyond the bound. A two-variant `PromptReadError` reports either `Unavailable` or `Invalid` (oversized, non-UTF-8, or blank).
+- `PromptReadError::into_cli_error` maps `Unavailable` to `cli_prompt_unavailable` and `Invalid` to the caller's code. `dispatch submit` and `decide route` keep `harness_dispatch_invalid_prompt`, and `dsh prompt` keeps `cli_invalid_arguments`. Each command passes its own 32 KiB constant.
+- `dispatch_commands::PromptSource` and `dsh_commands::PromptSource` stay valid paths, now re-exports of the one type.
+- No behavior, CLI output, daemon, or wire change.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_cli`: lib 48 passed, integration 5 passed. The reader tests moved to `prompt_input` with an 8-byte bound. The dispatch and DSH tests now check each command's bound and codes end to end. Two mutations were caught and restored byte-for-byte. Refusing a prompt of exactly the bound failed three tests, as did mapping every invalid prompt to `cli_invalid_arguments`.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
