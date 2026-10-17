@@ -4271,3 +4271,28 @@ scratch directory outside the repository.
 
 **Remaining**
 - The A2A and workflow bullets were not re-audited in this change.
+
+### 2026-10-17 - Show forced termination and stderr size in the native harness text view
+
+**Scope**
+- `vibemuxctl --format text harness probe|dispatch` printed only the record count, stdout bytes, and exit code from the native `Completion`. It dropped two fields:
+  - `forced_termination`. When the native process is killed after a deadline, cancellation, protocol error, or missed shutdown grace period, the exit code comes from the kill, not the vendor, and the text view gave no hint of that.
+  - `stderr_bytes`, the only content-free sign that the vendor wrote diagnostics.
+- The existing unit test rendered hand-written JSON, so a renamed completion field would have printed `-` without failing.
+- An audit of the GUI Agents list at narrow widths found nothing to fix. The window's minimum inner size is 960x600, which leaves room for the one-line metadata and the Details button.
+
+**Implemented**
+- `crates/vibemux_cli/src/output.rs`:
+  - The completion line reads `Records: N   Stdout bytes: N   Stderr bytes: N   Native exit: N`.
+  - A forced termination adds a `Forced termination: ...` line that says the exit code is not the vendor's.
+  - JSON output is unchanged.
+- The new test `harness_outcome_text_reads_every_native_completion_field` renders a real `vibemux_harness_native::contract::Outcome`, with records built by `Record::parse`. It pins both lines in the forced and normal cases, and checks that neither the vendor text nor the request id appears.
+- `docs/protocol_boundaries.md`: the native CLI bullet mentions the forced-termination flag.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features --lib`: 43 passed. `--test unified_commands`: 6 passed.
+- Mutation check: reading `stderr_byte` instead of `stderr_bytes` failed the new test with `Stderr bytes: -`. The file was restored afterwards.
+- `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- No end-to-end `vibemuxctl harness probe` run against the fixture plugin. The plugin binary belongs to another crate, so `vibemux_cli` tests cannot locate it through `CARGO_BIN_EXE_*`.

@@ -304,19 +304,29 @@ fn harness_text(value: &Value) -> String {
     // process fields rather than printing placeholders for them.
     let mut lines = if value["completion"].is_object() {
         let completion = &value["completion"];
-        vec![
+        let mut lines = vec![
             format!(
                 "Harness {} | {}",
                 field(value, "harness"),
                 field(completion, "status")
             ),
             format!(
-                "Records: {}   Bytes: {}   Native exit: {}",
+                "Records: {}   Stdout bytes: {}   Stderr bytes: {}   Native exit: {}",
                 field(completion, "record_count"),
                 field(completion, "stdout_bytes"),
+                field(completion, "stderr_bytes"),
                 field(completion, "exit_code")
             ),
-        ]
+        ];
+        // A killed process still reports an exit code, but it is the kill's,
+        // not the vendor's.
+        if completion["forced_termination"] == true {
+            lines.push(
+                "Forced termination: the native process was killed after a deadline, cancellation, protocol error, or missed shutdown grace period, so its exit code is not the vendor's."
+                    .to_string(),
+            );
+        }
+        lines
     } else {
         vec![
             format!(
@@ -484,5 +494,63 @@ mod tests {
             "{replay}"
         );
         assert!(!replay.contains("Native exit"));
+    }
+
+    /// Renders the native crate's own report type, so a renamed completion
+    /// field fails here instead of silently printing `-`.
+    #[test]
+    fn harness_outcome_text_reads_every_native_completion_field() {
+        use vibemux_harness_native::contract::{
+            Completion, Harness, Outcome, Protocol, Record, SCHEMA_VERSION, Status,
+        };
+        let records = [
+            r#"{"type":"thread.started","thread_id":"SYNTHETIC_THREAD"}"#,
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"SYNTHETIC_VENDOR_TEXT"}}"#,
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|(raw, sequence)| Record::parse(Protocol::Codex, sequence, raw.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("fixture records");
+        let request_id = uuid::Uuid::new_v4();
+        let outcome = |forced: bool| Outcome {
+            request_id,
+            harness: Harness::Codex,
+            records: records.clone(),
+            completion: Completion {
+                schema_version: SCHEMA_VERSION,
+                status: if forced {
+                    Status::Failed
+                } else {
+                    Status::Completed
+                },
+                record_count: 2,
+                stdout_bytes: 123,
+                stderr_bytes: 45,
+                exit_code: Some(i32::from(forced)),
+                forced_termination: forced,
+                error_code: forced.then(|| "harness_deadline_exceeded".to_string()),
+            },
+        };
+
+        let text = harness_text(&outcome(true).summary());
+        let lines = text.lines().collect::<Vec<_>>();
+        assert_eq!(lines[0], "Harness codex | failed", "{text}");
+        assert_eq!(
+            lines[1], "Records: 2   Stdout bytes: 123   Stderr bytes: 45   Native exit: 1",
+            "{text}"
+        );
+        assert!(lines[2].starts_with("Forced termination: "), "{text}");
+        assert_eq!(lines[3], "Error: harness_deadline_exceeded", "{text}");
+        assert!(lines[4].starts_with("Kinds: "), "{text}");
+        assert!(!text.contains("SYNTHETIC_"), "{text}");
+        assert!(!text.contains(&request_id.to_string()), "{text}");
+
+        let text = harness_text(&outcome(false).summary());
+        assert!(text.starts_with(
+            "Harness codex | completed\nRecords: 2   Stdout bytes: 123   Stderr bytes: 45   Native exit: 0\nKinds: "
+        ), "{text}");
+        assert!(!text.contains("Forced termination"), "{text}");
+        assert!(!text.contains("Error:"), "{text}");
     }
 }
