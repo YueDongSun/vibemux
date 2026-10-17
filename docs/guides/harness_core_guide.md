@@ -92,7 +92,11 @@ sandbox, sharing, or debug-log flag, such as `--yolo` or
 `harness_unsafe_arguments`. That list guards against mistakes and is not a
 sandbox, so keep the prefix to launcher arguments.
 
-Only the named `environment_names` plus a small OS startup set are inherited.
+Only the named `environment_names` plus the OS startup set (`SYSTEMROOT`,
+`WINDIR`, `TEMP`, and `TMP`) are inherited; the vendor gets no other variable,
+not even `PATH`. A startup variable is passed only when it is set and valid
+Unicode. Any other named variable that is unset or not valid Unicode fails the
+request with `harness_environment_unavailable` before a process starts.
 Variable names must be distinct, at most 128 bytes, and use only uppercase
 ASCII letters, digits, and `_`; `VIBEMUX_PLUGIN_SESSION_ID` is reserved. A bad
 name is rejected with `harness_invalid_environment`. Secret values stay in the

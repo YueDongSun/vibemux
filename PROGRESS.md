@@ -4698,3 +4698,22 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 32 unit, 18 normalization, 21 process dispatch through the real plugin binary; CLI 43 unit, 4 bootstrap process, 6 unified commands). Twelve mutations each failed a new test. They weakened, in turn, the used-session, method, deadline, size, schema, nil UUID, correlation, harness, and probe-only prompt checks; mapped unverified to cancelled; dropped the failure code fallback; and raised the shared bound past the plugin frame.
 
 **Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native launch environment and executable check are pure and tested
+
+**Scope:** The launch helpers in `vibemux_harness_native` process code, plus the harness core guide. No wire, schema, or control protocol change. There is one corner-case behavior alignment with the daemon, described below.
+
+**Implemented:**
+
+- The native path builds every launch environment the same way, for both the plugin and the vendor, but its environment builder had no test. It kept its own copy of the OS startup names, which now come from the shared engine's `SYSTEM_ENVIRONMENT_NAMES`. The builder is now a pure function that takes a lookup.
+- The tested rules:
+  - A launch inherits only the startup set (`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP`) and the route's named variables. No other variable passes, not even `PATH`.
+  - A startup variable passes only when it is set and valid Unicode.
+  - A named variable that is unset or not valid Unicode fails with `harness_environment_unavailable`.
+- **Alignment:** a route that names a startup variable now treats it as optional, as the daemon's launch already did through `build_launch_spec`. Before, the native path failed when such a variable was unset.
+- The Windows `.exe` requirement is now a pure `is_native_executable` check, tested on every platform. The test covers letter case, a double extension, and the `.cmd`, `.bat`, `.ps1`, `.com`, extensionless, trailing-dot, and bare-dot names. The check still runs only on Windows, and the process test for `.cmd` and `.bat` shims is unchanged.
+- The guide now names the startup set and says what an unset or non-Unicode variable does. A test checks the guide for this.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 34 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Six mutations each failed a new test rather than compilation: requiring a route-named startup variable, forwarding an unset startup name as empty, forwarding `PATH`, skipping an unset route variable, a case-sensitive `.exe` match, and accepting a path with no extension.
+
+**Remaining:** The plugin supervisor's launch contract holds only Unicode values, so the native path still refuses non-Unicode values that the daemon would pass through. The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

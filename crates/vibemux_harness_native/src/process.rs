@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, process::Stdio, time::Duration};
+#[cfg(any(windows, test))]
+use std::path::Path;
+use std::{collections::BTreeMap, env::VarError, process::Stdio, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, BufReader},
@@ -6,27 +8,47 @@ use tokio::{
     task::JoinHandle,
     time::timeout,
 };
+use vibemux_harness::dispatch::launch_spec::SYSTEM_ENVIRONMENT_NAMES;
 use vibemux_platform::ProcessTree;
 use vibemux_plugin_protocol::manifest::{ManifestPluginKind, PluginManifest, SupportedPlatform};
 use vibemux_plugin_supervisor::ResolvedPluginLaunch;
 
 use crate::{Error, config::Route};
 
-pub(crate) const SYSTEM_ENVIRONMENT: &[&str] = &["SYSTEMROOT", "WINDIR", "TEMP", "TMP"];
-
 pub(crate) fn environment(route: &Route) -> Result<BTreeMap<String, String>, Error> {
+    allowlisted_environment(&route.environment_names, |name| std::env::var(name))
+}
+
+/// Builds the whole environment a launch receives: each OS startup name that
+/// is set, then each route name, which must be set and valid Unicode. A route
+/// name from the startup set stays optional, as in the daemon's launch.
+fn allowlisted_environment(
+    route_names: &[String],
+    lookup: impl Fn(&str) -> Result<String, VarError>,
+) -> Result<BTreeMap<String, String>, Error> {
     let mut values = BTreeMap::new();
-    for name in SYSTEM_ENVIRONMENT {
-        if let Ok(value) = std::env::var(name) {
-            values.insert((*name).to_string(), value);
+    for name in SYSTEM_ENVIRONMENT_NAMES {
+        if let Ok(value) = lookup(name) {
+            values.insert(name.to_string(), value);
         }
     }
-    for name in &route.environment_names {
-        let value = std::env::var(name)
+    for name in route_names {
+        if SYSTEM_ENVIRONMENT_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        let value = lookup(name)
             .map_err(|source| Error::with_source("harness_environment_unavailable", source))?;
         values.insert(name.clone(), value);
     }
     Ok(values)
+}
+
+/// Whether Windows starts `path` itself rather than through a command
+/// interpreter. Only an `.exe` file qualifies, in any letter case.
+#[cfg(any(windows, test))]
+fn is_native_executable(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
 }
 
 pub(crate) struct Process {
@@ -73,11 +95,7 @@ impl Process {
         )
         .map_err(|source| Error::with_source("harness_invalid_launch", source))?;
         #[cfg(windows)]
-        if !launch
-            .executable
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-        {
+        if !is_native_executable(&launch.executable) {
             return Err(Error::new("harness_native_executable_required"));
         }
         let mut command = Command::new(&launch.executable);
@@ -214,4 +232,110 @@ fn contain(child: &Child) -> Result<ProcessTree, Error> {
         .ok_or_else(|| Error::new("harness_child_exited"))?;
     ProcessTree::contain(process_id)
         .map_err(|source| Error::with_source("harness_containment_failed", source))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, env::VarError, ffi::OsString, path::Path};
+
+    use super::{SYSTEM_ENVIRONMENT_NAMES, allowlisted_environment, is_native_executable};
+
+    const NOT_UNICODE: &str = "NOT_UNICODE";
+
+    /// A host environment where the value `NOT_UNICODE` stands for a value
+    /// that is set but is not valid Unicode.
+    fn launch_environment(
+        host: &[(&str, &str)],
+        route_names: &[&str],
+    ) -> Result<BTreeMap<String, String>, &'static str> {
+        let route_names: Vec<String> = route_names.iter().map(ToString::to_string).collect();
+        allowlisted_environment(&route_names, |name| {
+            match host.iter().find(|(key, _)| *key == name) {
+                Some((_, value)) if *value == NOT_UNICODE => {
+                    Err(VarError::NotUnicode(OsString::from(name)))
+                }
+                Some((_, value)) => Ok((*value).to_string()),
+                None => Err(VarError::NotPresent),
+            }
+        })
+        .map_err(|error| error.code())
+    }
+
+    fn expected(pairs: &[(&str, &str)]) -> Result<BTreeMap<String, String>, &'static str> {
+        Ok(pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect())
+    }
+
+    #[test]
+    fn a_launch_inherits_only_the_startup_set_and_the_route_names() {
+        let mut host: Vec<(&str, &str)> = SYSTEM_ENVIRONMENT_NAMES
+            .iter()
+            .map(|name| (*name, "startup_value"))
+            .collect();
+        host.extend([
+            ("PATH", "path_value"),
+            ("HOME", "home_value"),
+            ("OPENAI_API_KEY", "key_value"),
+            ("UNLISTED_SECRET", "secret_value"),
+        ]);
+        assert_eq!(
+            launch_environment(&host, &["OPENAI_API_KEY"]),
+            expected(&[
+                ("OPENAI_API_KEY", "key_value"),
+                ("SYSTEMROOT", "startup_value"),
+                ("TEMP", "startup_value"),
+                ("TMP", "startup_value"),
+                ("WINDIR", "startup_value"),
+            ])
+        );
+        // A startup name is passed only when it is set and valid Unicode.
+        assert_eq!(
+            launch_environment(&[("TEMP", "temp_value"), ("TMP", NOT_UNICODE)], &[]),
+            expected(&[("TEMP", "temp_value")])
+        );
+        // A route name must be set and valid Unicode.
+        for host in [vec![], vec![("OPENAI_API_KEY", NOT_UNICODE)]] {
+            assert_eq!(
+                launch_environment(&host, &["OPENAI_API_KEY"]),
+                Err("harness_environment_unavailable"),
+                "{host:?}"
+            );
+        }
+        // A route name from the startup set stays optional, as in the daemon.
+        assert_eq!(launch_environment(&[], &["TEMP"]), expected(&[]));
+        assert_eq!(
+            launch_environment(&[("TEMP", "temp_value")], &["TEMP"]),
+            expected(&[("TEMP", "temp_value")])
+        );
+        let guide = include_str!("../../../docs/guides/harness_core_guide.md");
+        for name in SYSTEM_ENVIRONMENT_NAMES {
+            assert!(guide.contains(&format!("`{name}`")), "{name}");
+        }
+        assert!(guide.contains("not even `PATH`"));
+        assert!(guide.contains("harness_environment_unavailable"));
+    }
+
+    #[test]
+    fn only_an_exe_starts_without_a_command_interpreter() {
+        for accepted in ["codex.exe", "CODEX.EXE", "tools/claude.Exe", "tool.cmd.exe"] {
+            assert!(is_native_executable(Path::new(accepted)), "{accepted}");
+        }
+        for refused in [
+            "codex",
+            "codex.cmd",
+            "codex.bat",
+            "codex.ps1",
+            "codex.com",
+            "codex.exe.cmd",
+            "codex.exe.",
+            "codex.ex",
+            "exe",
+            ".exe",
+            "",
+        ] {
+            assert!(!is_native_executable(Path::new(refused)), "{refused}");
+        }
+    }
 }
