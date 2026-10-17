@@ -4486,3 +4486,13 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. New `every_code_before_a_completion_survives_the_rejection_list` scans the runner's process code, its pre-launch checks, `Session::new`, and the plugin's request checks; new `launch_failures_keep_the_runner_code` probes and executes a missing executable through the real plugin (`harness_invalid_launch`); the Windows batch-route test now asserts `harness_native_executable_required`. Mutations (always `harness_plugin_rejected`, dropping `harness_spawn_failed` from the list, ignoring the response status) each failed the new tests. Fixture vendors only.
 
 **Remaining:** a dispatcher-built completion for a failed exchange still sets `forced_termination`, even when the plugin answered cleanly and no vendor process was killed.
+
+### 2026-10-18 - Native completion-less answers claim no forced kill and skip the drain
+
+**Scope:** `vibemux_harness_native` dispatcher (ADR 040) and `docs/protocol_boundaries.md`. No wire, schema, or control change.
+
+**Implemented:** a plugin answer without a completion (the request refused, or the vendor process never launched) went through the dispatcher's failed-exchange path. That path claimed `forced_termination: true`, so `vibemuxctl --format text harness probe` printed the forced-termination line for a process that never started. It also cancelled and drained for `shutdown_ms` (2 s by default) waiting for an answer that had already arrived. The dispatcher now builds the `failed` completion directly, with no exit code and `forced_termination: false`, as the daemon reports a vendor process that never started. It returns without the drain. Failures inside an exchange still cancel, drain, and report a forced termination.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features`, and `cargo +1.92.0 test -j 4 -p vibemux_cli --all-features harness` passed. `launch_failures_keep_the_runner_code` now uses a 3 s grace period. It asserts no forced termination and that each probe and execution returns within that period. Mutations failed as expected: claiming a forced kill failed the forced-termination assertion. Restoring the old error path failed it too, and with that assertion disabled the timing assertion failed at 3.31 s. Fixture vendors only.
+
+**Remaining:** none for this path.

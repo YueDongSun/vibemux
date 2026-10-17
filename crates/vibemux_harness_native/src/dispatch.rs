@@ -281,7 +281,20 @@ impl Dispatcher {
                     Some(envelope::Body::Response(response)) => {
                         if response.request_id != request_id { return Err(Error::new("harness_uncorrelated_response")); }
                         if response.payload.is_empty() {
-                            return Err(Error::new(rejection_code(response.status, response.error_code.as_deref())));
+                            // The plugin has answered, so nothing is left to
+                            // cancel or drain, and the core killed nothing.
+                            // Like the daemon's never-started process, the
+                            // report has no exit code and no forced kill.
+                            return Ok(Completion {
+                                schema_version: SCHEMA_VERSION,
+                                status: Status::Failed,
+                                record_count: records.len() as u64,
+                                stdout_bytes: captured_bytes as u64,
+                                stderr_bytes: 0,
+                                exit_code: None,
+                                forced_termination: false,
+                                error_code: Some(rejection_code(response.status, response.error_code.as_deref()).to_string()),
+                            });
                         }
                         let mut completion: Completion = serde_json::from_slice(&response.payload)
                             .map_err(|source| Error::with_source("harness_invalid_completion", source))?;

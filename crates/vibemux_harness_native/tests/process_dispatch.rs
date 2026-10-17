@@ -1,6 +1,10 @@
 #![cfg(feature = "test_helpers")]
 
-use std::{future::Future, path::PathBuf, time::Duration};
+use std::{
+    future::Future,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -25,6 +29,7 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCEL_DELAY: Duration = Duration::from_millis(100);
 const BLOCKED_TIMEOUT_MS: u64 = 30_000;
 const CANCEL_SHUTDOWN_MS: u64 = 300;
+const LONG_SHUTDOWN_MS: u64 = 3_000;
 const PROMPT: &str = "SYNTHETIC_PROMPT_SENTINEL ; echo injected > synthetic_injection_marker & $(synthetic_command) | < > `literal` %SYNTHETIC_ENV% \n你好";
 const HARNESSES: [Harness; 5] = [
     Harness::Codex,
@@ -97,23 +102,29 @@ impl Fixture {
         }
     }
 
-    /// Points one route at another vendor executable and reloads the
-    /// dispatcher, whose configuration digest the plugin checks.
-    fn replace_executable(&mut self, harness: Harness, executable: PathBuf) {
+    /// Rewrites the configuration and reloads the dispatcher, whose
+    /// configuration digest the plugin checks.
+    fn reconfigure(&mut self, edit: impl FnOnce(&mut Config)) {
         let mut config: Config =
             serde_json::from_slice(&std::fs::read(&self.config_path).unwrap()).unwrap();
-        config
-            .harnesses
-            .iter_mut()
-            .find(|route| route.harness == harness)
-            .unwrap()
-            .executable = executable;
+        edit(&mut config);
         std::fs::write(&self.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
         self.dispatcher = Dispatcher::new(
             &self.config_path,
             &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
         )
         .unwrap();
+    }
+
+    fn replace_executable(&mut self, harness: Harness, executable: PathBuf) {
+        self.reconfigure(|config| {
+            config
+                .harnesses
+                .iter_mut()
+                .find(|route| route.harness == harness)
+                .unwrap()
+                .executable = executable;
+        });
     }
 
     async fn execute(&self, harness: Harness) -> Outcome {
@@ -500,16 +511,22 @@ async fn changed_config_is_rejected_before_probe_or_prompt() {
 
 /// A vendor executable that cannot launch fails in the plugin's runner,
 /// before any completion exists. The report names that launch failure
-/// rather than `harness_plugin_rejected`, for a probe and an execution.
+/// rather than `harness_plugin_rejected`, for a probe and an execution. It
+/// claims no forced kill, and it returns without waiting out the shutdown
+/// grace period for an answer the plugin has already given.
 #[tokio::test]
 async fn launch_failures_keep_the_runner_code() {
     bounded(async {
         let mut fixture = Fixture::new("normal");
+        fixture.reconfigure(|config| config.limits.shutdown_ms = LONG_SHUTDOWN_MS);
         let missing = fixture.working_directory.join("missing_vendor_executable");
         fixture.replace_executable(Harness::Codex, missing);
+        let started = Instant::now();
         let probe = fixture.dispatcher.probe(Harness::Codex).await.unwrap();
+        let probe_elapsed = started.elapsed();
+        let started = Instant::now();
         let execution = fixture.execute(Harness::Codex).await;
-        for outcome in [probe, execution] {
+        for (outcome, elapsed) in [(probe, probe_elapsed), (execution, started.elapsed())] {
             assert_eq!(outcome.completion.status, Status::Failed, "{outcome:?}");
             assert_eq!(
                 outcome.completion.error_code.as_deref(),
@@ -517,6 +534,11 @@ async fn launch_failures_keep_the_runner_code() {
             );
             assert!(outcome.records.is_empty());
             assert_eq!(outcome.completion.exit_code, None);
+            assert!(!outcome.completion.forced_termination);
+            assert!(
+                elapsed < Duration::from_millis(LONG_SHUTDOWN_MS),
+                "{elapsed:?}"
+            );
         }
     })
     .await;
