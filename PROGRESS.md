@@ -4825,3 +4825,16 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 133 unit with 1 pre-existing ignore, plus the integration suites. A mutation that showed the result code in the Version row failed the new test; the file was restored.
 
 **Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
+
+### 2026-10-18 - Correct two harness API doc comments
+
+**Scope:** documentation comments in `vibemux_harness::dispatch`. No code, wire, store, or protocol change.
+
+**Implemented:**
+
+- `AdapterCapability::summary` no longer wraps its example across two comment lines, which made `codex_exec,codex_app_server` read as if it had a space after the comma. The comment now says the protocol list has none, which the existing summary test pins. It also no longer claims that every frontend uses this line.
+- `Sha256Digest::of_fields` no longer links to the crate-private `hash_fields`. That broken link was the only thing stopping `cargo doc -p vibemux_harness --no-deps` from building with warnings denied.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness --all-features capability` passed: 6 tests. With `RUSTDOCFLAGS="-D warnings"`, `cargo doc -p vibemux_harness --no-deps` failed before this change on the private link and passed after it. CI does not build rustdoc. The generated `target/doc` output was removed.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.

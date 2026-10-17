@@ -54,7 +54,8 @@ impl Sha256Digest {
     }
 
     /// Domain-separated digest of length-prefixed fields; the public form
-    /// of [`hash_fields`] for crates that derive their own identities.
+    /// of the crate's internal `hash_fields` for crates that derive their own
+    /// identities.
     #[must_use]
     pub fn of_fields(domain: &str, fields: &[&[u8]]) -> Self {
         hash_fields(domain, fields)

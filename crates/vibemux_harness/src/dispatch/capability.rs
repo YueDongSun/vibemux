@@ -64,8 +64,9 @@ impl AdapterCapability {
             .join(",")
     }
 
-    /// One display line shared by every frontend: `execute via codex_exec,
-    /// codex_app_server`, `probe_only via acp`, or `terminal_only`.
+    /// One display line for a frontend's detail view, such as
+    /// `execute via codex_exec,codex_app_server`, `probe_only via acp`, or
+    /// `terminal_only`. The protocol list has no space after its commas.
     #[must_use]
     pub fn summary(&self) -> String {
         match self.support {
