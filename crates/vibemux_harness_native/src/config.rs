@@ -308,6 +308,83 @@ mod tests {
         serde_json::to_vec(&value).unwrap()
     }
 
+    type LimitEdit = fn(&mut Limits, usize);
+
+    #[test]
+    fn every_limit_is_accepted_at_its_bounds_and_refused_outside_them() {
+        // Field, default, lowest, and highest accepted value.
+        let ranges: [(&str, usize, usize, usize, LimitEdit); 8] = [
+            ("frame_bytes", 131_072, 64, 131_072, |limits, value| {
+                limits.frame_bytes = value;
+            }),
+            (
+                "capture_bytes",
+                16_777_216,
+                131_072,
+                16_777_216,
+                |limits, value| {
+                    limits.capture_bytes = value;
+                },
+            ),
+            ("record_count", 16_384, 1, 65_536, |limits, value| {
+                limits.record_count = value;
+            }),
+            ("queue_capacity", 16, 1, 128, |limits, value| {
+                limits.queue_capacity = value;
+            }),
+            ("maximum_in_flight", 4, 1, 16, |limits, value| {
+                limits.maximum_in_flight = value;
+            }),
+            ("request_history", 4096, 1, 65_536, |limits, value| {
+                limits.request_history = value;
+            }),
+            ("timeout_ms", 60_000, 100, 600_000, |limits, value| {
+                limits.timeout_ms = u64::try_from(value).unwrap();
+            }),
+            ("shutdown_ms", 2_000, 100, 10_000, |limits, value| {
+                limits.shutdown_ms = u64::try_from(value).unwrap();
+            }),
+        ];
+        let defaults = serde_json::to_value(Limits::default()).unwrap();
+        let guide = include_str!("../../../docs/guides/harness_core_guide.md");
+        for (field, default, lowest, highest, set) in ranges {
+            assert_eq!(defaults[field], json!(default), "{field} default");
+            for (value, expected) in [
+                (lowest - 1, "harness_invalid_limits"),
+                (lowest, "ok"),
+                (highest, "ok"),
+                (highest + 1, "harness_invalid_limits"),
+            ] {
+                let mut limits = Limits::default();
+                set(&mut limits, value);
+                let actual = limits
+                    .validate()
+                    .map_or_else(|error| error.code(), |()| "ok");
+                assert_eq!(actual, expected, "{field} = {value}");
+            }
+            // The guide's table states the same default and range.
+            let floor = if field == "capture_bytes" {
+                "`frame_bytes`".to_string()
+            } else {
+                lowest.to_string()
+            };
+            let row = format!("| `{field}` | {default} | {floor} – {highest} |");
+            assert!(guide.contains(&row), "{row}");
+        }
+        // The capture floor follows frame_bytes rather than a fixed value.
+        let mut small_frames = Limits {
+            frame_bytes: 64,
+            capture_bytes: 64,
+            ..Limits::default()
+        };
+        assert!(small_frames.validate().is_ok());
+        small_frames.capture_bytes = 63;
+        assert_eq!(
+            small_frames.validate().unwrap_err().code(),
+            "harness_invalid_limits"
+        );
+    }
+
     #[test]
     fn config_files_load_only_when_present_bounded_and_closed() {
         let directory = tempfile::tempdir().unwrap();

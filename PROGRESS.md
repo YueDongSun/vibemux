@@ -4574,3 +4574,17 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (21 unit, 18 normalization, 21 process dispatch). Four mutations each failed a new test: refusing a file of exactly the bound, dropping `deny_unknown_fields` from `Route`, not resolving a relative working directory, and hashing all but the first byte.
 
 **Remaining:** Of the eight `Limits` ranges, only `timeout_ms` has a test; the others are the next coverage gap. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native limit ranges are documented and pinned
+
+**Scope:** `vibemux_harness_native` limit validation tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The native configuration's eight `limits` ranges were not documented, and only `timeout_ms` had a test. The guide said only that invalid limits are rejected.
+- `docs/guides/harness_core_guide.md` now has a table of each field's default and accepted range, and says every field is optional and an out-of-range value rejects the whole configuration with `harness_invalid_limits`.
+- A table-driven unit test checks each default against `Limits::default()`, accepts each field at its lowest and highest value, refuses one below and one above, and checks that the capture floor follows `frame_bytes`. The same test asserts that the guide contains each row, so the table cannot drift from the code.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (22 unit, 18 normalization, 21 process dispatch). Five mutations each failed the new test: raising the `record_count` ceiling, lowering the `shutdown_ms` floor, fixing the capture floor at 64, editing the guide's `queue_capacity` row, and changing the `shutdown_ms` default.
+
+**Remaining:** None for native configuration validation coverage. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

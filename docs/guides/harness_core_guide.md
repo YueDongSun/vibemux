@@ -55,6 +55,20 @@ permits a text prompt. Leave the latter false for initialization probes.
 Both are false in the public example. The configuration is closed and validated;
 unknown fields and invalid limits are rejected.
 
+Every `limits` field is optional and falls back to its default. A value outside
+its range rejects the whole configuration with `harness_invalid_limits`.
+
+| Field | Default | Range |
+|---|---|---|
+| `frame_bytes` | 131072 | 64 – 131072 |
+| `capture_bytes` | 16777216 | `frame_bytes` – 16777216 |
+| `record_count` | 16384 | 1 – 65536 |
+| `queue_capacity` | 16 | 1 – 128 |
+| `maximum_in_flight` | 4 | 1 – 16 |
+| `request_history` | 4096 | 1 – 65536 |
+| `timeout_ms` | 60000 | 100 – 600000 |
+| `shutdown_ms` | 2000 | 100 – 10000 |
+
 `arguments` is a fixed, operator-trusted launcher prefix, such as a Node script
 path when no native vendor binary exists. User messages are never substituted
 into it. On Windows the executable must resolve to a native `.exe`; do not point
