@@ -4496,3 +4496,13 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features`, and `cargo +1.92.0 test -j 4 -p vibemux_cli --all-features harness` passed. `launch_failures_keep_the_runner_code` now uses a 3 s grace period. It asserts no forced termination and that each probe and execution returns within that period. Mutations failed as expected: claiming a forced kill failed the forced-termination assertion. Restoring the old error path failed it too, and with that assertion disabled the timing assertion failed at 3.31 s. Fixture vendors only.
 
 **Remaining:** none for this path.
+
+### 2026-10-18 - Native plugin exit no longer hides the exchange's failure
+
+**Scope:** `vibemux_harness_native` dispatcher (ADR 040) and `docs/protocol_boundaries.md`. No wire, schema, or control change.
+
+**Implemented:** after every request the dispatcher overwrote the completion with `failed` / `harness_plugin_shutdown_failed` whenever the plugin did not shut down cleanly. That replaced a failure the exchange had already recorded, such as a protocol violation or `harness_dispatch_timeout`, which was usually the cause of the unclean exit. The new `apply_plugin_exit` folds the plugin's exit the way `vibemux_harness::dispatch::decide_outcome` folds the vendor's. An unclean exit still fails a success, a protocol terminal, or an unverified completion. An exchange failure keeps its status and code. The protocol boundary states the rule.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. New `an_unclean_plugin_exit_never_hides_an_exchange_failure` covers clean and unclean exits for five completions that are demoted and five that are kept. Three mutations each failed it: the old unconditional overwrite, treating `harness_eof_without_terminal` as an exchange failure, and ignoring the exit. No fixture makes the real plugin exit uncleanly, so the rule is unit-tested only. `vibemuxctl --format text` renders a missing exit code as `-`, the same placeholder as other missing fields, so Backlog 22 needed no change.
+
+**Remaining:** an integration fixture that makes the plugin exit uncleanly after an exchange failure.

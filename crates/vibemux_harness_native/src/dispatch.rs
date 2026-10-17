@@ -357,10 +357,10 @@ impl Dispatcher {
                 error_code: Some(error.code().to_string()),
             },
         };
-        if !shutdown.is_ok_and(|report| report.graceful && report.success) {
-            completion.status = Status::Failed;
-            completion.error_code = Some("harness_plugin_shutdown_failed".to_string());
-        }
+        apply_plugin_exit(
+            &mut completion,
+            shutdown.is_ok_and(|report| report.graceful && report.success),
+        );
         Ok(Outcome {
             request_id: request.request_id,
             harness: request.harness,
@@ -389,6 +389,23 @@ impl Dispatcher {
             state: self.state.clone(),
             resource,
         })
+    }
+}
+
+/// Folds the plugin's own exit into its completion the way
+/// `vibemux_harness::dispatch::decide_outcome` folds the vendor's exit. An
+/// unclean plugin exit fails any completion whose exchange had not already
+/// failed, so it never stands as success, a protocol terminal, or
+/// unverified. A failure the exchange recorded stays the reported cause,
+/// with its status, because the unclean exit is usually its consequence.
+fn apply_plugin_exit(completion: &mut Completion, clean_exit: bool) {
+    let exchange_failed = completion
+        .error_code
+        .as_deref()
+        .is_some_and(|code| code != "harness_eof_without_terminal");
+    if !clean_exit && !exchange_failed {
+        completion.status = Status::Failed;
+        completion.error_code = Some("harness_plugin_shutdown_failed".to_string());
     }
 }
 
@@ -472,7 +489,8 @@ fn rejection_code(status: i32, code: Option<&str>) -> &'static str {
 mod tests {
     use vibemux_plugin_protocol::wire::ResponseStatus;
 
-    use super::{rejection_code, safe_error_code};
+    use super::{apply_plugin_exit, rejection_code, safe_error_code};
+    use crate::contract::{Completion, SCHEMA_VERSION, Status};
 
     /// Every `"harness_..."` string literal in `source`.
     fn literal_codes(source: &str) -> Vec<&str> {
@@ -607,6 +625,58 @@ mod tests {
                 rejection_code(status, code),
                 "harness_plugin_rejected",
                 "{code:?}"
+            );
+        }
+    }
+    /// The plugin's exit follows `decide_outcome`: an unclean one fails a
+    /// success, a protocol terminal, or an unverified completion, and leaves
+    /// a failure the exchange already recorded as the reported cause.
+    #[test]
+    fn an_unclean_plugin_exit_never_hides_an_exchange_failure() {
+        let completion = |status, code: Option<&str>| Completion {
+            schema_version: SCHEMA_VERSION,
+            status,
+            record_count: 0,
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+            exit_code: None,
+            forced_termination: false,
+            error_code: code.map(str::to_string),
+        };
+        let demoted = [
+            (Status::Completed, None),
+            (Status::Probed, None),
+            (Status::Failed, None),
+            (Status::Cancelled, None),
+            (Status::Unverified, Some("harness_eof_without_terminal")),
+        ];
+        let kept = [
+            (Status::Failed, Some("harness_invalid_jsonrpc")),
+            (Status::Failed, Some("harness_dispatch_timeout")),
+            (Status::Failed, Some("harness_process_failed")),
+            (Status::Failed, Some("harness_invalid_launch")),
+            (Status::Cancelled, Some("harness_cancelled")),
+        ];
+        for (status, code) in demoted.into_iter().chain(kept) {
+            let mut clean = completion(status, code);
+            apply_plugin_exit(&mut clean, true);
+            assert_eq!((clean.status, clean.error_code.as_deref()), (status, code));
+        }
+        for (status, code) in demoted {
+            let mut unclean = completion(status, code);
+            apply_plugin_exit(&mut unclean, false);
+            assert_eq!(
+                (unclean.status, unclean.error_code.as_deref()),
+                (Status::Failed, Some("harness_plugin_shutdown_failed")),
+                "{status:?} {code:?}"
+            );
+        }
+        for (status, code) in kept {
+            let mut unclean = completion(status, code);
+            apply_plugin_exit(&mut unclean, false);
+            assert_eq!(
+                (unclean.status, unclean.error_code.as_deref()),
+                (status, code)
             );
         }
     }
