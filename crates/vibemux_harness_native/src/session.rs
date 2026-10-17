@@ -317,4 +317,23 @@ mod tests {
             .expect_err("second terminal");
         assert_eq!(error.code(), "harness_unexpected_terminal");
     }
+
+    /// The operator documentation lists each daemon code beside its native
+    /// code on one table row, so renaming either one fails here instead of
+    /// leaving the documentation stale.
+    #[test]
+    fn protocol_boundaries_document_every_protocol_code_pair() {
+        let documentation = include_str!("../../../docs/protocol_boundaries.md");
+        for (shared, native) in PROTOCOL_ERROR_CODES {
+            let shared_cell = format!("| `{}` |", shared.code());
+            let native_cell = format!("| `{native}` |");
+            assert!(
+                documentation
+                    .lines()
+                    .any(|line| line.contains(&shared_cell) && line.contains(&native_cell)),
+                "{native} is not documented beside {}",
+                shared.code()
+            );
+        }
+    }
 }

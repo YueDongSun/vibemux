@@ -4123,3 +4123,33 @@ scratch directory outside the repository.
 **Remaining**
 - The tally is a count, not a drift detector. Some opaque records are expected for every protocol (RPC replies), and every record of a direct `copilot_json` or `grok_stream_json` replay is opaque. No baseline share is recorded or compared.
 - The daemon dispatch status already returns per-kind counts (`CaptureSummary.kinds`). This change does not touch the daemon or its control protocol.
+
+### 2026-10-17 - Document harness adapter capability and protocol error codes
+
+**Scope**
+- Documentation, plus one test that keeps it current. `docs/protocol_boundaries.md` was stale for the harness surface:
+  - It still described control IPC v6.
+  - It said ACP prompt execution was unimplemented, although the ADR 040 native CLI executes ACP routes that set `allow_execution`.
+  - It said MCP was unimplemented, although ADR 035 adds `vibemux_mcp`.
+  - It did not mention the native harness CLI, adapter capability, or the native error codes.
+
+**Implemented**
+- The control IPC bullet now lists v1–v10 from the constants in `vibemuxd::control`.
+- The ACP/MCP bullet now states the daemon's probe-only rule and the native CLI's ACP execution path. It names that divergence as an open decision and links the native MCP read frontend.
+- A new "Native harness CLI" bullet describes `vibemuxctl harness`. It runs on the shared `ProtocolSession` engine, writes no canonical state, and produces content-free reports. Execution needs `allow_execution`, and its status is `PARTIAL — FIXTURE ONLY`.
+- A new "Harness adapter capability" section has the per-harness table from `adapter_capability`: execute, probe_only, or terminal_only, and through which protocols. It also explains the catalog `Actions` column.
+- A new "Harness protocol error codes" section:
+  - Maps the 13 shared `DispatchError` protocol violations to their daemon (`harness_protocol_*`) and native (`harness_*`) codes, and lists the other native mappings.
+  - Documents the plugin completion-code allowlist, under which anything else becomes `harness_vendor_failed`.
+  - Documents how each protocol answers vendor-to-client requests.
+- `vibemux_harness_native` `session::tests::protocol_boundaries_document_every_protocol_code_pair` requires each code pair to appear on one table row of the document.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_harness_native --all-features --lib`: 9 passed.
+- Renaming one native code in the document made the new test fail with `harness_uncorrelated_turn is not documented beside harness_protocol_uncorrelated_turn`. Restoring the document made it pass again.
+- Each table description and the vendor-request answers were checked against `vibemux_harness::dispatch::protocol_session` and `error_code`.
+- `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Only the protocol code pairs are pinned by a test. The capability table and the prose can still drift from the code.
+- Other `protocol_boundaries.md` bullets (A2A, plugin, workflow) were not re-audited.
