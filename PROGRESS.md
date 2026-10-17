@@ -4444,3 +4444,19 @@ scratch directory outside the repository.
 - Mutation checks: dropping the v9 names, stating 14 operations, and renaming the refusal code each fail the new test at their own assertions.
 
 **Remaining**: The guard's list of later operations is maintained by hand, like the existing per-version lists. `README.md`, `CLAUDE.md`, and ADR 031 still use the shorthand "no AAG gateway client", meaning no live-capable client. They were left for the owner to reword.
+
+### 2026-10-17 - Guard the control IPC version range in the protocol boundary
+
+**Scope**: The "Local control IPC" bullet in `docs/protocol_boundaries.md`, with a `vibemuxd` guard test.
+
+**Implemented**:
+- I verified the bullet against `ControlOperation::minimum_protocol_version` and `supported_control_version`. The current version (v10), the accepted range (v1–v10), and what each version added are correct.
+- One omission is fixed. The bullet said `vibemuxctl` covers lifecycle, recovery, harness listing and switching, dispatch, and workflows. Its daemon-backed commands also include `Dsh` and `Decision`, so the bullet now names DSH sessions and advisory decisions.
+- `protocol_boundaries_ipc_bullet_states_every_accepted_version` requires the bullet to name `CONTROL_PROTOCOL_VERSION` as current, to state the accepted range ending at it, and to name what every accepted version added. A version bump now fails until the documentation follows.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemuxd --all-features --lib control::tests`: 22 pass.
+- Mutation checks: a stale current version, a stale range, and a dropped v7 clause each fail the new test at their own assertions.
+
+**Remaining**: The test checks that each version is named, not the operation names listed for it. Those come from `minimum_protocol_version`, which has no enumerable operation list.
