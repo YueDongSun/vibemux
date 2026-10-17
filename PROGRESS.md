@@ -5224,3 +5224,17 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_cli`: lib 45 passed, integration 5 passed. Two mutations were each caught and restored byte-for-byte. Selecting the daemon before the read failed `the_prompt_is_checked_before_the_daemon_is_selected`. Reporting an unreadable source as an invalid argument failed that test and `a_prompt_is_bounded_utf8_and_non_blank_and_an_unreadable_one_is_unavailable`.
 
 **Remaining:** the DSH and dispatch readers are now near copies, each with its own `PromptSource` type and bound; one shared reader could own both. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - MCP task titles follow the shared terminal-text rule
+
+**Scope:** text boundaries of the native MCP read host (ADR 035). Every field in its results is typed or checked against an allowlist, except the task title. Harness, role, and event type must be ASCII tokens. Media types must be MIME-shaped, digests hexadecimal, and timestamps RFC 3339. Dispatch status fields are typed enums. `projection::task_summary` bounded the title to 240 bytes but replaced only characters for which `char::is_control` is true. So a right-to-left override, a bidirectional isolate or mark, or a line or paragraph separator reached the MCP client verbatim, where it could reorder or break the title as shown.
+
+**Implemented:**
+
+- The title projection replaces each character for which the shared `vibemux_harness::terminal_text::is_terminal_unsafe` is true with a space. That set includes every control character, so nothing the old rule changed is kept now. Other characters are kept, including a no-break space, so `title_truncated` is not set by ordinary text.
+- `vibemux_mcp` depends directly on `vibemux_harness`, which it already reached through `vibemuxd`. `Cargo.lock` adds that one edge.
+- `docs/native_mcp_protocol.md` states the rule.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_mcp --all-features`: lib 5, framing 5, ipc 3, lifecycle 22, and stdio 5 passed. The I: drive was full (4.9 MB free), so the `ipc` test failed to link under the repository's `target`. The full run used a scratch target directory on C:. Restoring `char::is_control` failed the new test `a_title_loses_bidirectional_controls_and_separators_but_keeps_its_text`, and the source was restored byte-for-byte.
+
+**Remaining:** the I: drive needs space before the repository `target` can build again; its existing build caches were not removed. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
