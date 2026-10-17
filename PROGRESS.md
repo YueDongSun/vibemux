@@ -4560,3 +4560,17 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (19 unit, 18 normalization, 21 process dispatch). Five mutations each failed a new test: loosening the total argument bound by one byte, dropping the protocol-accepts check, disabling the duplicate-harness check, dropping the route cap, and refusing an argument of exactly 4096 bytes.
 
 **Remaining:** The file-level load refusals (a missing file, a file over `MAX_CONFIG_BYTES`, and malformed JSON or an unknown field) still have no test. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native configuration file loading is pinned
+
+**Scope:** `vibemux_harness_native` configuration loading tests. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- No test exercised `Config::load` itself: a missing file (`harness_config_unavailable`), a file over `MAX_CONFIG_BYTES` (`harness_config_too_large`), malformed JSON or an unknown field at the top level, in `limits`, or in a route (`harness_invalid_config`), and a structurally invalid route surfacing its validation code at load.
+- Nothing pinned that relative `executable` and `working_directory` paths resolve against the configuration file's directory rather than the caller's current directory, as the harness core guide states, or that the snapshot digest is the SHA-256 of the exact file bytes.
+- Two unit tests now load files from a temporary directory. They accept a file of exactly `MAX_CONFIG_BYTES` and refuse one byte more, check each refusal code, resolve a relative route under the configuration's canonical directory, leave an absolute route unchanged, and compare the digest with an independently computed SHA-256.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (21 unit, 18 normalization, 21 process dispatch). Four mutations each failed a new test: refusing a file of exactly the bound, dropping `deny_unknown_fields` from `Route`, not resolving a relative working directory, and hashing all but the first byte.
+
+**Remaining:** Of the eight `Limits` ranges, only `timeout_ms` has a test; the others are the next coverage gap. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

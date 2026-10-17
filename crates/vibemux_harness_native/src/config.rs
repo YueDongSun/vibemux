@@ -256,12 +256,15 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
 
     use super::{
-        Config, Limits, MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, MAX_ENVIRONMENT_NAME_BYTES,
-        MAX_ENVIRONMENT_NAMES, MAX_MODEL_BYTES, MAX_ROUTES, MAX_TOTAL_ARGUMENT_BYTES, Route,
-        UNSAFE_ARGUMENTS,
+        Config, Limits, MAX_ARGUMENT_BYTES, MAX_ARGUMENTS, MAX_CONFIG_BYTES,
+        MAX_ENVIRONMENT_NAME_BYTES, MAX_ENVIRONMENT_NAMES, MAX_MODEL_BYTES, MAX_ROUTES,
+        MAX_TOTAL_ARGUMENT_BYTES, Route, UNSAFE_ARGUMENTS,
     };
     use crate::contract::{Harness, Protocol, SCHEMA_VERSION};
 
@@ -291,6 +294,102 @@ mod tests {
         config
             .validate()
             .map_or_else(|error| error.code(), |()| "ok")
+    }
+
+    fn load_outcome(directory: &Path, bytes: &[u8]) -> &'static str {
+        let path = directory.join("harness_config.json");
+        std::fs::write(&path, bytes).unwrap();
+        Config::load(&path).map_or_else(|error| error.code(), |_| "ok")
+    }
+
+    fn config_json(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+        let mut value = serde_json::to_value(config(|_| {})).unwrap();
+        edit(&mut value);
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn config_files_load_only_when_present_bounded_and_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = Config::load(&directory.path().join("missing_config.json"));
+        assert_eq!(
+            missing.map_or_else(|error| error.code(), |_| "ok"),
+            "harness_config_unavailable"
+        );
+        let valid = config_json(|_| {});
+        assert_eq!(load_outcome(directory.path(), &valid), "ok");
+        // Trailing whitespace is valid JSON, so only the size decides.
+        let mut at_bound = valid.clone();
+        at_bound.resize(MAX_CONFIG_BYTES, b' ');
+        assert_eq!(load_outcome(directory.path(), &at_bound), "ok");
+        let mut over_bound = valid;
+        over_bound.resize(MAX_CONFIG_BYTES + 1, b' ');
+        assert_eq!(
+            load_outcome(directory.path(), &over_bound),
+            "harness_config_too_large"
+        );
+        for (label, bytes) in [
+            ("malformed", b"{".to_vec()),
+            (
+                "unknown top-level field",
+                config_json(|value| value["shell"] = json!(true)),
+            ),
+            (
+                "unknown limits field",
+                config_json(|value| value["limits"]["retries"] = json!(3)),
+            ),
+            (
+                "unknown route field",
+                config_json(|value| value["harnesses"][0]["shell"] = json!("cmd")),
+            ),
+        ] {
+            assert_eq!(
+                load_outcome(directory.path(), &bytes),
+                "harness_invalid_config",
+                "{label}"
+            );
+        }
+        let invalid_route = config_json(|value| value["harnesses"][0]["protocol"] = json!("acp"));
+        assert_eq!(
+            load_outcome(directory.path(), &invalid_route),
+            "harness_invalid_route"
+        );
+    }
+
+    #[test]
+    fn relative_route_paths_resolve_against_the_config_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_directory = directory.path().join("private_config");
+        std::fs::create_dir(&config_directory).unwrap();
+        let absolute_executable = directory.path().join("claude.exe");
+        let bytes = config_json(|value| {
+            value["harnesses"][0]["executable"] = json!("codex.exe");
+            value["harnesses"][0]["working_directory"] = json!("workspace");
+            let mut claude = value["harnesses"][0].clone();
+            claude["harness"] = json!("claude");
+            claude["protocol"] = json!("claude_stream_json");
+            claude["executable"] = json!(absolute_executable);
+            claude["working_directory"] = json!(directory.path());
+            value["harnesses"].as_array_mut().unwrap().push(claude);
+        });
+        let path = config_directory.join("harness_config.json");
+        std::fs::write(&path, &bytes).unwrap();
+        // Resolution uses the file's directory, never the caller's
+        // current directory.
+        let (loaded, digest) = Config::snapshot(&path).unwrap();
+        let base = config_directory.canonicalize().unwrap();
+        assert_eq!(loaded.harnesses[0].executable, base.join("codex.exe"));
+        assert_eq!(
+            loaded.harnesses[0].working_directory,
+            base.join("workspace")
+        );
+        assert_eq!(loaded.harnesses[1].executable, absolute_executable);
+        assert_eq!(loaded.harnesses[1].working_directory, directory.path());
+        let expected: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(digest, expected);
     }
 
     #[test]
