@@ -142,6 +142,15 @@ fn slot_lines(slots: &[NativeTuiSlot]) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The details pane's slot line for one harness. A reserved slot is not a
+/// running session; an unavailable one has no verified launcher.
+const fn slot_detail(state: NativeTuiSlotState) -> &'static str {
+    match state {
+        NativeTuiSlotState::Reserved => "reserved, not running",
+        NativeTuiSlotState::Unavailable => "unavailable, no verified launcher",
+    }
+}
+
 fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &State) {
     let body = if area.width >= WIDE_LAYOUT {
         Layout::default()
@@ -338,7 +347,7 @@ fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &
     };
     let details = match model.agents.get(selected) {
         Some(agent) => format!(
-            "{} / version {}\nLauncher: {}\nAuth: {} | Inference: {}\nAdapter: {}\nRoute: {}\nCode: {}\nNative attach: disabled\nReserved is not running.",
+            "{} / version {}\nLauncher: {}\nAuth: {} | Inference: {}\nAdapter: {}\nRoute: {}\nCode: {}\nNative attach: disabled\nNative TUI slot: {}",
             safe_text(&agent.name),
             safe_text(&agent.version),
             safe_text(&agent.launcher_state),
@@ -346,7 +355,12 @@ fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &
             safe_text(&agent.inference_state),
             agent.adapter.summary(),
             safe_text(&agent.route),
-            safe_text(&agent.code)
+            safe_text(&agent.code),
+            model
+                .native_tui_slots
+                .iter()
+                .find(|slot| slot.agent == agent.adapter.harness)
+                .map_or("-", |slot| slot_detail(slot.state))
         ),
         None => "No verified agent observation supplied.".to_string(),
     };

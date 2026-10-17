@@ -290,6 +290,51 @@ mod tests {
     }
 
     #[test]
+    fn details_state_the_selected_harness_slot_not_a_fixed_reserved_line() {
+        // Regression: every harness's details said "Reserved is not running."
+        // even when its slot was unavailable for lack of a verified launcher.
+        let mut report = report();
+        report.agents.truncate(AgentKind::all().len() - 1);
+        report.agents[1].launcher_state = ProbeState::Unavailable;
+        let model = DashboardModel::from_report(&report);
+        let context = Context::default();
+        // Claude is verified, Codex unavailable, and DSH has no observation.
+        for (selected, expected, absent) in [
+            (0, "reserved, not running", "unavailable"),
+            (1, "unavailable, no verified", "reserved, not running"),
+            (
+                AgentKind::all().len() - 1,
+                "unavailable, no verified",
+                "reserved, not running",
+            ),
+        ] {
+            let state = State {
+                tab: Tab::Harnesses,
+                selected_agent: selected,
+                ..State::default()
+            };
+            for width in [70u16, 100] {
+                let rendered = snapshot(&model, &state, &context, width, 28).unwrap();
+                let details = rendered
+                    .lines()
+                    .skip_while(|line| !line.contains("Selected harness"))
+                    .take_while(|line| !line.contains("Native CLI TUI surfaces"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    details.contains(&format!("Native TUI slot: {expected}")),
+                    "width {width}, agent {selected}: {details}"
+                );
+                assert!(
+                    !details.contains(&format!("Native TUI slot: {absent}")),
+                    "width {width}, agent {selected}: {details}"
+                );
+                assert!(!details.contains("Reserved is not running"));
+            }
+        }
+    }
+
+    #[test]
     fn standalone_views_retain_source_without_inventing_workspace_metadata() {
         let model = DashboardModel::from_report(&report());
         for source in ["saved_report", "local_probe"] {

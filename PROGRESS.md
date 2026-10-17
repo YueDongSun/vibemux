@@ -4364,3 +4364,23 @@ scratch directory outside the repository.
 **Remaining**
 - At 80x24 the overview's diagnostics panel shows the gateway and A2A lines but not telemetry.
 - The details pane says `Reserved is not running.` even when the harness's slot is `unavailable`.
+
+### 2026-10-17 - Dashboard details state each harness's own native-TUI slot
+
+**Scope**
+- The ADR 041 dashboard's Harnesses details pane (`dashboard/render.rs`). No model or snapshot text change.
+
+**Implemented**
+- Bug: the details pane ended with `Reserved is not running.` for every harness. That included harnesses whose slot is `unavailable` because no launcher was verified, so a missing or failed CLI read as reserved.
+- The line now reads that harness's own slot: `Native TUI slot: reserved, not running` or `Native TUI slot: unavailable, no verified launcher`. It finds the slot by harness kind, not by list position.
+- An exhaustive match maps each slot state to its text, so a new state must be given its own text.
+- New test `details_state_the_selected_harness_slot_not_a_fixed_reserved_line` covers three harnesses at 70 and 100 columns: a verified one, an unavailable one, and one with no observation.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 127 passed (1 ignored generator); cli 6, palette_parity 2, and supervisor_ui 10 passed.
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- Mutation check, restored afterwards: printing the reserved text for an unavailable slot failed the new test at 70 columns.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- At 80x24 the overview's diagnostics panel still omits the telemetry line.
