@@ -158,7 +158,10 @@ does not authorize a harness to edit files or execute arbitrary tools.
 code change is correct or authorize canonical Task completion, commits, or
 publication. `unverified` means no trustworthy terminal event was observed.
 `failed` includes malformed input, inconsistent evidence, native failure,
-deadline expiry, and cleanup failure.
+deadline expiry, and cleanup failure. A terminal event stands only when the
+vendor process then exits with code 0 and is not force-terminated; otherwise
+the request is `failed` with `harness_process_failed`, as in the daemon. An
+exchange error, such as a deadline or a protocol violation, keeps its own code.
 
 An optional, real-model example asserts a fixed reply without printing content:
 

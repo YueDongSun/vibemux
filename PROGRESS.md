@@ -4717,3 +4717,26 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 34 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Six mutations each failed a new test rather than compilation: requiring a route-named startup variable, forwarding an unset startup name as empty, forwarding `PATH`, skipping an unset route variable, a case-sensitive `.exe` match, and accepting a path with no extension.
 
 **Remaining:** The plugin supervisor's launch contract holds only Unicode values, so the native path still refuses non-Unicode values that the daemon would pass through. The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native completion fold is pinned to the daemon's outcome rule
+
+**Scope:** The completion fold in `vibemux_harness_native` native code and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- At the end of a native exchange, the runner turns three things into the completion's status and code: the exchange's error, the protocol's terminal status, and the vendor's exit. This fold was inline and had no direct test. No test reached the `harness_process_failed` branch, where a vendor reports a terminal event but then exits unclean.
+- The fold moved unchanged into a pure `settle` function.
+- A parity test runs it against the shared engine's `decide_outcome`, the rule the daemon uses. It covers all 105 combinations of three exchange results, five terminal states, and seven exits, and the native status must match the daemon's outcome in every case.
+- The codes match too, with two documented differences:
+  - The native path uses its own names, `harness_eof_without_terminal` and `harness_process_failed`.
+  - A vendor-reported failure carries its `failed` status without a code. The plugin's wire answer still supplies `harness_vendor_failed`.
+- The guide now says that a terminal event stands only after a clean vendor exit, and that an exchange error keeps its own code. A test checks the guide for this.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 35 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Five mutations each failed the parity test:
+- letting an unclean exit outrank an exchange error;
+- ignoring forced termination;
+- misspelling the cancellation code;
+- turning end of input without a terminal into `failed`;
+- coding vendor failures.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

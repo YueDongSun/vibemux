@@ -12,7 +12,7 @@ use crate::{
     config::{Limits, Route},
     contract::{Completion, Record, Request, SCHEMA_VERSION, Status},
     json_lines::Reader,
-    process::Process,
+    process::{Exit, Process},
     session::Session,
 };
 
@@ -146,21 +146,41 @@ pub async fn run(
     completion.exit_code = exit.code;
     completion.stderr_bytes = exit.stderr_bytes;
     completion.forced_termination = exit.forced;
-    completion.status = session.status().unwrap_or(Status::Unverified);
-    if let Err(error) = exchange {
-        completion.status = if error.code() == "harness_cancelled" {
+    let (status, error_code) = settle(
+        exchange.err().map(|error| error.code()),
+        session.status(),
+        &exit,
+    );
+    completion.status = status;
+    completion.error_code = error_code.map(str::to_string);
+    Ok(completion)
+}
+
+/// Folds the exchange's error, the protocol's terminal status, and the
+/// vendor's exit into the completion's status and code. It follows the
+/// daemon's `decide_outcome` rule: an exchange error decides first, then an
+/// unclean exit, then the protocol's evidence. Only the codes are native,
+/// and a vendor-reported failure carries its status without one.
+fn settle(
+    exchange_error: Option<&'static str>,
+    terminal: Option<Status>,
+    exit: &Exit,
+) -> (Status, Option<&'static str>) {
+    if let Some(code) = exchange_error {
+        let status = if code == "harness_cancelled" {
             Status::Cancelled
         } else {
             Status::Failed
         };
-        completion.error_code = Some(error.code().to_string());
-    } else if !exit.success || exit.forced {
-        completion.status = Status::Failed;
-        completion.error_code = Some("harness_process_failed".to_string());
-    } else if completion.status == Status::Unverified {
-        completion.error_code = Some("harness_eof_without_terminal".to_string());
+        return (status, Some(code));
     }
-    Ok(completion)
+    if !exit.success || exit.forced {
+        return (Status::Failed, Some("harness_process_failed"));
+    }
+    match terminal {
+        Some(status) => (status, None),
+        None => (Status::Unverified, Some("harness_eof_without_terminal")),
+    }
 }
 
 async fn write_json(
@@ -206,5 +226,99 @@ async fn wait_cancel(cancellation: &mut watch::Receiver<bool>) {
         if *cancellation.borrow() || cancellation.changed().await.is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vibemux_harness::dispatch::{
+        AttemptOutcome, DispatchError, ProcessExit, SessionTerminal, outcome::decide_outcome,
+    };
+
+    use super::{Exit, Status, settle};
+
+    fn status_of(outcome: AttemptOutcome) -> Status {
+        match outcome {
+            AttemptOutcome::Completed => Status::Completed,
+            AttemptOutcome::Failed => Status::Failed,
+            AttemptOutcome::Unverified => Status::Unverified,
+            AttemptOutcome::Cancelled => Status::Cancelled,
+            AttemptOutcome::Probed => Status::Probed,
+        }
+    }
+
+    fn status_from(terminal: SessionTerminal) -> Status {
+        match terminal {
+            SessionTerminal::Completed => Status::Completed,
+            SessionTerminal::Failed => Status::Failed,
+            SessionTerminal::Cancelled => Status::Cancelled,
+            SessionTerminal::Probed => Status::Probed,
+        }
+    }
+
+    #[test]
+    fn the_completion_fold_follows_the_daemon_outcome_rule() {
+        let exchanges = [
+            (None, Ok(())),
+            (Some("harness_cancelled"), Err(DispatchError::Cancelled)),
+            (
+                Some("harness_deadline_exceeded"),
+                Err(DispatchError::DeadlineExceeded),
+            ),
+        ];
+        let terminals = [
+            None,
+            Some(SessionTerminal::Completed),
+            Some(SessionTerminal::Failed),
+            Some(SessionTerminal::Cancelled),
+            Some(SessionTerminal::Probed),
+        ];
+        // A killed process may still report a code, so every pairing is real.
+        let exits = [
+            (Some(0), false),
+            (Some(1), false),
+            (Some(-1), false),
+            (None, false),
+            (Some(0), true),
+            (Some(1), true),
+            (None, true),
+        ];
+        let mut cases = 0;
+        for (native_error, shared_exchange) in exchanges {
+            for terminal in terminals {
+                for (code, forced) in exits {
+                    let exit = Exit {
+                        code,
+                        success: code == Some(0),
+                        forced,
+                        stderr_bytes: 0,
+                    };
+                    let native = settle(native_error, terminal.map(status_from), &exit);
+                    let shared = decide_outcome(
+                        shared_exchange,
+                        terminal,
+                        ProcessExit {
+                            exit_code: code,
+                            forced_termination: forced,
+                        },
+                    );
+                    let expected_code = match shared.error_code {
+                        None | Some(DispatchError::TurnFailed) => None,
+                        Some(DispatchError::ProcessFailed) => Some("harness_process_failed"),
+                        Some(DispatchError::EofWithoutTerminal) => {
+                            Some("harness_eof_without_terminal")
+                        }
+                        Some(_) => native_error,
+                    };
+                    let case = (native_error, terminal, code, forced);
+                    assert_eq!(native.0, status_of(shared.outcome), "{case:?}");
+                    assert_eq!(native.1, expected_code, "{case:?}");
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 105);
+        let guide = include_str!("../../../docs/guides/harness_core_guide.md");
+        assert!(guide.contains("`failed` with `harness_process_failed`"));
     }
 }
