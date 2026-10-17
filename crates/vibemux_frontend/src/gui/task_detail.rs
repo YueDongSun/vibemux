@@ -2,6 +2,7 @@
 //! Reusable overview/activity/artifact/terminal task detail view.
 
 use eframe::egui::{self, RichText, Ui};
+use vibemux_harness::terminal_text::display_line;
 
 use crate::supervisor_model::{
     RunView, SupervisorAction, SupervisorSnapshot, TaskView, TerminalCandidate,
@@ -419,9 +420,9 @@ fn terminal_candidate(
                     .strong()
                     .color(colors.txt),
             );
-            detail_row(ui, colors, "Plugin", &candidate.plugin_id);
-            detail_row(ui, colors, "Pane", &candidate.pane_id);
-            detail_row(ui, colors, "Instance", &candidate.instance_id);
+            for (label, value) in candidate_rows(candidate) {
+                detail_row(ui, colors, label, &value);
+            }
             let link = design::action_button(
                 ui,
                 colors,
@@ -496,6 +497,18 @@ fn section_label(ui: &mut Ui, colors: &C, label: &str) {
     ui.add_space(5.0);
 }
 
+/// The identifier rows of a terminal candidate card, as display lines. A
+/// terminal plugin's instance ID only has to pass the protocol's control
+/// character check, so the card draws a mapped copy; the link request still
+/// sends the identifiers exactly as reported.
+fn candidate_rows(candidate: &TerminalCandidate) -> [(&'static str, String); 3] {
+    [
+        ("Plugin", display_line(&candidate.plugin_id)),
+        ("Pane", display_line(&candidate.pane_id)),
+        ("Instance", display_line(&candidate.instance_id)),
+    ]
+}
+
 /// Linking needs the exact reported candidate, so every identifier must be
 /// present; one that is empty or only whitespace counts as missing.
 fn candidate_is_linkable(candidate: &TerminalCandidate) -> bool {
@@ -528,5 +541,25 @@ mod tests {
         ] {
             assert!(!candidate_is_linkable(&missing), "{missing:?}");
         }
+    }
+
+    #[test]
+    fn candidate_rows_draw_a_display_copy_of_each_identifier() {
+        let candidate = TerminalCandidate {
+            plugin_id: "wezterm_observer".to_string(),
+            pane_id: "3".to_string(),
+            instance_id: "gui\u{2028}1\u{202e}fdp.exe".to_string(),
+            ..TerminalCandidate::default()
+        };
+        assert_eq!(
+            candidate_rows(&candidate),
+            [
+                ("Plugin", "wezterm_observer".to_string()),
+                ("Pane", "3".to_string()),
+                ("Instance", "gui 1 fdp.exe".to_string()),
+            ]
+        );
+        // The candidate a link request copies from is left as reported.
+        assert_eq!(candidate.instance_id, "gui\u{2028}1\u{202e}fdp.exe");
     }
 }

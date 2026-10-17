@@ -28,9 +28,23 @@ pub fn display_character(character: char) -> char {
     }
 }
 
+/// `text` as one display line: every character through `display_character`,
+/// with nothing removed, so the line keeps its length in characters.
+#[must_use]
+pub fn display_line(text: &str) -> String {
+    text.chars().map(display_character).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{display_character, is_terminal_unsafe};
+    use super::{display_character, display_line, is_terminal_unsafe};
+
+    #[test]
+    fn a_display_line_maps_every_character() {
+        assert_eq!(display_line("a\nb\u{202e}c\u{2066}中"), "a b c 中");
+        assert_eq!(display_line(""), "");
+        assert_eq!(display_line("plain text"), "plain text");
+    }
 
     #[test]
     fn a_display_line_shows_whitespace_and_unsafe_characters_as_spaces() {

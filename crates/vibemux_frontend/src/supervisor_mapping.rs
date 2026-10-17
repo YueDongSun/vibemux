@@ -1,18 +1,15 @@
 //! Explicit conversion from sanitized control responses to display-only state.
+//!
+//! The daemon's free text becomes one display line here. The domain checks a
+//! task title, harness, role, branch, or worktree path only for blankness and
+//! size, and an artifact media type only for control characters, so a line
+//! break, tab, or bidirectional control would otherwise split a row or reorder
+//! what follows it in every view that shows the task.
 
 use crate::supervisor_model::*;
-use vibemux_harness::terminal_text::display_character;
+use vibemux_harness::terminal_text::display_line;
 use vibemux_types::frontend::{FrontendTaskDetail, FrontendTaskSummary};
 use vibemuxd::terminal_observer::{TerminalBinding, TerminalSnapshot};
-
-/// One display line of the daemon's free text. The domain checks a task title,
-/// harness, role, branch, or worktree path only for blankness and size, and an
-/// artifact media type only for control characters, so a line break, tab, or
-/// bidirectional control would otherwise split a row or reorder what follows
-/// it in every view that shows the task.
-fn display_line(value: &str) -> String {
-    value.chars().map(display_character).collect()
-}
 
 pub fn task_summary(source: FrontendTaskSummary) -> TaskView {
     TaskView {
