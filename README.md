@@ -385,7 +385,8 @@ never contact a daemon or model. Example:
 `cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
 Scenes are `chat`, `drawer`, `task`, `task_terminal`, `disconnected`, `welcome`,
-and `collapsed`.
+and `collapsed`. An unknown scene or theme, a size or scale that is not a number,
+or an extra argument exits with code 4 instead of drawing a different scene.
 The `task` scenes capture the actual independent native viewport.
 
 The TUI ships six themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), `light` (dark variants tuned for white or very light terminal backgrounds), and the brand themes `nord` and `gruvbox` (xterm-256 indices resolved from the brand palettes, so they render the same hues on WezTerm and tmux without a truecolor dependency). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.

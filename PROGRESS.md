@@ -5076,3 +5076,31 @@ The file was restored and compared byte for byte.
 - The dispatcher still passes the config path to the plugin as lossy text, because the plugin manifest's entry point is a list of strings. A config under a non-Unicode path therefore fails closed when the plugin reads it, rather than being misread. Changing that needs a plugin wire decision.
 - `vibemux_frontend_preview`, the fixture binaries, and the `live_codex_smoke` example still read `std::env::args`.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Screenshot preview refuses unknown scenes and themes
+
+**Scope:** the command line of `vibemux_frontend_preview`, the screenshot-only binary built with `--features gui_screenshot`, plus one README sentence. The scenes, the defaults, the size and scale clamps, and the capture path are unchanged.
+
+**Implemented:**
+- An unknown scene used to fall back silently to `chat`, and an unknown theme to `claude_light`. A size or scale that was not a number fell back to its default. All of these exited 0. A typo, or one of the `switcher` and `shortcuts` scenes that plan 030 describes but the binary does not draw, therefore saved a screenshot of a different scene under the requested name.
+- These cases now print a message naming the expected values and exit 4, before any window opens. So do a non-finite scale (`NaN`, `inf`) and a seventh argument.
+- The binary read its arguments with `std::env::args`, which panics on an argument that is not valid Unicode. It now parses `std::env::args_os` in a pure `parse_arguments` function, and the screenshot path is kept as an operating-system path.
+- The README now states the refusal.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 142 lib (1 ignored), 6 preview bin (new), 4 DSH TUI bin, 2 diagnostic TUI bin, 6 cli, 2 palette parity, 10 supervisor UI.
+
+The built binary was run with four refused argument lists: the `switcher` scene, the `solarized` theme, a width of `wide`, and a scene holding a lone UTF-16 surrogate. Each exited 4 with its message. No window was opened, and no screenshot capture was run for this change.
+
+Five mutations were each caught, in two rounds so that no test masked another:
+- Falling back to `chat` for an unknown scene failed the unknown scene or theme test.
+- Falling back to `claude_light` for an unknown theme failed the same test.
+- Accepting a non-finite scale failed the malformed-argument test.
+- Allowing a seventh argument failed the same test.
+- Converting the screenshot path through lossy text failed the path test.
+
+The file was restored and compared byte for byte after each round.
+
+**Remaining:**
+- The preview's size clamps (720-3840 by 520-2160) are still separate from `WindowSize`'s 800-3840 by 600-2160. Aligning them is a choice about what the preview may show.
+- The fixture binaries and the `live_codex_smoke` example still read `std::env::args`.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
