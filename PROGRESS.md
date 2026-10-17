@@ -5104,3 +5104,31 @@ The file was restored and compared byte for byte after each round.
 - The preview's size clamps (720-3840 by 520-2160) are still separate from `WindowSize`'s 800-3840 by 600-2160. Aligning them is a choice about what the preview may show.
 - The fixture binaries and the `live_codex_smoke` example still read `std::env::args`.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Task window titles are one bounded line
+
+**Scope:** the operating-system title of the GUI's detached task windows, in `vibemux_frontend` (`gui/task_labels.rs`, `gui/supervisor_app.rs`). The task title shown inside egui is unchanged.
+
+An audit of the remaining frontend entry points found nothing else to change:
+- `vibemux_dashboard` already parses `std::env::args_os`.
+- `vibemux_frontend_dump` takes no arguments.
+- The GUI's use of the default probe port is the documented scope of `VIBEMUX_FRONTEND_PROBE_PORT`, which the README limits to the TUI JSON and dump entry points.
+- The welcome greeting and workspace hint are already tested.
+
+**Implemented:**
+- The GUI used to build a task window's title from the daemon-supplied task title with no change and no length limit. The operating system draws that title outside egui, in the title bar, the taskbar, and the window switcher. There a line break or a bidirectional override in a task title is honoured. For example, U+202E could make a title read as a different name.
+- The new `task_window_title` in `task_labels.rs` owns that title. It maps every character through the shared `display_character` rule, so whitespace and terminal-unsafe characters become spaces. It cuts the title at 80 characters with an ellipsis and appends ` · VibeMux`.
+- A title that is blank after mapping, such as one made only of bidirectional marks, falls back to `Untitled task`. A task the snapshot does not yet hold is titled `Task observation`, as before.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 143 lib (1 new, 1 ignored), 4 DSH TUI bin, 6 preview bin, 2 diagnostic TUI bin, 6 cli, 2 palette parity, 10 supervisor UI.
+
+Three mutations were each caught by the new test, one per round:
+- Dropping the `display_character` mapping.
+- Dropping the ellipsis.
+- Skipping the blank-title fallback after mapping.
+
+The file was restored and compared byte for byte after each round. The `supervisor_app.rs` call site was checked by review only. No GUI window was opened, so no title was observed in a real title bar.
+
+**Remaining:**
+- Task titles inside egui are still drawn verbatim, so a line break in a title still makes a multi-line row there. How egui draws bidirectional controls was not examined.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.

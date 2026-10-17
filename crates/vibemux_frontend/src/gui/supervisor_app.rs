@@ -419,17 +419,15 @@ impl SupervisorApp {
         let colors = super::pal(&palette_for(theme));
         for task_id in open_tasks {
             let title = self.with_snapshot(|snapshot| {
-                snapshot
-                    .tasks
-                    .iter()
-                    .find(|task| task.task_id == task_id)
-                    .map_or_else(
-                        || "Task observation".to_owned(),
-                        |task| task_labels::task_title(&task.title).to_owned(),
-                    )
+                task_labels::task_window_title(
+                    snapshot
+                        .tasks
+                        .iter()
+                        .find(|task| task.task_id == task_id)
+                        .map(|task| task.title.as_str()),
+                )
             });
             let viewport_id = chat::task_viewport_id(&task_id);
-            let title = format!("{title} · VibeMux");
             let viewport = ViewportBuilder::default()
                 .with_title(title)
                 .with_inner_size(TASK_WINDOW_SIZE)
