@@ -4384,3 +4384,29 @@ scratch directory outside the repository.
 
 **Remaining**
 - At 80x24 the overview's diagnostics panel still omits the telemetry line.
+
+### 2026-10-17 - Dashboard overview keeps every diagnostics line and grows its agent table
+
+**Scope**
+- The ADR 041 dashboard's stacked overview, below 110 columns (`dashboard/render.rs`). The side-by-side overview is unchanged.
+
+**Implemented**
+- Bug: the stacked overview gave the agent table a fixed eight rows (five agents) and the rest to diagnostics.
+  - At 80x24 the diagnostics panel had two rows of text, so the telemetry line was cut.
+  - On taller terminals the table still showed five agents above blank diagnostics rows.
+- New split:
+  - Diagnostics get the rows their word-wrapped lines need.
+  - The table keeps at least its header and two agents, then takes the rest up to its full height.
+  - Leftover rows go back to diagnostics.
+- At 80x24 the table now shows four agents, titled `Agent probes 1-4/11`, plus all three diagnostics lines. At 100x28 it shows eight. At 100x40 it shows all eleven, with no range title.
+- `wrapped_rows` estimates greedy word wrapping, splitting a word wider than a row. A unit test pins it.
+- New test `overview_keeps_every_diagnostics_line_and_grows_the_table_with_height` covers 80x24, 60x24, 45x30, 100x28, and 100x40. The narrow-terminal test now expects the four-row window.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 129 passed (1 ignored generator); cli 6, palette_parity 2, and supervisor_ui 10 passed.
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- Mutation check, restored afterwards: restoring the fixed eight-row split failed the new test with `80x24 lacks Telemetry:`.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Below about 35 columns, the wrapped diagnostics lines can still exceed the space the table leaves.

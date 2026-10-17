@@ -115,7 +115,7 @@ mod tests {
         let context = Context::default();
         let first = snapshot(&model, &State::default(), &context, 80, 24).unwrap();
         assert!(
-            first.contains(&format!("Agent probes 1-5/{total}")),
+            first.contains(&format!("Agent probes 1-4/{total}")),
             "{first}"
         );
         assert!(first.contains("> Claude"));
@@ -127,7 +127,7 @@ mod tests {
         };
         let scrolled = snapshot(&model, &last, &context, 80, 24).unwrap();
         assert!(
-            scrolled.contains(&format!("Agent probes {}-{total}/{total}", total - 4)),
+            scrolled.contains(&format!("Agent probes {}-{total}/{total}", total - 3)),
             "{scrolled}"
         );
         assert!(scrolled.contains("> DSH"));
@@ -286,6 +286,45 @@ mod tests {
             for label in ["execute", "probe"] {
                 assert!(rendered.contains(label), "width {width} lacks {label}");
             }
+        }
+    }
+
+    #[test]
+    fn overview_keeps_every_diagnostics_line_and_grows_the_table_with_height() {
+        // Regression: a fixed eight-row table cut the telemetry line at 80x24
+        // and kept five agents on screen however tall the terminal was.
+        let model = DashboardModel::from_report(&report());
+        let total = AgentKind::all().len();
+        let context = Context::default();
+        for (width, height, title) in [
+            (80u16, 24u16, format!("Agent probes 1-4/{total}")),
+            (60, 24, format!("Agent probes 1-4/{total}")),
+            (45, 30, format!("Agent probes 1-5/{total}")),
+            (100, 28, format!("Agent probes 1-8/{total}")),
+            (100, 40, "Agent probes─".to_string()),
+        ] {
+            let rendered = snapshot(&model, &State::default(), &context, width, height).unwrap();
+            for label in ["Gateway:", "A2A:", "Telemetry:"] {
+                assert!(
+                    rendered.contains(label),
+                    "{width}x{height} lacks {label}\n{rendered}"
+                );
+            }
+            assert!(
+                rendered.contains(&title),
+                "{width}x{height} lacks {title}\n{rendered}"
+            );
+        }
+        let tall = snapshot(&model, &State::default(), &context, 100, 40).unwrap();
+        for agent in AgentKind::all() {
+            let name = agent.display_name();
+            assert!(
+                tall.lines().any(|line| {
+                    line.starts_with(&format!("│  {name} "))
+                        || line.starts_with(&format!("│> {name} "))
+                }),
+                "{name} hidden at 100x40"
+            );
         }
     }
 

@@ -24,6 +24,8 @@ const WORKTREE_PANEL_HEIGHT: u16 = 16;
 /// Agent table rows that hold no agent: the top border, the header, and the
 /// bottom border.
 const AGENT_TABLE_CHROME_ROWS: u16 = 3;
+/// The stacked overview's smallest agent table: its chrome plus two agents.
+const AGENT_TABLE_MIN_HEIGHT: u16 = AGENT_TABLE_CHROME_ROWS + 2;
 
 pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
     render_with_state(frame, model, &State::default(), &Context::default());
@@ -152,31 +154,73 @@ const fn slot_detail(state: NativeTuiSlotState) -> &'static str {
 }
 
 fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &State) {
+    let diagnostics = [
+        format!("Gateway: {}", safe_text(&model.gateway_summary)),
+        format!("A2A: {}", safe_text(&model.a2a_summary)),
+        format!("Telemetry: {}", safe_text(&model.telemetry_summary)),
+    ];
     let body = if area.width >= WIDE_LAYOUT {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(area)
     } else {
+        // A fixed eight-row table cut the telemetry line at 80x24 and left
+        // taller terminals showing five agents above blank diagnostics rows.
+        // Diagnostics get the rows their wrapped lines need, the table keeps
+        // a header and two agents at the least, takes the rest up to its full
+        // height, and any leftover goes back to diagnostics.
+        let interior = usize::from(area.width.saturating_sub(2));
+        let diagnostics_height = diagnostics
+            .iter()
+            .map(|line| wrapped_rows(line, interior))
+            .sum::<usize>()
+            .saturating_add(2);
+        let table_full = u16::try_from(model.agents.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(AGENT_TABLE_CHROME_ROWS);
+        let table_height = area
+            .height
+            .saturating_sub(u16::try_from(diagnostics_height).unwrap_or(u16::MAX))
+            .max(AGENT_TABLE_MIN_HEIGHT)
+            .min(table_full);
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(8), Constraint::Min(1)])
+            .constraints([Constraint::Length(table_height), Constraint::Min(0)])
             .split(area)
     };
     agent_table(frame, body[0], model, state.selected_agent);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(format!("Gateway: {}", safe_text(&model.gateway_summary))),
-            Line::from(format!("A2A: {}", safe_text(&model.a2a_summary))),
-            Line::from(format!(
-                "Telemetry: {}",
-                safe_text(&model.telemetry_summary)
-            )),
-        ])
-        .wrap(Wrap { trim: true })
-        .block(Block::default().title("Diagnostics").borders(Borders::ALL)),
+        Paragraph::new(diagnostics.map(Line::from).to_vec())
+            .wrap(Wrap { trim: true })
+            .block(Block::default().title("Diagnostics").borders(Borders::ALL)),
         body[1],
     );
+}
+
+/// Rows `text` takes when greedily word-wrapped to `width` cells, the way
+/// `Wrap { trim: true }` lays out a line; a word wider than a row is split
+/// across whole rows.
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let mut rows = 1;
+    let mut used = 0;
+    for word in text.split_whitespace() {
+        let length = word.chars().count();
+        if used > 0 && used + 1 + length <= width {
+            used += 1 + length;
+            continue;
+        }
+        if used > 0 {
+            rows += 1;
+        }
+        let extra_rows = length.saturating_sub(1) / width;
+        rows += extra_rows;
+        used = length - extra_rows * width;
+    }
+    rows
 }
 
 /// The agent rows a bordered table of `height` rows shows around the
@@ -505,5 +549,22 @@ mod tests {
         assert_eq!(agent_window(3, 2, 8), 0..3);
         assert_eq!(agent_window(11, 4, 3), 0..0);
         assert_eq!(agent_window(0, 0, 8), 0..0);
+    }
+
+    #[test]
+    fn wrapped_rows_counts_greedy_word_wrapping() {
+        assert_eq!(wrapped_rows("Telemetry: telemetry unavailable", 78), 1);
+        // "A2A: verified correlation=true" fills 30 of 43 cells.
+        assert_eq!(
+            wrapped_rows("A2A: verified correlation=true listener_closed=true", 43),
+            2
+        );
+        assert_eq!(wrapped_rows("exactly ten", 11), 1);
+        assert_eq!(wrapped_rows("exactly ten", 10), 2);
+        // A word wider than a row fills whole rows: 4 + 4 + 2 cells.
+        assert_eq!(wrapped_rows("abcdefghij", 4), 3);
+        assert_eq!(wrapped_rows("ab abcdefghij", 4), 4);
+        assert_eq!(wrapped_rows("", 10), 1);
+        assert_eq!(wrapped_rows("anything", 0), 0);
     }
 }
