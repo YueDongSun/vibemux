@@ -4602,3 +4602,17 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (23 unit, 18 normalization, 21 process dispatch). Six mutations each failed the new test: dropping the prompt `trim`, refusing a prompt of exactly the bound, dropping the nil UUID check, accepting any non-zero schema version, counting characters instead of bytes, and changing the guide's bound to 32 KiB.
 
 **Remaining:** `Config::catalog()` has no direct test of its per-protocol `structured_probe` and `native_execution` flags or of the fields it omits; the CLI output tests build their catalog JSON by hand. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native catalog output is pinned and its actions documented
+
+**Scope:** `vibemux_harness_native` catalog tests, a `vibemuxctl` output test, the harness core guide, and `docs/protocol_boundaries.md`. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- `Config::catalog()` had no direct test. The `vibemuxctl` output tests build catalog JSON by hand, so nothing checked the real per-protocol `structured_probe` and `native_execution` flags, that disabled routes stay listed, or that a route's executable, working directory, arguments, environment names, and model stay out of the output.
+- A unit test builds one route per native protocol, each with private paths, arguments, environment names, and a model, and compares every catalog row with an exact expected object. `codex_exec` executes without a probe; `codex_app_server`, `claude_stream_json`, and `acp` both probe and execute; the replay-only OpenCode, Copilot, and Grok JSON protocols do neither. The ACP row records today's native execution, which stays an open owner decision.
+- The guide and `docs/protocol_boundaries.md` listed the text `Actions` column values as `disabled`, `probe`, `execute`, or `none`, but a route that can do both shows `execute,probe`. Both now list all five values, and the `vibemuxctl` output test asserts that each document names each value. The guide also states which fields the catalog reports and which route settings it never includes.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 24 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Seven mutations each failed a test: gating `native_execution` on the shared engine's execution support, reporting a probe for every engine protocol, adding the executable to a row, dropping disabled routes, reporting `enabled` as `allow_execution`, and removing `execute,probe` from either document.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

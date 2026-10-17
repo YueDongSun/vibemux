@@ -448,6 +448,15 @@ mod tests {
         let header = text.lines().nth(1).unwrap();
         let claude = text.lines().nth(2).unwrap();
         assert_eq!(header.find("Actions"), claude.find("execute,probe"));
+        // Both guides list every value the column can show.
+        for doc in [
+            include_str!("../../../docs/guides/harness_core_guide.md"),
+            include_str!("../../../docs/protocol_boundaries.md"),
+        ] {
+            for value in ["disabled", "none", "probe", "execute", "execute,probe"] {
+                assert!(doc.contains(&format!("`{value}`")), "{value}");
+            }
+        }
     }
     #[test]
     fn harness_report_text_tallies_every_kind_including_truncated_rows() {

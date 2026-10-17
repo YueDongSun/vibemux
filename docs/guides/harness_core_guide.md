@@ -34,9 +34,15 @@ cargo test --locked -p vibemux_harness_native --all-features
 
 Replay reads records without launching a harness or contacting a model.
 Its successful exit means the stream was read, not that a task completed.
+`catalog` lists every configured route, enabled or not, with its `harness`,
+`protocol`, `enabled`, and `allow_execution` settings and two build facts:
+`structured_probe` (the protocol has an initialize-only handshake) and
+`native_execution` (a shared engine session drives the protocol). It never
+includes a route's executable, working directory, arguments, environment
+names, or model.
 With `vibemuxctl --format text`, `catalog` adds an `Actions` column (`disabled`,
-`probe`, `execute`, or `none`) and reports add a per-kind record tally. Both
-are derived from the JSON report, which stays the contract.
+`none`, `probe`, `execute`, or `execute,probe`) and reports add a per-kind
+record tally. Both are derived from the JSON report, which stays the contract.
 
 The tests use a real local synthetic executable for all five routes. They cover
 native stdin/stdout, Protobuf transport, permission denial, unknown records,

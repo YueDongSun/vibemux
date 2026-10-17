@@ -629,4 +629,61 @@ mod tests {
             "harness_invalid_route"
         );
     }
+
+    /// The catalog lists every route, enabled or not, with its settings and
+    /// two build facts from the shared engine, and nothing an operator wrote
+    /// about where or how the vendor runs. The ACP row records today's
+    /// native execution; whether ACP should follow the daemon's probe-only
+    /// rule is an open decision.
+    #[test]
+    fn the_catalog_states_capabilities_and_no_route_content() {
+        // harness, protocol, structured_probe, native_execution
+        let rows = [
+            (Harness::Codex, Protocol::Codex, false, true),
+            (Harness::Codex, Protocol::Appserver, true, true),
+            (Harness::Claude, Protocol::Claude, true, true),
+            (Harness::Opencode, Protocol::Acp, true, true),
+            (Harness::Opencode, Protocol::Opencode, false, false),
+            (Harness::Copilot, Protocol::Copilot, false, false),
+            (Harness::Grok, Protocol::Grok, false, false),
+        ];
+        let mut catalog_config = config(|_| {});
+        catalog_config.harnesses = rows
+            .iter()
+            .enumerate()
+            .map(|(index, &(harness, protocol, ..))| Route {
+                harness,
+                protocol,
+                executable: PathBuf::from("private_dir/private_vendor.exe"),
+                arguments: vec!["--private_argument".to_string()],
+                working_directory: PathBuf::from("private_workspace"),
+                environment_names: vec!["PRIVATE_ENVIRONMENT".to_string()],
+                enabled: index % 2 == 0,
+                allow_execution: index % 3 == 0,
+                model: Some("private_model".to_string()),
+            })
+            .collect();
+        let catalog = catalog_config.catalog();
+        assert!(
+            !catalog.to_string().to_lowercase().contains("private"),
+            "{catalog}"
+        );
+        let routes = catalog["harnesses"].as_array().cloned().unwrap_or_default();
+        assert_eq!(catalog.as_object().map(serde_json::Map::len), Some(2));
+        assert_eq!(catalog["schema_version"], json!(SCHEMA_VERSION));
+        assert_eq!(routes.len(), rows.len());
+        for (index, (route, &(harness, protocol, probe, native))) in
+            routes.iter().zip(&rows).enumerate()
+        {
+            let expected = json!({
+                "harness": harness,
+                "protocol": protocol,
+                "enabled": index % 2 == 0,
+                "allow_execution": index % 3 == 0,
+                "structured_probe": probe,
+                "native_execution": native,
+            });
+            assert_eq!(route, &expected, "{protocol:?}");
+        }
+    }
 }

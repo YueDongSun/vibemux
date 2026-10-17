@@ -24,7 +24,7 @@
 | OpenCode, Copilot, Grok | `acp` | `probe_only` |
 | Qwen, iFlow, TRAE, CodeBuddy, Kimi | none | `terminal_only` |
 
-`probe_only` for ACP means the daemon refuses to execute an ACP turn. No verified per-vendor deny posture exists yet, and OpenCode grants edit and bash by default. `codex_exec` has no initialize-only handshake, so probing Codex needs a `codex_app_server` route. `vibemuxctl --format text harness catalog` adds a per-route `Actions` column: `disabled`, `probe`, `execute`, or `none`. It combines these build facts with the route's `enabled` and `allow_execution` settings, and it is not a readiness check.
+`probe_only` for ACP means the daemon refuses to execute an ACP turn. No verified per-vendor deny posture exists yet, and OpenCode grants edit and bash by default. `codex_exec` has no initialize-only handshake, so probing Codex needs a `codex_app_server` route. `vibemuxctl --format text harness catalog` adds a per-route `Actions` column: `disabled`, `none`, `probe`, `execute`, or `execute,probe`. It combines these build facts with the route's `enabled` and `allow_execution` settings, and it is not a readiness check.
 
 ## Harness protocol error codes
 
