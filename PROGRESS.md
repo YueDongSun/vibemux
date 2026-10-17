@@ -4153,3 +4153,25 @@ scratch directory outside the repository.
 **Remaining**
 - Only the protocol code pairs are pinned by a test. The capability table and the prose can still drift from the code.
 - Other `protocol_boundaries.md` bullets (A2A, plugin, workflow) were not re-audited.
+
+### 2026-10-17 - Keep adapter support in every dashboard agent table width
+
+**Scope**
+- Read-only dashboard rendering (ADR 041). Below 72 columns the agent table switched to `Agent / Launcher / Route` and dropped the `Adapter` column. That happened on the overview in a terminal narrower than 72 columns, and on the Harnesses page at most widths, because the table gets 45% of the width there. No model, probe, or protocol change.
+
+**Implemented**
+- `vibemux_frontend` `dashboard::render::AgentColumns` chooses one of three column sets by table width:
+  - Full (at least 72): every probe column.
+  - Compact (50 to 71): `Agent / Launcher / Adapter / Route`. 50 is the narrowest width at which the route column still fits `local_gateway`.
+  - Minimal (below 50): `Agent / Launcher / Adapter`.
+- Adapter support is a build fact that no observation replaces, so every set keeps it. The minimal set drops the route, which the selected-harness pane still shows.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- New `dashboard::tests::every_agent_table_width_keeps_adapter_support` covers the overview at 60 and 44 columns and the Harnesses page at 80 and 120 columns. It checks that the table header has `Adapter`, has `Route` only when the compact or full set applies, and that `execute` and `probe` labels are visible.
+- `vibemuxctl --format text ui --once --report <probe fixture> --width 60|44 --height 30` shows the compact and minimal tables with each harness's adapter label.
+- `cargo test -p vibemux_frontend --all-features`: lib 124 passed (1 ignored) and all integration targets passed. `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- On the Harnesses page at 80 columns, the table now shows the adapter instead of the route. The route stays in the selected-harness pane.
+- The overview's stacked agent table is 8 rows high, so at 24 rows only the first five harnesses are visible without scrolling. This is unchanged.

@@ -1,5 +1,5 @@
 use super::{
-    Context, DashboardModel, State, Tab, Workspace,
+    AgentView, Context, DashboardModel, State, Tab, Workspace,
     model::{safe_text, slot_state_label},
 };
 use ratatui::{
@@ -13,6 +13,11 @@ use vibemux_harness::dispatch::AdapterSupport;
 
 const WIDE_LAYOUT: u16 = 110;
 const HARNESS_COLUMNS_WIDTH: u16 = 72;
+/// Narrowest agent table with every probe column.
+const AGENT_FULL_WIDTH: u16 = 72;
+/// Narrowest compact agent table whose route column still fits
+/// `local_gateway` beside the agent, launcher, and adapter columns.
+const AGENT_ROUTE_WIDTH: u16 = 50;
 const WORKTREE_PANEL_HEIGHT: u16 = 16;
 
 pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
@@ -150,58 +155,16 @@ fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &S
 }
 
 fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, selected: usize) {
-    let compact = area.width < 72;
+    let layout = AgentColumns::for_width(area.width);
     let rows = model.agents.iter().map(|agent| {
-        let values = if compact {
-            vec![
-                agent.name.as_str(),
-                agent.launcher_state.as_str(),
-                agent.route.as_str(),
-            ]
-        } else {
-            vec![
-                agent.name.as_str(),
-                agent.launcher_state.as_str(),
-                agent.authentication_state.as_str(),
-                agent.inference_state.as_str(),
-                agent.version.as_str(),
-                adapter_column_label(agent.adapter.support),
-                agent.route.as_str(),
-            ]
-        };
-        Row::new(values.into_iter().map(|value| Cell::from(safe_text(value))))
+        Row::new(
+            layout
+                .values(agent)
+                .into_iter()
+                .map(|value| Cell::from(safe_text(value))),
+        )
     });
-    let (columns, header) = if compact {
-        (
-            vec![
-                Constraint::Length(10),
-                Constraint::Length(11),
-                Constraint::Min(7),
-            ],
-            vec!["Agent", "Launcher", "Route"],
-        )
-    } else {
-        (
-            vec![
-                Constraint::Length(10),
-                Constraint::Length(11),
-                Constraint::Length(9),
-                Constraint::Length(9),
-                Constraint::Length(11),
-                Constraint::Length(8),
-                Constraint::Min(10),
-            ],
-            vec![
-                "Agent",
-                "Launcher",
-                "Auth",
-                "Inference",
-                "Version",
-                "Adapter",
-                "Route",
-            ],
-        )
-    };
+    let (columns, header) = layout.columns();
     let table = Table::new(rows, columns)
         .header(Row::new(header).style(Style::default().add_modifier(Modifier::BOLD)))
         .row_highlight_style(Style::default().fg(Color::Cyan))
@@ -212,6 +175,92 @@ fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, select
         (!model.agents.is_empty()).then(|| selected.min(model.agents.len().saturating_sub(1))),
     );
     frame.render_stateful_widget(table, area, &mut selection);
+}
+
+/// Agent table column sets, widest first. Adapter support is a build fact
+/// that no observation replaces, so every set keeps it. Narrower sets drop
+/// observation detail that the selected-harness pane still shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AgentColumns {
+    Full,
+    Compact,
+    Minimal,
+}
+
+impl AgentColumns {
+    const fn for_width(width: u16) -> Self {
+        if width >= AGENT_FULL_WIDTH {
+            Self::Full
+        } else if width >= AGENT_ROUTE_WIDTH {
+            Self::Compact
+        } else {
+            Self::Minimal
+        }
+    }
+
+    fn values(self, agent: &AgentView) -> Vec<&str> {
+        let adapter = adapter_column_label(agent.adapter.support);
+        match self {
+            Self::Full => vec![
+                agent.name.as_str(),
+                agent.launcher_state.as_str(),
+                agent.authentication_state.as_str(),
+                agent.inference_state.as_str(),
+                agent.version.as_str(),
+                adapter,
+                agent.route.as_str(),
+            ],
+            Self::Compact => vec![
+                agent.name.as_str(),
+                agent.launcher_state.as_str(),
+                adapter,
+                agent.route.as_str(),
+            ],
+            Self::Minimal => vec![agent.name.as_str(), agent.launcher_state.as_str(), adapter],
+        }
+    }
+
+    fn columns(self) -> (Vec<Constraint>, Vec<&'static str>) {
+        match self {
+            Self::Full => (
+                vec![
+                    Constraint::Length(10),
+                    Constraint::Length(11),
+                    Constraint::Length(9),
+                    Constraint::Length(9),
+                    Constraint::Length(11),
+                    Constraint::Length(8),
+                    Constraint::Min(10),
+                ],
+                vec![
+                    "Agent",
+                    "Launcher",
+                    "Auth",
+                    "Inference",
+                    "Version",
+                    "Adapter",
+                    "Route",
+                ],
+            ),
+            Self::Compact => (
+                vec![
+                    Constraint::Length(10),
+                    Constraint::Length(11),
+                    Constraint::Length(8),
+                    Constraint::Min(7),
+                ],
+                vec!["Agent", "Launcher", "Adapter", "Route"],
+            ),
+            Self::Minimal => (
+                vec![
+                    Constraint::Length(10),
+                    Constraint::Length(11),
+                    Constraint::Min(8),
+                ],
+                vec!["Agent", "Launcher", "Adapter"],
+            ),
+        }
+    }
 }
 
 /// Short table label; the details pane and snapshots spell out the full

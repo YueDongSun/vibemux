@@ -201,6 +201,39 @@ mod tests {
     }
 
     #[test]
+    fn every_agent_table_width_keeps_adapter_support() {
+        let model = DashboardModel::from_report(&report());
+        let context = Context::default();
+        // The overview table spans the terminal below the wide layout; the
+        // Harnesses page gives the table 45% of the width beside the details.
+        for (tab, width, route_column) in [
+            (Tab::Overview, 60, true),
+            (Tab::Overview, 44, false),
+            (Tab::Harnesses, 80, false),
+            (Tab::Harnesses, 120, true),
+        ] {
+            let state = State {
+                tab,
+                ..State::default()
+            };
+            let rendered = snapshot(&model, &state, &context, width, 24).unwrap();
+            let header = rendered
+                .lines()
+                .find(|line| line.contains("Agent") && line.contains("Launcher"))
+                .unwrap_or_else(|| panic!("no agent table header at width {width}"));
+            assert!(header.contains("Adapter"), "width {width}: {header}");
+            assert_eq!(
+                header.contains("Route"),
+                route_column,
+                "width {width}: {header}"
+            );
+            for label in ["execute", "probe"] {
+                assert!(rendered.contains(label), "width {width} lacks {label}");
+            }
+        }
+    }
+
+    #[test]
     fn standalone_views_retain_source_without_inventing_workspace_metadata() {
         let model = DashboardModel::from_report(&report());
         for source in ["saved_report", "local_probe"] {
