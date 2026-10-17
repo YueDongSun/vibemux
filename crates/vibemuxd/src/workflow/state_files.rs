@@ -36,12 +36,8 @@ use uuid::Uuid;
 use vibemux_types::a2a::RunWorkspace;
 use vibemux_workflow::{Sha256Digest, SpecIdentifier};
 
-use super::{
-    bounded_file::{BoundedReadError, read_regular_file},
-    collector::BlobStore,
-    error::WorkflowError,
-    prepare::WorkflowPlan,
-};
+use super::{collector::BlobStore, error::WorkflowError, prepare::WorkflowPlan};
+use crate::bounded_file::{BoundedReadError, read_regular_file};
 
 pub const WORKFLOW_STATE_DIR_NAME: &str = "workflow_state";
 const LEDGER_SCHEMA_VERSION: u32 = 1;

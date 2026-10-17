@@ -5319,3 +5319,25 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision: whether bounded reads should open without following links. On POSIX that means `O_NOFOLLOW`. On Windows it means `FILE_FLAG_OPEN_REPARSE_POINT`, which also changes how cloud-file and deduplication placeholders read. Until then, the bound, not the path check, is the guarantee against a swapped link.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Check the daemon lifecycle lock with a bounded read
+
+**Scope:** `vibemuxd`'s `LifecycleLock::is_held` decides whether the writer lock and the project compatibility lock still carry this holder's nonce. `Drop` removes the file only then, and the Windows leaf release checks the compatibility lock the same way. It used `read_to_string` on the lock path, so a lock path replaced by a large file was read whole.
+
+**Implemented:**
+- `bounded_file` moved from `vibemuxd::workflow` to the crate root (`git mv`), since the lifecycle lock is not workflow code. The four workflow callers now import `crate::bounded_file`, with unchanged behavior.
+- `is_held` reads the lock through `bounded_file::read_regular_file` with a new private `MAX_LOCK_FILE_BYTES = 256`. A nonce is `{pid}-{epoch nanoseconds}-{counter}`, under 80 bytes. A link found at the path, an oversized file, non-UTF-8 bytes, or another nonce now reads as not held, so `Drop` leaves that file in place.
+- `docs/architecture.md` (writer section) says the nonce check is bounded and what it leaves in place.
+- No change to the lock file contents, the lock path, recovery, the control protocol, or the store.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib`: 130 passed. The new test `a_lifecycle_lock_is_held_only_while_its_bounded_file_carries_the_nonce` covers the fresh lock, the nonce padded past 256 bytes, another holder's nonce, and the nonce restored. The padded case read as held under the old `read_to_string` and `trim`.
+- `cargo test -p vibemuxd --all-features --test daemon_process`: 9 passed.
+- `cargo test -p vibemux_cli --all-features`: lib 48, `bootstrap_process` 4, `unified_commands` 6 passed. `bootstrap_process` asserts the writer lock is gone after a daemon run, so the holder still recognizes its own lock.
+- One mutation was caught and restored byte-for-byte: reading the lock with no bound (`u64::MAX`) failed the new test.
+
+**Remaining:**
+- The Windows control ACL marker check (`process.rs` `acl_marker_valid`) still reads its marker whole.
+- Owner decision on no-follow opens for bounded reads (see the previous entry).
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

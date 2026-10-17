@@ -1,7 +1,8 @@
-//! Bounded reads of regular files: shared contract text from the project
-//! checkout, files a worker changed in its worktree, a verifier's result
-//! file, and the daemon's own workflow state. The bound holds for the bytes
-//! actually read, not only for the size reported before the read.
+//! Bounded reads of regular files: the daemon's lifecycle lock, shared
+//! contract text from the project checkout, files a worker changed in its
+//! worktree, a verifier's result file, and the daemon's own workflow state.
+//! The bound holds for the bytes actually read, not only for the size
+//! reported before the read.
 
 use std::{
     fs::File,

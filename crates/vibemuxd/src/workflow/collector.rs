@@ -27,7 +27,8 @@ use vibemux_workflow::{
 };
 use vibemux_workspace::WorkspaceManager;
 
-use super::{bounded_file::read_regular_file, error::WorkflowError, settings::CandidateLimits};
+use super::{error::WorkflowError, settings::CandidateLimits};
+use crate::bounded_file::read_regular_file;
 
 /// A worker commit moved `HEAD` away from the base commit.
 pub const HEAD_MOVED_CODE: &str = "snapshot_head_moved";

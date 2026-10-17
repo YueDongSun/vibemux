@@ -35,10 +35,8 @@ use vibemux_workflow::{
 };
 use vibemux_workflow::{gates::WorkflowPhase, supervisor::LoopBudget};
 
-use super::{
-    bounded_file::read_regular_file, error::WorkflowError, request::WorkflowRequest,
-    settings::LoadedWorkflowConfig,
-};
+use super::{error::WorkflowError, request::WorkflowRequest, settings::LoadedWorkflowConfig};
+use crate::bounded_file::read_regular_file;
 
 pub const WORKFLOW_PLAN_SCHEMA_VERSION: u32 = 1;
 const PLAN_DIGEST_DOMAIN: &str = "vibemux.workflow.plan.v1";

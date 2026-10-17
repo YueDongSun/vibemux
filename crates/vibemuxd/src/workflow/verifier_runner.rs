@@ -22,12 +22,12 @@ use vibemux_workflow::{
 };
 
 use super::{
-    bounded_file::read_regular_file,
     error::WorkflowError,
     settings::{
         CANDIDATE_PLACEHOLDER, LoadedWorkflowConfig, OUT_PLACEHOLDER, VERIFIER_DIR_PLACEHOLDER,
     },
 };
+use crate::bounded_file::read_regular_file;
 use crate::harness_dispatch::{
     child_path_text,
     native_process::{LaunchPlan, NativeProcess, resolve_environment},
