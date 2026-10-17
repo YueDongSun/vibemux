@@ -4588,3 +4588,17 @@ scratch directory outside the repository.
 **Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (22 unit, 18 normalization, 21 process dispatch). Five mutations each failed the new test: raising the `record_count` ceiling, lowering the `shutdown_ms` floor, fixing the capture floor at 64, editing the guide's `queue_capacity` row, and changing the `shutdown_ms` default.
 
 **Remaining:** None for native configuration validation coverage. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native request validation is pinned and documented
+
+**Scope:** `vibemux_harness_native` request contract tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- `Request::validate` had no direct test, and the guide did not state the native prompt rules. It refuses a schema version other than 1 or a nil request UUID with `harness_invalid_request`, and a blank prompt or one over 128 KiB with `harness_invalid_prompt`. The 128 KiB bound is deliberately larger than the daemon's 32 KiB dispatch prompt limit, because each caller of the shared engine owns its prompt-size policy.
+- A unit test accepts a prompt of exactly `MAX_PROMPT_BYTES`, including one made of two-byte characters, and refuses an empty prompt, a whitespace-only prompt, and one byte over the bound. It also refuses the next schema version and a nil UUID.
+- The "Explicit Execution" section of `docs/guides/harness_core_guide.md` now states these rules and the separate daemon limit. The test asserts that the guide names the same bound.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (23 unit, 18 normalization, 21 process dispatch). Six mutations each failed the new test: dropping the prompt `trim`, refusing a prompt of exactly the bound, dropping the nil UUID check, accepting any non-zero schema version, counting characters instead of bytes, and changing the guide's bound to 32 KiB.
+
+**Remaining:** `Config::catalog()` has no direct test of its per-protocol `structured_probe` and `native_execution` flags or of the fields it omits; the CLI output tests build their catalog JSON by hand. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.

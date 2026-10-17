@@ -230,7 +230,9 @@ mod tests {
         dispatch::{NativeProtocol, adapter_capability},
     };
 
-    use super::{Harness, Protocol};
+    use uuid::Uuid;
+
+    use super::{Harness, MAX_PROMPT_BYTES, Protocol, Request, SCHEMA_VERSION};
 
     const HARNESSES: [Harness; 5] = [
         Harness::Codex,
@@ -306,5 +308,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn request(prompt: String) -> Request {
+        Request {
+            schema_version: SCHEMA_VERSION,
+            request_id: Uuid::new_v4(),
+            harness: Harness::Codex,
+            prompt,
+        }
+    }
+
+    fn outcome(request: &Request) -> &'static str {
+        request
+            .validate()
+            .map_or_else(|error| error.code(), |()| "ok")
+    }
+
+    #[test]
+    fn requests_need_an_identity_and_a_bounded_non_blank_prompt() {
+        // The bound counts UTF-8 bytes, not characters.
+        let two_byte = "\u{e9}".repeat(MAX_PROMPT_BYTES / 2);
+        for prompt in [
+            "hello".to_string(),
+            "x".repeat(MAX_PROMPT_BYTES),
+            two_byte.clone(),
+        ] {
+            assert_eq!(outcome(&request(prompt)), "ok");
+        }
+        for prompt in [
+            String::new(),
+            " \t\r\n".to_string(),
+            "x".repeat(MAX_PROMPT_BYTES + 1),
+            two_byte + "x",
+        ] {
+            assert_eq!(
+                outcome(&request(prompt.clone())),
+                "harness_invalid_prompt",
+                "{} bytes",
+                prompt.len()
+            );
+        }
+        let mut other_schema = request("hello".to_string());
+        other_schema.schema_version = SCHEMA_VERSION + 1;
+        assert_eq!(outcome(&other_schema), "harness_invalid_request");
+        let mut nil_id = request("hello".to_string());
+        nil_id.request_id = Uuid::nil();
+        assert_eq!(outcome(&nil_id), "harness_invalid_request");
+        // The guide states the same bound.
+        let guide = include_str!("../../../docs/guides/harness_core_guide.md");
+        let bound = format!("at most {} KiB", MAX_PROMPT_BYTES / 1024);
+        assert!(guide.contains(&bound), "{bound}");
     }
 }

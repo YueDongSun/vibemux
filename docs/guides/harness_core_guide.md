@@ -119,7 +119,11 @@ records into issues, public logs, telemetry, Agent Cards, or repository fixtures
 After approving the selected vendor, working directory, model cost, and sandbox
 boundary, enable execution in the private configuration. Create a new request
 UUID for each attempt; the public request file is a format example, not a
-reusable production identifier.
+reusable production identifier. The prompt must contain a non-whitespace
+character and be at most 128 KiB of UTF-8; otherwise the request fails with
+`harness_invalid_prompt`. A schema version other than 1 or a nil UUID fails
+with `harness_invalid_request`. The daemon's `vibemuxctl dispatch submit` keeps
+its own 32 KiB prompt limit.
 
 ```powershell
 .\target\debug\vibemux_harness_native.exe dispatch --config .vibemux/harness_config.json --request examples/harness/harness_request.json
