@@ -5209,3 +5209,18 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 148 passed and 1 ignored, and every bin and integration target passed. Dropping the mapping failed the new test `allowlisted_values_are_one_display_line`, and the source was restored byte-for-byte.
 
 **Remaining:** whether the diagnostics should show these values at all, or set or unset only as the GUI does, is still the owner's decision; this entry does not change what is shown, only how. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - `dsh prompt` reads its prompt before selecting the daemon
+
+**Scope:** how the CLI reads a prompt file. `dispatch submit` and `decide route` share `read_valid_prompt`, which reads on a blocking thread before `harness_client` selects the daemon and reports a source it cannot open or read as `cli_prompt_unavailable`. `dsh prompt` kept its own reader. It ran synchronously on the async runtime after the daemon had been selected, and it reported every failure as `cli_invalid_arguments`, including a missing file. Audits in this pass needed no change: every dashboard draw site goes through `safe_text`, CLI text output goes through `safe_text` and JSON through `escape_controls`, every production binary reads `args_os`, the probe cache read is bounded and re-checks the opened file, and the daemon validates each cached detection's path and version.
+
+**Implemented:**
+
+- `run_dsh` reads and checks the prompt first, through a new `read_prompt_off_runtime` (`spawn_blocking`), the same order `run_dispatch` and `run_decision` use.
+- `read_prompt` reads at most one byte beyond the 32 KiB bound into bytes. A source it cannot open or read (a missing file, a directory) returns `cli_prompt_unavailable`. A blank, oversized, or non-UTF-8 prompt still returns `cli_invalid_arguments`.
+- `docs/dsh_session_protocol.md` names both codes in its CLI section.
+- No daemon, control protocol, or wire change.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_cli`: lib 45 passed, integration 5 passed. Two mutations were each caught and restored byte-for-byte. Selecting the daemon before the read failed `the_prompt_is_checked_before_the_daemon_is_selected`. Reporting an unreadable source as an invalid argument failed that test and `a_prompt_is_bounded_utf8_and_non_blank_and_an_unreadable_one_is_unavailable`.
+
+**Remaining:** the DSH and dispatch readers are now near copies, each with its own `PromptSource` type and bound; one shared reader could own both. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.

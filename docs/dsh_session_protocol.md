@@ -333,10 +333,14 @@ vibemuxctl dsh close  [--project-root <path>]
 ```
 
 A prompt comes from a file or stdin, never from argv, so it stays out of
-process listings and shell history. `dsh prompt`, `status`, `cancel`, and
-`close` print a content-free status projection; `dsh poll` prints byte-exact
-records and the cursor to resume from. It follows pages until one has nothing
-more, and the session status it prints comes from that last page.
+process listings and shell history. `dsh prompt` reads and checks it before
+selecting the daemon. A source it cannot open or read returns
+`cli_prompt_unavailable`, as for `dispatch submit`; a blank, non-UTF-8, or
+oversized (over 32 KiB) prompt returns `cli_invalid_arguments`. `dsh prompt`,
+`status`, `cancel`, and `close` print a content-free status projection;
+`dsh poll` prints byte-exact records and the cursor to resume from. It follows
+pages until one has nothing more, and the session status it prints comes from
+that last page.
 
 The terminal surface writes no canonical state. The daemon path also writes no
 canonical state today: a DSH session has no persisted record, so a daemon
