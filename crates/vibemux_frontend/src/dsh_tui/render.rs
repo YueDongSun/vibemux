@@ -21,7 +21,7 @@ use ratatui::{
 use serde_json::Value;
 use vibemux_harness::{
     dsh::{DshRecordKind, DshTurnOutcome},
-    terminal_text::display_character,
+    terminal_text::display_line,
 };
 
 use crate::tui::Theme;
@@ -88,13 +88,9 @@ pub fn display_text(kind: DshRecordKind, raw_json: &str) -> String {
         }
         DshRecordKind::Other => "unrecognized frame".to_string(),
     };
-    truncate(&one_line(&text), MAX_LINE_BYTES)
-}
-
-/// Runtime text as one display line: a line break, an ANSI escape, or a
-/// bidirectional override becomes a space instead of reaching the terminal.
-fn one_line(text: &str) -> String {
-    text.chars().map(display_character).collect()
+    // A line break, an ANSI escape, or a bidirectional override becomes a
+    // space instead of reaching the terminal.
+    truncate(&display_line(&text), MAX_LINE_BYTES)
 }
 
 fn string_at(value: &Value, pointer: &str) -> String {
@@ -179,7 +175,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, theme: 
     let version = state
         .server_version
         .as_deref()
-        .map_or_else(|| "(no handshake yet)".to_string(), one_line);
+        .map_or_else(|| "(no handshake yet)".to_string(), display_line);
     let outcome = state.last_outcome.map_or("none", DshTurnOutcome::as_str);
     let lines = vec![
         Line::from(format!(

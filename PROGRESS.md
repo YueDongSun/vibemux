@@ -5184,3 +5184,15 @@ The file was restored and compared byte for byte after each round. The `supervis
 **Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_harness --all-features`: lib 90 passed, and every integration target passed. `cargo test -p vibemux_frontend --all-features`: lib 147 passed and 1 ignored, and every bin and integration target passed. Mutations: drawing the raw instance ID failed `candidate_rows_draw_a_display_copy_of_each_identifier`. Making `display_line` return its input unchanged failed the new harness test `a_display_line_maps_every_character` and all three display tests in `supervisor_mapping`. Both sources were restored byte-for-byte.
 
 **Remaining:** `dsh_tui::render::one_line` is the same mapping and could call `display_line`. That is a consolidation with no behavior change, so it was left out of this entry. The dashboard's `safe_text` and `task_labels::task_window_title` also cut at a length, so they keep their own chains. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - DSH TUI uses the shared display line
+
+**Scope:** the duplicate noted in the previous entry. `dsh_tui::render::one_line` was the same whole-string mapping as `vibemux_harness::terminal_text::display_line`.
+
+**Implemented:**
+
+- `dsh_tui::render` calls `display_line` for runtime record text and the runtime's version string, and its private `one_line` is gone. There is no behavior change.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 147 passed and 1 ignored, and every bin and integration target passed. Making `display_line` return its input unchanged failed the existing `runtime_text_is_one_line_without_terminal_controls`, so the TUI now depends on the shared rule. The source was restored byte-for-byte.
+
+**Remaining:** the dashboard's `safe_text` and `task_labels::task_window_title` also cut at a length, so they keep their own chains. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
