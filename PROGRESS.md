@@ -5735,3 +5735,34 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A runtime's request identity and task listing in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_runtime.rs` owns the bounded ephemeral task runtime. Three of its pure helpers decide what callers see. `canonical_identity_payload` and `input_identity` build the identity that tells a repeated request apart from a conflicting one. `list_tasks` filters and pages a caller's tasks. The module's only unit test covered subscriber lag; these helpers were reached only through the `task_runtime` integration tests. This change is test-only.
+
+**Implemented:**
+- Five unit tests in the existing `task_runtime.rs` test module. No production code changed.
+- `the_identity_payload_is_canonical`:
+  - A float with no fractional part becomes an integer: `1.0`, `-0.0`, `1e3`, and `-2.0` become `1`, `0`, `1000`, and `-2`. `1.5` stays as it is.
+  - Integers up to plus or minus 2^53 - 1 (`MAX_EXACT_INTEGER`) are kept, written either as integers or as floats. One past that bound in either direction is refused, as are `u64::MAX`, `1e300`, and an out-of-range number nested in an array or object.
+  - Strings, booleans, and null pass through. Nested arrays and objects are canonicalized, and object keys come out sorted.
+- `the_input_identity_ignores_request_ids_and_number_spelling`: the request id and idempotency key do not change the identity, nor does spelling `2` as `2.0` or reordering object keys. A different context id, a missing or different task id, or a different payload value does change it, and a payload with an out-of-range number is refused.
+- `a_listing_keeps_only_the_callers_matching_tasks`: a listing holds only the calling subject's tasks, optionally narrowed by context id, state, or both. The total size counts only the matching tasks, and a subject with no tasks gets an empty page.
+- `a_listing_pages_by_a_numeric_offset_token`: the page token is the offset of the next task. A page holds at most the page size, the last page has no next token, and a token equal to the number of matching tasks gives an empty page. A token past the end, a non-numeric token, a negative one, and an empty one are refused.
+- `a_listing_strips_artifacts_unless_asked_and_stops_at_its_size_bound`:
+  - Without `include_artifacts` the listed tasks have no artifacts, and the stored tasks keep theirs.
+  - With artifacts, a page stops before the task that would take it over the 32 KiB list bound, and its next token points at that task. Three tasks of about 12 KiB give pages of two and one.
+  - A task whose snapshot is exactly 32 KiB is valid on its own. A page stops before it rather than skipping it for a later task that would fit. A page that would start with it is refused as busy, and without artifacts it lists normally.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 36 library tests passed (5 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Twenty-eight mutations were caught and restored byte-for-byte.
+  - Identity payload: keeping integral floats as floats; refusing the largest exact integer; dropping the integer bound or only its negative side; making the float bound inclusive, dropping it, or applying it only to positive floats; and not recursing into arrays or objects.
+  - Input identity: adding the request id; dropping the task id or the context id; and using the raw payload, with or without the canonical check.
+  - Listing: dropping the subject, context, or state filter; treating a bad token as offset 0; refusing a token equal to the number of tasks; counting every task in the total size; never or always stripping artifacts; ignoring the page size; an off-by-one next token, or the token left by the task that did not fit; keeping the task that overflows the page, or skipping past it; and reporting an internal error instead of busy.
+- This crate builds `serde_json` without `preserve_order`, so its maps already keep keys sorted. Removing the explicit key sort would therefore change nothing, and it was not counted as a mutation. The sorted-key assertions hold either way.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
