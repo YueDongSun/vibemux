@@ -95,3 +95,57 @@ pub fn decide_outcome(
         Some(SessionTerminal::Probed) => decision(AttemptOutcome::Probed, None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const OUTCOME_NAMES: [(AttemptOutcome, &str); 5] = [
+        (AttemptOutcome::Completed, "completed"),
+        (AttemptOutcome::Failed, "failed"),
+        (AttemptOutcome::Unverified, "unverified"),
+        (AttemptOutcome::Cancelled, "cancelled"),
+        (AttemptOutcome::Probed, "probed"),
+    ];
+
+    #[test]
+    fn outcome_names_match_their_serde_form() {
+        for (outcome, name) in OUTCOME_NAMES {
+            assert_eq!(outcome.as_str(), name);
+            assert_eq!(
+                serde_json::to_value(outcome).expect("serialize"),
+                json!(name)
+            );
+            let parsed: AttemptOutcome = serde_json::from_value(json!(name)).expect("deserialize");
+            assert_eq!(parsed, outcome);
+        }
+        assert!(serde_json::from_value::<AttemptOutcome>(json!("Completed")).is_err());
+    }
+
+    #[test]
+    fn exits_and_decisions_round_trip_and_refuse_unknown_fields() {
+        let exit = ProcessExit {
+            exit_code: Some(0),
+            forced_termination: false,
+        };
+        let mut exit_value = serde_json::to_value(exit).expect("serialize exit");
+        let parsed: ProcessExit =
+            serde_json::from_value(exit_value.clone()).expect("deserialize exit");
+        assert_eq!(parsed, exit);
+        exit_value["signal"] = json!(9);
+        assert!(serde_json::from_value::<ProcessExit>(exit_value).is_err());
+
+        let decision = OutcomeDecision {
+            outcome: AttemptOutcome::Unverified,
+            error_code: Some(DispatchError::EofWithoutTerminal),
+        };
+        let mut decision_value = serde_json::to_value(decision).expect("serialize decision");
+        let parsed: OutcomeDecision =
+            serde_json::from_value(decision_value.clone()).expect("deserialize decision");
+        assert_eq!(parsed, decision);
+        decision_value["detail"] = json!("synthetic");
+        assert!(serde_json::from_value::<OutcomeDecision>(decision_value).is_err());
+    }
+}

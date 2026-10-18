@@ -5927,3 +5927,25 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch outcome wire names in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/outcome.rs`. It holds `AttemptOutcome`, `ProcessExit`, `OutcomeDecision`, and `decide_outcome`, the single rule that turns exchange, protocol, and process evidence into an attempt outcome (ADR 029 §3). The integration test `outcomes_prefer_exchange_errors_then_process_exit_then_terminal_evidence` in `tests/dispatch_attempt.rs` covers the rule. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `outcome.rs` with two unit tests. No production code changed.
+- `outcome_names_match_their_serde_form`: each of the five outcomes has the `as_str` name `completed`, `failed`, `unverified`, `cancelled`, or `probed`. Each serializes to that same name and parses back from it, and the Rust variant spelling `Completed` is refused.
+- `exits_and_decisions_round_trip_and_refuse_unknown_fields`: a `ProcessExit` and an `OutcomeDecision` round-trip through JSON, and an extra field in either is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 116 library tests passed (2 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 18 mutants against that suite. The existing tests caught all 10 that changed `decide_outcome` or `is_clean`, and the source was restored byte-for-byte.
+- The new tests catch all 8 survivors:
+  - Changing any of the five `as_str` names.
+  - Dropping the snake_case serde rename on `AttemptOutcome`.
+  - Accepting unknown fields in `ProcessExit` or `OutcomeDecision`.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
