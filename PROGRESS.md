@@ -5463,3 +5463,23 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 - JSON Schema counts `1.0` as an integer, but the parser refuses a `limit` sent as a float. The parser is the stricter of the two, so this was left unchanged.
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the MCP reader process's own request checks
+
+**Scope:** The native MCP read host (ADR 035) does its daemon reads in a contained child process (`vibemux_mcp --ipc_reader`, which runs `vibemux_mcp::control_reader::run`). The reader owner sends that child one JSON request per line over a private pipe. The child decodes each request with serde, so `parse_operation` never runs there, and it repeats its own checks before reading the control descriptor. It also requires a stable non-zero generation and sequences that rise by one. The integration suites send the real reader only well-formed requests, and no `vibemux_mcp` test named `reader_request_invalid`.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_mcp/src/control_reader.rs`. No production code changed, and the reader's private wire and the MCP wire are unchanged.
+- `invalid_operations_are_refused_before_the_descriptor_is_read`: limit 0, a limit one past `MAX_FRONTEND_TASKS`, and a nil `request_id` are `reader_request_invalid`. Each valid operation, including limits 1 and `MAX_FRONTEND_TASKS`, reaches a descriptor path where nothing exists and answers `producer_unavailable`. So the refusals happen before any descriptor I/O.
+- `a_request_with_a_nil_task_id_or_an_extra_key_does_not_decode`: a nil `task_id` or `after` fails to decode, as does an unknown key inside the operation or at the top level.
+- `each_request_is_answered_in_order_until_the_input_ends`: three requests in one generation get three replies carrying their own generation and sequence, and the end of input ends the run cleanly. Empty input writes nothing.
+- `a_request_out_of_generation_or_sequence_stops_the_reader`: generation 0, a first sequence other than 1, a replayed or skipped sequence, a changed generation, and an undecodable line each stop the run with `reader_request_invalid`. No reply is written for the offending line.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_mcp --all-features`: lib 18 passed (4 new), framing 5, ipc 3, lifecycle 22, stdio 5.
+- Four mutations were caught and restored byte-for-byte: dropping the zero-limit guard, dropping the nil `request_id` guard, accepting generation 0, and ignoring a changed generation.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
