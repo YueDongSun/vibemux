@@ -5949,3 +5949,22 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch resource key in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/attempt.rs`. It holds the durable attempt phases, their Task/Run mapping, the `apply` transition table, and `resource_key`, the working-directory reservation hash the store keeps in place of the path (ADR 029 §3). The integration tests in `tests/dispatch_attempt.rs` cover the transition table, status pairs, fences, reservations, and phase names. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `attempt.rs` with one unit test. No production code changed.
+- `the_resource_key_is_a_known_answer_over_the_directory`: the keys for `C:\projects\synthetic` and for an empty directory string equal SHA-256 digests computed independently in Python. Each digest covers the domain `vibemux.harness_dispatch.resource.v1`, a NUL byte, and the directory with its u64 big-endian length prefix.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 117 library tests passed (1 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 22 mutants against that suite. The existing tests caught 19, and the source was restored byte-for-byte.
+- The new test catches 2 of the 3 survivors: a changed key domain, and an extra hashed field.
+- The third survivor is equivalent and is not counted. It drops the `from.holds_reservation()` check from `releases_reservation`, but every `Changed` transition starts in a non-terminal phase, and those phases all hold the reservation.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
