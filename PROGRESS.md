@@ -5381,3 +5381,22 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Bound the GUI user settings read
+
+**Scope:** `vibemux_frontend::theme::serialize::load_user_config_at` loads `frontend.json`, the GUI's persisted theme, window size, and sidebar setting, when the `vibemux_frontend` GUI binary starts. It read the whole file with `fs::read_to_string` before parsing. A missing, unreadable, or corrupt file already fell back to the defaults.
+
+**Implemented:**
+- The file is read only if it is a regular file, and the read stops one byte past `MAX_USER_CONFIG_BYTES` (64 KiB). A larger file, a directory, or non-UTF-8 bytes fall back to the defaults like any other unreadable file. A saved settings document is a few hundred bytes.
+- The file-type check follows a link, so a settings file a dotfiles manager placed as a link still loads.
+- No change to the `frontend.json` layout, its schema version, the save path, or the window-size clamping.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_frontend --all-features --lib`: 150 passed, 1 ignored (the golden-fixture writer). New tests: `a_user_config_past_the_bound_returns_defaults` loads a valid document padded to exactly 64 KiB, and falls back for one byte more or a directory. `a_settings_read_stops_one_byte_past_the_bound` ends an endless source at the bound.
+- One mutation was caught and restored byte-for-byte: accepting one byte past the bound failed both new tests.
+- No GUI window was opened.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

@@ -6,13 +6,14 @@
 //! - Off-Windows: `$XDG_CONFIG_HOME/vibemux/frontend.json` (falling
 //!   back to `$HOME/.config/vibemux/frontend.json`)
 //!
-//! All reads are tolerant: missing or corrupt files return
+//! All reads are tolerant: missing, corrupt, or oversized files return
 //! [`UserConfig::default`]. Writes are atomic (write tmp, rename).
 //! We never hold an OS lock; concurrent writers can clobber each
 //! other, but the worst case is a lost write of the theme id.
 
 use std::{
     env, fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -22,6 +23,10 @@ use super::{ThemeId, palette_for};
 
 /// On-disk schema version. Bump when the JSON layout changes.
 pub const SCHEMA_VERSION: u16 = 1;
+
+/// A settings document is a few hundred bytes of JSON; a file past this
+/// bound is not one and is never read whole.
+const MAX_USER_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WindowSize {
@@ -93,7 +98,7 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Load the persisted user config. On any failure (missing file,
-/// unreadable, parse error, unknown schema version), return
+/// unreadable, over 64 KiB, parse error, unknown schema version), return
 /// [`UserConfig::default`]. A window size outside the settings range is
 /// clamped into it, so a hand-edited file cannot open a zero-sized or
 /// oversized window. Never panics.
@@ -106,7 +111,7 @@ pub fn load_user_config() -> UserConfig {
 /// to ignore the platform path for any reason.
 #[must_use]
 pub fn load_user_config_at(path: &Path) -> UserConfig {
-    let Ok(bytes) = fs::read_to_string(path) else {
+    let Some(bytes) = read_bounded_text(path, MAX_USER_CONFIG_BYTES) else {
         return UserConfig::default();
     };
     // Strip an optional UTF-8 BOM (`﻿`) so JSON parsers that
@@ -121,6 +126,28 @@ pub fn load_user_config_at(path: &Path) -> UserConfig {
         Ok(_) => UserConfig::default(),
         Err(_) => UserConfig::default(),
     }
+}
+
+/// The UTF-8 text of the regular file at `path`, at most `maximum`
+/// bytes of it. The check follows a link, since a dotfiles manager may
+/// place the settings file as one.
+fn read_bounded_text(path: &Path, maximum: u64) -> Option<String> {
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let bytes = read_at_most(fs::File::open(path).ok()?, maximum)?;
+    String::from_utf8(bytes).ok()
+}
+
+/// At most `maximum` bytes; a longer source is refused after reading one
+/// byte past the bound, so a file grown after the check is not read whole.
+fn read_at_most(reader: impl Read, maximum: u64) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= maximum).then_some(bytes)
 }
 
 /// Persist the user config to the platform path. Errors are swallowed
@@ -289,6 +316,39 @@ mod tests {
             // Clamping touches only the size.
             assert_eq!(config.theme, ThemeId::Github);
         }
+    }
+
+    #[test]
+    fn a_user_config_past_the_bound_returns_defaults() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        let json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "theme": "github",
+            "window_size": {"width": 1024, "height": 768}
+        })
+        .to_string();
+        // Trailing whitespace keeps the document valid JSON at any length.
+        let padded_to = |length: u64| {
+            let padding = usize::try_from(length).expect("length") - json.len();
+            format!("{json}{}", " ".repeat(padding))
+        };
+        std::fs::write(&path, padded_to(MAX_USER_CONFIG_BYTES)).expect("write");
+        assert_eq!(load_user_config_at(&path).theme, ThemeId::Github);
+        std::fs::write(&path, padded_to(MAX_USER_CONFIG_BYTES + 1)).expect("write");
+        assert_eq!(load_user_config_at(&path), UserConfig::default());
+        // A directory at the path is not a settings file.
+        assert_eq!(load_user_config_at(directory.path()), UserConfig::default());
+    }
+
+    #[test]
+    fn a_settings_read_stops_one_byte_past_the_bound() {
+        assert_eq!(
+            read_at_most(&b"12345678"[..], 8),
+            Some(b"12345678".to_vec())
+        );
+        // An endless source ends at the bound instead of exhausting memory.
+        assert_eq!(read_at_most(std::io::repeat(b' '), 8), None);
     }
 
     #[test]
