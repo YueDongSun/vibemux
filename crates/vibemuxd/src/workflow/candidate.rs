@@ -597,12 +597,16 @@ pub(crate) async fn negative_control(
     }) else {
         return Ok(None);
     };
-    let SnapshotChange::Write { sha256, .. } = target.change else {
+    let SnapshotChange::Write {
+        sha256,
+        byte_count: original_byte_count,
+    } = target.change
+    else {
         return Ok(None);
     };
     let original = {
         let blobs = blobs.clone();
-        tokio::task::spawn_blocking(move || blobs.get(sha256))
+        tokio::task::spawn_blocking(move || blobs.get(sha256, original_byte_count))
             .await
             .map_err(|_| WorkflowError::Internal)??
     };

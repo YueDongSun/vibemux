@@ -12,7 +12,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -273,7 +273,7 @@ impl BlobStore {
         let digest = Sha256Digest::of(bytes);
         let path = self.root.join(digest.to_hex());
         if path.is_file() {
-            if self.get(digest).is_ok() {
+            if self.get(digest, bytes.len() as u64).is_ok() {
                 return Ok(digest);
             }
             std::fs::remove_file(&path).map_err(|_| WorkflowError::Snapshot)?;
@@ -301,18 +301,13 @@ impl BlobStore {
         Ok(digest)
     }
 
-    /// The bytes of `digest`, re-hashed.
-    pub fn get(&self, digest: Sha256Digest) -> Result<Vec<u8>, WorkflowError> {
-        let path = self.root.join(digest.to_hex());
-        let metadata = std::fs::symlink_metadata(&path).map_err(|_| WorkflowError::Snapshot)?;
-        if !metadata.is_file() {
-            return Err(WorkflowError::Snapshot);
-        }
-        let mut bytes = Vec::new();
-        File::open(&path)
-            .and_then(|mut file| file.read_to_end(&mut bytes))
+    /// The `byte_count` bytes of `digest`, re-hashed. The read stops one
+    /// byte past the count the manifest recorded, so a blob file that is
+    /// not exactly those bytes is refused without being read whole.
+    pub fn get(&self, digest: Sha256Digest, byte_count: u64) -> Result<Vec<u8>, WorkflowError> {
+        let bytes = read_regular_file(&self.root.join(digest.to_hex()), byte_count)
             .map_err(|_| WorkflowError::Snapshot)?;
-        if Sha256Digest::of(&bytes) != digest {
+        if bytes.len() as u64 != byte_count || Sha256Digest::of(&bytes) != digest {
             return Err(WorkflowError::Snapshot);
         }
         Ok(bytes)
@@ -355,8 +350,8 @@ pub(crate) fn apply_manifests(
             let full = join_relative(target, &entry.path);
             reject_linked_ancestors(target, &entry.path)?;
             match entry.change {
-                SnapshotChange::Write { sha256, .. } => {
-                    let bytes = blobs.get(sha256)?;
+                SnapshotChange::Write { sha256, byte_count } => {
+                    let bytes = blobs.get(sha256, byte_count)?;
                     if let Some(parent) = full.parent() {
                         std::fs::create_dir_all(parent).map_err(|_| WorkflowError::Snapshot)?;
                     }
@@ -422,17 +417,24 @@ mod tests {
 
     #[test]
     fn blobs_are_content_addressed_and_rehashed() {
+        const CONTENT: &[u8] = b"export const x = 1;\n";
+        let byte_count = CONTENT.len() as u64;
         let directory = tempfile::tempdir().expect("dir");
         let blobs = BlobStore::new(directory.path().join("blobs"));
-        let digest = blobs.put(b"export const x = 1;\n").expect("put");
-        assert_eq!(blobs.get(digest).expect("get"), b"export const x = 1;\n");
-        std::fs::write(
-            directory.path().join("blobs").join(digest.to_hex()),
-            b"tampered",
-        )
-        .expect("tamper");
-        assert!(blobs.get(digest).is_err());
-        assert_eq!(blobs.put(b"export const x = 1;\n").expect("heal"), digest);
+        let digest = blobs.put(CONTENT).expect("put");
+        assert_eq!(blobs.get(digest, byte_count).expect("get"), CONTENT);
+        // Only the recorded byte count reads: a manifest count off by one
+        // either way refuses the blob.
+        assert!(blobs.get(digest, byte_count - 1).is_err());
+        assert!(blobs.get(digest, byte_count + 1).is_err());
+        let path = directory.path().join("blobs").join(digest.to_hex());
+        std::fs::write(&path, b"tampered").expect("tamper");
+        assert!(blobs.get(digest, byte_count).is_err());
+        // A blob file grown past its count is refused, then healed by put.
+        std::fs::write(&path, [CONTENT, b"tail"].concat()).expect("grow");
+        assert!(blobs.get(digest, byte_count).is_err());
+        assert_eq!(blobs.put(CONTENT).expect("heal"), digest);
+        assert_eq!(blobs.get(digest, byte_count).expect("healed"), CONTENT);
     }
 
     #[test]

@@ -5362,3 +5362,22 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 - `BlobStore::get` still reads a whole blob from the daemon's private workflow state, because it has no bound of its own.
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Bound candidate blob reads to the manifest's byte count
+
+**Scope:** `vibemuxd::workflow::collector::BlobStore::get` returns a candidate's collected bytes from the daemon's private workflow state. It serves materialization (`apply_manifests`), the negative-control mutation, reloading a candidate's texts for a resumed coordinator, and `put`'s check of an existing blob. It refused a non-regular file and re-hashed the bytes, but read the whole blob file first. The supervisor-context path already read the same blobs bounded by the manifest's byte count.
+
+**Implemented:**
+- `get` takes the `byte_count` the manifest recorded for the write. It reads through `crate::bounded_file::read_regular_file` bounded to that count, then requires exactly that many bytes and the digest. A blob file that has grown or been replaced is refused one byte past the count instead of being read whole.
+- Every caller passes the count from its `SnapshotChange::Write` entry, and `put` passes the length of the bytes it stores. The collector records that count as the length of the bytes it read, so collected manifests and blobs agree.
+- No change to the manifest format, the blob layout, the store schema, or the control protocol.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib`: 131 passed. `blobs_are_content_addressed_and_rehashed` now also covers a count one byte short or long, a tampered blob, and a blob grown past its count that `put` then heals.
+- `cargo test -p vibemuxd --all-features --test workflow_compare --test workflow_cooperate --test workflow_gates`: 2, 2, and 4 passed. They drive the real daemon through collection, review, verification, and isolated integration.
+- One mutation was caught and restored byte-for-byte: dropping the length comparison failed the off-by-one assertion. The bound by itself has no observable effect at this level once the length check stands; the shared reader's own tests cover the stop one byte past the bound.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

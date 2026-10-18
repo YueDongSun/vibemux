@@ -218,8 +218,8 @@ pub(crate) async fn restore_latest(
             tokio::task::spawn_blocking(move || {
                 let mut texts = BTreeMap::new();
                 for entry in entries {
-                    if let SnapshotChange::Write { sha256, .. } = entry.change
-                        && let Ok(text) = String::from_utf8(blobs.get(sha256)?)
+                    if let SnapshotChange::Write { sha256, byte_count } = entry.change
+                        && let Ok(text) = String::from_utf8(blobs.get(sha256, byte_count)?)
                     {
                         texts.insert(entry.path, text);
                     }
