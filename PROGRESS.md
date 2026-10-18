@@ -5442,3 +5442,24 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the MCP tool schemas to the argument parser
+
+**Scope:** The native MCP read host (ADR 035) advertises an input schema for each read tool in `tools/list`, and `vibemux_mcp::tools::parse_operation` decides what a `tools/call` actually accepts. The two are written separately, and only the stdio integration tests sampled a few refused arguments. No test checked that each schema describes what the parser accepts.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_mcp/src/tools.rs`. No production code changed, and the MCP wire is unchanged.
+- `listed_read_tools_are_the_tools_the_parser_knows`: with the host grant, the listed tools after `host_status` are `READ_TOOLS` in order. Without it, only `host_status` is listed, and the parser does not handle `host_status` (`unknown_tool`).
+- `each_schema_declares_exactly_the_arguments_the_parser_accepts`: for every read tool, all declared arguments together are accepted, and so are the required ones alone. Dropping any required argument is refused. So are an undeclared argument (the schema sets `additionalProperties: false`) and a non-object.
+- `the_limit_schema_states_the_parser_bounds_and_default`: the `limit` schema's `minimum` and `maximum` are 1 and `MAX_FRONTEND_TASKS`, both accepted. Omitting `limit` yields the schema's `default`. 0, one past the maximum, -1, 1.5, the string `"1"`, and null are refused.
+- `identifier_schemas_admit_what_the_parser_admits`: `after`, `task_id`, and `request_id` share one schema: a 36-character string matching a lowercase hyphenated hex pattern that is not the nil UUID. For eight candidates, the parser accepts exactly those that a hand-written reading of that schema admits. The canonical form is accepted. Uppercase, nil, unhyphenated, braced, `urn:uuid:`, space-led, and non-hex forms are refused, and so is a number.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_mcp --all-features`: lib 14 passed (4 new), framing 5, ipc 3, lifecycle 22, stdio 5.
+- Three mutations were caught and restored byte-for-byte. Each failed one new test: narrowing the parser's limit range to `1..MAX_FRONTEND_TASKS`, dropping `task_id` from the `frontend_task` schema's `required`, and dropping the canonical-text check from `canonical_uuid`.
+
+**Remaining:**
+- JSON Schema counts `1.0` as an integer, but the parser refuses a `limit` sent as a float. The parser is the stricter of the two, so this was left unchanged.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
