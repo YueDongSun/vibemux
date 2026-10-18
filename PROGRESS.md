@@ -5503,3 +5503,23 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin decision and model-call workflow receipts
+
+**Scope:** `vibemux_workflow::receipts::WorkflowReceipt` is the evidence the single writer persists for a workflow (ADR 031). `vibemux_store` files each receipt under its `kind()`, `receipt_id()`, `task_key()`, and `subject_digest()`, and checks those columns and `digest()` again when it recovers. The store tests build candidate, review, verification, integration, and selection receipts, and the daemon builds bundle receipts. Nothing in production or in any test builds the decision or model-call variants as a `WorkflowReceipt`. So those two arms of every accessor were never run.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_workflow/src/receipts.rs`. No production code changed, and the store schema and receipt JSON are unchanged.
+- `decision_and_model_call_receipts_name_their_own_id_and_subject`: a decision receipt is kind `decision`, takes its id from `decision_id`, and is bound to `rationale_sha256`. A model-call receipt is kind `model_call`, takes its id from `call_id`, and is bound to `request_sha256`, not to the response or the route table. Neither claims a workflow or a task.
+- `the_stored_kind_is_the_serialized_tag`: for both kinds, `kind()` equals the `kind` tag in the receipt JSON, and the decoded receipt equals the original and has the same digest.
+- `the_receipt_digest_covers_the_kind_and_every_field`: the digest is taken over the tagged receipt, not the bare record. It changes when a decision is rejected instead of accepted, and when a model call's attempt number changes.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_workflow --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_workflow --all-features`: 149 passed (3 new).
+- Three mutations were caught and restored byte-for-byte: the model-call kind spelled `model-call`, the model-call subject switched to `route_generation`, and the decision id shifted by one.
+
+**Remaining:**
+- `kind()` and the serde tag are still compared only for these two kinds. The other six are built only in store and daemon tests.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
