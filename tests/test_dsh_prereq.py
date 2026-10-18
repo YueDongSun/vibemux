@@ -14,6 +14,7 @@ tests with an explicit reason; a skip is not a pass.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,6 +34,11 @@ pytestmark = pytest.mark.skipif(
 DSH_PACKAGE = "@deepseek-ai/dsh"
 READY_EXIT = 0
 NOT_READY_EXIT = 2
+# The script's JSON byte limits: the adapter's MAX_SESSION_CONFIG_BYTES, and the
+# larger allowance for DSH-owned profile manifests.
+ADAPTER_JSON_BYTES = 32 * 1024
+PROFILE_MANIFEST_BYTES = 256 * 1024
+SDK_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-sdk-app"]
 
 
 def pwsh_executable() -> str:
@@ -85,7 +91,50 @@ def build_profile(home: Path, profile: str, bundles: list[str]) -> None:
     )
 
 
-def run_script(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+def write_fake_node(directory: Path, *, version_output: str, exit_code: int) -> Path:
+    """Create a stand-in ``node`` launcher that answers ``--version`` with a fixed result.
+
+    The script resolves ``node`` from PATH, so putting this directory first makes
+    the version probe deterministic without depending on the machine's Node.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        launcher = directory / "node.cmd"
+        lines = ["@echo off"]
+        if version_output:
+            lines.append(f"echo {version_output}")
+        lines.append(f"exit /b {exit_code}")
+        launcher.write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+    else:
+        launcher = directory / "node"
+        body = f"echo {version_output}\n" if version_output else ""
+        launcher.write_text(f"#!/bin/sh\n{body}exit {exit_code}\n", encoding="ascii")
+        launcher.chmod(0o755)
+    return launcher
+
+
+def environment_with_path_first(directory: Path) -> dict[str, str]:
+    """Return the current environment with ``directory`` at the front of PATH."""
+    environment = dict(os.environ)
+    environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+    return environment
+
+
+def make_directory_link(link: Path, target: Path) -> None:
+    """Create a directory junction on Windows (no privilege needed), a symlink elsewhere."""
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def run_script(
+    *args: str, timeout: int = 120, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run the prerequisite script once and capture its streams."""
     return subprocess.run(
         [pwsh_executable(), "-NoProfile", "-NonInteractive", "-File", str(SCRIPT), *args],
@@ -95,6 +144,7 @@ def run_script(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[st
         errors="replace",
         timeout=timeout,
         check=False,
+        env=env,
     )
 
 
@@ -103,15 +153,21 @@ def run_prereq(
     *extra: str,
     npm_prefix: Path | None = None,
     dsh_home: Path | None = None,
+    probes: bool = False,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    """Run the script in its probe-free, read-only mode and parse its JSON report."""
+    """Run the script read-only and parse its JSON report.
+
+    Probes stay off unless ``probes`` is set; a probing run starts the ``node``
+    that PATH resolves, so callers pair it with a fake launcher.
+    """
     npm_prefix = npm_prefix if npm_prefix is not None else tmp_path / "npm"
     dsh_home = dsh_home if dsh_home is not None else tmp_path / "dsh-home"
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
     completed = run_script(
         "-Json",
-        "-SkipProbes",
+        *(() if probes else ("-SkipProbes",)),
         "-NpmPrefix",
         str(npm_prefix),
         "-DshHome",
@@ -119,6 +175,7 @@ def run_prereq(
         "-ProjectRoot",
         str(project),
         *extra,
+        env=env,
     )
     assert completed.returncode in (READY_EXIT, NOT_READY_EXIT), completed.stderr
     report: dict[str, Any] = json.loads(completed.stdout)
@@ -364,3 +421,197 @@ def test_apply_cannot_be_combined_with_skip_probes(tmp_path: Path) -> None:
 
     assert completed.returncode == 1
     assert "-SkipProbes" in ((completed.stderr or "") + (completed.stdout or ""))
+
+
+@pytest.mark.parametrize(
+    ("version_output", "exit_code", "failure"),
+    [("", 3, "exited with code 3"), ("", 0, "printed no version")],
+)
+def test_node_that_fails_its_version_probe_is_not_ready(
+    tmp_path: Path, version_output: str, exit_code: int, failure: str
+) -> None:
+    """A node image that cannot answer ``--version`` must not report READY."""
+    prefix = build_npm_prefix(tmp_path / "npm")
+    home = tmp_path / "dsh-home"
+    build_profile(home, "sdk", SDK_BUNDLES)
+    fake_directory = tmp_path / "fake_node"
+    write_fake_node(fake_directory, version_output=version_output, exit_code=exit_code)
+
+    code, report = run_prereq(
+        tmp_path,
+        "-SkipTui",
+        npm_prefix=prefix,
+        dsh_home=home,
+        probes=True,
+        env=environment_with_path_first(fake_directory),
+    )
+
+    assert code == NOT_READY_EXIT
+    assert report["ok"] is False
+    node = check_by_id(report, "node")
+    assert node["status"] == "missing"
+    assert failure in node["detail"]
+    assert report["node"]["version"] is None
+
+
+def test_node_that_answers_its_version_probe_is_ready(tmp_path: Path) -> None:
+    """The positive control for the fake launcher: an answered probe is READY."""
+    prefix = build_npm_prefix(tmp_path / "npm")
+    home = tmp_path / "dsh-home"
+    build_profile(home, "sdk", SDK_BUNDLES)
+    fake_directory = tmp_path / "fake_node"
+    write_fake_node(fake_directory, version_output="v24.0.0", exit_code=0)
+
+    code, report = run_prereq(
+        tmp_path,
+        "-SkipTui",
+        npm_prefix=prefix,
+        dsh_home=home,
+        probes=True,
+        env=environment_with_path_first(fake_directory),
+    )
+
+    assert code == READY_EXIT, report
+    assert check_by_id(report, "node")["status"] == "ok"
+    assert report["node"]["version"] == "v24.0.0"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{not json",
+        b"",
+        b"[]",
+        b'[{"name": "dsh-profile-sdk"}]',
+        b'{"name": "\xff"}',
+        b'{"padding": "' + b"x" * PROFILE_MANIFEST_BYTES + b'"}',
+    ],
+    ids=["malformed", "empty", "array", "object_in_array", "invalid_utf8", "oversized"],
+)
+def test_unreadable_sdk_profile_manifest_is_not_ready(tmp_path: Path, content: bytes) -> None:
+    """A present sdk profile DSH cannot load must not count as provisioned."""
+    prefix = build_npm_prefix(tmp_path / "npm")
+    home = tmp_path / "dsh-home"
+    directory = home / "profiles" / "sdk"
+    directory.mkdir(parents=True)
+    (directory / "package.json").write_bytes(content)
+
+    code, report = run_prereq(tmp_path, "-SkipTui", npm_prefix=prefix, dsh_home=home)
+
+    assert code == NOT_READY_EXIT
+    profile = check_by_id(report, "dsh-sdk-profile")
+    assert profile["status"] == "stale"
+    assert "not a JSON object" in profile["detail"]
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [(ADAPTER_JSON_BYTES, "ok"), (ADAPTER_JSON_BYTES + 1, "missing")],
+)
+def test_package_manifest_byte_limit_matches_the_adapter(
+    tmp_path: Path, size: int, expected: str
+) -> None:
+    """The install manifest is refused past the adapter's limit, before parsing."""
+    prefix = build_npm_prefix(tmp_path / "npm")
+    manifest = prefix / "node_modules" / "@deepseek-ai" / "dsh" / "package.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["description"] = ""
+    base_size = len(json.dumps(document).encode("utf-8"))
+    document["description"] = "x" * (size - base_size)
+    encoded = json.dumps(document).encode("utf-8")
+    assert len(encoded) == size
+    manifest.write_bytes(encoded)
+
+    _, report = run_prereq(tmp_path, "-SkipTui", npm_prefix=prefix)
+
+    install = check_by_id(report, "dsh-install")
+    assert install["status"] == expected
+    if expected == "missing":
+        assert f"{ADAPTER_JSON_BYTES} bytes" in install["detail"]
+
+
+def test_oversized_session_config_is_stale(tmp_path: Path) -> None:
+    """A session document past the adapter's limit is reported, not parsed."""
+    project = tmp_path / "project"
+    (project / ".vibemux").mkdir(parents=True)
+    document = {
+        "schema_version": 1,
+        "executable": "node",
+        "entry_script": "bin.js",
+        "provider": "deepseek-official",
+        "model": "deepseek-v4-flash",
+        "padding": "x" * ADAPTER_JSON_BYTES,
+    }
+    (project / ".vibemux" / "dsh_session.json").write_text(json.dumps(document), encoding="utf-8")
+
+    _, report = run_prereq(tmp_path)
+
+    session = check_by_id(report, "vibemux-session-config")
+    assert session["status"] == "stale"
+    assert f"{ADAPTER_JSON_BYTES} bytes" in session["detail"]
+
+
+def apply_session_config(project: Path, npm_prefix: Path, dsh_home: Path) -> dict[str, Any]:
+    """Run ``-Apply -WriteSessionConfig`` for the sdk profile and parse the report.
+
+    With a complete fixture nothing needs installing, so the only child process
+    is the version probe of the machine's ``node``.
+    """
+    completed = run_script(
+        "-Json",
+        "-Apply",
+        "-WriteSessionConfig",
+        "-SkipTui",
+        "-NpmPrefix",
+        str(npm_prefix),
+        "-DshHome",
+        str(dsh_home),
+        "-ProjectRoot",
+        str(project),
+    )
+    assert completed.returncode in (READY_EXIT, NOT_READY_EXIT), completed.stderr
+    report: dict[str, Any] = json.loads(completed.stdout)
+    return report
+
+
+def test_launcher_in_a_sibling_sharing_the_project_name_prefix_is_outside(tmp_path: Path) -> None:
+    """``project_tools`` is not inside ``project``: containment is by path component."""
+    project = tmp_path / "project"
+    project.mkdir()
+    prefix = build_npm_prefix(tmp_path / "project_tools" / "npm")
+    home = tmp_path / "dsh-home"
+    build_profile(home, "sdk", SDK_BUNDLES)
+
+    report = apply_session_config(project, prefix, home)
+
+    assert (project / ".vibemux" / "dsh_session.json").is_file(), report["applied"]
+    assert check_by_id(report, "vibemux-session-config")["status"] == "ok"
+
+
+def test_launcher_inside_the_project_root_is_refused(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    prefix = build_npm_prefix(project / "tools" / "npm")
+    home = tmp_path / "dsh-home"
+    build_profile(home, "sdk", SDK_BUNDLES)
+
+    report = apply_session_config(project, prefix, home)
+
+    assert not (project / ".vibemux" / "dsh_session.json").exists()
+    assert check_by_id(report, "vibemux-session-config")["status"] == "missing"
+    assert any("inside the project root" in line for line in report["applied"])
+
+
+def test_launcher_reached_through_a_link_into_the_project_is_refused(tmp_path: Path) -> None:
+    """Lexically outside but canonically inside: the adapter canonicalizes, so the script must."""
+    project = tmp_path / "project"
+    vendor = project / "vendor"
+    build_npm_prefix(vendor / "npm")
+    alias = tmp_path / "alias"
+    make_directory_link(alias, vendor)
+    home = tmp_path / "dsh-home"
+    build_profile(home, "sdk", SDK_BUNDLES)
+
+    report = apply_session_config(project, alias / "npm", home)
+
+    assert not (project / ".vibemux" / "dsh_session.json").exists()
+    assert any("inside the project root" in line for line in report["applied"])
