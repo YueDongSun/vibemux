@@ -1,0 +1,3 @@
+# Keep in sync with the [advisories] ignore list in deny.toml, which records the reason.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

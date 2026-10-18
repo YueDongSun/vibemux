@@ -7,6 +7,14 @@ fn private_temporary_state() -> tempfile::TempDir {
     // This test is the producer/owner of the directory, just as InstanceLease is in production.
     #[cfg(windows)]
     vibemux_platform::secure_user_directory(temp.path()).expect("restrict fixture ACL");
+    // tempfile creates the directory with the umask default (often 0755), which
+    // prepare_directory rejects for an existing directory.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restrict fixture mode");
+    }
     temp
 }
 
