@@ -5996,3 +5996,40 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the writable fixture launch guard in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/fixture_guard.rs`, which is compiled only with the `test_helpers` feature. It admits launches only of exact registered copies of the built synthetic worker, and builds their fixture argv. The integration tests in `tests/writable_fixture_guard.rs` cover profile and grant arguments, byte and path changes at launch, duplicate aliases, a source inside the vendor root, and symlinked copies. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `fixture_guard.rs` with six unit tests. No production code changed. The tests write synthetic images under a unique directory in the system temporary directory and remove it on drop.
+- `registration_needs_one_or_two_aliases_and_exact_nonempty_copies`: registration refuses an empty alias list, a copy whose bytes differ from the source, and an empty image.
+- `a_route_must_be_enabled_executable_matching_and_its_own_copy`: a disabled route, a route without execution consent, and a protocol that does not accept the harness are `ExecutionDisabled`. A Codex route that points at the registered Claude copy is `ConfigExecutableInvalid`.
+- `launch_argv_is_exact_per_protocol`: Codex gets exactly `exec --json --fixture_profile codex_fixture_writable_v1 --fixture_grant_json <grant> -`, with the prompt on stdin. Claude gets the stream-json input and output flags, its own profile, and the grant, with no stdin marker.
+- `a_development_runtime_is_pinned_and_passed_by_flag`: a pinned runtime is passed as `--fixture_node <canonical path>` before the Codex stdin marker. Changing its bytes refuses the next launch.
+- `canonical_helpers_refuse_relative_paths_and_the_wrong_kind`: the file helper refuses a directory, the directory helper refuses a file, and a relative path is refused.
+- `a_drive_relative_path_is_refused` (Windows only): a drive-relative path such as `<drive>:Cargo.toml`, built at run time from the current drive, is refused. Its ancestors resolve to the current directory, so the absolute-path check is its only guard.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 127 library tests passed (6 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 25 mutants against that suite. The existing tests caught 4, and the source was restored byte-for-byte.
+- The new tests catch 15 of the 21 survivors:
+  - Admitting an empty alias list, a copy with different bytes, or an empty image.
+  - Skipping the enabled, execution-consent, or protocol check.
+  - Admitting another alias's copy.
+  - Changing the Codex or Claude argv, or always adding the stdin marker.
+  - Skipping the runtime recheck, or renaming its flag.
+  - Admitting a drive-relative path.
+  - Dropping the file or directory kind check.
+- Four survivors are equivalent and are not counted:
+  - Both copy-parent checks: a canonical path with no reparse ancestor that equals the expected copy is always directly under the vendor root.
+  - The vendor-root recheck: the route executable's ancestor reparse check and exact path match already cover it.
+  - The `is_symlink` check on Windows: the reparse-point attribute check covers it, and the Unix integration test covers it there.
+- Two survivors need host features this machine does not provide in a test:
+  - The source path recheck differs only when the source becomes a symlink, which needs symlink privilege.
+  - The reparse-attribute check differs only for a reparse point that is not a link.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
