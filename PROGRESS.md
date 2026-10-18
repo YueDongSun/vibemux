@@ -5567,3 +5567,22 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin task and run restoration in vibemux_types
+
+**Scope:** `crates/vibemux_types/src/restore.rs` decodes stored `Task` and `Run` JSON, for example the A2A record and the store's run check. It runs the same field checks as construction, and it keeps the stored status. Its one test covered a nil task id, a malformed base commit, and an unknown run key. Nothing pinned the title, description, or name bounds on this path, the stored status being kept, missing fields, or that a restoration failure reports the same domain error as construction. This change is test-only.
+
+**Implemented:**
+- `task()` and `run()` fixtures, plus `restore_with` and `restore_without` helpers that set or remove one key of the stored JSON and restore it. They are added to the existing unit-test module. No production code changed, and the JSON shape is unchanged.
+- `a_restored_task_keeps_its_stored_status_and_bounded_text`: an in-progress task restores equal with its status, and a stored `blocked` status is kept without any transition being replayed. A title of exactly 512 UTF-8 bytes made of two-byte characters is accepted. So are a 64 KiB description and a blank description. These are refused: a 513-byte title, a blank or empty title, a description one byte over 64 KiB, an unknown status, a nil task id, a malformed project id, an unknown key, and a missing title, description, or status.
+- `a_restored_run_keeps_its_stored_status_and_bounded_names`: a running run restores equal with its status, and a stored `stale` status is kept. `harness`, `role`, and `protocol` are each accepted at 128 bytes. Each is refused at 129 bytes, when blank, when empty, and when missing. A base commit of 7 and of 128 hex characters is accepted. These are refused: 6 or 129 characters, a non-hex commit, an unknown status, a nil run id, and an unknown key.
+- `restoration_reports_the_same_domain_error_as_construction`: an over-long title, an over-long description, and a short base commit each fail restoration with the message `Task::new` or `Run::new` gives for the same value.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_types --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_types --all-features`: 21 passed (3 new).
+- Eleven mutations were caught and restored byte-for-byte. Ten were in `restore.rs`: a blank title accepted, the description bound raised by one, a blank role accepted, the protocol bound raised by one, an unbounded harness, the base commit left unchecked, the task status or the run status reset on restore, unknown task keys admitted, and the title error replaced by a generic message. The eleventh was in the shared `validate_required` in `lib.rs`: whitespace-only values accepted.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
