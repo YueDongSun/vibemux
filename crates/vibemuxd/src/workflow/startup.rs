@@ -7,7 +7,7 @@
 //! again, and a requested cancellation is finished. The store has already
 //! quarantined every lease whose attempt was interrupted.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use time::OffsetDateTime;
 use vibemux_workflow::{gates::WorkflowPhase, leases::LeaseState};
@@ -40,31 +40,20 @@ pub(crate) fn load_setup(
     let canonical_root =
         std::fs::canonicalize(project_root).map_err(|_| WorkflowError::ConfigInvalid)?;
     let config = load_workflow_config(&state_dir.join(WORKFLOW_CONFIG_FILE_NAME), &canonical_root)?;
-    let slot_protocols = config
-        .config
-        .slots
-        .iter()
-        .filter_map(|slot| {
-            dispatch
-                .execution_protocol(slot.harness)
-                .filter(|_| {
-                    dispatch
-                        .execution_profile(slot.harness, config.config.evidence_class)
-                        .is_some()
-                })
-                .map(|protocol| (slot.slot_id.clone(), protocol))
-        })
-        .collect();
-    let slot_profiles = config
-        .config
-        .slots
-        .iter()
-        .filter_map(|slot| {
-            dispatch
-                .execution_profile(slot.harness, config.config.evidence_class)
-                .map(|profile| (slot.slot_id.clone(), profile.to_string()))
-        })
-        .collect();
+    let mut slot_protocols = BTreeMap::new();
+    let mut slot_profiles = BTreeMap::new();
+    for slot in &config.config.slots {
+        // Looked up once per slot: a fixture guard rehashes its pinned
+        // images on every lookup.
+        let Some(profile) = dispatch.execution_profile(slot.harness, config.config.evidence_class)
+        else {
+            continue;
+        };
+        if let Some(protocol) = dispatch.execution_protocol(slot.harness) {
+            slot_protocols.insert(slot.slot_id.clone(), protocol);
+        }
+        slot_profiles.insert(slot.slot_id.clone(), profile.to_string());
+    }
     protect_state_root(&state_dir.join(WORKFLOW_STATE_DIR_NAME))?;
     Ok(WorkflowSetup {
         config,
