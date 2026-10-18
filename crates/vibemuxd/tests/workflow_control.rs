@@ -342,10 +342,9 @@ async fn a_restart_stops_the_workflow_and_the_resumed_run_repeats_no_completed_t
         })
         .await;
 
-    let began = Instant::now();
-    fixture.restart().await;
+    let shutdown = fixture.restart().await;
     assert!(
-        began.elapsed() < Duration::from_millis(INTERRUPTED_TURN_MS),
+        shutdown < Duration::from_millis(INTERRUPTED_TURN_MS),
         "the shutdown waited for the turn"
     );
     let status = fixture.status(workflow).await;
