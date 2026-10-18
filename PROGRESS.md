@@ -5904,3 +5904,26 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch JSON line framer in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/json_line_framer.rs`. It splits vendor stdout into LF-delimited UTF-8 frames under a byte limit. Its integration tests in `tests/dispatch_framing.rs` cover reassembly, the exact limit, and poisoning after a failed `push`. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `json_line_framer.rs` with three unit tests. No production code changed.
+- `a_failed_finish_poisons_the_framer`: an incomplete UTF-8 sequence left at `finish` fails with `InvalidUtf8`. A second `finish` and a later `push` of a valid frame return the same failure, and the later push emits no frame.
+- `the_frame_limit_counts_a_trailing_cr`: with a 4-byte limit, `123` CR LF yields the frame `123`, and `1234` CR LF is `FrameTooLarge`, because the limit covers the bytes before LF, including the CR.
+- `only_one_trailing_cr_is_removed`: `{}` CR CR LF yields `{}` CR, and a CR inside a frame is kept.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 114 library tests passed (3 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 19 mutants against that suite. The existing tests caught 16, and the source was restored byte-for-byte. A proptest regression file that a caught mutant wrote was removed.
+- The new tests catch all 3 survivors:
+  - Not poisoning the framer when `finish` fails.
+  - Leaving a trailing CR out of the frame limit.
+  - Removing every trailing CR instead of one.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
