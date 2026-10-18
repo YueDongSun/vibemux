@@ -5877,3 +5877,30 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch capture budget in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/capture_budget.rs` accounts for one dispatch attempt's stdout records (ADR 029). For each frame it enforces the capture byte and record limits before parsing, assigns the record sequence, classifies the record, and folds it into the per-kind counts and the transcript digest. Its content-free `CaptureSummary` is persisted. The module had no unit tests; two integration tests in `tests/dispatch_framing.rs` covered it, using only five of the nine observation kinds and a frame limit equal to the capture limit. A sweep of 33 mutants against the crate's tests left 15 alive. This change is test-only.
+
+**Implemented:**
+- A new test module in `capture_budget.rs` with five unit tests. No production code changed.
+- `each_kind_lands_in_its_own_count_and_the_total`: one Codex app-server notification per observation kind is classified as that kind. Each of the nine counts is then 1, and the total and the record count are 9.
+- `counts_and_their_total_saturate`: incrementing a count at `u64::MAX` keeps it there, and a total over a saturated count is `u64::MAX`.
+- `the_capture_bound_is_the_byte_limit_and_admits_an_exact_fill`: with a 64-byte frame limit and a 128-byte capture limit, two 64-byte records fill the capture exactly and are accepted. The next record is `CaptureTooLarge`, and 128 bytes stay counted.
+- `a_rejected_frame_leaves_no_trace`: a frame that is not JSON (`InvalidJson`) or not an object (`InvalidRecord`) leaves the record count, the byte count, and the transcript digest unchanged. The next accepted record is sequence 1, and the digest covers only that record and its LF.
+- `summaries_round_trip_and_refuse_unknown_fields`: a capture summary round-trips through JSON. An extra field in the summary or in its kind counts is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 111 library tests passed (5 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 33 mutants against that suite. The existing tests caught 18, and the source was restored byte-for-byte.
+- The new tests catch all 15 survivors:
+  - Counting approval, usage, failed, or cancelled records in the wrong slot, or leaving any of those four out of the total.
+  - Plain addition in place of saturation, in a count or in the total.
+  - Bounding the capture by the frame limit instead of the capture limit, and refusing a capture that fills the limit exactly.
+  - Counting a rejected frame's bytes.
+  - Accepting unknown fields in the summary or in its kind counts.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
