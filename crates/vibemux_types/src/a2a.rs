@@ -411,3 +411,146 @@ fn valid_identifier(value: &str, maximum: usize) -> bool {
 fn valid_label(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STATES: [A2aRemoteState; 6] = [
+        A2aRemoteState::Submitted,
+        A2aRemoteState::Working,
+        A2aRemoteState::InputRequired,
+        A2aRemoteState::Completed,
+        A2aRemoteState::Failed,
+        A2aRemoteState::Cancelled,
+    ];
+
+    fn workspace() -> RunWorkspace {
+        RunWorkspace {
+            path: r"C:\work\repo".to_string(),
+            branch: "vibemux/run_1".to_string(),
+            base_commit: "a".repeat(40),
+            ownership_token: "owner_token_1".to_string(),
+        }
+    }
+
+    fn workspace_with(change: impl FnOnce(&mut RunWorkspace)) -> RunWorkspace {
+        let mut workspace = workspace();
+        change(&mut workspace);
+        workspace
+    }
+
+    fn artifact(byte: u8) -> ArtifactReference {
+        ArtifactReference {
+            artifact_id: ArtifactId::new(),
+            sha256: format!("{byte:02x}").repeat(32),
+            size_bytes: 1,
+            media_type: "text/plain".to_string(),
+        }
+    }
+
+    #[test]
+    fn remote_states_never_return_to_submitted_or_leave_a_terminal_state() {
+        use A2aRemoteState::{Cancelled, Completed, Failed, InputRequired, Submitted, Working};
+        for from in STATES {
+            for to in STATES {
+                let expected = from == to
+                    || match from {
+                        Submitted => true,
+                        Working | InputRequired => to != Submitted,
+                        Completed | Failed | Cancelled => false,
+                    };
+                assert_eq!(from.can_transition_to(to), expected, "{from:?} -> {to:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_workspace_needs_an_absolute_path_and_a_safe_branch() {
+        assert_eq!(workspace().validate(), Ok(()));
+        for valid in [
+            workspace_with(|w| w.path = "/srv/repo".to_string()),
+            workspace_with(|w| w.path = r"\\server\share\repo".to_string()),
+            workspace_with(|w| w.path = "C:/work/repo".to_string()),
+            workspace_with(|w| w.base_commit = "0123456789abcdef".repeat(4)),
+        ] {
+            assert_eq!(valid.validate(), Ok(()), "{valid:?}");
+        }
+        for invalid in [
+            workspace_with(|w| w.path = "repo".to_string()),
+            workspace_with(|w| w.path = "C:repo".to_string()),
+            workspace_with(|w| w.path = String::new()),
+            workspace_with(|w| w.path = "/srv/repo\n".to_string()),
+            workspace_with(|w| w.path = format!("/{}", "a".repeat(4096))),
+            workspace_with(|w| w.branch = "-run".to_string()),
+            workspace_with(|w| w.branch = "run..1".to_string()),
+            workspace_with(|w| w.branch = "run.lock".to_string()),
+            workspace_with(|w| w.branch = "run 1".to_string()),
+            workspace_with(|w| w.branch = String::new()),
+            workspace_with(|w| w.base_commit = "a".repeat(39)),
+            workspace_with(|w| w.base_commit = "g".repeat(40)),
+            workspace_with(|w| w.ownership_token = String::new()),
+            workspace_with(|w| w.ownership_token = "owner token".to_string()),
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_path_keys_ignore_case_separators_and_trailing_slashes() {
+        let key = |path: &str| workspace_with(|w| w.path = path.to_string()).path_key();
+        assert_eq!(key(r"C:\Work\Repo\"), "c:/work/repo");
+        assert_eq!(key(r"C:\Work\Repo\"), key("c:/work/repo"));
+        assert_eq!(key("/srv/Repo//"), "/srv/repo");
+        assert_ne!(key(r"C:\Work\Repo"), key(r"C:\Work\Repo2"));
+    }
+
+    #[test]
+    fn artifacts_are_bounded_unique_and_lowercase_hex() {
+        let full: Vec<_> = (0_u8..).take(MAX_A2A_ARTIFACTS).map(artifact).collect();
+        assert_eq!(validate_artifacts(&full), Ok(()));
+        let mut over = full.clone();
+        over.push(artifact(0xff));
+        assert_eq!(validate_artifacts(&over), Err(A2aStateError::InvalidInput));
+        let first = artifact(1);
+        assert_eq!(
+            validate_artifacts(&[first.clone(), first]),
+            Err(A2aStateError::InvalidInput)
+        );
+        let mut largest = artifact(2);
+        largest.size_bytes = MAX_A2A_ARTIFACT_BYTES;
+        assert_eq!(largest.validate(), Ok(()));
+        for invalid in [
+            ArtifactReference {
+                size_bytes: MAX_A2A_ARTIFACT_BYTES + 1,
+                ..artifact(3)
+            },
+            ArtifactReference {
+                sha256: "AB".repeat(32),
+                ..artifact(4)
+            },
+            ArtifactReference {
+                sha256: "ab".repeat(31),
+                ..artifact(5)
+            },
+            ArtifactReference {
+                media_type: "text/plain\u{7}".to_string(),
+                ..artifact(6)
+            },
+            ArtifactReference {
+                media_type: " ".to_string(),
+                ..artifact(7)
+            },
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+}

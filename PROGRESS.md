@@ -5523,3 +5523,23 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 - `kind()` and the serde tag are still compared only for these two kinds. The other six are built only in store and daemon tests.
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A record rules in vibemux_types
+
+**Scope:** `vibemux_types::a2a` holds the rules that `vibemux_store` applies to A2A run records. These include the remote-state transitions, the run workspace checks, the workspace key that the store compares workspaces by, and the artifact reference bounds. The module had no unit tests. Its rules were reached only through `vibemux_store` and daemon scenarios.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_types/src/a2a.rs`. No production code changed, no rule was tightened (including `valid_label`), and the record JSON is unchanged.
+- `remote_states_never_return_to_submitted_or_leave_a_terminal_state`: checks all 36 pairs. Every state may repeat. `submitted` may move to any state. `working` and `input_required` may move to each other or to any terminal state, but never back to `submitted`. `completed`, `failed`, and `cancelled` move nowhere else.
+- `a_run_workspace_needs_an_absolute_path_and_a_safe_branch`: POSIX, UNC, and drive paths with either separator are accepted, and so are 40- and 64-character base commits. These are refused: a relative path, a drive-relative `C:repo`, an empty path, a path with a control character, or one longer than 4096 bytes. So is a branch that starts with `-`, contains `..`, ends in `.lock`, contains a space, or is empty. So is a base commit of the wrong length or with a non-hex character, and an empty or spaced ownership token.
+- `workspace_path_keys_ignore_case_separators_and_trailing_slashes`: `C:\Work\Repo\` and `c:/work/repo` share the key `c:/work/repo`, and a different directory keeps a different key.
+- `artifacts_are_bounded_unique_and_lowercase_hex`: `MAX_A2A_ARTIFACTS` artifacts pass, and one more fails. A repeated artifact id fails. A size of exactly `MAX_A2A_ARTIFACT_BYTES` passes, and one byte more fails. So do an uppercase or short digest, and a media type that is blank or contains a control character.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_types --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_types --all-features`: 10 passed (4 new).
+- Five mutations were caught and restored byte-for-byte: letting `working` return to `submitted`, accepting a drive-relative path, dropping the `.lock` branch rule, keeping case in the path key, and admitting a repeated artifact id.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
