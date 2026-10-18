@@ -71,3 +71,96 @@ impl error::Error for Failure {
         self.source.as_deref().map(|source| source as _)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error as _;
+
+    use super::*;
+
+    const PRIVATE_PATH: &str = r"C:\Users\private_user\project\.vibemux\control.json";
+
+    fn private_source() -> std::io::Error {
+        std::io::Error::other(format!("cannot open {PRIVATE_PATH}"))
+    }
+
+    #[test]
+    fn only_a_short_snake_case_code_is_kept() {
+        let longest = "a".repeat(96);
+        for kept in [
+            "workspace_unavailable",
+            "ui_terminal_required",
+            "e2",
+            longest.as_str(),
+        ] {
+            assert_eq!(Failure::new(kept).code(), kept);
+        }
+        let too_long = "a".repeat(97);
+        for replaced in [
+            "",
+            too_long.as_str(),
+            "Workspace_unavailable",
+            "workspace-unavailable",
+            "workspace unavailable",
+            "workspace_unavailable\n",
+            PRIVATE_PATH,
+            "\u{e9}t\u{e9}",
+        ] {
+            assert_eq!(
+                Failure::new(replaced).code(),
+                "cli_operation_failed",
+                "{replaced:?}"
+            );
+            assert_eq!(
+                Failure::with_source(replaced, private_source()).code(),
+                "cli_operation_failed"
+            );
+        }
+    }
+
+    #[test]
+    fn display_and_debug_show_the_code_and_never_the_source_or_message() {
+        let failures = [
+            Failure::with_source("workspace_unavailable", private_source()),
+            Failure::with_message(
+                "workspace_unavailable",
+                "start the daemon first".to_string(),
+                private_source(),
+            ),
+            Failure::with_source(PRIVATE_PATH, private_source()),
+        ];
+        for failure in &failures {
+            let display = failure.to_string();
+            let debug = format!("{failure:?}");
+            assert_eq!(display, failure.code());
+            assert_eq!(
+                debug,
+                format!("Failure {{ code: {:?}, .. }}", failure.code())
+            );
+            for shown in [&display, &debug] {
+                assert!(!shown.contains("private_user"), "{shown}");
+                assert!(!shown.contains("start the daemon"), "{shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_message_and_source_stay_available_to_their_own_readers() {
+        let plain = Failure::new("ui_terminal_required");
+        assert_eq!((plain.message(), plain.source().is_none()), (None, true));
+        let chained = Failure::with_source("workspace_unavailable", private_source());
+        assert_eq!(chained.message(), None);
+        assert!(
+            chained
+                .source()
+                .is_some_and(|source| source.to_string().contains("private_user"))
+        );
+        let actionable = Failure::with_message(
+            "workspace_unavailable",
+            "start the daemon first".to_string(),
+            private_source(),
+        );
+        assert_eq!(actionable.message(), Some("start the daemon first"));
+        assert!(actionable.source().is_some());
+    }
+}

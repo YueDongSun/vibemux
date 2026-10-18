@@ -5483,3 +5483,23 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the CLI failure type's public-code contract
+
+**Scope:** Every `vibemuxctl` error reaches the operator as a `vibemux_cli::failure::Failure`. Its module promises that public error codes are independent of private paths and process diagnostics. `Failure::new` keeps a code only if it is 1 to 96 bytes of lowercase ASCII letters, digits, and underscores. Otherwise the code becomes `cli_operation_failed`. `Display` and `Debug` show only the code. `output::error_text` adds the remediation message from `with_message` when there is one. The wrapped source is reachable only through `Error::source`. No `vibemux_cli` test exercised the code filter or checked what `Display` and `Debug` show.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_cli/src/failure.rs`. No production code changed.
+- `only_a_short_snake_case_code_is_kept`: real codes and a 96-byte code are kept. These are all replaced by `cli_operation_failed`, through both `new` and `with_source`: an empty code, a 97-byte code, one with an uppercase letter, a hyphen, a space, or a newline, a Windows path, and non-ASCII letters.
+- `display_and_debug_show_the_code_and_never_the_source_or_message`: for a failure with a source, with a message, and with a path given as its code, `Display` is exactly the code and `Debug` is exactly `Failure { code: ..., .. }`. Neither shows the source's private path or the message.
+- `the_message_and_source_stay_available_to_their_own_readers`: `message()` returns only what `with_message` set, and `Error::source` still returns the wrapped error.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_cli --all-features --lib`: 51 passed (3 new). The CLI integration suites were not rerun, because no production code changed.
+- Four mutations were caught and restored byte-for-byte: a 97-byte code limit, an accepted hyphen, a `Display` that appends the source, and a `Debug` that lists the message.
+- `vibemux_workflow::receipts` was checked first and deferred. Its accessors feed the `vibemux_store` row checks on kind, task key, subject, and digest. The store integration tests build candidate, review, verification, integration, and selection receipts directly. How they reach bundle, decision, and model-call receipts was not traced.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
