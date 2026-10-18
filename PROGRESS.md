@@ -5699,3 +5699,39 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A task contract bounds in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_contract.rs` defines the local A2A task types and their validators. These cover identifiers, requests, parts, artifacts, snapshots, messages, list requests, lists, and the peer credential. The other A2A modules rely on these validators, but the module had no tests of its own; its bounds were reached only through the integration tests. This change is test-only.
+
+**Implemented:**
+- A unit-test module in `task_contract.rs`. No production code changed.
+- `task_identifiers_are_short_ascii_names`: one to 128 bytes of ASCII letters, digits, `_`, `-`, and `.` are accepted. An empty identifier, 129 bytes, a space, `/`, `:`, a non-ASCII letter, and NUL are refused.
+- `a_request_bounds_its_identifiers_and_payload`: the request, context, optional task, and idempotency-key identifiers are each checked, and a request without a task id is accepted. A payload of exactly 16 KiB of serialized JSON is accepted, and one byte more is refused.
+- `parts_bound_their_content_and_names`:
+  - Text, data, and raw parts are accepted at 16 KiB and refused one byte over.
+  - A media type is accepted at 128 bytes and refused at 129 bytes or with CR or LF. A filename is accepted at 256 bytes and refused at 257 bytes or with NUL, CR, or LF. Both checks apply to raw and URL parts.
+  - A URL is accepted at 2048 bytes and refused at 2049. An unparsable URL, an ftp URL, a user name, and a password are refused.
+  - A part list holds 1 to 16 parts, and one invalid part refuses the whole list.
+- `artifacts_snapshots_and_messages_are_bounded`:
+  - `TaskArtifact::data` builds an unnamed artifact with one data part. An artifact name is accepted at 256 bytes and refused at 257 bytes or with NUL. An invalid artifact id or an empty part list is refused.
+  - A snapshot holds at most 16 artifacts and 32 KiB of serialized JSON: two 12 KiB artifacts fit and three do not. An invalid artifact, task id, context id, or error code refuses the snapshot.
+  - A message has the same 32 KiB bound (two 12 KiB texts fit, three do not). An empty part list or an invalid id refuses it.
+- `a_list_request_and_a_list_are_bounded`:
+  - A list request's page size is 1 to 32. Its context id must be an identifier, and its page token is at most 128 bytes with no NUL.
+  - A list holds at most 32 tasks and 32 KiB. Its total size is at most `i32::MAX`, its next-page token has the same bounds as the page token, and each task is validated.
+- `a_peer_credential_is_validated_and_its_token_never_printed`: the subject must be an identifier. The bearer token is 32 to 256 bytes of ASCII letters, digits, `-`, `_`, and `.`, so a space or `+` refuses it. `Debug` prints the subject and `[redacted]`, never the token.
+- `states_bindings_and_errors_keep_their_names`: completed, failed, canceled, and rejected are the terminal states, and all eight states serialize in snake_case. The bindings report the protocol names `HTTP+JSON` and `JSONRPC` and serialize as `http_json` and `json_rpc`. All eleven error codes keep their `a2a_task_*` strings.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 31 library tests passed (7 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Fifty-three mutations were caught and restored byte-for-byte.
+  - Identifiers and parts: raising the identifier bound, allowing `/`, or accepting an empty identifier; skipping the idempotency-key, task-id, or payload check; refusing text at exactly 16 KiB or raising the text, data, or raw bound; skipping the raw or URL media type check; raising the filename bound or allowing CR in a URL filename; raising the media type bound or allowing CR; raising the URL bound; ignoring an unparsable URL; allowing ftp, a user name, or a password; allowing an empty part list or 17 parts; and making the shared JSON bound inclusive.
+  - Artifacts, snapshots, and messages: raising the artifact name bound or allowing NUL; skipping the artifact id or part check; allowing 17 artifacts; skipping the artifact or error-code check; and dropping the snapshot, message, or list size bound or the message part or id check.
+  - Lists and credentials: allowing page size 0 or 33; skipping the list context check; raising the page-token bound or allowing NUL in the next-page token; allowing 33 tasks; dropping the total-size bound or the per-task check; skipping the subject check; allowing a 31- or 257-byte token or any byte but a space; and printing the token.
+  - Names: making rejected non-terminal, renaming the JSON-RPC protocol or the server error code, and dropping the snake_case state names.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

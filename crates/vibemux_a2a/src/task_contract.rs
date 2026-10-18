@@ -403,3 +403,374 @@ pub(crate) fn bounded_json(value: &impl Serialize, limit: usize) -> Result<(), T
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const REFUSED: Result<(), TaskGatewayError> = Err(TaskGatewayError::InvalidRequest);
+
+    fn request() -> TaskRequest {
+        TaskRequest {
+            request_id: "request_1".to_string(),
+            context_id: "context_1".to_string(),
+            task_id: Some("task_1".to_string()),
+            idempotency_key: "key_1".to_string(),
+            payload: json!({"goal": "review"}),
+        }
+    }
+
+    fn snapshot(artifacts: Vec<TaskArtifact>) -> TaskSnapshot {
+        TaskSnapshot {
+            task_id: "task_1".to_string(),
+            context_id: "context_1".to_string(),
+            state: TaskState::Working,
+            artifacts,
+            error_code: None,
+        }
+    }
+
+    /// A JSON string of exactly `bytes` serialized bytes, quotes included.
+    fn json_text(bytes: usize) -> Value {
+        json!("x".repeat(bytes - 2))
+    }
+
+    fn large_artifact(artifact_id: &str) -> TaskArtifact {
+        TaskArtifact::data(artifact_id, json_text(12 * 1024))
+    }
+
+    #[test]
+    fn task_identifiers_are_short_ascii_names() {
+        for valid in ["a", "A-z_0.9", "a".repeat(128).as_str()] {
+            assert_eq!(validate_task_identifier(valid), Ok(()), "{valid}");
+        }
+        for invalid in [
+            "",
+            "a".repeat(129).as_str(),
+            "a b",
+            "a/b",
+            "a:b",
+            "é",
+            "a\0",
+        ] {
+            assert_eq!(validate_task_identifier(invalid), REFUSED, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn a_request_bounds_its_identifiers_and_payload() {
+        assert_eq!(request().validate(), Ok(()));
+        assert_eq!(
+            TaskRequest {
+                task_id: None,
+                ..request()
+            }
+            .validate(),
+            Ok(())
+        );
+        let changes: [fn(&mut TaskRequest); 4] = [
+            |request| request.request_id = "request 1".to_string(),
+            |request| request.context_id = String::new(),
+            |request| request.task_id = Some("task/1".to_string()),
+            |request| request.idempotency_key = "k".repeat(129),
+        ];
+        for (index, change) in changes.into_iter().enumerate() {
+            let mut changed = request();
+            change(&mut changed);
+            assert_eq!(changed.validate(), REFUSED, "change {index}");
+        }
+        let with_payload = |bytes| TaskRequest {
+            payload: json_text(bytes),
+            ..request()
+        };
+        assert_eq!(with_payload(MAX_TASK_PAYLOAD_BYTES).validate(), Ok(()));
+        assert_eq!(with_payload(MAX_TASK_PAYLOAD_BYTES + 1).validate(), REFUSED);
+    }
+
+    #[test]
+    fn parts_bound_their_content_and_names() {
+        let raw =
+            |bytes: usize, media_type: Option<String>, filename: Option<String>| TaskPart::Raw {
+                bytes: vec![0; bytes],
+                media_type,
+                filename,
+            };
+        let url = |url: String| TaskPart::Url {
+            url,
+            media_type: None,
+            filename: None,
+        };
+        let long_url = |bytes: usize| {
+            let prefix = "https://example.test/";
+            url(format!("{prefix}{}", "a".repeat(bytes - prefix.len())))
+        };
+        for valid in [
+            TaskPart::Text("x".repeat(MAX_TASK_PAYLOAD_BYTES)),
+            TaskPart::Data(json_text(MAX_TASK_PAYLOAD_BYTES)),
+            raw(MAX_TASK_PAYLOAD_BYTES, None, None),
+            raw(1, Some("t".repeat(128)), Some("f".repeat(256))),
+            url("http://example.test/a".to_string()),
+            long_url(2048),
+        ] {
+            assert_eq!(valid.validate(), Ok(()), "{valid:?}");
+        }
+        for invalid in [
+            TaskPart::Text("x".repeat(MAX_TASK_PAYLOAD_BYTES + 1)),
+            TaskPart::Data(json_text(MAX_TASK_PAYLOAD_BYTES + 1)),
+            raw(MAX_TASK_PAYLOAD_BYTES + 1, None, None),
+            raw(1, Some("t".repeat(129)), None),
+            raw(1, Some("text/plain\r".to_string()), None),
+            raw(1, None, Some("f".repeat(257))),
+            raw(1, None, Some("a\0b".to_string())),
+            long_url(2049),
+            url("not a url".to_string()),
+            url("ftp://example.test/a".to_string()),
+            url("https://user@example.test/a".to_string()),
+            url("https://:secret@example.test/a".to_string()),
+            TaskPart::Url {
+                url: "https://example.test/a".to_string(),
+                media_type: Some("text/plain\n".to_string()),
+                filename: None,
+            },
+            TaskPart::Url {
+                url: "https://example.test/a".to_string(),
+                media_type: None,
+                filename: Some("a\rb".to_string()),
+            },
+        ] {
+            assert_eq!(invalid.validate(), REFUSED);
+        }
+        let text = TaskPart::Text("x".to_string());
+        assert_eq!(validate_parts(&vec![text.clone(); MAX_TASK_PARTS]), Ok(()));
+        assert_eq!(
+            validate_parts(&vec![text.clone(); MAX_TASK_PARTS + 1]),
+            REFUSED
+        );
+        assert_eq!(validate_parts(&[]), REFUSED);
+        assert_eq!(
+            validate_parts(&[text, raw(1, None, Some("a\nb".to_string()))]),
+            REFUSED
+        );
+    }
+
+    #[test]
+    fn artifacts_snapshots_and_messages_are_bounded() {
+        let artifact = TaskArtifact::data("artifact_1", json!(1));
+        assert_eq!(
+            (artifact.name.as_deref(), artifact.parts.as_slice()),
+            (None, &[TaskPart::Data(json!(1))][..])
+        );
+        let named = |name: String| TaskArtifact {
+            name: Some(name),
+            ..artifact.clone()
+        };
+        assert_eq!(named("n".repeat(256)).validate(), Ok(()));
+        for invalid in [
+            named("n".repeat(257)),
+            named("a\0b".to_string()),
+            TaskArtifact::data("artifact 1", json!(1)),
+            TaskArtifact {
+                parts: Vec::new(),
+                ..artifact.clone()
+            },
+        ] {
+            assert_eq!(invalid.validate(), REFUSED, "{invalid:?}");
+        }
+
+        let numbered = |count: usize| {
+            (0..count)
+                .map(|index| TaskArtifact::data(format!("artifact_{index}"), json!(index)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(snapshot(numbered(MAX_TASK_ARTIFACTS)).validate(), Ok(()));
+        // Each large artifact is valid; two fit the 32 KiB snapshot, three do not.
+        let large = |count: usize| {
+            (0..count)
+                .map(|index| large_artifact(&format!("artifact_{index}")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(snapshot(large(2)).validate(), Ok(()));
+        for invalid in [
+            snapshot(numbered(MAX_TASK_ARTIFACTS + 1)),
+            snapshot(large(3)),
+            snapshot(vec![named("a\0b".to_string())]),
+            TaskSnapshot {
+                task_id: "task 1".to_string(),
+                ..snapshot(Vec::new())
+            },
+            TaskSnapshot {
+                context_id: String::new(),
+                ..snapshot(Vec::new())
+            },
+            TaskSnapshot {
+                error_code: Some("worker failed".to_string()),
+                ..snapshot(Vec::new())
+            },
+        ] {
+            assert_eq!(invalid.validate(), REFUSED);
+        }
+
+        let message = |parts: Vec<TaskPart>| TaskMessage {
+            message_id: "message_1".to_string(),
+            context_id: "context_1".to_string(),
+            parts,
+        };
+        let large_text = || TaskPart::Text("x".repeat(12 * 1024));
+        assert_eq!(message(vec![large_text(), large_text()]).validate(), Ok(()));
+        for invalid in [
+            message(Vec::new()),
+            message(vec![large_text(), large_text(), large_text()]),
+            TaskMessage {
+                message_id: "message 1".to_string(),
+                ..message(vec![large_text()])
+            },
+            TaskMessage {
+                context_id: String::new(),
+                ..message(vec![large_text()])
+            },
+        ] {
+            assert_eq!(invalid.validate(), REFUSED);
+        }
+    }
+
+    #[test]
+    fn a_list_request_and_a_list_are_bounded() {
+        let list_request = |page_size: u32| TaskListRequest {
+            context_id: Some("context_1".to_string()),
+            state: None,
+            page_size,
+            page_token: Some("t".repeat(128)),
+            include_artifacts: false,
+        };
+        for page_size in [1, 32] {
+            assert_eq!(list_request(page_size).validate(), Ok(()), "{page_size}");
+        }
+        for invalid in [
+            list_request(0),
+            list_request(33),
+            TaskListRequest {
+                context_id: Some("context 1".to_string()),
+                ..list_request(1)
+            },
+            TaskListRequest {
+                page_token: Some("t".repeat(129)),
+                ..list_request(1)
+            },
+            TaskListRequest {
+                page_token: Some("a\0b".to_string()),
+                ..list_request(1)
+            },
+        ] {
+            assert_eq!(invalid.validate(), REFUSED, "{invalid:?}");
+        }
+
+        let list = |tasks: Vec<TaskSnapshot>| TaskList {
+            tasks,
+            next_page_token: Some("t".repeat(128)),
+            total_size: i32::MAX as u32,
+        };
+        assert_eq!(list(vec![snapshot(Vec::new()); 32]).validate(), Ok(()));
+        let large = |index: usize| snapshot(vec![large_artifact(&format!("artifact_{index}"))]);
+        assert_eq!(list((0..2).map(large).collect()).validate(), Ok(()));
+        for invalid in [
+            list(vec![snapshot(Vec::new()); 33]),
+            list((0..3).map(large).collect()),
+            TaskList {
+                total_size: i32::MAX as u32 + 1,
+                ..list(Vec::new())
+            },
+            TaskList {
+                next_page_token: Some("t".repeat(129)),
+                ..list(Vec::new())
+            },
+            TaskList {
+                next_page_token: Some("a\0b".to_string()),
+                ..list(Vec::new())
+            },
+            list(vec![TaskSnapshot {
+                task_id: "task 1".to_string(),
+                ..snapshot(Vec::new())
+            }]),
+        ] {
+            assert_eq!(invalid.validate(), REFUSED);
+        }
+    }
+
+    #[test]
+    fn a_peer_credential_is_validated_and_its_token_never_printed() {
+        let credential = |subject: &str, bearer_token: String| PeerCredential {
+            subject: subject.to_string(),
+            bearer_token,
+        };
+        for token in ["a".repeat(32), "a".repeat(256), "aA0-_.".repeat(6)] {
+            assert_eq!(
+                credential("alice", token.clone()).validate(),
+                Ok(()),
+                "{token}"
+            );
+        }
+        for (subject, token) in [
+            ("alice", "a".repeat(31)),
+            ("alice", "a".repeat(257)),
+            ("alice", format!("{} ", "a".repeat(32))),
+            ("alice", format!("{}+", "a".repeat(32))),
+            ("alice smith", "a".repeat(32)),
+            ("", "a".repeat(32)),
+        ] {
+            assert_eq!(
+                credential(subject, token.clone()).validate(),
+                REFUSED,
+                "{subject:?} {}",
+                token.len()
+            );
+        }
+        let secret = "s3cr3t_token_value_".repeat(2);
+        let printed = format!("{:?}", credential("alice", secret.clone()));
+        assert!(printed.contains("alice") && printed.contains("[redacted]"));
+        assert!(!printed.contains(&secret) && !printed.contains("s3cr3t"));
+    }
+
+    #[test]
+    fn states_bindings_and_errors_keep_their_names() {
+        for (state, terminal, name) in [
+            (TaskState::Submitted, false, "submitted"),
+            (TaskState::Working, false, "working"),
+            (TaskState::InputRequired, false, "input_required"),
+            (TaskState::AuthRequired, false, "auth_required"),
+            (TaskState::Completed, true, "completed"),
+            (TaskState::Failed, true, "failed"),
+            (TaskState::Canceled, true, "canceled"),
+            (TaskState::Rejected, true, "rejected"),
+        ] {
+            assert_eq!(state.is_terminal(), terminal, "{state:?}");
+            assert_eq!(json!(state), json!(name));
+        }
+        assert_eq!(
+            (
+                TaskBinding::HttpJson.protocol(),
+                TaskBinding::JsonRpc.protocol()
+            ),
+            ("HTTP+JSON", "JSONRPC")
+        );
+        assert_eq!(
+            (json!(TaskBinding::HttpJson), json!(TaskBinding::JsonRpc)),
+            (json!("http_json"), json!("json_rpc"))
+        );
+        for (error, code) in [
+            (TaskGatewayError::InvalidRequest, "a2a_task_invalid_request"),
+            (TaskGatewayError::Unauthorized, "a2a_task_unauthorized"),
+            (TaskGatewayError::Forbidden, "a2a_task_forbidden"),
+            (TaskGatewayError::NotFound, "a2a_task_not_found"),
+            (TaskGatewayError::Unsupported, "a2a_task_unsupported"),
+            (TaskGatewayError::Busy, "a2a_task_busy"),
+            (TaskGatewayError::Deadline, "a2a_task_deadline"),
+            (TaskGatewayError::Protocol, "a2a_task_protocol"),
+            (TaskGatewayError::Transport, "a2a_task_transport"),
+            (TaskGatewayError::Server, "a2a_task_server"),
+            (TaskGatewayError::Internal, "a2a_task_internal"),
+        ] {
+            assert_eq!(error.code(), code);
+        }
+    }
+}
