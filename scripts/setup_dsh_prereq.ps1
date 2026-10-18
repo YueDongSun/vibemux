@@ -118,6 +118,16 @@ $script:Notes = New-Object System.Collections.ArrayList
 # Windows PowerShell 5.1 has no $IsWindows, and strict mode rejects reading it.
 $script:IsWindowsHost = if ($PSVersionTable.PSVersion.Major -ge 6) { [bool]$IsWindows } else { $true }
 
+# Byte limits for every JSON document this script parses, enforced before the
+# parse. The package manifest and session configuration limit equals the
+# adapter's MAX_SESSION_CONFIG_BYTES (crates/vibemux_dsh/src/config.rs), so a
+# document the adapter refuses for size is never reported ready here. Profile
+# manifests belong to DSH, which lists bundles in them, so they get more room.
+$script:MaxAdapterJsonBytes = 32 * 1024
+$script:MaxProfileManifestBytes = 256 * 1024
+# Link hops followed while canonicalizing a launcher path before giving up.
+$script:MaxLinkHops = 32
+
 function New-Check {
     param(
         [string]$Id,
@@ -299,6 +309,121 @@ function Compare-SemVer {
     return 0
 }
 
+function Read-BoundedJsonObject {
+    <#
+    Parse one JSON object from a regular file of at most MaxBytes bytes. The size
+    is checked before reading, and the read stops one byte past the limit, so a
+    file that grows (or a link whose own length is zero) is still refused before
+    it is parsed. The text must be strict UTF-8 and the top-level value an
+    object. Throws on any failure; callers report a throw as an unreadable
+    document.
+    #>
+    param([string]$Path, [int]$MaxBytes)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item -isnot [System.IO.FileInfo]) { throw 'not a regular file' }
+    if ($item.Length -gt $MaxBytes) { throw "larger than $MaxBytes bytes" }
+    $buffer = New-Object byte[] ($MaxBytes + 1)
+    $total = 0
+    $stream = [System.IO.File]::OpenRead($item.FullName)
+    try {
+        while ($total -lt $buffer.Length) {
+            $read = $stream.Read($buffer, $total, $buffer.Length - $total)
+            if ($read -le 0) { break }
+            $total += $read
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+    if ($total -gt $MaxBytes) { throw "larger than $MaxBytes bytes" }
+    # A UTF-8 byte-order mark is skipped, as Get-Content does; invalid UTF-8 throws.
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $reader = New-Object System.IO.StreamReader((New-Object System.IO.MemoryStream($buffer, 0, $total)), $strictUtf8, $true)
+    try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    # ConvertFrom-Json unrolls a top-level array, so a one-element array would
+    # otherwise pass for an object.
+    if (-not $text.TrimStart().StartsWith('{')) { throw 'top-level value is not a JSON object' }
+    return ($text | ConvertFrom-Json)
+}
+
+function Resolve-ComparablePath {
+    <#
+    Approximate std::fs::canonicalize, which the adapter applies to the project
+    root and to both launcher paths before its containment test: make the path
+    absolute, then follow every symbolic-link or junction component, including
+    links inside a link's target. When a component is missing or a link cannot be
+    followed, the absolute lexical path is returned instead.
+    #>
+    param([string]$Path)
+    $lexical = [System.IO.Path]::GetFullPath($Path)
+    $pending = $lexical
+    try {
+        for ($hop = 0; $hop -le $script:MaxLinkHops; $hop++) {
+            $root = [System.IO.Path]::GetPathRoot($pending)
+            $components = $pending.Substring($root.Length).Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+            $current = $root
+            $redirect = $null
+            for ($index = 0; $index -lt $components.Count; $index++) {
+                $next = [System.IO.Path]::Combine($current, $components[$index])
+                $item = Get-Item -LiteralPath $next -Force -ErrorAction SilentlyContinue
+                if ($null -eq $item) { return $lexical }
+                $linkProperty = $item.PSObject.Properties['LinkType']
+                $linkType = if ($null -ne $linkProperty) { [string]$linkProperty.Value } else { '' }
+                if ($linkType -eq 'SymbolicLink' -or $linkType -eq 'Junction') {
+                    if ($null -ne $item.PSObject.Methods['ResolveLinkTarget']) {
+                        # .NET 6+ asks the OS, which also understands stored junction
+                        # forms such as `\??\Global\C:\...` that are not plain paths.
+                        $final = $item.ResolveLinkTarget($true)
+                        $target = if ($null -ne $final) { $final.FullName } else { $null }
+                    }
+                    else {
+                        $target = [string](@($item.Target) | Select-Object -First 1)
+                        # Windows PowerShell 5.1 reports a junction's stored name minus
+                        # `\??\`; map the object-manager forms back to plain paths.
+                        # Junction targets are always absolute, so a relative symlink
+                        # target is never rewritten.
+                        if ($linkType -eq 'Junction' -and $target -match '^Global\\(.+)$') { $target = $Matches[1] }
+                        elseif ($linkType -eq 'Junction' -and $target -match '^UNC\\(.+)$') { $target = '\\' + $Matches[1] }
+                    }
+                    if (-not $target) { return $lexical }
+                    # A relative link target is relative to the directory holding the link.
+                    $redirect = [System.IO.Path]::Combine($current, [string]$target)
+                    for ($rest = $index + 1; $rest -lt $components.Count; $rest++) {
+                        $redirect = [System.IO.Path]::Combine($redirect, $components[$rest])
+                    }
+                    break
+                }
+                $current = $next
+            }
+            if ($null -eq $redirect) { return $current }
+            $pending = [System.IO.Path]::GetFullPath($redirect)
+        }
+    }
+    catch {
+        # A link this host cannot follow leaves the lexical path, as documented above.
+    }
+    return $lexical
+}
+
+function Test-PathWithin {
+    <#
+    True when Candidate is Root itself or lies below it. Paths are compared
+    component by component, never by string prefix, so `C:\work\project-tools`
+    is not inside `C:\work\project`; trailing separators do not matter, and
+    components compare case-insensitively on Windows.
+    #>
+    param([string]$Candidate, [string]$Root)
+    $separators = [char[]]@('\', '/')
+    $candidateParts = $Candidate.Split($separators, [System.StringSplitOptions]::RemoveEmptyEntries)
+    $rootParts = $Root.Split($separators, [System.StringSplitOptions]::RemoveEmptyEntries)
+    if ($rootParts.Count -gt $candidateParts.Count) { return $false }
+    $comparison = if ($script:IsWindowsHost) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    for ($index = 0; $index -lt $rootParts.Count; $index++) {
+        if (-not [string]::Equals($candidateParts[$index], $rootParts[$index], $comparison)) { return $false }
+    }
+    return $true
+}
+
 function Resolve-NodeImage {
     $command = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $command) { return $null }
@@ -344,8 +469,8 @@ function Get-DshInstall {
         return [pscustomobject]@{ present = $false; trusted = $false; version = $null; entry_script = $null; reason = 'package manifest not found' }
     }
     $manifest = $null
-    try { $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json } catch {
-        return [pscustomobject]@{ present = $true; trusted = $false; version = $null; entry_script = $null; reason = 'package manifest is not valid JSON' }
+    try { $manifest = Read-BoundedJsonObject -Path $manifestPath -MaxBytes $script:MaxAdapterJsonBytes } catch {
+        return [pscustomobject]@{ present = $true; trusted = $false; version = $null; entry_script = $null; reason = "package manifest is not a JSON object of at most $($script:MaxAdapterJsonBytes) bytes" }
     }
     $version = if ($manifest.PSObject.Properties.Name -contains 'version') { [string]$manifest.version } else { $null }
     $packageName = if ($manifest.PSObject.Properties.Name -contains 'name') { [string]$manifest.name } else { '' }
@@ -374,11 +499,16 @@ function Test-TuiBundleSpec {
 }
 
 function Get-ProfileManifest {
+    <#
+    Read one profile manifest. `present` says the file exists; `valid` says it is
+    a readable JSON object within the byte limit. A present but invalid manifest
+    is a profile DSH cannot load, so callers must not count it as provisioned.
+    #>
     param([string]$DshHomePath, [string]$Profile)
     $path = Join-Path (Join-Path $DshHomePath 'profiles') (Join-Path $Profile 'package.json')
-    if (-not (Test-Path $path)) { return [pscustomobject]@{ present = $false; path = $path; bundles = @() } }
+    if (-not (Test-Path $path)) { return [pscustomobject]@{ present = $false; valid = $false; path = $path; bundles = @() } }
     try {
-        $manifest = Get-Content $path -Raw | ConvertFrom-Json
+        $manifest = Read-BoundedJsonObject -Path $path -MaxBytes $script:MaxProfileManifestBytes
         $bundles = @()
         $names = $manifest.PSObject.Properties.Name
         if ($names -contains 'dsh' -and $manifest.dsh -and ($manifest.dsh.PSObject.Properties.Name -contains 'profile')) {
@@ -386,10 +516,10 @@ function Get-ProfileManifest {
                 $bundles = @($manifest.dsh.profile.bundles)
             }
         }
-        return [pscustomobject]@{ present = $true; path = $path; bundles = $bundles }
+        return [pscustomobject]@{ present = $true; valid = $true; path = $path; bundles = $bundles }
     }
     catch {
-        return [pscustomobject]@{ present = $true; path = $path; bundles = @() }
+        return [pscustomobject]@{ present = $true; valid = $false; path = $path; bundles = @() }
     }
 }
 
@@ -402,12 +532,30 @@ $install = if ($npmPrefixResolved) { Get-DshInstall -Prefix $npmPrefixResolved }
     [pscustomobject]@{ present = $false; trusted = $false; version = $null; entry_script = $null; reason = 'npm global prefix could not be resolved' }
 }
 $nodeVersion = $null
+# Why a probed node image is unusable; $null when it answered or was not probed.
+$nodeProbeFailure = $null
 if ($nodeImage -and -not $SkipProbes) {
-    $probe = Invoke-Bounded -FilePath $nodeImage -Arguments @('--version') -TimeoutSeconds $ProbeTimeoutSeconds
-    if (-not $probe.timed_out -and $probe.exit_code -eq 0) { $nodeVersion = $probe.stdout.Trim() }
+    try {
+        $probe = Invoke-Bounded -FilePath $nodeImage -Arguments @('--version') -TimeoutSeconds $ProbeTimeoutSeconds
+        if ($probe.timed_out) { $nodeProbeFailure = "timed out after $ProbeTimeoutSeconds s" }
+        elseif ($probe.exit_code -ne 0) { $nodeProbeFailure = "exited with code $($probe.exit_code)" }
+        elseif (-not $probe.stdout.Trim()) { $nodeProbeFailure = 'printed no version' }
+        else { $nodeVersion = $probe.stdout.Trim() }
+    }
+    catch {
+        $nodeProbeFailure = 'could not be started'
+    }
 }
+# Only a node image that is present and did not fail its probe may run installers
+# or be written into a session configuration.
+$nodeUsable = [bool]$nodeImage -and -not $nodeProbeFailure
 
-if ($nodeImage) {
+if ($nodeImage -and $nodeProbeFailure) {
+    [void](New-Check -Id 'node' -Severity 'required' -Status 'missing' `
+            -Detail "$nodeImage did not answer --version ($nodeProbeFailure)" `
+            -Remediation 'Repair or reinstall Node.js 22.19+ or 24+ (https://nodejs.org) so `node --version` succeeds, then rerun this script.')
+}
+elseif ($nodeImage) {
     $nodeDetail = if ($nodeVersion) { "$nodeImage ($nodeVersion)" } else { "$nodeImage (version not probed)" }
     [void](New-Check -Id 'node' -Severity 'required' -Status 'ok' -Detail $nodeDetail)
 }
@@ -478,8 +626,13 @@ else {
 }
 
 $sdkProfile = if ($dshHomeResolved) { Get-ProfileManifest -DshHomePath $dshHomeResolved -Profile 'sdk' } else { $null }
-if ($sdkProfile -and $sdkProfile.present) {
+if ($sdkProfile -and $sdkProfile.present -and $sdkProfile.valid) {
     [void](New-Check -Id 'dsh-sdk-profile' -Severity 'required' -Status 'ok' -Detail $sdkProfile.path)
+}
+elseif ($sdkProfile -and $sdkProfile.present) {
+    [void](New-Check -Id 'dsh-sdk-profile' -Severity 'required' -Status 'stale' `
+            -Detail "$($sdkProfile.path) is not a JSON object of at most $($script:MaxProfileManifestBytes) bytes" `
+            -Remediation 'Inspect or restore that manifest; DSH writes it when it provisions the sdk profile (dsh --profile sdk --help). -Apply runs that command but does not delete or rewrite the file.')
 }
 else {
     [void](New-Check -Id 'dsh-sdk-profile' -Severity 'required' -Status 'missing' `
@@ -501,8 +654,12 @@ else {
                 -Detail "$($tuiProfile.path) bundles $($tuiProfile.bundles -join ', ')")
     }
     else {
+        $tuiDetail = if ($tuiProfile -and $tuiProfile.present -and -not $tuiProfile.valid) {
+            "$($tuiProfile.path) is not a JSON object of at most $($script:MaxProfileManifestBytes) bytes"
+        }
+        else { "the tui profile is absent or does not bundle $tuiBundleName" }
         [void](New-Check -Id 'dsh-tui-profile' -Severity 'required' -Status 'missing' `
-                -Detail "the tui profile is absent or does not bundle $tuiBundleName" `
+                -Detail $tuiDetail `
                 -Remediation "Install it: dsh plugin --profile tui add $TuiBundle, or rerun this script with -Apply.")
     }
     if ($SkipProbes) {
@@ -511,7 +668,7 @@ else {
         [void](New-Check -Id 'dsh-tui-compose' -Severity 'advisory' -Status 'unknown' `
                 -Detail 'composition not probed (-SkipProbes)')
     }
-    elseif ($install.trusted -and $bundlePresent) {
+    elseif ($nodeUsable -and $install.trusted -and $bundlePresent) {
         $compose = Invoke-Bounded -FilePath $nodeImage -Arguments @($install.entry_script, '--profile', 'tui', '--dump-default-config') -TimeoutSeconds $ProbeTimeoutSeconds
         if (-not $compose.timed_out -and $compose.exit_code -eq 0) {
             [void](New-Check -Id 'dsh-tui-compose' -Severity 'required' -Status 'ok' `
@@ -526,7 +683,7 @@ else {
     }
     else {
         [void](New-Check -Id 'dsh-tui-compose' -Severity 'required' -Status 'unknown' `
-                -Detail 'not attempted because the install or the tui profile is missing')
+                -Detail 'not attempted because node, the install, or the tui profile is unavailable')
     }
 }
 
@@ -534,9 +691,9 @@ $sessionPath = Join-Path (Join-Path $ProjectRoot '.vibemux') 'dsh_session.json'
 $sessionPresent = Test-Path $sessionPath
 if ($sessionPresent) {
     $sessionOk = $false
-    $sessionDetail = "$sessionPath is not valid schema-1 JSON"
+    $sessionDetail = "$sessionPath is not valid schema-1 JSON of at most $($script:MaxAdapterJsonBytes) bytes"
     try {
-        $session = Get-Content $sessionPath -Raw | ConvertFrom-Json
+        $session = Read-BoundedJsonObject -Path $sessionPath -MaxBytes $script:MaxAdapterJsonBytes
         $sessionNames = $session.PSObject.Properties.Name
         # Wrap the pipeline so an empty result is an empty array, not $null:
         # under Set-StrictMode a $null.Count read would abort this validation.
@@ -588,7 +745,7 @@ function Set-CheckResult {
 }
 
 if ($Apply) {
-    if ($nodeImage -and $npmPrefixResolved) {
+    if ($nodeUsable -and $npmPrefixResolved) {
         $npmCli = Join-Path $npmPrefixResolved 'node_modules/npm/bin/npm-cli.js'
         if ((Get-CheckStatus 'dsh-install') -ne 'ok' -or (Get-CheckStatus 'dsh-version') -ne 'ok') {
             if (Test-Path $npmCli) {
@@ -613,7 +770,7 @@ if ($Apply) {
             [void]$applied.Add("dsh --profile sdk --help -> $(if ($ok) { 'ok' } else { 'failed' })")
             if ($ok -and $dshHomeResolved) {
                 $sdkProfile = Get-ProfileManifest -DshHomePath $dshHomeResolved -Profile 'sdk'
-                if ($sdkProfile.present) {
+                if ($sdkProfile.present -and $sdkProfile.valid) {
                     Set-CheckResult -Id 'dsh-sdk-profile' -Status 'ok' -Detail $sdkProfile.path
                 }
             }
@@ -636,24 +793,28 @@ if ($Apply) {
         }
     }
     else {
-        [void]$applied.Add('no remediation attempted: the node image or the npm prefix is unresolved')
+        [void]$applied.Add('no remediation attempted: no runnable node image, or the npm prefix is unresolved')
     }
 
     if ($WriteSessionConfig -and $install.trusted) {
-        $projectFull = [System.IO.Path]::GetFullPath($ProjectRoot)
+        # Mirror the adapter: it canonicalizes the project root and both launcher
+        # paths, then refuses a launcher at or below the root.
         # Wrap the pipeline: an empty result must be an empty array, not $null,
         # because Set-StrictMode rejects a $null.Count read.
-        $insideProject = @(
-            @($nodeImage, $install.entry_script) | Where-Object {
-                $candidate = [System.IO.Path]::GetFullPath($_)
-                $candidate.StartsWith($projectFull, [System.StringComparison]::OrdinalIgnoreCase)
-            }
-        )
+        $insideProject = @()
+        if ($nodeUsable) {
+            $projectComparable = Resolve-ComparablePath -Path $ProjectRoot
+            $insideProject = @(
+                @($nodeImage, $install.entry_script) | Where-Object {
+                    Test-PathWithin -Candidate (Resolve-ComparablePath -Path $_) -Root $projectComparable
+                }
+            )
+        }
         if ($sessionPresent -and -not $Force) {
             [void]$applied.Add("session config left unchanged (already present; pass -Force to replace): $sessionPath")
         }
-        elseif (-not $nodeImage) {
-            [void]$applied.Add('session config skipped: no node image')
+        elseif (-not $nodeUsable) {
+            [void]$applied.Add('session config skipped: no runnable node image')
         }
         elseif ($insideProject.Count -gt 0) {
             # The adapter refuses either path inside the project root, so writing
