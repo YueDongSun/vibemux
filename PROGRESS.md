@@ -5652,3 +5652,22 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A client's origin, JSON-RPC, and event-frame checks in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_client.rs` has three pure helpers that the network client depends on. `loopback_origin` normalizes the allowed origins, the base URL, every interface an agent card advertises, and the server's gRPC base URL; it is the check that keeps the gateway loopback-only. `rpc_result` checks a JSON-RPC response before its result is used. `event_boundary` finds where a server-sent event ends in the subscription stream. The module had no tests of its own; the helpers were reached only through the gateway integration tests and their adversarial agent-card fixture. This change is test-only.
+
+**Implemented:**
+- A unit-test module in `task_client.rs`. No production code changed.
+- `only_a_numeric_loopback_http_origin_with_an_explicit_port_is_allowed`: plain-http origins on IPv4 loopback (any `127.0.0.0/8` address) or IPv6 `::1`, with a port and at most a root path, are normalized to their origin without the trailing slash. These are refused as forbidden: a host name (including `localhost`), a private or unspecified address, another IPv6 address, https, a missing port, user info, a password, a query, a fragment, and a non-root path. The URL parser drops a scheme's default port, so `http://127.0.0.1:80` also counts as a missing port. Text that is not a URL is refused as invalid.
+- `a_json_rpc_result_needs_its_id_and_exactly_one_outcome`: a `2.0` response whose numeric or string id matches yields its result. These are protocol failures: another version, another id, a string id where a number was sent, a response when no id is expected, a missing id, both a result and an error, neither, and a value that is not a response object. An error outcome maps by its local error code first (`a2a_task_not_found`, `a2a_task_busy`) and then by its JSON-RPC code (`-32004` is unsupported); any other error is a protocol failure.
+- `an_event_ends_at_its_first_blank_line_in_any_newline_style`: an event ends at the first blank line written as LF LF, CR CR, or CRLF CRLF, and the helper returns both where the event data ends and where the next event starts. A blank line at the very start counts. A partial frame, including one cut inside a CRLF CRLF, has no boundary.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 21 library tests passed (3 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Twenty-four mutations were caught and restored byte-for-byte. They were: mapping unparsable text to forbidden; accepting any non-multicast IPv4 address; refusing or accepting every IPv6 address; accepting host names; and skipping the scheme, port, user name, password, query, fragment, or path check. For the origin, keeping the trailing slash. For JSON-RPC: skipping the version, id, or single-outcome check; not mapping an error; and ignoring the error's JSON-RPC code. For event frames: shortening the CRLF CRLF frame, or dropping the CRLF CRLF, LF LF, or CR CR boundary; shifting where the data ends; and skipping the first byte.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
