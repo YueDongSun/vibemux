@@ -18,8 +18,14 @@ use workflow_support::{
 
 const SYNTAX: [&str; 1] = ["syntax"];
 const SLOW_TURN_MS: u64 = 2_000;
-/// Longer than the service's shutdown grace, so a restart interrupts it.
-const INTERRUPTED_TURN_MS: u64 = 15_000;
+/// The worker fixture's longest delay. The restart must still find this
+/// turn running once the other track's candidate is recorded, which can take
+/// longer than 15 s on a loaded runner; the restart kills it well before.
+const INTERRUPTED_TURN_MS: u64 = 60_000;
+/// A shutdown that cancels the running turn ends well within this. One that
+/// waited for the turn instead would take at least the dispatch join bound,
+/// the 2 s shutdown grace plus a 15 s margin.
+const RESTART_SHUTDOWN_LIMIT: Duration = Duration::from_secs(15);
 /// Longer than the whole cancellation test may take.
 const CANCELLED_TURN_MS: u64 = 30_000;
 
@@ -341,16 +347,25 @@ async fn a_restart_stops_the_workflow_and_the_resumed_run_repeats_no_completed_t
                 })
         })
         .await;
+    let ended_early = finished(&fixture, "track_a/implement_1");
+    assert!(
+        ended_early.is_empty(),
+        "track A's turn ended before the restart could interrupt it: {ended_early:?}"
+    );
 
     let shutdown = fixture.restart().await;
     assert!(
-        shutdown < Duration::from_millis(INTERRUPTED_TURN_MS),
+        shutdown < RESTART_SHUTDOWN_LIMIT,
         "the shutdown waited for the turn"
     );
     let status = fixture.status(workflow).await;
     assert_eq!(phase(&status), "paused", "status: {status:#}");
     assert_eq!(status["running_here"], false);
-    assert!(finished(&fixture, "track_a/implement_1").is_empty());
+    let interrupted = finished(&fixture, "track_a/implement_1");
+    assert!(
+        interrupted.is_empty(),
+        "the interrupted turn finished: {interrupted:?}"
+    );
 
     fixture.restart_after_crash(workflow).await;
     let status = fixture.status(workflow).await;
