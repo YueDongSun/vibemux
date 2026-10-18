@@ -796,7 +796,7 @@ impl HarnessDispatchService {
     }
 
     /// Stops admission, cancels every attempt and probe, and waits for their
-    /// tasks up to the grace period plus [`SHUTDOWN_JOIN_MARGIN`]; tasks
+    /// tasks up to the grace period plus `SHUTDOWN_JOIN_MARGIN`; tasks
     /// still running then are aborted, which kills their process trees. An
     /// attempt that could not report its finish is recovered at the next
     /// start. Runs before the writer shuts down.

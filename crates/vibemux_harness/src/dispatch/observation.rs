@@ -330,3 +330,358 @@ fn classify_dsh_turn_end(value: &Value) -> ObservationKind {
         _ => ObservationKind::Opaque,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    use ObservationKind::{
+        Approval, Cancelled, Completed, Failed, Opaque, Started, Text, Tool, Usage,
+    };
+
+    fn assert_table(protocol: NativeProtocol, table: &[(Value, ObservationKind)]) {
+        for (payload, expected) in table {
+            assert_eq!(classify(protocol, payload), *expected, "{payload}");
+        }
+    }
+
+    #[test]
+    fn kind_names_match_their_serde_form_and_only_results_are_terminal() {
+        let names = [
+            "started",
+            "text",
+            "tool",
+            "approval",
+            "usage",
+            "completed",
+            "failed",
+            "cancelled",
+            "opaque",
+        ];
+        for (kind, name) in ObservationKind::ALL.into_iter().zip(names) {
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(serde_json::to_value(kind).ok(), Some(json!(name)));
+            assert_eq!(
+                kind.is_terminal(),
+                [Completed, Failed, Cancelled].contains(&kind),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_keeps_the_exact_bytes_and_refuses_bad_frames_by_code() {
+        let raw = r#"{"type":"turn.completed","secret_field":"do_not_print"}"#;
+        let Ok((record, value)) =
+            ObservedRecord::parse(NativeProtocol::CodexExec, 7, raw.to_owned())
+        else {
+            panic!("a JSON object frame must parse");
+        };
+        assert_eq!(record.sequence(), 7);
+        assert_eq!(record.kind(), Completed);
+        assert_eq!(record.raw_json(), raw);
+        assert_eq!(record.byte_count(), raw.len());
+        assert_eq!(value["secret_field"], "do_not_print");
+        assert_eq!(
+            format!("{record:?}"),
+            format!(
+                "ObservedRecord {{ sequence: 7, kind: Completed, bytes: {} }}",
+                raw.len()
+            )
+        );
+        let refused = |sequence: u64, frame: &str| {
+            ObservedRecord::parse(NativeProtocol::CodexExec, sequence, frame.to_owned()).err()
+        };
+        assert!(matches!(refused(0, raw), Some(DispatchError::Internal)));
+        assert!(matches!(refused(1, "{"), Some(DispatchError::InvalidJson)));
+        for frame in ["[]", "7", "\"text\"", "null"] {
+            assert!(
+                matches!(refused(1, frame), Some(DispatchError::InvalidRecord)),
+                "{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_exec_classifies_every_verified_discriminant() {
+        let mut table = vec![
+            (json!({"type": "thread.started"}), Started),
+            (json!({"type": "turn.started"}), Started),
+            (json!({"type": "turn.completed"}), Completed),
+            (json!({"type": "turn.failed"}), Failed),
+            (json!({"type": "error"}), Failed),
+            (json!({"type": "item.future"}), Opaque),
+        ];
+        for event in ["item.started", "item.updated", "item.completed"] {
+            for (item_type, expected) in [
+                ("agent_message", Text),
+                ("reasoning", Text),
+                ("command_execution", Tool),
+                ("file_change", Tool),
+                ("mcp_tool_call", Tool),
+                ("web_search", Tool),
+                ("error", Opaque),
+                ("future_item", Opaque),
+            ] {
+                table.push((
+                    json!({"type": event, "item": {"type": item_type}}),
+                    expected,
+                ));
+            }
+        }
+        assert_table(NativeProtocol::CodexExec, &table);
+    }
+
+    #[test]
+    fn codex_app_server_classifies_every_verified_discriminant() {
+        let mut table = vec![
+            (json!({"method": "thread/started"}), Started),
+            (json!({"method": "turn/started"}), Started),
+            (json!({"method": "thread/tokenUsage/updated"}), Usage),
+            (json!({"method": "item/agentMessage/delta"}), Text),
+            (json!({"method": "item/plan/delta"}), Text),
+            (json!({"method": "item/commandExecution/outputDelta"}), Tool),
+            (json!({"method": "item/fileChange/outputDelta"}), Tool),
+            (json!({"method": "item/tool/call"}), Tool),
+            (json!({"method": "error"}), Opaque),
+        ];
+        for method in [
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+            "item/tool/requestUserInput",
+            "mcpServer/elicitation/request",
+        ] {
+            table.push((json!({"method": method}), Approval));
+        }
+        for (status, expected) in [
+            ("completed", Completed),
+            ("failed", Failed),
+            ("interrupted", Cancelled),
+            ("inProgress", Opaque),
+        ] {
+            table.push((
+                json!({"method": "turn/completed", "params": {"turn": {"status": status}}}),
+                expected,
+            ));
+        }
+        for method in ["item/started", "item/completed"] {
+            for (item_type, expected) in [
+                ("agentMessage", Text),
+                ("plan", Text),
+                ("commandExecution", Tool),
+                ("fileChange", Tool),
+                ("mcpToolCall", Tool),
+                ("dynamicToolCall", Tool),
+                ("collabToolCall", Tool),
+                ("webSearch", Tool),
+                ("imageView", Tool),
+                ("userMessage", Opaque),
+            ] {
+                table.push((
+                    json!({"method": method, "params": {"item": {"type": item_type}}}),
+                    expected,
+                ));
+            }
+        }
+        assert_table(NativeProtocol::CodexAppServer, &table);
+    }
+
+    #[test]
+    fn claude_classifies_every_verified_discriminant() {
+        let message = |role: &str, block: &str| json!({"type": role, "message": {"content": [{"type": block}]}});
+        let stream = |event: Value| json!({"type": "stream_event", "event": event});
+        let table = [
+            (json!({"type": "system", "subtype": "init"}), Started),
+            (
+                json!({"type": "system", "subtype": "compact_boundary"}),
+                Opaque,
+            ),
+            (
+                json!({"type": "control_request", "request": {"subtype": "can_use_tool"}}),
+                Approval,
+            ),
+            (
+                json!({"type": "control_request", "request": {"subtype": "interrupt"}}),
+                Opaque,
+            ),
+            (message("assistant", "text"), Text),
+            (message("assistant", "tool_use"), Tool),
+            (message("assistant", "thinking"), Opaque),
+            (message("user", "tool_result"), Tool),
+            (message("user", "text"), Opaque),
+            (
+                json!({"type": "assistant", "message": {"content": "text"}}),
+                Opaque,
+            ),
+            (
+                stream(json!({"type": "content_block_delta", "delta": {"type": "text_delta"}})),
+                Text,
+            ),
+            (
+                stream(
+                    json!({"type": "content_block_delta", "delta": {"type": "input_json_delta"}}),
+                ),
+                Tool,
+            ),
+            (
+                stream(json!({"type": "content_block_delta", "delta": {"type": "thinking_delta"}})),
+                Opaque,
+            ),
+            (
+                stream(
+                    json!({"type": "content_block_start", "content_block": {"type": "tool_use"}}),
+                ),
+                Tool,
+            ),
+            (
+                stream(json!({"type": "content_block_start", "content_block": {"type": "text"}})),
+                Opaque,
+            ),
+            (stream(json!({"type": "message_delta", "usage": {}})), Usage),
+            (stream(json!({"type": "message_delta"})), Opaque),
+            (stream(json!({"type": "message_stop"})), Opaque),
+        ];
+        assert_table(NativeProtocol::ClaudeStreamJson, &table);
+    }
+
+    #[test]
+    fn claude_results_need_root_scope_and_a_clean_success() {
+        let result = |fields: Value| {
+            let mut value = json!({"type": "result"});
+            if let (Some(target), Some(source)) = (value.as_object_mut(), fields.as_object()) {
+                target.extend(source.clone());
+            }
+            value
+        };
+        let table = [
+            (result(json!({"subtype": "success"})), Completed),
+            (
+                result(
+                    json!({"subtype": "success", "is_error": false, "terminal_reason": "completed"}),
+                ),
+                Completed,
+            ),
+            (
+                result(json!({"subtype": "success", "terminal_reason": "future_reason"})),
+                Opaque,
+            ),
+            (
+                result(json!({"subtype": "success", "is_error": "false"})),
+                Opaque,
+            ),
+            (result(json!({"subtype": "error_during_execution"})), Failed),
+            (result(json!({"subtype": "error_max_turns"})), Failed),
+            (
+                result(json!({"subtype": "future_error", "is_error": true})),
+                Failed,
+            ),
+            (result(json!({"subtype": "future_error"})), Opaque),
+            (
+                result(json!({"terminal_reason": "aborted_streaming"})),
+                Cancelled,
+            ),
+            (
+                result(json!({"terminal_reason": "aborted_tools"})),
+                Cancelled,
+            ),
+            (result(json!({"terminal_reason": "max_turns"})), Failed),
+            (
+                result(json!({"subtype": "error_max_turns", "parent_tool_use_id": "nested"})),
+                Opaque,
+            ),
+            (
+                result(json!({"terminal_reason": "aborted_tools", "parent_tool_use_id": "nested"})),
+                Opaque,
+            ),
+        ];
+        assert_table(NativeProtocol::ClaudeStreamJson, &table);
+    }
+
+    #[test]
+    fn acp_classifies_every_verified_discriminant() {
+        let update = |kind: &str, content: Value| {
+            json!({
+                "method": "session/update",
+                "params": {"update": {"sessionUpdate": kind, "content": content}}
+            })
+        };
+        let mut table = vec![
+            (json!({"method": "session/request_permission"}), Approval),
+            (update("agent_message_chunk", json!({"type": "text"})), Text),
+            (update("agent_thought_chunk", json!({"type": "text"})), Text),
+            (
+                update("agent_message_chunk", json!({"type": "image"})),
+                Opaque,
+            ),
+            (update("agent_thought_chunk", Value::Null), Opaque),
+            (update("tool_call", Value::Null), Tool),
+            (update("tool_call_update", Value::Null), Tool),
+            (update("usage_update", Value::Null), Usage),
+            (update("plan", Value::Null), Opaque),
+            (json!({"method": "session/cancel"}), Opaque),
+            (
+                json!({"method": null, "result": {"stopReason": "end_turn"}}),
+                Opaque,
+            ),
+            (
+                json!({"method": 5, "result": {"stopReason": "end_turn"}}),
+                Opaque,
+            ),
+        ];
+        for (stop_reason, expected) in [
+            ("end_turn", Completed),
+            ("cancelled", Cancelled),
+            ("max_tokens", Failed),
+            ("max_turn_requests", Failed),
+            ("refusal", Failed),
+            ("future_stop", Opaque),
+        ] {
+            table.push((
+                json!({"id": 3, "result": {"stopReason": stop_reason}}),
+                expected,
+            ));
+        }
+        assert_table(NativeProtocol::Acp, &table);
+    }
+
+    #[test]
+    fn dsh_classifies_turn_events_and_never_ends_on_status() {
+        let event = |event: Value| json!({"method": "session.event", "params": {"event": event}});
+        let mut table = vec![
+            (event(json!({"type": "turn/start"})), Started),
+            (event(json!({"type": "assistant/message"})), Text),
+            (event(json!({"type": "assistant/chunk"})), Text),
+            (event(json!({"type": "tool/call"})), Tool),
+            (event(json!({"type": "tool/result"})), Tool),
+            (event(json!({"type": "approval/asked"})), Approval),
+            (event(json!({"type": "subagent/start"})), Opaque),
+            (event(json!({"type": "turn/end"})), Opaque),
+            (
+                json!({"method": "session.status", "params": {"status": "idle"}}),
+                Opaque,
+            ),
+            (
+                json!({"method": "turn/end", "params": {"event": {"type": "turn/end"}}}),
+                Opaque,
+            ),
+        ];
+        for (reason, expected) in [
+            ("completed", Completed),
+            ("aborted", Cancelled),
+            ("blocked", Failed),
+            ("error", Failed),
+            ("max-tokens", Failed),
+            ("interrupted", Failed),
+            ("future_reason", Opaque),
+        ] {
+            table.push((
+                event(json!({"type": "turn/end", "data": {"reason": {"kind": reason}}})),
+                expected,
+            ));
+        }
+        assert_table(NativeProtocol::DshSdkJsonRpc, &table);
+    }
+}

@@ -373,4 +373,118 @@ mod tests {
             assert!(parse(args.into_iter().map(OsString::from)).is_err());
         }
     }
+
+    /// The documented value for a `<placeholder>` in a command line.
+    fn placeholder_value(name: &str) -> &'static str {
+        match name {
+            "sha256" | "confirmation_from_inspect" => {
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            }
+            "new_dir" => "export_dir",
+            "path" => "input_path",
+            "path|-" => "-",
+            "n" => "0",
+            "uuid" | "id" | "request_id" | "decision_id" | "workflow_id" | "bundle_id"
+            | "session_id" | "candidate_id" | "suite_id" => "11111111-1111-4111-8111-111111111111",
+            other => panic!("undocumented placeholder <{other}>"),
+        }
+    }
+
+    /// One documented argument: a `<placeholder>` gets a valid value and
+    /// anything else is literal.
+    fn documented_argument(token: &str) -> String {
+        match token
+            .strip_prefix('<')
+            .and_then(|name| name.strip_suffix('>'))
+        {
+            Some(name) => placeholder_value(name).to_string(),
+            None => token.to_string(),
+        }
+    }
+
+    /// Every argument list one documented command line stands for: a
+    /// `status|pause` token is each alternative, an optional group such as
+    /// `[--prompts]` or `[--after-sequence <n>]` is present or absent, and a
+    /// `<placeholder>`, even one such as `<path|->`, is one argument.
+    fn documented_argument_lists(command_line: &str) -> Vec<Vec<String>> {
+        let mut lists = vec![Vec::new()];
+        let mut tokens = command_line
+            .split_whitespace()
+            .map(|token| token.trim_matches('\''));
+        while let Some(token) = tokens.next() {
+            let alternatives: Vec<Vec<&str>> = if let Some(first) = token.strip_prefix('[') {
+                let mut group = vec![first];
+                while !group.last().is_some_and(|last| last.ends_with(']')) {
+                    group.push(tokens.next().expect("closed optional group"));
+                }
+                if let Some(last) = group.last_mut() {
+                    *last = last.trim_end_matches(']');
+                }
+                vec![group, Vec::new()]
+            } else if token.starts_with('<') {
+                vec![vec![token]]
+            } else {
+                token
+                    .split('|')
+                    .map(|alternative| vec![alternative])
+                    .collect()
+            };
+            lists = lists
+                .into_iter()
+                .flat_map(|list| {
+                    alternatives.iter().map(move |alternative| {
+                        let mut list = list.clone();
+                        list.extend(alternative.iter().copied().map(documented_argument));
+                        list
+                    })
+                })
+                .collect();
+        }
+        lists
+    }
+
+    /// AGENTS.md requires documented commands to match the current CLI.
+    /// Every `vibemuxctl.exe` invocation and every line that starts with a
+    /// `vibemuxctl` synopsis in these documents must parse. Parsing is pure,
+    /// so nothing runs and no path is opened.
+    #[test]
+    fn every_documented_command_line_parses() {
+        let documents = [
+            ("CLAUDE.md", include_str!("../../../CLAUDE.md")),
+            ("README.md", include_str!("../../../README.md")),
+            (
+                "unified_cli_guide.md",
+                include_str!("../../../docs/guides/unified_cli_guide.md"),
+            ),
+            (
+                "branch_workflow.md",
+                include_str!("../../../docs/workflow/branch_workflow.md"),
+            ),
+            (
+                "dsh_session_protocol.md",
+                include_str!("../../../docs/dsh_session_protocol.md"),
+            ),
+        ];
+        for (document, text) in documents {
+            let mut command_lines = 0;
+            for line in text.lines() {
+                let Some(rest) = line
+                    .split_once("vibemuxctl.exe ")
+                    .map(|(_, rest)| rest)
+                    .or_else(|| line.trim_start().strip_prefix("vibemuxctl "))
+                else {
+                    continue;
+                };
+                let command_line = rest.split(['#', '`']).next().unwrap_or_default();
+                command_lines += 1;
+                for arguments in documented_argument_lists(command_line) {
+                    assert!(
+                        parse(arguments.iter().map(OsString::from)).is_ok(),
+                        "{document}: {arguments:?}"
+                    );
+                }
+            }
+            assert!(command_lines > 0, "{document}");
+        }
+    }
 }

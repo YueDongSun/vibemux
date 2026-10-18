@@ -4,7 +4,7 @@
 use eframe::egui::{self, RichText, Ui};
 use vibemux_probe::ProbeState;
 
-use crate::{view_model::ViewModel, view_model::route_label};
+use crate::view_model::{AgentView, ViewModel, route_label};
 
 use super::C;
 
@@ -66,13 +66,9 @@ fn render_list(ui: &mut Ui, c: &C, view_model: &ViewModel, actions: &mut AgentsA
                         );
                         ui.add_space(3.0);
                         ui.label(
-                            RichText::new(format!(
-                                "Launcher: {}  ·  Route: {}",
-                                probe_state_label(agent.launcher_state),
-                                route_label(agent.route)
-                            ))
-                            .size(12.0)
-                            .color(c.muted),
+                            RichText::new(agent_summary(agent))
+                                .size(12.0)
+                                .color(c.muted),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -107,22 +103,9 @@ fn render_detail(ui: &mut Ui, c: &C, view_model: &ViewModel, index: usize) -> bo
         .corner_radius(egui::CornerRadius::same(7))
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
-            detail_row(ui, c, "Launcher", probe_state_label(agent.launcher_state));
-            detail_row(
-                ui,
-                c,
-                "Authentication",
-                probe_state_label(agent.authentication_state),
-            );
-            detail_row(
-                ui,
-                c,
-                "Inference probe",
-                probe_state_label(agent.inference_state),
-            );
-            detail_row(ui, c, "Version", &agent.version);
-            detail_row(ui, c, "Route", route_label(agent.route));
-            detail_row(ui, c, "Result code", &agent.code);
+            for (label, value) in agent_details(agent) {
+                detail_row(ui, c, label, &value);
+            }
         });
     ui.add_space(14.0);
     ui.label(
@@ -146,11 +129,106 @@ fn detail_row(ui: &mut Ui, c: &C, label: &str, value: &str) {
     ui.add_space(5.0);
 }
 
+/// The line the agent list shows under a harness name.
+fn agent_summary(agent: &AgentView) -> String {
+    format!(
+        "Launcher: {}  ·  Route: {}  ·  Adapter: {}",
+        probe_state_label(agent.launcher_state),
+        route_label(agent.route),
+        agent.adapter.support.as_str()
+    )
+}
+
+/// The labelled values the agent detail view shows, in order.
+fn agent_details(agent: &AgentView) -> [(&'static str, String); 7] {
+    [
+        (
+            "Launcher",
+            probe_state_label(agent.launcher_state).to_string(),
+        ),
+        (
+            "Authentication",
+            probe_state_label(agent.authentication_state).to_string(),
+        ),
+        (
+            "Inference probe",
+            probe_state_label(agent.inference_state).to_string(),
+        ),
+        ("Version", agent.version.clone()),
+        ("Route", route_label(agent.route).to_string()),
+        ("Structured adapter", agent.adapter.summary()),
+        ("Result code", agent.code.clone()),
+    ]
+}
+
 fn probe_state_label(state: ProbeState) -> &'static str {
     match state {
         ProbeState::Verified => "Verified",
         ProbeState::Failed => "Failed",
         ProbeState::Unavailable => "Unavailable",
         ProbeState::NotRun => "Not run",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vibemux_harness::dispatch::adapter_capability;
+    use vibemux_probe::{AgentKind, ProbeState, RouteKind};
+
+    use super::{agent_details, agent_summary, probe_state_label};
+    use crate::view_model::AgentView;
+
+    fn agent(kind: AgentKind) -> AgentView {
+        AgentView {
+            name: kind.display_name().to_string(),
+            launcher_state: ProbeState::Verified,
+            authentication_state: ProbeState::Failed,
+            inference_state: ProbeState::NotRun,
+            version: "1.2.3".to_string(),
+            route: RouteKind::LocalGateway,
+            code: "launcher_verified".to_string(),
+            adapter: adapter_capability(kind),
+        }
+    }
+
+    #[test]
+    fn the_agent_views_state_every_probe_fact_in_order() {
+        let codex = agent(AgentKind::Codex);
+        assert_eq!(
+            agent_summary(&codex),
+            "Launcher: Verified  ·  Route: local_gateway  ·  Adapter: execute"
+        );
+        assert_eq!(
+            agent_details(&codex).map(|(label, value)| format!("{label}={value}")),
+            [
+                "Launcher=Verified",
+                "Authentication=Failed",
+                "Inference probe=Not run",
+                "Version=1.2.3",
+                "Route=local_gateway",
+                "Structured adapter=execute via codex_exec,codex_app_server",
+                "Result code=launcher_verified",
+            ]
+        );
+        // The adapter is a build fact, shown even for a harness with none.
+        let kimi = agent(AgentKind::Kimi);
+        assert!(agent_summary(&kimi).ends_with("Adapter: terminal_only"));
+        assert_eq!(
+            agent_details(&kimi)[5],
+            ("Structured adapter", "terminal_only".to_string())
+        );
+    }
+
+    #[test]
+    fn probe_state_labels_are_pinned() {
+        let labels = [
+            (ProbeState::Verified, "Verified"),
+            (ProbeState::Failed, "Failed"),
+            (ProbeState::Unavailable, "Unavailable"),
+            (ProbeState::NotRun, "Not run"),
+        ];
+        for (state, expected) in labels {
+            assert_eq!(probe_state_label(state), expected);
+        }
     }
 }

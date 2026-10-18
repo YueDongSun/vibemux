@@ -704,3 +704,271 @@ pub(crate) fn task_agent_card(peer_id: &str, interfaces: Vec<AgentInterface>) ->
         signatures: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task_contract::TaskState;
+    use serde_json::json;
+
+    fn subscription(stop_on_interrupted: bool) -> SubscriptionState {
+        let (_stopper, stop) = watch::channel(false);
+        let permit = Arc::new(Semaphore::new(1))
+            .try_acquire_owned()
+            .expect("permit");
+        SubscriptionState {
+            stream: Box::pin(stream::empty()),
+            task_id: "task_1".to_string(),
+            context_id: "context_1".to_string(),
+            previous: None,
+            pending: std::collections::VecDeque::new(),
+            done: false,
+            stop,
+            _permit: permit,
+            stop_on_interrupted,
+        }
+    }
+
+    fn snapshot(
+        state: TaskState,
+        artifacts: Vec<TaskArtifact>,
+        error_code: Option<&str>,
+    ) -> TaskSnapshot {
+        TaskSnapshot {
+            task_id: "task_1".to_string(),
+            context_id: "context_1".to_string(),
+            state,
+            artifacts,
+            error_code: error_code.map(str::to_string),
+        }
+    }
+
+    fn artifact(artifact_id: &str, value: u32) -> TaskArtifact {
+        TaskArtifact::data(artifact_id, json!(value))
+    }
+
+    fn drain(state: &mut SubscriptionState) -> Vec<StreamResponse> {
+        state
+            .pending
+            .drain(..)
+            .map(|event| event.expect("an event, not an error"))
+            .collect()
+    }
+
+    fn artifact_update(artifact: &TaskArtifact) -> StreamResponse {
+        StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
+            task_id: "task_1".to_string(),
+            context_id: "context_1".to_string(),
+            artifact: artifact_to_wire(artifact),
+            append: Some(false),
+            last_chunk: Some(true),
+            metadata: None,
+        })
+    }
+
+    fn status_update(wire_state: a2a::TaskState, error_code: Option<&str>) -> StreamResponse {
+        StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
+            task_id: "task_1".to_string(),
+            context_id: "context_1".to_string(),
+            status: TaskStatus {
+                state: wire_state,
+                message: None,
+                timestamp: None,
+            },
+            metadata: error_code
+                .map(|code| HashMap::from([("error_code".to_string(), json!(code))])),
+        })
+    }
+
+    #[test]
+    fn the_first_snapshot_is_sent_whole_and_later_ones_only_as_changes() {
+        let mut state = subscription(false);
+        let first = snapshot(TaskState::Working, vec![artifact("artifact_1", 1)], None);
+        assert_eq!(snapshot_events(&mut state, first.clone()), Ok(()));
+        assert_eq!(
+            drain(&mut state),
+            vec![StreamResponse::Task(
+                snapshot_to_wire(first.clone()).expect("first snapshot")
+            )]
+        );
+        // An unchanged snapshot sends nothing.
+        assert_eq!(snapshot_events(&mut state, first), Ok(()));
+        assert!(state.pending.is_empty());
+
+        // A changed or new artifact is sent whole as a replacing update, in
+        // snapshot order; an unchanged state sends no status update.
+        let artifacts = vec![artifact("artifact_1", 2), artifact("artifact_2", 3)];
+        let second = snapshot(TaskState::Working, artifacts.clone(), None);
+        assert_eq!(snapshot_events(&mut state, second), Ok(()));
+        assert_eq!(
+            drain(&mut state),
+            vec![
+                artifact_update(&artifacts[0]),
+                artifact_update(&artifacts[1])
+            ]
+        );
+
+        // A change of state, of error code alone, or a cleared error code
+        // each send one status update and no artifact update.
+        for (task_state, error_code, wire_state) in [
+            (
+                TaskState::InputRequired,
+                None,
+                a2a::TaskState::InputRequired,
+            ),
+            (
+                TaskState::InputRequired,
+                Some("needs_input"),
+                a2a::TaskState::InputRequired,
+            ),
+            (
+                TaskState::InputRequired,
+                None,
+                a2a::TaskState::InputRequired,
+            ),
+        ] {
+            let next = snapshot(task_state, artifacts.clone(), error_code);
+            assert_eq!(snapshot_events(&mut state, next), Ok(()));
+            assert_eq!(
+                drain(&mut state),
+                vec![status_update(wire_state, error_code)]
+            );
+        }
+    }
+
+    #[test]
+    fn applying_the_sent_events_reproduces_each_snapshot() {
+        let mut state = subscription(false);
+        let mut client = None;
+        for expected in [
+            snapshot(TaskState::Submitted, Vec::new(), None),
+            snapshot(TaskState::Working, vec![artifact("artifact_1", 1)], None),
+            snapshot(
+                TaskState::Working,
+                vec![artifact("artifact_1", 2), artifact("artifact_2", 3)],
+                None,
+            ),
+            snapshot(
+                TaskState::InputRequired,
+                vec![artifact("artifact_1", 2), artifact("artifact_2", 3)],
+                Some("needs_input"),
+            ),
+            snapshot(
+                TaskState::Working,
+                vec![artifact("artifact_1", 2), artifact("artifact_2", 4)],
+                None,
+            ),
+            snapshot(
+                TaskState::Completed,
+                vec![artifact("artifact_1", 5), artifact("artifact_2", 4)],
+                None,
+            ),
+        ] {
+            assert!(!state.done);
+            assert_eq!(snapshot_events(&mut state, expected.clone()), Ok(()));
+            for event in drain(&mut state) {
+                apply_stream_response(&mut client, event).expect("the client applies the event");
+            }
+            assert_eq!(client.as_ref(), Some(&expected));
+        }
+        assert!(state.done);
+    }
+
+    #[test]
+    fn a_snapshot_of_another_task_an_invalid_one_or_a_shrinking_one_is_refused() {
+        let mut state = subscription(false);
+        let other_task = TaskSnapshot {
+            task_id: "task_2".to_string(),
+            ..snapshot(TaskState::Working, Vec::new(), None)
+        };
+        let other_context = TaskSnapshot {
+            context_id: "context_2".to_string(),
+            ..snapshot(TaskState::Working, Vec::new(), None)
+        };
+        for refused in [other_task.clone(), other_context.clone()] {
+            assert_eq!(
+                snapshot_events(&mut state, refused),
+                Err(TaskGatewayError::Protocol)
+            );
+        }
+        let invalid = snapshot(TaskState::Working, Vec::new(), Some("needs input"));
+        assert_eq!(
+            snapshot_events(&mut state, invalid),
+            Err(TaskGatewayError::InvalidRequest)
+        );
+        assert_eq!((&state.previous, state.pending.len()), (&None, 0));
+
+        let first = snapshot(
+            TaskState::Working,
+            vec![artifact("artifact_1", 1), artifact("artifact_2", 2)],
+            None,
+        );
+        assert_eq!(snapshot_events(&mut state, first.clone()), Ok(()));
+        drain(&mut state);
+        let dropped = snapshot(TaskState::Working, vec![artifact("artifact_2", 2)], None);
+        for refused in [other_task, other_context, dropped] {
+            assert_eq!(
+                snapshot_events(&mut state, refused),
+                Err(TaskGatewayError::Protocol)
+            );
+        }
+        // Once a snapshot was sent, an invalid one is refused before any
+        // status update could carry its error code.
+        let invalid = snapshot(
+            TaskState::Failed,
+            first.artifacts.clone(),
+            Some("worker failed"),
+        );
+        assert_eq!(
+            snapshot_events(&mut state, invalid),
+            Err(TaskGatewayError::InvalidRequest)
+        );
+        assert_eq!((state.previous, state.pending.len()), (Some(first), 0));
+    }
+
+    #[test]
+    fn a_terminal_state_ends_the_stream_and_an_interruption_ends_it_only_when_asked() {
+        for (task_state, ends, ends_when_asked) in [
+            (TaskState::Submitted, false, false),
+            (TaskState::Working, false, false),
+            (TaskState::InputRequired, false, true),
+            (TaskState::AuthRequired, false, true),
+            (TaskState::Completed, true, true),
+            (TaskState::Failed, true, true),
+            (TaskState::Canceled, true, true),
+            (TaskState::Rejected, true, true),
+        ] {
+            assert_eq!(
+                stream_finished(task_state),
+                ends_when_asked,
+                "{task_state:?}"
+            );
+            for (stop_on_interrupted, expected) in [(false, ends), (true, ends_when_asked)] {
+                let mut state = subscription(stop_on_interrupted);
+                let next = snapshot(task_state, Vec::new(), None);
+                assert_eq!(snapshot_events(&mut state, next), Ok(()));
+                assert_eq!(
+                    state.done, expected,
+                    "{task_state:?} stop_on_interrupted={stop_on_interrupted}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_task_query_needs_a_valid_id_and_no_tenant() {
+        assert!(validate_task_query("task_1", &None).is_ok());
+        for (id, tenant, code) in [
+            ("task 1", None, a2a::error_code::INVALID_PARAMS),
+            ("", None, a2a::error_code::INVALID_PARAMS),
+            (
+                "task_1",
+                Some("tenant_1".to_string()),
+                a2a::error_code::UNSUPPORTED_OPERATION,
+            ),
+        ] {
+            let error = validate_task_query(id, &tenant).expect_err("refused query");
+            assert_eq!(error.code, code, "{id:?} {tenant:?}");
+        }
+    }
+}

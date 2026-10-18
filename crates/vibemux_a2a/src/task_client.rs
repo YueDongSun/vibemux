@@ -508,3 +508,142 @@ fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_a_numeric_loopback_http_origin_with_an_explicit_port_is_allowed() {
+        for (value, origin) in [
+            ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("http://127.0.0.1:8080/", "http://127.0.0.1:8080"),
+            ("http://127.1.2.3:9", "http://127.1.2.3:9"),
+            ("http://[::1]:8080/", "http://[::1]:8080"),
+        ] {
+            assert_eq!(loopback_origin(value), Ok(origin.to_string()), "{value}");
+        }
+        for refused in [
+            "http://localhost:8080",
+            "http://10.0.0.1:8080",
+            "http://0.0.0.0:8080",
+            "http://[::2]:8080",
+            "https://127.0.0.1:8080",
+            "http://127.0.0.1",
+            // The URL parser drops a scheme's default port, so port 80
+            // counts as no port.
+            "http://127.0.0.1:80",
+            "http://user@127.0.0.1:8080",
+            "http://:secret@127.0.0.1:8080",
+            "http://127.0.0.1:8080/?a=1",
+            "http://127.0.0.1:8080/#a",
+            "http://127.0.0.1:8080/a2a",
+        ] {
+            assert_eq!(
+                loopback_origin(refused),
+                Err(TaskGatewayError::Forbidden),
+                "{refused}"
+            );
+        }
+        for unparsable in ["", "not a url"] {
+            assert_eq!(
+                loopback_origin(unparsable),
+                Err(TaskGatewayError::InvalidRequest),
+                "{unparsable}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_json_rpc_result_needs_its_id_and_exactly_one_outcome() {
+        let number = JsonRpcId::Number(7);
+        assert_eq!(
+            rpc_result(
+                json!({"jsonrpc": "2.0", "id": 7, "result": {"k": 1}}),
+                Some(&number)
+            ),
+            Ok(json!({"k": 1}))
+        );
+        let text = JsonRpcId::String("request_1".to_string());
+        assert_eq!(
+            rpc_result(
+                json!({"jsonrpc": "2.0", "id": "request_1", "result": {}}),
+                Some(&text)
+            ),
+            Ok(json!({}))
+        );
+        let not_found = json!({"code": -32001, "message": "a2a_task_not_found"});
+        for (value, expected_id) in [
+            (
+                json!({"jsonrpc": "1.0", "id": 7, "result": {}}),
+                Some(&number),
+            ),
+            (
+                json!({"jsonrpc": "2.0", "id": 8, "result": {}}),
+                Some(&number),
+            ),
+            (
+                json!({"jsonrpc": "2.0", "id": "7", "result": {}}),
+                Some(&number),
+            ),
+            (json!({"jsonrpc": "2.0", "id": 7, "result": {}}), None),
+            (json!({"jsonrpc": "2.0", "result": {}}), Some(&number)),
+            (
+                json!({"jsonrpc": "2.0", "id": 7, "result": {}, "error": not_found}),
+                Some(&number),
+            ),
+            (json!({"jsonrpc": "2.0", "id": 7}), Some(&number)),
+            (json!([1]), Some(&number)),
+        ] {
+            assert_eq!(
+                rpc_result(value.clone(), expected_id),
+                Err(TaskGatewayError::Protocol),
+                "{value}"
+            );
+        }
+        // An error outcome maps by its local code first, then by its
+        // JSON-RPC code.
+        for (error, expected) in [
+            (not_found, TaskGatewayError::NotFound),
+            (
+                json!({"code": -32603, "message": "a2a_task_busy"}),
+                TaskGatewayError::Busy,
+            ),
+            (
+                json!({"code": -32004, "message": "unsupported"}),
+                TaskGatewayError::Unsupported,
+            ),
+            (
+                json!({"code": -32603, "message": "internal"}),
+                TaskGatewayError::Protocol,
+            ),
+        ] {
+            assert_eq!(
+                rpc_result(
+                    json!({"jsonrpc": "2.0", "id": 7, "error": error}),
+                    Some(&number)
+                ),
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_ends_at_its_first_blank_line_in_any_newline_style() {
+        for (bytes, boundary) in [
+            (&b"data: x\n\nrest"[..], Some((7, 9))),
+            (b"data: x\r\n\r\nrest", Some((7, 11))),
+            (b"data: x\r\rrest", Some((7, 9))),
+            (b"a\n\nb\r\n\r\n", Some((1, 3))),
+            (b"a\r\n\r\nb\n\n", Some((1, 5))),
+            (b"\n\n", Some((0, 2))),
+            (b"data: x\n", None),
+            (b"data: x\r\n", None),
+            (b"data: x\r\n\r", None),
+            (b"", None),
+        ] {
+            assert_eq!(event_boundary(bytes), boundary, "{bytes:?}");
+        }
+    }
+}

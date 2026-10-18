@@ -245,3 +245,252 @@ fn image_digest(path: &Path) -> Result<[u8; 32], DispatchError> {
     }
     Ok(hasher.finalize().into())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::env::consts::EXE_SUFFIX;
+
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::*;
+
+    const INVALID: DispatchError = DispatchError::ConfigExecutableInvalid;
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "vibemux_fixture_guard_unit_{}",
+                Uuid::new_v4().simple()
+            ));
+            fs::create_dir(&path).expect("unique test root");
+            Self(fs::canonicalize(path).expect("canonical test root"))
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct Fixture {
+        scratch: Scratch,
+        source: PathBuf,
+        vendor: PathBuf,
+    }
+
+    fn copy_path(vendor: &Path, alias: AgentKind) -> PathBuf {
+        vendor.join(format!("{}{EXE_SUFFIX}", alias.command_name()))
+    }
+
+    fn fixture(image: &[u8]) -> Fixture {
+        let scratch = Scratch::new();
+        let source = scratch.0.join(format!("built_worker{EXE_SUFFIX}"));
+        fs::write(&source, image).expect("built source");
+        let vendor = scratch.0.join("vendor");
+        fs::create_dir(&vendor).expect("vendor root");
+        for alias in [AgentKind::Codex, AgentKind::Claude] {
+            fs::write(copy_path(&vendor, alias), image).expect("worker copy");
+        }
+        Fixture {
+            scratch,
+            source,
+            vendor,
+        }
+    }
+
+    fn register(
+        fixture: &Fixture,
+        aliases: &[AgentKind],
+    ) -> Result<FixtureLaunchGuard, DispatchError> {
+        FixtureLaunchGuard::register_worker_copies(&fixture.source, &fixture.vendor, aliases)
+    }
+
+    fn route(alias: AgentKind, executable: &Path) -> DispatchRoute {
+        let protocol = match alias {
+            AgentKind::Codex => NativeProtocol::CodexExec,
+            _ => NativeProtocol::ClaudeStreamJson,
+        };
+        serde_json::from_value(json!({
+            "harness": alias,
+            "protocol": protocol,
+            "executable": executable,
+            "enabled": true,
+            "allow_execution": true,
+            "environment_names": ["FIXTURE_MARKER"],
+        }))
+        .expect("test route")
+    }
+
+    fn grant_json() -> String {
+        serde_json::to_string(&WritableGrant::NONE).expect("grant JSON")
+    }
+
+    #[test]
+    fn registration_needs_one_or_two_aliases_and_exact_nonempty_copies() {
+        let exact = fixture(b"synthetic built worker image v1");
+        assert_eq!(register(&exact, &[]).err(), Some(INVALID));
+        register(&exact, &[AgentKind::Codex]).expect("exact copy");
+
+        fs::write(copy_path(&exact.vendor, AgentKind::Codex), b"changed copy").expect("change");
+        assert_eq!(register(&exact, &[AgentKind::Codex]).err(), Some(INVALID));
+
+        let empty = fixture(b"");
+        assert_eq!(register(&empty, &[AgentKind::Codex]).err(), Some(INVALID));
+    }
+
+    #[test]
+    fn a_route_must_be_enabled_executable_matching_and_its_own_copy() {
+        let fixture = fixture(b"synthetic built worker image v1");
+        let guard = register(&fixture, &[AgentKind::Codex, AgentKind::Claude]).expect("guard");
+        let base = route(
+            AgentKind::Codex,
+            &copy_path(&fixture.vendor, AgentKind::Codex),
+        );
+        build_writable_fixture_launch_spec(&base, WritableGrant::NONE, &guard).expect("base");
+
+        let mut disabled = base.clone();
+        disabled.enabled = false;
+        let mut no_execution = base.clone();
+        no_execution.allow_execution = false;
+        let mut mismatched = base.clone();
+        mismatched.protocol = NativeProtocol::ClaudeStreamJson;
+        for refused in [disabled, no_execution, mismatched] {
+            assert_eq!(
+                build_writable_fixture_launch_spec(&refused, WritableGrant::NONE, &guard),
+                Err(DispatchError::ExecutionDisabled)
+            );
+        }
+
+        let other_copy = route(
+            AgentKind::Codex,
+            &copy_path(&fixture.vendor, AgentKind::Claude),
+        );
+        assert_eq!(
+            build_writable_fixture_launch_spec(&other_copy, WritableGrant::NONE, &guard),
+            Err(INVALID)
+        );
+    }
+
+    #[test]
+    fn launch_argv_is_exact_per_protocol() {
+        let fixture = fixture(b"synthetic built worker image v1");
+        let guard = register(&fixture, &[AgentKind::Codex, AgentKind::Claude]).expect("guard");
+        let codex = route(
+            AgentKind::Codex,
+            &copy_path(&fixture.vendor, AgentKind::Codex),
+        );
+        let spec = build_writable_fixture_launch_spec(&codex, WritableGrant::NONE, &guard)
+            .expect("codex spec");
+        assert_eq!(spec.executable, codex.executable);
+        assert_eq!(
+            spec.arguments,
+            [
+                "exec",
+                "--json",
+                "--fixture_profile",
+                CODEX_FIXTURE_WRITABLE_PROFILE,
+                "--fixture_grant_json",
+                &grant_json(),
+                "-",
+            ]
+        );
+
+        let claude = route(
+            AgentKind::Claude,
+            &copy_path(&fixture.vendor, AgentKind::Claude),
+        );
+        let spec = build_writable_fixture_launch_spec(&claude, WritableGrant::NONE, &guard)
+            .expect("claude spec");
+        assert_eq!(
+            spec.arguments,
+            [
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--fixture_profile",
+                CLAUDE_FIXTURE_WRITABLE_PROFILE,
+                "--fixture_grant_json",
+                &grant_json(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_development_runtime_is_pinned_and_passed_by_flag() {
+        let fixture = fixture(b"synthetic built worker image v1");
+        let runtime = fixture.scratch.0.join(format!("runtime{EXE_SUFFIX}"));
+        fs::write(&runtime, b"synthetic runtime image").expect("runtime");
+        let guard = register(&fixture, &[AgentKind::Codex])
+            .expect("guard")
+            .with_development_runtime(&runtime)
+            .expect("pinned runtime");
+        let codex = route(
+            AgentKind::Codex,
+            &copy_path(&fixture.vendor, AgentKind::Codex),
+        );
+        let spec = build_writable_fixture_launch_spec(&codex, WritableGrant::NONE, &guard)
+            .expect("codex spec");
+        let canonical_runtime = fs::canonicalize(&runtime).expect("canonical runtime");
+        assert_eq!(
+            spec.arguments[5..],
+            [
+                grant_json(),
+                "--fixture_node".to_owned(),
+                canonical_runtime.to_string_lossy().into_owned(),
+                "-".to_owned(),
+            ]
+        );
+
+        fs::write(&runtime, b"changed runtime image").expect("change runtime");
+        assert_eq!(
+            build_writable_fixture_launch_spec(&codex, WritableGrant::NONE, &guard),
+            Err(INVALID)
+        );
+    }
+
+    #[test]
+    fn canonical_helpers_refuse_relative_paths_and_the_wrong_kind() {
+        let fixture = fixture(b"synthetic built worker image v1");
+        assert_eq!(
+            regular_canonical(&fixture.source),
+            Ok(fixture.source.clone())
+        );
+        assert_eq!(
+            directory_canonical(&fixture.vendor),
+            Ok(fixture.vendor.clone())
+        );
+        assert_eq!(regular_canonical(&fixture.vendor), Err(INVALID));
+        assert_eq!(directory_canonical(&fixture.source), Err(INVALID));
+
+        let relative = Path::new("Cargo.toml");
+        assert!(relative.is_file(), "unit tests run in the package root");
+        assert_eq!(regular_canonical(relative), Err(INVALID));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_relative_path_is_refused() {
+        use std::path::{Component, Prefix};
+
+        let current = std::env::current_dir().expect("current directory");
+        let Some(Component::Prefix(prefix)) = current.components().next() else {
+            panic!("a Windows current directory starts with a prefix");
+        };
+        let letter = match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
+            other => panic!("unit tests run from a drive path, not {other:?}"),
+        };
+        let drive_relative = PathBuf::from(format!("{}:Cargo.toml", char::from(letter)));
+        assert!(!drive_relative.is_absolute());
+        assert!(
+            drive_relative.is_file(),
+            "unit tests run in the package root"
+        );
+        assert_eq!(regular_canonical(&drive_relative), Err(INVALID));
+    }
+}

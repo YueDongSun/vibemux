@@ -42,6 +42,40 @@ impl fmt::Debug for LaunchSpec {
     }
 }
 
+/// Restore the classic spelling of a Windows verbatim path that is handed to an
+/// interpreter as an argument.
+///
+/// `std::fs::canonicalize` returns `\\?\C:\...` on Windows. `CreateProcess`
+/// accepts that spelling for the image, but Node's CommonJS loader does not: it
+/// mis-splits the verbatim form, tries `lstat("C:")`, and exits before loading
+/// the script, so a launcher-pair session dies before its first frame and the
+/// driver reports a closed transport. The canonical form stays the trust
+/// anchor — `canonical_outside_root` decides what is admissible — and only the
+/// argument the interpreter receives is restored to the spelling its loader can
+/// open.
+///
+/// `\\?\UNC\server\share\x` maps back to `\\server\share\x`. A verbatim path
+/// with no classic equivalent (a volume GUID path) is returned unchanged,
+/// because inventing a spelling would be worse than failing loudly.
+#[must_use]
+pub fn interpreter_script_path(script: &str) -> String {
+    const VERBATIM: &str = r"\\?\";
+    let Some(rest) = script.strip_prefix(VERBATIM) else {
+        return script.to_string();
+    };
+    let bytes = rest.as_bytes();
+    // `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`.
+    if bytes.len() >= 4 && bytes[..4].eq_ignore_ascii_case(b"UNC\\") {
+        return format!(r"\\{}", &rest[4..]);
+    }
+    // Only a drive path has a classic equivalent: `\\?\C:\dir\script.js`.
+    // A bare volume root (`\\?\C:`) is not the same path as `C:`, so it stays.
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
+        return rest.to_string();
+    }
+    script.to_string()
+}
+
 pub fn build_launch_spec(
     route: &DispatchRoute,
     mode: SessionMode,
@@ -77,38 +111,71 @@ fn protocol_arguments(
     route: &DispatchRoute,
     mode: SessionMode,
 ) -> Result<Vec<String>, DispatchError> {
-    let owned = |values: &[&str]| values.iter().map(|value| (*value).to_string()).collect();
-    let model = route.model.as_deref();
-    let arguments: Vec<String> = match route.protocol {
-        // The model, if any, travels in thread/start params, not argv.
-        NativeProtocol::CodexAppServer => owned(&["app-server", "--stdio"]),
-        NativeProtocol::Acp => match route.harness {
-            AgentKind::OpenCode => owned(&["acp"]),
-            AgentKind::Copilot => owned(&["--acp", "--no-auto-update"]),
-            AgentKind::Grok => owned(&["agent", "stdio"]),
-            _ => return Err(DispatchError::ConfigRouteInvalid),
-        },
+    match route.protocol {
         // The launcher pair: `node <entry script> --profile <profile>`. The
         // entry script is the interpreter's first argument, the profile comes
         // from the validated route config, and nothing else reaches argv. The
         // provider, model, and reasoning effort travel in `initialize`
         // params, and the prompt travels in `session/prompt` params, so no
         // prompt text can reach a command line (ADR 032 Decision 3).
+        //
+        // The script is canonicalized when the route is admitted, which on
+        // Windows yields a verbatim `\\?\` path. Node cannot load a script from
+        // that spelling, so the argument is de-verbatimized while the admitted
+        // canonical form remains the trust anchor.
         NativeProtocol::DshSdkJsonRpc => {
             let script = route
                 .entry_script
                 .as_ref()
                 .ok_or(DispatchError::ConfigRouteInvalid)?;
-            let script = script
-                .to_str()
-                .ok_or(DispatchError::ConfigRouteInvalid)?
-                .to_string();
+            let script = script.to_str().ok_or(DispatchError::ConfigRouteInvalid)?;
             let profile = route.effective_profile().to_string();
             if !route_config::profile_is_valid(&profile) {
                 return Err(DispatchError::ConfigRouteInvalid);
             }
-            vec![script, "--profile".to_string(), profile]
+            Ok(vec![
+                interpreter_script_path(script),
+                "--profile".to_string(),
+                profile,
+            ])
         }
+        protocol => structured_arguments(route.harness, protocol, mode, route.model.as_deref()),
+    }
+}
+
+/// The fixed argv of a structured adapter that runs the vendor executable
+/// directly (every protocol except the DSH launcher pair).
+///
+/// This is the one place that pins each vendor's structured transport and its
+/// read-only, no-approval posture, so the daemon (ADR 029) and the standalone
+/// native dispatcher (ADR 040) launch a vendor CLI with the same hardening.
+/// The prompt never appears here: it travels on stdin or in a protocol frame.
+pub fn structured_arguments(
+    harness: AgentKind,
+    protocol: NativeProtocol,
+    mode: SessionMode,
+    model: Option<&str>,
+) -> Result<Vec<String>, DispatchError> {
+    if !protocol.accepts(harness) {
+        return Err(DispatchError::ConfigRouteInvalid);
+    }
+    let owned = |values: &[&str]| values.iter().map(|value| (*value).to_string()).collect();
+    let arguments: Vec<String> = match protocol {
+        // The model, if any, travels in thread/start params, not argv.
+        NativeProtocol::CodexAppServer => owned(&["app-server", "--stdio"]),
+        NativeProtocol::Acp => {
+            // ACP v1 has no standard model selection; refuse rather than ignore.
+            if model.is_some() {
+                return Err(DispatchError::ConfigRouteInvalid);
+            }
+            match harness {
+                AgentKind::OpenCode => owned(&["acp"]),
+                AgentKind::Copilot => owned(&["--acp", "--no-auto-update"]),
+                AgentKind::Grok => owned(&["agent", "stdio"]),
+                _ => return Err(DispatchError::ConfigRouteInvalid),
+            }
+        }
+        NativeProtocol::DshSdkJsonRpc => return Err(DispatchError::ConfigRouteInvalid),
         // `--tools=` removes every built-in tool, `--strict-mcp-config` skips
         // project and user MCP servers, and `--restricted` ignores project and
         // user settings files, so a repository cannot re-enable tools.
@@ -149,4 +216,128 @@ fn protocol_arguments(
         }
     };
     Ok(arguments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionMode, interpreter_script_path, structured_arguments};
+    use crate::{
+        AgentKind,
+        dispatch::{DispatchError, NativeProtocol},
+    };
+
+    #[test]
+    fn claude_argv_pins_the_tool_free_restricted_posture() {
+        let arguments = structured_arguments(
+            AgentKind::Claude,
+            NativeProtocol::ClaudeStreamJson,
+            SessionMode::Execute,
+            Some("sonnet"),
+        )
+        .expect("claude argv");
+        for flag in [
+            "--bare",
+            "--tools=",
+            "--strict-mcp-config",
+            "--restricted",
+            "--no-session-persistence",
+        ] {
+            assert!(arguments.iter().any(|argument| argument == flag), "{flag}");
+        }
+        assert_eq!(arguments[arguments.len() - 2..], ["--model", "sonnet"]);
+    }
+
+    #[test]
+    fn codex_exec_keeps_the_stdin_marker_last() {
+        let arguments = structured_arguments(
+            AgentKind::Codex,
+            NativeProtocol::CodexExec,
+            SessionMode::Execute,
+            Some("gpt-5"),
+        )
+        .expect("codex argv");
+        assert_eq!(arguments.last().map(String::as_str), Some("-"));
+        assert_eq!(arguments[arguments.len() - 3..], ["--model", "gpt-5", "-"]);
+        assert_eq!(
+            structured_arguments(
+                AgentKind::Codex,
+                NativeProtocol::CodexExec,
+                SessionMode::Probe,
+                None
+            ),
+            Err(DispatchError::ProbeUnsupported)
+        );
+    }
+
+    #[test]
+    fn mismatched_launcher_pair_and_acp_model_routes_are_refused() {
+        let refused = |harness, protocol, model| {
+            structured_arguments(harness, protocol, SessionMode::Probe, model)
+                == Err(DispatchError::ConfigRouteInvalid)
+        };
+        assert!(refused(AgentKind::Qwen, NativeProtocol::Acp, None));
+        assert!(refused(
+            AgentKind::Codex,
+            NativeProtocol::ClaudeStreamJson,
+            None
+        ));
+        assert!(refused(AgentKind::Dsh, NativeProtocol::DshSdkJsonRpc, None));
+        assert!(refused(AgentKind::OpenCode, NativeProtocol::Acp, Some("m")));
+        assert_eq!(
+            structured_arguments(
+                AgentKind::Copilot,
+                NativeProtocol::Acp,
+                SessionMode::Probe,
+                None
+            ),
+            Ok(vec!["--acp".to_string(), "--no-auto-update".to_string()])
+        );
+    }
+
+    #[test]
+    fn verbatim_drive_paths_lose_the_prefix() {
+        assert_eq!(
+            interpreter_script_path(
+                r"\\?\C:\Users\user\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js"
+            ),
+            r"C:\Users\user\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js"
+        );
+        assert_eq!(
+            interpreter_script_path(r"\\?\c:\dsh\bin.js"),
+            r"c:\dsh\bin.js"
+        );
+        assert_eq!(interpreter_script_path(r"\\?\C:\"), r"C:\");
+    }
+
+    #[test]
+    fn verbatim_unc_paths_return_to_the_share_spelling() {
+        assert_eq!(
+            interpreter_script_path(r"\\?\UNC\server\share\bin.js"),
+            r"\\server\share\bin.js"
+        );
+        assert_eq!(
+            interpreter_script_path(r"\\?\unc\server\share\bin.js"),
+            r"\\server\share\bin.js"
+        );
+    }
+
+    #[test]
+    fn classic_paths_are_unchanged() {
+        assert_eq!(interpreter_script_path(r"C:\dsh\bin.js"), r"C:\dsh\bin.js");
+        assert_eq!(
+            interpreter_script_path("/usr/local/lib/dsh/bin.js"),
+            "/usr/local/lib/dsh/bin.js"
+        );
+        assert_eq!(interpreter_script_path("bin.js"), "bin.js");
+        assert_eq!(interpreter_script_path(""), "");
+    }
+
+    #[test]
+    fn verbatim_paths_without_a_classic_equivalent_are_unchanged() {
+        let volume = r"\\?\Volume{1e0f0e2a-0000-0000-0000-100000000000}\dsh\bin.js";
+        assert_eq!(interpreter_script_path(volume), volume);
+        // The verbatim volume root is not the drive-relative path `C:`.
+        assert_eq!(interpreter_script_path(r"\\?\C:"), r"\\?\C:");
+        assert_eq!(interpreter_script_path(r"\\?\UNC"), r"\\?\UNC");
+    }
 }

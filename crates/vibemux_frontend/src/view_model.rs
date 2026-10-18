@@ -4,6 +4,7 @@
 //! `ViewModel::from_report` is the only place that knows the shape of
 //! `vibemux_probe::ProbeReport`. Both UIs consume a `ViewModel`.
 
+use vibemux_harness::dispatch::{AdapterCapability, adapter_capability};
 use vibemux_probe::{
     A2aSelfTestProbe, AgentKind, AgentProbe, GatewayProbe, ProbeReport, ProbeState, RouteKind,
 };
@@ -21,6 +22,9 @@ pub struct AgentView {
     pub version: String,
     pub route: RouteKind,
     pub code: String,
+    /// What this build's structured adapters can do for the harness. A
+    /// build fact, not an observation: it says nothing about detection.
+    pub adapter: AdapterCapability,
 }
 
 impl From<&AgentProbe> for AgentView {
@@ -33,6 +37,7 @@ impl From<&AgentProbe> for AgentView {
             version: probe.version.clone().unwrap_or_else(|| "-".to_string()),
             route: probe.route,
             code: probe.code.clone(),
+            adapter: adapter_capability(probe.agent),
         }
     }
 }
@@ -220,27 +225,18 @@ const fn civil_from_days(days_since_1970: i64) -> (i64, u32, u32) {
     (y, m as u32, d as u32)
 }
 
-/// Stable, lowercase ASCII label for a probe state. Used by both UIs
-/// and by the snapshot formatter.
+/// Stable, lowercase ASCII label for a probe state: the probe JSON's wire
+/// name. Used by both UIs and by the snapshot formatter.
 #[must_use]
 pub const fn state_label(state: ProbeState) -> &'static str {
-    match state {
-        ProbeState::Verified => "verified",
-        ProbeState::Failed => "failed",
-        ProbeState::Unavailable => "unavailable",
-        ProbeState::NotRun => "not_run",
-    }
+    state.as_str()
 }
 
-/// Stable, lowercase ASCII label for a route kind. Used by both UIs
-/// and the snapshot formatter.
+/// Stable, lowercase ASCII label for a route kind: the probe JSON's wire
+/// name. Used by both UIs and the snapshot formatter.
 #[must_use]
 pub const fn route_label(route: RouteKind) -> &'static str {
-    match route {
-        RouteKind::Direct => "direct",
-        RouteKind::LocalGateway => "local_gateway",
-        RouteKind::Unknown => "unknown",
-    }
+    route.as_str()
 }
 
 /// Stable, lowercase ASCII label for an agent kind's command name.
@@ -343,26 +339,30 @@ mod tests {
         // ViewModel has no native_tui_slots field (compile-time check).
     }
 
+    /// The TUI table, its copied snapshot, and the dashboard all print these
+    /// labels, so they are pinned exactly rather than by shape.
     #[test]
-    fn state_label_is_lowercase_ascii() {
-        for label in [
-            state_label(ProbeState::Verified),
-            state_label(ProbeState::Failed),
-            state_label(ProbeState::Unavailable),
-            state_label(ProbeState::NotRun),
-        ] {
-            assert!(label.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+    fn state_labels_are_pinned() {
+        let labels = [
+            (ProbeState::Verified, "verified"),
+            (ProbeState::Failed, "failed"),
+            (ProbeState::Unavailable, "unavailable"),
+            (ProbeState::NotRun, "not_run"),
+        ];
+        for (state, expected) in labels {
+            assert_eq!(state_label(state), expected);
         }
     }
 
     #[test]
-    fn route_label_is_lowercase_ascii() {
-        for label in [
-            route_label(RouteKind::Direct),
-            route_label(RouteKind::LocalGateway),
-            route_label(RouteKind::Unknown),
-        ] {
-            assert!(label.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+    fn route_labels_are_pinned() {
+        let labels = [
+            (RouteKind::Direct, "direct"),
+            (RouteKind::LocalGateway, "local_gateway"),
+            (RouteKind::Unknown, "unknown"),
+        ];
+        for (route, expected) in labels {
+            assert_eq!(route_label(route), expected);
         }
     }
 }

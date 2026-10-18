@@ -31,6 +31,34 @@ The protocol carries no version negotiation and makes no compatibility
 promise, so a later release must be re-verified before this adapter is claimed
 to work against it.
 
+**Re-verified against `0.2.0-rc.2` (initialize-only), 2026-10-06.** `initialize`
+answered with `serverInfo.name == "deepseek-harness-sdk-runtime"` and
+`serverInfo.version == "0.0.1"`; `shutdown` answered `{}`; the runtime exited `0`
+with an empty stderr. Five runs, including ones reproducing the adapter's
+environment allowlist, its creation posture, and a verbatim `cwd`, produced
+byte-identical output and no difference from the shapes above. Turn-level
+behavior is **not** re-verified: no prompt was sent on any path. Full record:
+[docs/evidence/dsh_runtime_validation.md](evidence/dsh_runtime_validation.md).
+
+**Verbatim-path blocker, found and repaired 2026-10-06.** The first live
+exercise of the adapter failed on Windows: `canonical_outside_root` stored the
+entry script in its verbatim form (`\\?\C:\...`), `build_launch_spec` passed
+that form as the interpreter's first argument, and Node's loader refuses to
+execute a script from a verbatim path (`EISDIR: ... lstat 'C:'`, exit 1 before
+any script loads). The child's stderr is discarded, so it surfaced as
+`dsh_driver_transport_closed` on the terminal surface and `dsh_session_refused`
+through Control v7. The failure was version-independent — no DSH code ran — so
+it was not caused by the `0.2.0-rc.2` upgrade.
+
+`build_launch_spec` now passes `interpreter_script_path(script)`: the admitted
+canonical path stays the trust anchor, and only the interpreter's argument is
+restored to the classic spelling (`\\?\C:\x` → `C:\x`, `\\?\UNC\s\share\x` →
+`\\s\share\x`; a volume GUID path, which has no classic equivalent, is left
+alone and fails loudly). After the repair the same initialize-only probe
+reached `phase ready` with `1 handshake ok: deepseek-harness-sdk-runtime 0.0.1`
+in a real ConPTY. Full record:
+[docs/evidence/dsh_runtime_validation.md](evidence/dsh_runtime_validation.md).
+
 **Operator-visible side effect.** DSH auto-initializes a templated profile on
 first use and rewrites that profile's `cordis.yml` on every boot. Booting
 `dsh --profile sdk` for the first time therefore **writes to the operator's DSH
@@ -305,10 +333,14 @@ vibemuxctl dsh close  [--project-root <path>]
 ```
 
 A prompt comes from a file or stdin, never from argv, so it stays out of
-process listings and shell history. `dsh prompt`, `status`, `cancel`, and
-`close` print a content-free status projection; `dsh poll` prints byte-exact
-records and the cursor to resume from. It follows pages until one has nothing
-more, and the session status it prints comes from that last page.
+process listings and shell history. `dsh prompt` reads and checks it before
+selecting the daemon. A source it cannot open or read returns
+`cli_prompt_unavailable`, as for `dispatch submit`; a blank, non-UTF-8, or
+oversized (over 32 KiB) prompt returns `cli_invalid_arguments`. `dsh prompt`,
+`status`, `cancel`, and `close` print a content-free status projection;
+`dsh poll` prints byte-exact records and the cursor to resume from. It follows
+pages until one has nothing more, and the session status it prints comes from
+that last page.
 
 The terminal surface writes no canonical state. The daemon path also writes no
 canonical state today: a DSH session has no persisted record, so a daemon
@@ -326,10 +358,15 @@ restart loses it and its records (ADR 032 open decision 1).
   answered.
 - **`sdk-minimal`.** Its composition is `danger-full-access` by default and it
   ships no credential store, so it is not a supported route here.
-- **Live validation.** No prompt has been sent to a real DSH runtime. The
-  adapter is verified against the wire shapes read from
-  `@deepseek-ai/dsh-sdk-protocol` 0.1.2-rc.1 and against
-  `vibemux_dsh_fixture`.
+- **Live validation.** An initialize-only probe through the adapter was run
+  against a real runtime for the first time on 2026-10-06: it reached `ready`
+  with `handshake ok: deepseek-harness-sdk-runtime 0.0.1` once the
+  verbatim-path blocker recorded in §1 was repaired. **No turn has ever been
+  sent**, so turn execution, notification handling, and completion authority
+  remain fixture-verified only. The adapter is otherwise verified against the
+  wire shapes read from `@deepseek-ai/dsh-sdk-protocol` (re-checked against
+  `0.2.0-rc.2`) and against `vibemux_dsh_fixture`. See
+  [docs/evidence/dsh_runtime_validation.md](evidence/dsh_runtime_validation.md).
 
 ## 11. References
 

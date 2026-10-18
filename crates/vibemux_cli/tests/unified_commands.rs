@@ -37,7 +37,13 @@ fn git(root: &Path, arguments: &[&str]) {
         .current_dir(root)
         .output()
         .unwrap();
-    assert!(output.status.success(), "fixture git operation failed");
+    // Fixture arguments are constants, so naming them and Git's own stderr
+    // exposes no private data and makes a setup failure diagnosable.
+    assert!(
+        output.status.success(),
+        "fixture git operation failed: git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
 }
 
 fn run(root: &Path, arguments: &[&str]) -> Output {
@@ -99,22 +105,25 @@ fn workspace_inventory_reads_local_graph_without_urls_subjects_or_index_changes(
     assert!(!directory.path().join(".vibemux").exists());
 }
 
+/// The filter fixture's path as a Git filter command. Forward slashes keep
+/// the path free of shell metacharacters, so Git executes it directly instead
+/// of through `sh -c`.
+#[cfg(feature = "test_helpers")]
+fn filter_command() -> String {
+    env!("CARGO_BIN_EXE_vibemux_git_filter_fixture").replace('\\', "/")
+}
+
+#[cfg(feature = "test_helpers")]
 #[test]
 fn workspace_inventory_disables_external_git_filters_and_labels_the_comparison() {
     let directory = repository();
     let root = directory.path();
     std::fs::write(root.join(".gitattributes"), "tracked.txt filter=fixture\n").unwrap();
     std::fs::write(root.join("tracked.txt"), "fixture content\n").unwrap();
-    // This constant, synthetic Git filter demonstrates the side effect under test.
-    // Neither the command nor its paths contain user input.
-    git(
-        root,
-        &[
-            "config",
-            "filter.fixture.clean",
-            "echo invoked > filter_marker; cat",
-        ],
-    );
+    // This synthetic Git filter demonstrates the side effect under test. Its
+    // command is the fixture's build path, with no user input.
+    let filter = filter_command();
+    git(root, &["config", "filter.fixture.clean", &filter]);
     git(root, &["config", "filter.fixture.required", "true"]);
     git(root, &["add", ".gitattributes", "tracked.txt"]);
     let marker = root.join("filter_marker");
@@ -141,18 +150,15 @@ fn workspace_inventory_disables_external_git_filters_and_labels_the_comparison()
         index_before
     );
 
-    git(
-        root,
-        &[
-            "config",
-            "filter.fixture.process",
-            "echo invoked > process_marker; exit 1",
-        ],
-    );
+    // A long-running process filter takes precedence over `clean`. The same
+    // fixture would leave the marker if Git started it.
+    git(root, &["config", "filter.fixture.process", &filter]);
     let output = run(root, &["workspace", "status"]);
     assert!(output.status.success());
-    assert!(!marker.exists());
-    assert!(!root.join("process_marker").exists());
+    assert!(
+        !marker.exists(),
+        "inventory must not start a process filter"
+    );
     let text = run(root, &["--format", "text", "workspace", "status"]);
     assert!(
         String::from_utf8(text.stdout)
@@ -227,5 +233,70 @@ fn harness_catalog_stays_metadata_only_through_unified_entrypoint() {
             .all(|route| route["allow_execution"] == false)
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("native_bin"));
+    let disabled = report["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|route| route["enabled"] != true)
+        .count();
+    let text = run(
+        directory.path(),
+        &[
+            "--format",
+            "text",
+            "harness",
+            "catalog",
+            "--config",
+            config.to_str().unwrap(),
+        ],
+    );
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("Actions"));
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.ends_with(" disabled"))
+            .count(),
+        disabled
+    );
+    // No example route grants execution, so no row may offer it.
+    assert!(!text.contains("execute"));
+    assert!(!text.contains("native_bin"));
+    assert!(!directory.path().join(".vibemux").exists());
+}
+
+#[test]
+fn harness_replay_text_tallies_kinds_without_vendor_content() {
+    let directory = repository();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../vibemux_harness_native/tests/fixtures/codex_app_server.jsonl")
+        .canonicalize()
+        .unwrap();
+    let output = run(
+        directory.path(),
+        &[
+            "--format",
+            "text",
+            "harness",
+            "replay",
+            "--protocol",
+            "codex_app_server",
+            "--input",
+            fixture.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    // The three RPC replies stay opaque; every vendor event is classified.
+    let expected = [
+        "Replay codex_app_server | replayed",
+        "Records: 10",
+        "Kinds: started 1, text 2, tool 1, approval 1, usage 1, completed 1, opaque 3",
+    ];
+    assert_eq!(text.lines().take(3).collect::<Vec<_>>(), expected, "{text}");
+    assert!(text.contains("Opaque records are kept intact"));
+    for vendor_content in ["synthetic_agent", "synthetic_thread", "first chunk"] {
+        assert!(!text.contains(vendor_content), "{vendor_content} leaked");
+    }
     assert!(!directory.path().join(".vibemux").exists());
 }

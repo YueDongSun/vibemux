@@ -6,14 +6,17 @@
 //! - Off-Windows: `$XDG_CONFIG_HOME/vibemux/frontend.json` (falling
 //!   back to `$HOME/.config/vibemux/frontend.json`)
 //!
-//! All reads are tolerant: missing or corrupt files return
-//! [`UserConfig::default`]. Writes are atomic (write tmp, rename).
+//! All reads are tolerant: missing, corrupt, or oversized files return
+//! [`UserConfig::default`]. Writes are atomic (write a uniquely named
+//! staged file, rename), and a failed save removes the file it staged.
 //! We never hold an OS lock; concurrent writers can clobber each
 //! other, but the worst case is a lost write of the theme id.
 
 use std::{
     env, fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -23,10 +26,31 @@ use super::{ThemeId, palette_for};
 /// On-disk schema version. Bump when the JSON layout changes.
 pub const SCHEMA_VERSION: u16 = 1;
 
+/// A settings document is a few hundred bytes of JSON; a file past this
+/// bound is not one and is never read whole.
+const MAX_USER_CONFIG_BYTES: u64 = 64 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WindowSize {
     pub width: u32,
     pub height: u32,
+}
+
+impl WindowSize {
+    pub const MIN_WIDTH: u32 = 800;
+    pub const MAX_WIDTH: u32 = 3840;
+    pub const MIN_HEIGHT: u32 = 600;
+    pub const MAX_HEIGHT: u32 = 2160;
+
+    /// This size moved into the range the settings dialog offers, which is
+    /// the only range the GUI ever saves or opens a window at.
+    #[must_use]
+    pub fn clamped(self) -> Self {
+        Self {
+            width: self.width.clamp(Self::MIN_WIDTH, Self::MAX_WIDTH),
+            height: self.height.clamp(Self::MIN_HEIGHT, Self::MAX_HEIGHT),
+        }
+    }
 }
 
 /// Persisted across launches. Only `theme` and `window_size` are
@@ -76,8 +100,10 @@ pub fn config_path() -> PathBuf {
 }
 
 /// Load the persisted user config. On any failure (missing file,
-/// unreadable, parse error, unknown schema version), return
-/// [`UserConfig::default`]. Never panics.
+/// unreadable, over 64 KiB, parse error, unknown schema version), return
+/// [`UserConfig::default`]. A window size outside the settings range is
+/// clamped into it, so a hand-edited file cannot open a zero-sized or
+/// oversized window. Never panics.
 #[must_use]
 pub fn load_user_config() -> UserConfig {
     load_user_config_at(&config_path())
@@ -87,7 +113,7 @@ pub fn load_user_config() -> UserConfig {
 /// to ignore the platform path for any reason.
 #[must_use]
 pub fn load_user_config_at(path: &Path) -> UserConfig {
-    let Ok(bytes) = fs::read_to_string(path) else {
+    let Some(bytes) = read_bounded_text(path, MAX_USER_CONFIG_BYTES) else {
         return UserConfig::default();
     };
     // Strip an optional UTF-8 BOM (`﻿`) so JSON parsers that
@@ -95,10 +121,35 @@ pub fn load_user_config_at(path: &Path) -> UserConfig {
     let stripped = bytes.strip_prefix('\u{FEFF}').unwrap_or(&bytes);
     let parsed: Result<UserConfig, _> = serde_json::from_str(stripped);
     match parsed {
-        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => cfg,
+        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => UserConfig {
+            window_size: cfg.window_size.clamped(),
+            ..cfg
+        },
         Ok(_) => UserConfig::default(),
         Err(_) => UserConfig::default(),
     }
+}
+
+/// The UTF-8 text of the regular file at `path`, at most `maximum`
+/// bytes of it. The check follows a link, since a dotfiles manager may
+/// place the settings file as one.
+fn read_bounded_text(path: &Path, maximum: u64) -> Option<String> {
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let bytes = read_at_most(fs::File::open(path).ok()?, maximum)?;
+    String::from_utf8(bytes).ok()
+}
+
+/// At most `maximum` bytes; a longer source is refused after reading one
+/// byte past the bound, so a file grown after the check is not read whole.
+fn read_at_most(reader: impl Read, maximum: u64) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(maximum.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= maximum).then_some(bytes)
 }
 
 /// Persist the user config to the platform path. Errors are swallowed
@@ -118,17 +169,48 @@ pub fn save_user_config_at(cfg: &UserConfig, path: &Path) -> std::io::Result<()>
     }
     let serialised = serde_json::to_string_pretty(cfg)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serialised)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(first) => {
+    let staging = staging_path(path);
+    write_new(&staging, serialised.as_bytes())?;
+    fs::rename(&staging, path)
+        .or_else(|first| {
             // Retry once after a small delay; another process may be
             // closing the file on Windows. We do not retry forever.
             std::thread::sleep(std::time::Duration::from_millis(50));
-            fs::rename(&tmp, path).map_err(|_| first)
-        }
+            fs::rename(&staging, path).map_err(|_| first)
+        })
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&staging);
+        })
+}
+
+/// A hidden sibling of `path` named for this process and moment. Two
+/// saves that still draw the same name do not share it: the second
+/// open fails instead of overwriting the first.
+fn staging_path(path: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(".{}.{nanos}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Writes `bytes` to a file created at `path`, which must not exist yet.
+/// A failed write removes the file it created; a name already taken is
+/// left alone, since another save owns it.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let written = file.write_all(bytes);
+    drop(file);
+    if written.is_err() {
+        let _ = fs::remove_file(path);
     }
+    written
 }
 
 /// Build the active `ThemePalette` for the configured theme id.
@@ -235,6 +317,109 @@ mod tests {
         let back = load_user_config_at(&path);
         assert_eq!(back, cfg);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_out_of_range_window_size_is_clamped_on_load() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        for (stored, loaded) in [
+            ((0, 0), (800, 600)),
+            ((100_000, 1), (3840, 600)),
+            ((1, 100_000), (800, 2160)),
+            ((1024, 768), (1024, 768)),
+            ((800, 2160), (800, 2160)),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "theme": "github",
+                    "window_size": {"width": stored.0, "height": stored.1}
+                })
+                .to_string(),
+            )
+            .expect("write");
+            let config = load_user_config_at(&path);
+            assert_eq!(
+                (config.window_size.width, config.window_size.height),
+                loaded,
+                "{stored:?}"
+            );
+            // Clamping touches only the size.
+            assert_eq!(config.theme, ThemeId::Github);
+        }
+    }
+
+    #[test]
+    fn a_user_config_past_the_bound_returns_defaults() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        let json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "theme": "github",
+            "window_size": {"width": 1024, "height": 768}
+        })
+        .to_string();
+        // Trailing whitespace keeps the document valid JSON at any length.
+        let padded_to = |length: u64| {
+            let padding = usize::try_from(length).expect("length") - json.len();
+            format!("{json}{}", " ".repeat(padding))
+        };
+        std::fs::write(&path, padded_to(MAX_USER_CONFIG_BYTES)).expect("write");
+        assert_eq!(load_user_config_at(&path).theme, ThemeId::Github);
+        std::fs::write(&path, padded_to(MAX_USER_CONFIG_BYTES + 1)).expect("write");
+        assert_eq!(load_user_config_at(&path), UserConfig::default());
+        // A directory at the path is not a settings file.
+        assert_eq!(load_user_config_at(directory.path()), UserConfig::default());
+    }
+
+    #[test]
+    fn a_settings_read_stops_one_byte_past_the_bound() {
+        assert_eq!(
+            read_at_most(&b"12345678"[..], 8),
+            Some(b"12345678".to_vec())
+        );
+        // An endless source ends at the bound instead of exhausting memory.
+        assert_eq!(read_at_most(std::io::repeat(b' '), 8), None);
+    }
+
+    #[test]
+    fn a_save_leaves_only_the_settings_file() {
+        let file_names = |directory: &Path| -> Vec<std::ffi::OsString> {
+            fs::read_dir(directory)
+                .expect("read dir")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect()
+        };
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        save_user_config_at(&UserConfig::default(), &path).expect("save");
+        assert_eq!(file_names(directory.path()), ["frontend.json"]);
+
+        // A non-empty directory at the path refuses the rename; the staged
+        // file is removed and the directory is left as it was.
+        let blocked = tempfile::tempdir().expect("tempdir");
+        let path = blocked.path().join("frontend.json");
+        fs::create_dir(&path).expect("mkdir");
+        fs::write(path.join("kept"), b"").expect("write");
+        assert!(save_user_config_at(&UserConfig::default(), &path).is_err());
+        assert_eq!(file_names(blocked.path()), ["frontend.json"]);
+        assert_eq!(file_names(&path), ["kept"]);
+    }
+
+    #[test]
+    fn a_staged_file_is_a_hidden_sibling_named_for_this_process() {
+        let path = Path::new("settings").join("frontend.json");
+        let staging = staging_path(&path);
+        assert_eq!(staging.parent(), path.parent());
+        let name = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("name");
+        let prefix = format!(".frontend.json.{}.", std::process::id());
+        assert!(name.starts_with(&prefix), "{name}");
+        assert!(name.ends_with(".tmp"), "{name}");
     }
 
     #[test]

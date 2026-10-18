@@ -301,3 +301,20 @@ pub fn resource_key(canonical_working_directory: &str) -> Sha256Digest {
         &[canonical_working_directory.as_bytes()],
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_resource_key_is_a_known_answer_over_the_directory() {
+        assert_eq!(
+            resource_key(r"C:\projects\synthetic").to_hex(),
+            "d33c157ac3d6f40572640c8119a3d0c03b665c0d92c159f2688f6689020168b5"
+        );
+        assert_eq!(
+            resource_key("").to_hex(),
+            "96d77145be1a396e3c8e266bcaf36f75f153e1c5bb3d9b04c6b2ed8a030890dd"
+        );
+    }
+}

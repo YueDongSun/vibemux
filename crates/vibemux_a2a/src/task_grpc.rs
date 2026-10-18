@@ -561,3 +561,225 @@ grpc_status_methods! {
     get_extended_agent_card(proto::GetExtendedAgentCardRequest) -> proto::AgentCard;
     delete_task_push_notification_config(proto::DeleteTaskPushNotificationConfigRequest) -> ();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error_reason(status: &tonic::Status) -> Option<(String, String)> {
+        status
+            .get_details_error_info()
+            .map(|info| (info.reason, info.domain))
+    }
+
+    #[test]
+    fn a_grpc_endpoint_is_a_numeric_loopback_http_address() {
+        for (endpoint, normalized) in [
+            ("127.0.0.1:50051", "http://127.0.0.1:50051"),
+            ("http://127.0.0.1:50051", "http://127.0.0.1:50051"),
+            ("http://[::1]:50051/", "http://[::1]:50051/"),
+            // Unlike an HTTP origin, a missing port means the default port 80.
+            ("127.0.0.1", "http://127.0.0.1"),
+            ("127.0.0.1:80", "http://127.0.0.1:80"),
+        ] {
+            assert_eq!(
+                validate_grpc_endpoint(endpoint),
+                Ok(normalized.to_string()),
+                "{endpoint}"
+            );
+        }
+        for refused in [
+            "",
+            "localhost:50051",
+            "10.0.0.1:50051",
+            "[::2]:50051",
+            "https://127.0.0.1:50051",
+            "http://user@127.0.0.1:50051",
+            "http://:secret@127.0.0.1:50051",
+            "http://127.0.0.1:50051/?a=1",
+            "http://127.0.0.1:50051/#a",
+            "http://127.0.0.1:50051/a2a",
+            "127.0.0.1:0",
+        ] {
+            assert_eq!(
+                validate_grpc_endpoint(refused),
+                Err(TaskGatewayError::InvalidRequest),
+                "{refused}"
+            );
+        }
+        // Leading zeros keep the port valid, so only the length refuses the
+        // longer endpoint.
+        let padded = |zeros: usize| format!("127.0.0.1:{}50051", "0".repeat(zeros));
+        assert_eq!(
+            validate_grpc_endpoint(&padded(100)),
+            Ok(format!("http://{}", padded(100)))
+        );
+        assert_eq!(padded(2033).len(), 2048);
+        assert!(validate_grpc_endpoint(&padded(2033)).is_ok());
+        assert_eq!(
+            validate_grpc_endpoint(&padded(2034)),
+            Err(TaskGatewayError::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn grpc_statuses_map_to_local_errors() {
+        for (status, expected) in [
+            (
+                tonic::Status::deadline_exceeded("late"),
+                TaskGatewayError::Deadline,
+            ),
+            (
+                tonic::Status::unauthenticated("who"),
+                TaskGatewayError::Unauthorized,
+            ),
+            (
+                tonic::Status::permission_denied("no"),
+                TaskGatewayError::Forbidden,
+            ),
+            (
+                tonic::Status::resource_exhausted("full"),
+                TaskGatewayError::Busy,
+            ),
+            (
+                tonic::Status::unavailable("down"),
+                TaskGatewayError::Transport,
+            ),
+            (
+                tonic::Status::cancelled("gone"),
+                TaskGatewayError::Transport,
+            ),
+            // Other statuses map by their local error code first ...
+            (
+                tonic::Status::new(Code::Unknown, "a2a_task_unauthorized"),
+                TaskGatewayError::Unauthorized,
+            ),
+            (
+                tonic::Status::internal("a2a_task_busy"),
+                TaskGatewayError::Busy,
+            ),
+            (
+                tonic::Status::invalid_argument("a2a_task_invalid_request"),
+                TaskGatewayError::InvalidRequest,
+            ),
+            // ... and then by the SDK's mapping of their gRPC code.
+            (
+                tonic::Status::not_found("missing"),
+                TaskGatewayError::NotFound,
+            ),
+            (
+                tonic::Status::failed_precondition("task cannot be canceled: completed"),
+                TaskGatewayError::Unsupported,
+            ),
+            (
+                tonic::Status::invalid_argument("bad"),
+                TaskGatewayError::Protocol,
+            ),
+            (
+                tonic::Status::unimplemented("nope"),
+                TaskGatewayError::Protocol,
+            ),
+            (tonic::Status::internal("boom"), TaskGatewayError::Protocol),
+        ] {
+            let description = format!("{:?} {}", status.code(), status.message());
+            assert_eq!(grpc_error(status), expected, "{description}");
+        }
+    }
+
+    #[test]
+    fn compatible_statuses_carry_the_a2a_error_reason() {
+        for (code, message, compatible_code, reason) in [
+            (
+                Code::NotFound,
+                "a2a_task_not_found",
+                Code::NotFound,
+                "TASK_NOT_FOUND",
+            ),
+            (
+                Code::FailedPrecondition,
+                "push notification not supported",
+                Code::Unimplemented,
+                "PUSH_NOTIFICATION_NOT_SUPPORTED",
+            ),
+            (
+                Code::FailedPrecondition,
+                "a2a_task_unsupported",
+                Code::Unimplemented,
+                "UNSUPPORTED_OPERATION",
+            ),
+            (
+                Code::FailedPrecondition,
+                "version not supported: 2.0",
+                Code::Unimplemented,
+                "VERSION_NOT_SUPPORTED",
+            ),
+            (
+                Code::FailedPrecondition,
+                "task cannot be canceled: completed",
+                Code::FailedPrecondition,
+                "TASK_NOT_CANCELABLE",
+            ),
+        ] {
+            let status = compatible_grpc_status(tonic::Status::new(code, message));
+            assert_eq!(
+                (status.code(), status.message()),
+                (compatible_code, message)
+            );
+            assert_eq!(
+                error_reason(&status),
+                Some((reason.to_string(), "a2a-protocol.org".to_string())),
+                "{message}"
+            );
+        }
+        // Authentication failures change only their code.
+        for (message, compatible_code) in [
+            ("a2a_task_unauthorized", Code::Unauthenticated),
+            ("a2a_task_forbidden", Code::PermissionDenied),
+        ] {
+            let status = compatible_grpc_status(tonic::Status::new(Code::Unknown, message));
+            assert_eq!(
+                (status.code(), status.message()),
+                (compatible_code, message)
+            );
+            assert_eq!(error_reason(&status), None);
+        }
+        // Anything else passes through unchanged.
+        for (code, message) in [
+            (Code::NotFound, "missing"),
+            (Code::FailedPrecondition, "not ready"),
+            (Code::Unknown, "a2a_task_busy"),
+            (Code::Internal, "a2a_task_not_found"),
+            (Code::Internal, "a2a_task_unauthorized"),
+        ] {
+            let status = compatible_grpc_status(tonic::Status::new(code, message));
+            assert_eq!((status.code(), status.message()), (code, message));
+            assert_eq!(error_reason(&status), None, "{message}");
+        }
+        // A rewritten local error still maps back to itself on the client.
+        for (code, message, expected) in [
+            (
+                Code::NotFound,
+                "a2a_task_not_found",
+                TaskGatewayError::NotFound,
+            ),
+            (
+                Code::FailedPrecondition,
+                "a2a_task_unsupported",
+                TaskGatewayError::Unsupported,
+            ),
+            (
+                Code::Unknown,
+                "a2a_task_unauthorized",
+                TaskGatewayError::Unauthorized,
+            ),
+            (
+                Code::Unknown,
+                "a2a_task_forbidden",
+                TaskGatewayError::Forbidden,
+            ),
+        ] {
+            let status = compatible_grpc_status(tonic::Status::new(code, message));
+            assert_eq!(grpc_error(status), expected, "{message}");
+        }
+    }
+}

@@ -24,6 +24,7 @@ use tokio::{
 use toml::Value as TomlValue;
 use url::Url;
 use vibemux_a2a::{InformationShare, LocalInformationServer, share_information};
+use vibemux_harness::terminal_text::is_terminal_unsafe;
 
 // The agent/launcher/probe-state vocabulary is owned by `vibemux_harness`
 // (pure logic, no I/O) and re-exported here so every consumer of the
@@ -66,6 +67,18 @@ pub enum RouteKind {
     Direct,
     LocalGateway,
     Unknown,
+}
+
+impl RouteKind {
+    /// The wire name serde writes for this route kind. Text views use it so
+    /// they never drift from the probe JSON and its cache.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::LocalGateway => "local_gateway",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -545,12 +558,35 @@ fn collect_toml_values(
     }
 }
 
+/// A config file of at most `MAX_CONFIG_FILE_BYTES`. The path is checked
+/// before the open so a FIFO found there is never opened, the opened handle
+/// is checked again, and the read itself is bounded: a file swapped or grown
+/// after the checks cannot make the probe read more than the bound.
 fn read_bounded_config(path: &Path) -> Option<String> {
-    let metadata = std::fs::metadata(path).ok()?;
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
     if !metadata.is_file() || metadata.len() > MAX_CONFIG_FILE_BYTES {
         return None;
     }
-    std::fs::read_to_string(path).ok()
+    read_bounded_text(file, MAX_CONFIG_FILE_BYTES)
+}
+
+/// At most `max_bytes` of UTF-8 text; a longer source is refused, not
+/// truncated, after reading one byte past the bound.
+fn read_bounded_text(reader: impl std::io::Read, max_bytes: u64) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn safe_endpoint(value: &str) -> Option<SafeEndpoint> {
@@ -718,9 +754,17 @@ async fn probe_a2a() -> A2aSelfTestProbe {
     }
 }
 
+/// Drops every terminal-unsafe character, which covers ANSI escapes and
+/// bidirectional overrides as well as plain controls, then bounds the
+/// result to `max_bytes` without splitting a character. Vendor `--version`
+/// output and launcher paths reach the probe report, its cache, and every
+/// frontend through here.
 fn sanitize_text(value: &str, max_bytes: usize) -> String {
     let mut sanitized = String::new();
-    for character in value.chars().filter(|character| !character.is_control()) {
+    for character in value
+        .chars()
+        .filter(|character| !is_terminal_unsafe(*character))
+    {
         if sanitized.len() + character.len_utf8() > max_bytes {
             break;
         }
@@ -746,9 +790,46 @@ mod tests {
     const PROBE_REPORT_FIXTURE: &str = include_str!("../tests/fixtures/probe_report_v1.json");
 
     #[test]
+    fn route_kind_wire_names_are_pinned() {
+        let kinds = [
+            RouteKind::Direct,
+            RouteKind::LocalGateway,
+            RouteKind::Unknown,
+        ];
+        let encoded = serde_json::to_string(&kinds).expect("encode route kinds");
+        assert_eq!(encoded, r#"["direct","local_gateway","unknown"]"#);
+        for kind in kinds {
+            let name = serde_json::to_string(&kind).expect("encode route kind");
+            assert_eq!(name, format!("\"{}\"", kind.as_str()));
+            assert_eq!(
+                serde_json::from_str::<RouteKind>(&name).expect("decode route kind"),
+                kind
+            );
+        }
+    }
+
+    #[test]
     fn safe_endpoint_rejects_credentials() {
         assert!(safe_endpoint("https://token@example.com/v1").is_none());
         assert!(safe_endpoint("https://example.com/v1").is_some());
+    }
+
+    /// A vendor `--version` line or launcher path can carry an ANSI escape or
+    /// a bidirectional override that would reorder what the operator reads;
+    /// both are dropped before the text reaches the report or the cache.
+    #[test]
+    fn sanitized_text_drops_controls_and_bidirectional_marks() {
+        assert_eq!(
+            sanitize_text("codex\u{202e} 1.2.3\u{1b}[0m\u{2066}\u{200f}\u{061c}", 256),
+            "codex 1.2.3[0m"
+        );
+        assert_eq!(
+            sanitize_text("C:\\tools\\\u{2067}exe.claude\u{2069}", 256),
+            "C:\\tools\\exe.claude"
+        );
+        // The bound counts kept bytes only and never splits a character.
+        assert_eq!(sanitize_text("\u{202e}1.é", 3), "1.");
+        assert_eq!(sanitize_text("1.é\u{9b}", 4), "1.é");
     }
 
     #[test]
@@ -801,6 +882,23 @@ mod tests {
             run_a2a_self_test: false,
         };
         assert!(discover_endpoints(AgentKind::OpenCode, &config).is_empty());
+    }
+
+    #[test]
+    fn a_config_read_stops_one_byte_past_the_bound() {
+        assert_eq!(
+            read_bounded_text(&b"12345678"[..], 8).as_deref(),
+            Some("12345678")
+        );
+        // An endless source ends at the bound instead of exhausting memory.
+        assert_eq!(read_bounded_text(std::io::repeat(b'x'), 8), None);
+        assert_eq!(read_bounded_text(&[0xff, 0xfe][..], 8), None);
+        let temporary = TempDir::new().expect("temporary directory");
+        assert_eq!(read_bounded_config(temporary.path()), None);
+        assert_eq!(
+            read_bounded_config(&temporary.path().join("missing.json")),
+            None
+        );
     }
 
     #[test]

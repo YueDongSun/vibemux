@@ -183,7 +183,8 @@ cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemu
 |---|---|---|
 | Owner | `vibemuxd` (needs a running daemon) | the CLI process |
 | Records | canonical Task/Run, schema-4 dispatch records | none; content-free JSON report |
-| Routes | Codex and Claude execute; ACP is probe-only | Codex app-server/exec, Claude stream-json, ACP for OpenCode, Copilot, and Grok |
+| Routes | Codex and Claude execute; ACP is probe-only | Codex app-server/exec and Claude stream-json execute; ACP for OpenCode, Copilot, and Grok also executes when `allow_execution` is set (an open policy decision) |
+| Protocol engine | shared `vibemux_harness::dispatch::ProtocolSession` | the same shared engine |
 | Configuration | `.vibemux/harness_dispatch.json` | a private `--config` file, pinned by SHA-256 |
 
 ```powershell
@@ -384,7 +385,8 @@ never contact a daemon or model. Example:
 `cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
 Scenes are `chat`, `drawer`, `task`, `task_terminal`, `disconnected`, `welcome`,
-and `collapsed`.
+and `collapsed`. An unknown scene or theme, a size or scale that is not a number,
+or an extra argument exits with code 4 instead of drawing a different scene.
 The `task` scenes capture the actual independent native viewport.
 
 The TUI ships six themes: `classic` (8-color default for dark terminals), `high-contrast` (bright variants for dark terminals and low-vision users), `mono` (no foreground colors at all; emphasis via bold/dim only, safe for colorless terminals, color-blind users, and any background), `light` (dark variants tuned for white or very light terminal backgrounds), and the brand themes `nord` and `gruvbox` (xterm-256 indices resolved from the brand palettes, so they render the same hues on WezTerm and tmux without a truecolor dependency). Select with `--theme <name>` or `VIBEMUX_FRONTEND_THEME`; the footer always shows the active theme, and pressing `t` in the interactive dashboard cycles themes in place. Every accent color is covered by a WCAG AA (4.5:1) contrast audit against its background, and all state information is carried by full-word text labels so color is never the only channel.
@@ -429,25 +431,67 @@ cargo run -p vibemux_frontend --bin vibemux_frontend
 
 DSH is registered as the eleventh harness and is driven through its first-party
 SDK protocol: newline-delimited JSON-RPC 2.0 over stdio, served by the `sdk`
-profile bundle. Setup is opt-in and lives outside the repository:
+profile bundle. Setup is opt-in and lives outside the repository.
+
+### Prerequisite check
+
+`scripts\setup_dsh_prereq.ps1` reports whether this machine can drive the DSH
+runtime, and with `-Apply` provisions what is missing. The default is read-only;
+mutation happens only with `-Apply`:
 
 ```powershell
-# 1. Boot the runtime once so DSH initializes its `sdk` profile.
-#    This writes to $DSH_HOME (by default %USERPROFILE%\.dsh).
-dsh --profile sdk --help
+.\scripts\setup_dsh_prereq.ps1                       # report only; exit 0 ready, 2 not ready
+.\scripts\setup_dsh_prereq.ps1 -Json                 # one machine-readable object
+.\scripts\setup_dsh_prereq.ps1 -Apply -WriteSessionConfig
+.\scripts\setup_dsh_prereq.ps1 -SkipTui              # the sdk profile only
+```
 
-# 2. Describe the launcher pair. See docs/dsh_session_protocol.md for every field.
-#    .vibemux/dsh_session.json
-#    {
-#      "schema_version": 1,
-#      "executable": "<npm prefix>\\node.exe",
-#      "entry_script": "<npm prefix>\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
-#      "provider": "deepseek-official",
-#      "model": "deepseek-v4-flash"
-#    }
+Required checks: a native `node` image, npm and pnpm, an npm-global
+`@deepseek-ai/dsh` at or above the supported version, and the `sdk` profile the
+VibeMux adapter drives. Unless `-SkipTui` is passed, the interactive `tui`
+profile is required as well. `-Apply` runs only documented operator commands —
+`npm install -g @deepseek-ai/dsh@<version>`, `dsh --profile sdk --help`, and
+`dsh plugin --profile tui add <bundle>` — and it never deletes anything, never
+edits a profile by hand, and never prints a secret or an environment dump.
+`-SkipProbes` runs the structural checks without starting a child process.
 
+The check requires the CLI version this repository's DSH adapter is verified
+against; see [docs/dsh_session_protocol.md](docs/dsh_session_protocol.md) §1 for
+the exact version bound and what re-verification a different release needs.
+
+A READY result means the runtime and profiles are present. The adapter itself
+has since been exercised live against `dsh` 0.2.0-rc.2: it completes the
+initialize handshake and reaches `ready` (see the
+[validation record](docs/evidence/dsh_runtime_validation.md)). Turn-level
+behavior against a real runtime is still unverified — no prompt has been sent
+to a vendor from this repository.
+
+### VibeMux's DSH terminal surface
+
+```powershell
 cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .
 ```
+
+`.vibemux\dsh_session.json` describes the launcher pair. `-WriteSessionConfig`
+writes this template, filling in the two paths it resolved:
+
+```json
+{
+  "schema_version": 1,
+  "executable": "<absolute path of the native node image>",
+  "entry_script": "<absolute path of @deepseek-ai/dsh/lib/bin.js>",
+  "profile": "sdk",
+  "provider": "deepseek-official",
+  "model": "deepseek-v4-flash",
+  "environment_names": ["DEEPSEEK_API_KEY"]
+}
+```
+
+`executable` must be a native image whose file stem is `node` — on a machine
+where Node is installed outside npm (for example with nvm), it is **not**
+`<npm prefix>\node.exe`; resolve it with `where node`. Both paths must lie
+outside the project root. See
+[docs/dsh_session_protocol.md](docs/dsh_session_protocol.md) for every field.
 
 Both paths are verified before anything starts: the executable must be a
 canonical `node` image, and the entry script must be a `.js` file the installed
@@ -473,6 +517,21 @@ A DSH session currently has no canonical Task/Run record: it lives in daemon
 memory and is lost on a daemon restart. Never treat `session.status: idle` as
 completion — only a correlated `turn/end` event with a recognized reason is
 terminal evidence.
+
+### Upstream interactive terminal UI
+
+DSH's own terminal UI is a separate, optional, out-of-tree surface: the `tui`
+profile. Once it is installed, an operator can run it directly in a real
+terminal, where `dsh tui` is the positional shorthand for `dsh --profile tui`:
+
+```powershell
+dsh tui            # or: dsh --profile tui
+```
+
+VibeMux neither drives nor attaches to that UI: it speaks the `sdk` profile over
+stdio, which is a different surface with its own contract. The prerequisite
+script checks the `tui` profile only so an operator is not left with a profile
+that cannot compose; pass `-SkipTui` to ignore it.
 
 ## See also
 

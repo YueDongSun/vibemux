@@ -86,7 +86,9 @@ annotations describe behavior; they are not authorization.
   output, cancel or session operations.
 
 Task titles are intentionally disclosed metadata, bounded to 240 UTF-8 bytes.
-Title control characters are normalized, and `title_truncated` reports changed
+A control character, bidirectional mark or control, or line or paragraph
+separator in a title becomes a space (the shared
+`vibemux_harness::terminal_text` rule), and `title_truncated` reports changed
 text. Other textual metadata has fixed bounds; invalid labels/timestamps/digests
 are represented as null rather than returned verbatim. Artifact media types must
 have bounded, nonempty MIME type/subtype components; absolute or path-shaped

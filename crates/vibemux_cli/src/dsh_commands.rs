@@ -7,7 +7,7 @@
 //! content, and it prints byte-exact records; every other command is
 //! content-free.
 
-use std::{ffi::OsString, io::Read, path::PathBuf};
+use std::{ffi::OsString, path::PathBuf};
 
 use serde_json::{Value, json};
 use vibemuxd::{
@@ -18,12 +18,14 @@ use vibemuxd::{
     process::DaemonPaths,
 };
 
-use crate::{CliCommand, DaemonCliError, harness_client, map_control_error};
+pub use crate::prompt_input::PromptSource;
+use crate::{
+    CliCommand, DaemonCliError, harness_client, map_control_error,
+    prompt_input::{prompt_source, read_prompt},
+};
 
 /// Pages one `dsh poll` call reads at most before it stops advancing.
 const MAX_POLL_PAGES: usize = 4096;
-/// `--prompt-file` value that reads the prompt from stdin.
-const STDIN_PROMPT_SOURCE: &str = "-";
 /// Keeps a prompt inside the control frame for ordinary text.
 const MAX_PROMPT_BYTES: usize = vibemux_harness::dsh::MAX_PROMPT_BYTES;
 
@@ -43,12 +45,6 @@ pub enum DshCommand {
     Status,
     Cancel,
     Close,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PromptSource {
-    Stdin,
-    File(PathBuf),
 }
 
 /// Parses `vibemuxctl dsh <verb> [...]`, returning `None` when the arguments
@@ -121,15 +117,9 @@ pub fn parse_dsh_arguments(arguments: &[OsString]) -> Result<Option<CliCommand>,
             if session_id.is_some() || after_sequence != 0 {
                 return Err(DaemonCliError::InvalidArguments);
             }
-            let Some(prompt_file) = prompt_file else {
-                return Err(DaemonCliError::InvalidArguments);
-            };
-            let source = if prompt_file.as_os_str() == STDIN_PROMPT_SOURCE {
-                PromptSource::Stdin
-            } else {
-                PromptSource::File(PathBuf::from(prompt_file))
-            };
-            DshCommand::Prompt { source }
+            DshCommand::Prompt {
+                source: prompt_source(prompt_file.as_ref())?,
+            }
         }
         "poll" => {
             if session_id.is_some() || prompt_file.is_some() {
@@ -163,8 +153,18 @@ pub fn parse_dsh_arguments(arguments: &[OsString]) -> Result<Option<CliCommand>,
     }))
 }
 
-/// Runs one DSH command against the daemon.
+/// Runs one DSH command against the daemon. A prompt is read and checked
+/// first, as `dispatch submit` reads its own, so a missing, unreadable, or
+/// invalid prompt is refused before the daemon is selected.
 pub async fn run_dsh(paths: &DaemonPaths, command: DshCommand) -> Result<Value, DaemonCliError> {
+    let prompt = match &command {
+        DshCommand::Prompt { source } => Some(
+            read_prompt(source.clone(), MAX_PROMPT_BYTES)
+                .await
+                .map_err(|error| error.into_cli_error(DaemonCliError::InvalidArguments))?,
+        ),
+        _ => None,
+    };
     let client = harness_client(paths).await?;
     match command {
         DshCommand::Open { session_id } => {
@@ -174,8 +174,8 @@ pub async fn run_dsh(paths: &DaemonPaths, command: DshCommand) -> Result<Value, 
                 .map_err(map_control_error)?;
             Ok(status_json("opened", &status))
         }
-        DshCommand::Prompt { source } => {
-            let prompt = read_prompt(&source)?;
+        DshCommand::Prompt { .. } => {
+            let prompt = prompt.ok_or(DaemonCliError::InvalidArguments)?;
             let byte_count = prompt.len();
             let status = client
                 .dsh_session_prompt(&DshSessionPromptRequest { prompt })
@@ -248,28 +248,6 @@ async fn poll_to_tail(client: &ControlClient, cursor: u64) -> Result<Value, Daem
     Err(DaemonCliError::Control {
         code: "dsh_poll_page_limit".to_string(),
     })
-}
-
-fn read_prompt(source: &PromptSource) -> Result<String, DaemonCliError> {
-    let mut prompt = String::new();
-    match source {
-        PromptSource::Stdin => {
-            std::io::stdin()
-                .take(MAX_PROMPT_BYTES as u64 + 1)
-                .read_to_string(&mut prompt)
-                .map_err(|_| DaemonCliError::InvalidArguments)?;
-        }
-        PromptSource::File(path) => {
-            let file = std::fs::File::open(path).map_err(|_| DaemonCliError::InvalidArguments)?;
-            file.take(MAX_PROMPT_BYTES as u64 + 1)
-                .read_to_string(&mut prompt)
-                .map_err(|_| DaemonCliError::InvalidArguments)?;
-        }
-    }
-    if prompt.trim().is_empty() || prompt.len() > MAX_PROMPT_BYTES {
-        return Err(DaemonCliError::InvalidArguments);
-    }
-    Ok(prompt)
 }
 
 /// The content-free status projection every non-poll command prints.
@@ -466,28 +444,47 @@ mod tests {
         assert_eq!(value["profile"], "sdk");
     }
 
-    #[test]
-    fn an_empty_or_oversized_prompt_file_is_refused_before_the_daemon() {
-        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
-        std::fs::create_dir_all(&directory).expect("scratch");
-        let blank = directory.join("vibemux-cli-dsh-blank.txt");
-        std::fs::write(&blank, "   \n").expect("write");
+    #[tokio::test]
+    async fn the_prompt_is_checked_before_the_daemon_is_selected() {
+        let temp = tempfile::tempdir().expect("temp project");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let path = temp.path().join("prompt.txt");
+        let run_with = |content: Vec<u8>| {
+            std::fs::write(&path, content).expect("write prompt");
+            run_dsh(
+                &paths,
+                DshCommand::Prompt {
+                    source: PromptSource::File(path.clone()),
+                },
+            )
+        };
+        // No daemon runs for this project, so only a prompt that passes every
+        // check reaches daemon selection and reports `NotRunning`.
         assert_eq!(
-            read_prompt(&PromptSource::File(blank.clone())),
-            Err(DaemonCliError::InvalidArguments)
+            run_with("p".repeat(MAX_PROMPT_BYTES).into_bytes()).await,
+            Err(DaemonCliError::NotRunning)
         );
-        let oversized = directory.join("vibemux-cli-dsh-oversized.txt");
-        std::fs::write(&oversized, "x".repeat(MAX_PROMPT_BYTES + 1)).expect("write");
-        assert_eq!(
-            read_prompt(&PromptSource::File(oversized.clone())),
-            Err(DaemonCliError::InvalidArguments)
-        );
-        let _ = std::fs::remove_file(blank);
-        let _ = std::fs::remove_file(oversized);
-        assert_eq!(
-            read_prompt(&PromptSource::File(directory.join("missing.txt"))),
-            Err(DaemonCliError::InvalidArguments)
-        );
+        for invalid in [
+            b" \n".to_vec(),
+            "p".repeat(MAX_PROMPT_BYTES + 1).into_bytes(),
+            vec![0xff, 0xfe],
+        ] {
+            assert_eq!(
+                run_with(invalid).await,
+                Err(DaemonCliError::InvalidArguments)
+            );
+        }
+        // A missing file and a directory are unreadable sources, not bad
+        // arguments, which is what `dispatch submit` reports for them too.
+        for unreadable in [temp.path().join("missing.txt"), temp.path().to_path_buf()] {
+            let command = DshCommand::Prompt {
+                source: PromptSource::File(unreadable),
+            };
+            assert_eq!(
+                run_dsh(&paths, command).await,
+                Err(DaemonCliError::PromptUnavailable)
+            );
+        }
     }
 
     #[test]

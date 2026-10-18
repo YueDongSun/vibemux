@@ -320,25 +320,25 @@ impl PushService {
                     run.latest_sequence,
                 ));
             }
-            if let Some(linked) = &task.dispatch {
-                if let Some(sequence) = linked.sequence {
-                    candidates.push((
-                        "dispatch",
-                        linked.id.as_str(),
-                        linked.state.as_str(),
-                        sequence,
-                    ));
-                }
+            if let Some(linked) = &task.dispatch
+                && let Some(sequence) = linked.sequence
+            {
+                candidates.push((
+                    "dispatch",
+                    linked.id.as_str(),
+                    linked.state.as_str(),
+                    sequence,
+                ));
             }
-            if let Some(linked) = &task.workflow {
-                if let Some(sequence) = linked.sequence {
-                    candidates.push((
-                        "workflow",
-                        linked.id.as_str(),
-                        linked.state.as_str(),
-                        sequence,
-                    ));
-                }
+            if let Some(linked) = &task.workflow
+                && let Some(sequence) = linked.sequence
+            {
+                candidates.push((
+                    "workflow",
+                    linked.id.as_str(),
+                    linked.state.as_str(),
+                    sequence,
+                ));
             }
         }
         for (kind, id, state_name, sequence) in candidates {
@@ -512,14 +512,13 @@ fn claim_event(
             Some(_) => EventDecision::Send,
         };
         if matches!(decision, EventDecision::Unchanged) {
-            if let Some(previous) = state.recent_events.get_mut(&entity_key) {
-                if previous.generation == event.generation
-                    && event.control_sequence > previous.sequence
-                    && previous.state == event.state
-                {
-                    previous.sequence = event.control_sequence;
-                    return Ok((decision, true));
-                }
+            if let Some(previous) = state.recent_events.get_mut(&entity_key)
+                && previous.generation == event.generation
+                && event.control_sequence > previous.sequence
+                && previous.state == event.state
+            {
+                previous.sequence = event.control_sequence;
+                return Ok((decision, true));
             }
             return Ok((decision, false));
         }

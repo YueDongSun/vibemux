@@ -2699,6 +2699,43 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 
 ---
 
+### 2026-10-06 - DSH prerequisite provisioning and live runtime re-verification
+
+**Scope and resulting contracts**
+- Add the DeepSeek Harness runtime to the repository's prerequisite path: a checkable, provisionable setup step for the npm-global `@deepseek-ai/dsh` runtime, the `sdk` profile the ADR 032 adapter drives, and the optional out-of-tree `tui` profile.
+- Re-verify the ADR 032 wire binding against the current vendor release, because `docs/dsh_session_protocol.md` bound the adapter to shapes read from `0.1.2-rc.1` and required re-verification before a later release is claimed to work.
+- No canonical state, store schema, control protocol, event, or plugin contract changed, and no Rust source changed.
+
+**Implemented**
+- `scripts/setup_dsh_prereq.ps1`: read-only by default (exit 0 ready, 2 not ready, 1 unusable); `-Apply` performs only the documented operator commands (`npm install -g @deepseek-ai/dsh@<version>`, `dsh --profile sdk --help`, `dsh plugin --profile tui add <bundle>`); `-Json` emits one machine-readable object; `-SkipTui` limits the check to the `sdk` profile; `-WriteSessionConfig` writes `.vibemux\dsh_session.json` as UTF-8 without a BOM, refuses to replace it without `-Force`, and refuses a launcher path that resolves inside the project root; `-SkipProbes` runs the structural checks only. Tools are launched as `node <javascript entry>`, never through a command interpreter; the script prints no secret and no environment dump and deletes nothing.
+- The launcher-pair trust rule is mirrored rather than assumed: the installed package must declare `"name": "@deepseek-ai/dsh"` and map its own `dsh` bin entry to the script that would be launched.
+- `tests/test_dsh_prereq.py`: 17 fixture-driven tests (skipped with an explicit reason when `pwsh` is absent) covering the missing install, the version floor with prerelease ordering, a foreign package with the same layout, the ready path, a `tui` profile without its bundle, `-SkipTui`, the read-only guarantee, `-Apply -WriteSessionConfig` (BOM-free write, no clobber without `-Force`), and the `-Apply`/`-SkipProbes` refusal.
+- The prerequisite is documented in README's DSH section and as CONTRIBUTING step 7.
+- `crates/vibemux_harness/src/dispatch/launch_spec.rs`: `interpreter_script_path` restores the classic spelling of a Windows verbatim path for the launcher-pair script argument only (`\\?\C:\x` → `C:\x`, `\\?\UNC\s\share\x` → `\\s\share\x`; a volume GUID path is left unchanged so it fails loudly). The admitted canonical path stays the trust anchor, and the image argument is untouched because `CreateProcess` accepts the verbatim form.
+
+**Evidence**
+- commands (native Windows, PowerShell 7.6.6, Node v24.18.0): `python -m pytest` 128 passed; `python -m ruff format --check .` clean (109 files); `python -m ruff check .` clean; `mypy tests/test_dsh_prereq.py` clean; repository-wide `python -m mypy .` still reports the same 20 errors in three untouched `tools/` modules.
+- `scripts\setup_dsh_prereq.ps1` on the reference host: `READY`, exit 0, ten checks (node, npm, pnpm, DSH install, DSH version, `sdk` profile, `tui` profile, `tui` composition, session configuration, API-key presence).
+- Live wire re-verification against `@deepseek-ai/dsh` `0.2.0-rc.2`, initialize-only with no prompt on any path: `initialize` returned `serverInfo.name == "deepseek-harness-sdk-runtime"` and `serverInfo.version == "0.0.1"`, `shutdown` returned `{}`, the runtime exited 0 with empty stderr, and five runs — including the adapter's environment allowlist, its creation posture, and a verbatim `cwd` — produced byte-identical output. No difference from the documented shapes. Full record: [docs/evidence/dsh_runtime_validation.md](docs/evidence/dsh_runtime_validation.md).
+- First live exercise of the adapter itself (`vibemux_dsh_tui` in a real ConPTY, and the Control v7 path through `vibemuxd`) failed before the handshake completed: `dsh_driver_transport_closed` (exit 1) and `dsh_session_refused` (exit 4). `--print-config` still returns the documented content-free projection with exit 0.
+- `cargo test -p vibemux_harness -p vibemux_dsh --all-features`: every suite green, including three new unit tests for the path transformation and one Windows-gated integration test proving that a route whose `entry_script` is `\\?\C:\tools\dsh-package\lib\bin.js` yields the argv `["C:\\tools\\dsh-package\\lib\\bin.js", "--profile", "sdk"]` with no `\\?\` prefix. `cargo clippy -p vibemux_harness -p vibemux_dsh --all-targets --all-features -- -D warnings` clean.
+- Live re-probe after the repair (rebuilt `vibemux_dsh_tui`, node-pty 120x32, real `dsh` 0.2.0-rc.2): the surface reaches `phase ready` with `1 handshake ok: deepseek-harness-sdk-runtime 0.0.1`, renders its status and record panels, and `Ctrl-Q` exits `0` after 21.1 s. The same probe exited `1` after ~1.16 s with no status line before the repair. This is the first live DSH session this adapter has completed.
+
+**Defect found and repaired**
+- `crates/vibemux_dsh/src/config.rs` (`canonical_outside_root`) stores the entry script in `std::fs::canonicalize` form — on Windows the verbatim `\\?\C:\...` form — and `crates/vibemux_harness/src/dispatch/launch_spec.rs` passed that string as Node's first argument. Node's loader refuses a verbatim script path (`EISDIR: illegal operation on a directory, lstat 'C:'`) and exits 1 before loading anything, and because the driver discards the child's stderr the failure surfaced as a closed transport. Reproduced directly: `node <plain path>` runs the script, `node \\?\<same path>` fails.
+- The defect was version-independent — no DSH code ran — so it was not caused by the `0.2.0-rc.2` upgrade and would have failed identically on `0.1.2-rc.1`. It is repaired at the argv boundary, and `docs/dsh_session_protocol.md` §1 and §10 plus the validation record now carry both the defect and the repair.
+
+**Remaining**
+- Turn-level behavior against `0.2.0-rc.2` is unverified: no prompt was sent before or after the repair, so `session.event`/`session.status` handling, `turn/end` mapping, record paging, and the completion-authority table remain fixture-verified only. Sending one is the next live step and needs explicit authorization for vendor inference.
+- The Control v7 daemon path (`vibemuxctl dsh open`) was not re-run against the repaired driver; it shares `build_launch_spec` with the terminal surface, which now completes the handshake.
+- `vibemuxctl daemon start` reported `daemon_spawn_failed` while `vibemuxd.exe --project-root ...` started correctly; not root-caused.
+
+**Known risks**
+- `-Apply` installs third-party packages; the default check mode does not. CI never exercises a real install: the tests use fixture trees with `-SkipProbes`.
+- The `tui` profile comes from a third-party community bundle. The script checks composition, not behavior, and never launches an interactive surface.
+
+---
+
 ### 2026-10-04 - Dual-track workflow and DSH integration on main
 
 **Scope and resulting contracts**
@@ -3940,3 +3977,2114 @@ scratch directory outside the repository.
   nextest, cargo-deny, or cargo-audit. The native dispatch's live evidence above
   is the branch-time record and was not repeated. `vibemux_web` is outside these
   workspace gates.
+
+### 2026-10-17 - Shared harness protocol engine and adapter capability display
+
+**Scope**
+- A harness-design review of the two dispatch paths and of the frontends. After the ADR 040 port, `vibemux_harness_native` carried its own copy of the Codex, Claude, and ACP state machines and vendor argv, so the two paths could drift apart, and Claude ran under a weaker posture on the native path. No frontend showed which harnesses VibeMux can drive through a structured adapter.
+- Backend: `vibemux_harness` (shared argv and session constructors, new `dispatch::capability` table) and `vibemux_harness_native` (now a thin wrapper over the shared engine). Frontend: `vibemux_frontend` (dashboard, TUI debug snapshot, egui Agents view and composer) and `vibemux_cli` (`probe` text). Docs: [docs/architecture.md](docs/architecture.md) and the "Integration with main" section of [ADR 040](docs/adr/040_native_harness_request_dispatch.md).
+- No store schema, control protocol, plugin wire, `HarnessRow` wire, or route-config schema change. No milestone status moves.
+
+**Implemented**
+- `vibemux_harness::dispatch::structured_arguments` is now the only place that defines each vendor's structured argv: Codex app-server and exec, Claude stream-json, and ACP for OpenCode, Copilot, and Grok. The daemon's `build_launch_spec` delegates to it, and DSH keeps its launcher pair. ACP model selection is refused there as well as in route config.
+- `SessionRoute` with `ProtocolSession::probe` and `ProtocolSession::execution` builds a session from route facts without a daemon `DispatchRoute`. The daemon's `for_probe` and `for_execution` keep their signatures and the 128 KiB prompt limit.
+- `vibemux_harness_native` drives Codex, Claude, and ACP routes through the shared `ProtocolSession` and `observation::classify`, and its observation `Kind` is now the shared `ObservationKind`.
+  - Only the direct OpenCode JSON classifier stays local; direct Copilot and Grok JSON stay opaque and non-executable as before.
+  - A fixed 13-entry table maps shared protocol errors to the crate's existing `harness_*` codes and keeps the source error.
+- `vibemux_harness::dispatch::capability` (`AdapterSupport`, `AdapterCapability`, `adapter_capability`, `adapter_capabilities`) derives each harness's support from `NativeProtocol`. The value is `execute`, `probe_only`, or `terminal_only`. It describes what this build can do, not what the operator has configured or authorized.
+- The frontends show it:
+  - Dashboard: an Adapter column in the wide Harnesses table, and an `Adapter:` line in the details pane.
+  - Plain snapshot and TUI debug snapshot: `adapter=… protocols=…` per agent.
+  - GUI: the support level in the Agents list and the full summary in its detail view.
+  - GUI composer: a detected harness that cannot take a prompt now says why ("Structured adapter is probe-only", "No structured adapter (terminal UI only)") instead of appearing available.
+  - `vibemuxctl probe` text: `adapter=` per row, and `unknown` for an agent this build does not know.
+
+**Behavior changes on the native path (ADR 040)**
+- Native Claude routes also get `--strict-mcp-config` and `--restricted`, so project and user MCP servers and settings files cannot re-enable tools. The bare, tool-free `dontAsk` profile is unchanged.
+- Native Codex exec puts `--model` before the stdin marker `-`, which stays last.
+- A duplicate Codex exec terminal record reports `harness_unexpected_terminal` instead of `harness_duplicate_terminal`.
+- `clientInfo.version` in initialize frames is the workspace version `0.2.0-alpha.1` instead of `0.2.0`.
+- The plugin error allowlist accepts all 13 mapped protocol codes. Five of them used to be masked as `harness_vendor_failed`.
+- The dispatcher builds its validator session before it takes a slot or lease or spawns the plugin, so a route the engine cannot drive is refused without starting a process.
+
+**Evidence** (native Windows, Rust 1.92.0, `-j 4`, no vendor CLI, Jev, or paid API invoked)
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy -p vibemux_harness -p vibemux_harness_native -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings`: clean.
+- `cargo test -p vibemux_harness -p vibemux_harness_native -p vibemux_cli -p vibemux_frontend --all-features --no-fail-fast`, every target passes except one:
+  - `vibemux_harness`: lib 85, `dispatch_attempt` 12, `dispatch_config` 22, `dispatch_framing` 8, `dispatch_protocols` 14, `writable_fixture_guard` 4.
+  - `vibemux_harness_native`: lib 7, `normalization` 18, `process_dispatch` 19.
+  - `vibemux_frontend`: lib 123 (1 ignored), `cli` 6, `palette_parity` 2, `supervisor_ui` 10.
+  - `vibemux_cli`: lib 40, `bootstrap_process` 4, `unified_commands` 4 of 5.
+  - The exception is `unified_commands::workspace_inventory_disables_external_git_filters_and_labels_the_comparison`. It fails at a fixture `git` call (`unified_commands.rs:40`), and it fails identically on unmodified `HEAD` `5f82aa7` in a scratch worktree, so it predates this change. Its root cause in this environment was not found.
+- `cargo test -p vibemuxd --all-features --lib --test harness_dispatch --test control_harness_dispatch --test dsh_session --test launch_trampoline --test decision_route`: lib 123, `harness_dispatch` 23, `control_harness_dispatch` 3, `dsh_session` 10, `launch_trampoline` 6, `decision_route` 10, all passed.
+- New tests:
+  - Shared Claude argv posture and Codex exec stdin-marker order.
+  - Refused mismatched, launcher-pair, and ACP-model routes.
+  - Capability table order, ownership, and summaries.
+  - Native argv composition, error-code mapping, and duplicate-terminal handling.
+  - Composer reasons, dashboard and TUI adapter display (including with no probe observation), and CLI `probe` text.
+
+**Remaining**
+- Policy split, not changed: ADR 040's native path still executes ACP routes, while ADR 029 keeps ACP probe-only because some ACP vendors grant their own tool permissions. The shared engine declines every `session/request_permission` it sees, but that cannot restrain a vendor that never asks. An operator decision is needed: align the native path with ADR 029, or record a deny posture per vendor.
+- Not done: multi-turn or resumed sessions, an approval bridge for vendor permission requests, contract-drift telemetry for unknown vendor event types, and the vendor CLI version on dispatch records.
+- Live vendor evidence is unchanged: initialize-only probes on the daemon path, and the 2026-08-27 branch record on the native path. No real prompt turn was run.
+
+**Known risks**
+- The stricter native Claude argv and the shared Codex exec argv were checked against fixtures only. A vendor release that rejects `--restricted` or `--strict-mcp-config` would now fail on both paths, not just the daemon path.
+
+### 2026-10-17 - Hermetic Git filter fixture for the workspace inventory test
+
+**Scope**
+- Fixes the pre-existing `vibemux_cli` failure recorded in the previous entry: `unified_commands::workspace_inventory_disables_external_git_filters_and_labels_the_comparison`. Test-only change: a new `test_helpers` fixture binary, the test, and its fixture helper. No product code changed.
+
+**Cause**
+- The test configured the shell filter `echo invoked > filter_marker; cat`. Git for Windows runs such a command through MSYS `sh.exe`. Launched from the Rust test process, that `sh.exe` aborted before running anything with `NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…): 0xC0000022` (access denied), so `git add` failed with filter exit 66.
+- The same sequence succeeded from Git Bash and from PowerShell, with inherited or redirected stdio. It also failed outside the tool sandbox, so the sandbox is not the cause. Why this one launch context is denied was not determined.
+- The flaw that matters: the test's "no filter ran" assertions only prove something while that shell can start.
+
+**Implemented**
+- New `vibemux_git_filter_fixture` binary (`required-features = ["test_helpers"]`, like the other CLI fixtures). It writes `filter_marker` in its working directory and copies stdin to stdout.
+- The test configures the fixture's forward-slash path as both the `clean` and the `process` filter. With no shell metacharacters, Git runs it directly instead of through `sh -c`. The positive control (`git add` must leave the marker) and the negative checks (inventory must not run a clean or a process filter, and must not change the index) are kept. The test is now gated on `test_helpers`, which CI and the documented `--all-features` commands enable.
+- The test's `git()` helper now reports the failing fixture arguments and Git's stderr. The arguments are constants, so no private data is printed.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 5 passed, including the previously failing test.
+- `cargo test -p vibemux_cli --test unified_commands` with default features: 4 passed, and the gated test compiles out cleanly.
+- `cargo clippy -p vibemux_cli --all-targets -- -D warnings`, with and without `--all-features`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Without `test_helpers`, the filter test no longer runs. A filter path that contains a space or another shell metacharacter would make Git use `sh -c` again.
+
+### 2026-10-17 - Pin the vendor-request refusal posture and the native completion-code allowlist
+
+**Scope**
+- Test-only. Coverage review of how both dispatch paths answer vendor-to-client requests, and of which plugin error codes the native dispatcher passes through. No behavior change.
+
+**Findings**
+- The native fixture already checks end to end that an ACP `session/request_permission` is answered `cancelled`, a Codex `item/commandExecution/requestApproval` is answered `decline`, and a Claude permission control request is answered with an error.
+- Untested shared-engine branches before this change:
+  - The Codex `item/fileChange/requestApproval` decline.
+  - The JSON-RPC `-32601` refusal for every other vendor request, which covers the filesystem and terminal requests behind ACP's disabled client capabilities.
+  - Rejection of a request whose id cannot be echoed back.
+- The native `safe_error_code` allowlist had no test. Removing a mapped protocol code from it would have silently relabeled that violation as `harness_vendor_failed`.
+
+**Implemented**
+- `vibemux_harness` `dispatch_protocols::every_vendor_request_is_refused_and_none_is_granted`:
+  - A Codex app-server session declines a `fileChange` approval and refuses an unknown request without a `jsonrpc` member.
+  - An ACP session refuses `fs/read_text_file`, `fs/write_text_file`, `terminal/create`, and an unknown request with a `jsonrpc: "2.0"` `-32601` error that echoes no request parameters.
+  - Both reject a non-scalar or empty request id with `InvalidRpcId` and leave the session non-terminal.
+- `vibemux_harness_native` `dispatch::tests::completion_codes_survive_only_when_fixed_and_content_free`: all 13 mapped protocol codes plus representative transport codes are accepted. Empty, case-changed, padded, content-bearing, and vendor-defined codes are rejected.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_harness --all-features --test dispatch_protocols`: 15 passed.
+- `cargo test -p vibemux_harness_native --all-features --lib`: 8 passed.
+- `cargo clippy -p vibemux_harness -p vibemux_harness_native --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Approval method names are pinned only to the ones the engine knows. A vendor that renames its approval request would get `-32601` rather than a decline. That is still a refusal, but its effect on the vendor turn was not verified against a live CLI.
+
+### 2026-10-17 - Show what each native harness route can do in the catalog text
+
+**Scope**
+- CLI text rendering only. `vibemuxctl --format text harness catalog` previously listed each route's `enabled` and `allow_execution` settings, but not whether this build can probe or execute that route's protocol. The JSON catalog contract is unchanged.
+
+**Implemented**
+- `vibemux_cli` `output::route_actions` derives an `Actions` column from fields the catalog already returns:
+  - `disabled` when the route is not enabled, because route lookup skips it.
+  - `probe` when the shared engine has an initialize-only handshake for the protocol (`structured_probe`).
+  - `execute` only when the route has a shared-engine session (`native_execution`) and the operator set `allow_execution`.
+  - `none` for an enabled route that offers neither, such as a direct replay protocol, or a `codex` route without `allow_execution`.
+- A footer states that the column combines route settings with this build's protocol engine and that a probe sends no prompt. The text keeps the "configuration only, not a live readiness check" header.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features`: lib 41 passed (including `output::tests::harness_catalog_text_states_what_each_route_can_do`), `bootstrap_process` 4 passed, `unified_commands` 5 passed.
+- `unified_commands::harness_catalog_stays_metadata_only_through_unified_entrypoint` now also renders the example configuration as text. It checks that every disabled route shows `disabled`, that no row offers `execute`, and that no `native_bin` path appears.
+- `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The column reports configuration and build capability only. It does not check that the vendor CLI is installed, and it does not run a probe.
+- ACP routes still show `execute` under the native CLI when `allow_execution` is set. Whether native ACP execution should follow the daemon's probe-only policy is still an open decision.
+
+### 2026-10-17 - Tally observation kinds in the native harness report text
+
+**Scope**
+- CLI text rendering only. The `vibemuxctl harness` probe, dispatch, and replay reports list at most 32 observation rows in text mode. A run with more records hid how many records the classifier left `opaque`, which is the earliest sign that a vendor changed its output. The JSON reports are unchanged and already carry every observation.
+
+**Implemented**
+- `vibemux_cli` `output::kind_tally` adds a `Kinds:` line that counts every observation, including the truncated rows. It uses the shared ADR 029 kind order. A kind outside that vocabulary is counted as `unrecognized` and is never echoed.
+- When any record is `opaque`, the text says that such records are kept intact but not classified: RPC replies, or vendor events without a verified contract. It also says that a growing share can mean the vendor output changed.
+- A replay report now starts with `Replay <protocol> | replayed` and `Records: <n>`. It no longer prints `Harness -` and placeholder process fields for a replay that ran no process.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features`: lib 42 passed (including `output::tests::harness_report_text_tallies_every_kind_including_truncated_rows`), `bootstrap_process` 4 passed, `unified_commands` 6 passed.
+- New `unified_commands::harness_replay_text_tallies_kinds_without_vendor_content` replays the native `codex_app_server.jsonl` fixture through `vibemuxctl --format text harness replay`. It checks the header, `Records: 10`, and `Kinds: started 1, text 2, tool 1, approval 1, usage 1, completed 1, opaque 3`, and that no fixture content appears.
+- `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The tally is a count, not a drift detector. Some opaque records are expected for every protocol (RPC replies), and every record of a direct `copilot_json` or `grok_stream_json` replay is opaque. No baseline share is recorded or compared.
+- The daemon dispatch status already returns per-kind counts (`CaptureSummary.kinds`). This change does not touch the daemon or its control protocol.
+
+### 2026-10-17 - Document harness adapter capability and protocol error codes
+
+**Scope**
+- Documentation, plus one test that keeps it current. `docs/protocol_boundaries.md` was stale for the harness surface:
+  - It still described control IPC v6.
+  - It said ACP prompt execution was unimplemented, although the ADR 040 native CLI executes ACP routes that set `allow_execution`.
+  - It said MCP was unimplemented, although ADR 035 adds `vibemux_mcp`.
+  - It did not mention the native harness CLI, adapter capability, or the native error codes.
+
+**Implemented**
+- The control IPC bullet now lists v1–v10 from the constants in `vibemuxd::control`.
+- The ACP/MCP bullet now states the daemon's probe-only rule and the native CLI's ACP execution path. It names that divergence as an open decision and links the native MCP read frontend.
+- A new "Native harness CLI" bullet describes `vibemuxctl harness`. It runs on the shared `ProtocolSession` engine, writes no canonical state, and produces content-free reports. Execution needs `allow_execution`, and its status is `PARTIAL — FIXTURE ONLY`.
+- A new "Harness adapter capability" section has the per-harness table from `adapter_capability`: execute, probe_only, or terminal_only, and through which protocols. It also explains the catalog `Actions` column.
+- A new "Harness protocol error codes" section:
+  - Maps the 13 shared `DispatchError` protocol violations to their daemon (`harness_protocol_*`) and native (`harness_*`) codes, and lists the other native mappings.
+  - Documents the plugin completion-code allowlist, under which anything else becomes `harness_vendor_failed`.
+  - Documents how each protocol answers vendor-to-client requests.
+- `vibemux_harness_native` `session::tests::protocol_boundaries_document_every_protocol_code_pair` requires each code pair to appear on one table row of the document.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_harness_native --all-features --lib`: 9 passed.
+- Renaming one native code in the document made the new test fail with `harness_uncorrelated_turn is not documented beside harness_protocol_uncorrelated_turn`. Restoring the document made it pass again.
+- Each table description and the vendor-request answers were checked against `vibemux_harness::dispatch::protocol_session` and `error_code`.
+- `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Only the protocol code pairs are pinned by a test. The capability table and the prose can still drift from the code.
+- Other `protocol_boundaries.md` bullets (A2A, plugin, workflow) were not re-audited.
+
+### 2026-10-17 - Keep adapter support in every dashboard agent table width
+
+**Scope**
+- Read-only dashboard rendering (ADR 041). Below 72 columns the agent table switched to `Agent / Launcher / Route` and dropped the `Adapter` column. That happened on the overview in a terminal narrower than 72 columns, and on the Harnesses page at most widths, because the table gets 45% of the width there. No model, probe, or protocol change.
+
+**Implemented**
+- `vibemux_frontend` `dashboard::render::AgentColumns` chooses one of three column sets by table width:
+  - Full (at least 72): every probe column.
+  - Compact (50 to 71): `Agent / Launcher / Adapter / Route`. 50 is the narrowest width at which the route column still fits `local_gateway`.
+  - Minimal (below 50): `Agent / Launcher / Adapter`.
+- Adapter support is a build fact that no observation replaces, so every set keeps it. The minimal set drops the route, which the selected-harness pane still shows.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- New `dashboard::tests::every_agent_table_width_keeps_adapter_support` covers the overview at 60 and 44 columns and the Harnesses page at 80 and 120 columns. It checks that the table header has `Adapter`, has `Route` only when the compact or full set applies, and that `execute` and `probe` labels are visible.
+- `vibemuxctl --format text ui --once --report <probe fixture> --width 60|44 --height 30` shows the compact and minimal tables with each harness's adapter label.
+- `cargo test -p vibemux_frontend --all-features`: lib 124 passed (1 ignored) and all integration targets passed. `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- On the Harnesses page at 80 columns, the table now shows the adapter instead of the route. The route stays in the selected-harness pane.
+- The overview's stacked agent table is 8 rows high, so at 24 rows only the first five harnesses are visible without scrolling. This is unchanged.
+
+### 2026-10-17 - Pin the documented harness capability table to the code
+
+**Scope**
+- Test plus a one-cell documentation fix. The capability table that `c8512ce` added to `docs/protocol_boundaries.md` had no test, and it already had one error: DSH's protocol id was written as `dsh_sdk_jsonrpc`, but the code uses `dsh_sdk_json_rpc`.
+
+**Implemented**
+- `vibemux_harness` `dispatch::capability::tests::protocol_boundaries_document_every_harness_capability` parses the "Harness adapter capability" table. It requires every `AgentKind` display name exactly once, and the total count rules out stale or extra names. Each harness's row must list exactly the protocols and support that `adapter_capability` derives.
+- `docs/protocol_boundaries.md`: the DSH row now names `dsh_sdk_json_rpc`.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- Before the documentation fix, the new test failed with ``DSH protocols: left "`dsh_sdk_jsonrpc`", right "`dsh_sdk_json_rpc`"``. After the fix it passes.
+- Mutation checks, each restored afterwards:
+  - Documenting ACP as `execute` failed with `OpenCode support`.
+  - Adding an unknown harness to a row failed with `stale or extra harness`.
+- `cargo test -p vibemux_harness --all-features`: lib 86 passed and every integration target passed. `cargo test -p vibemux_harness_native --all-features --lib protocol_boundaries`: 1 passed.
+- `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The prose around both tables is still unchecked.
+
+### 2026-10-17 - Bring the native harness guide and README table up to date
+
+**Scope**
+- Documentation only, from a re-audit of the harness surfaces. `docs/guides/harness_core_guide.md` was stale:
+  - It named a pinned Rust 1.85 toolchain, but `rust-toolchain.toml` pins 1.92.0.
+  - It did not mention `vibemuxctl harness`, `codex_exec`, the shared protocol engine, or that the direct JSON protocols are replay-only.
+  - It did not mention the daemon/native ACP difference.
+- The README's ADR 029 / ADR 040 table did not say that native ACP routes can execute.
+
+**Implemented**
+- The guide now says:
+  - All four structured protocols run on the shared `ProtocolSession` engine that the daemon also uses.
+  - `opencode_json`, `copilot_json`, and `grok_stream_json` can be replayed but not run.
+  - The native CLI can run an ACP prompt where the daemon only probes, and this is an open decision.
+  - `vibemuxctl --format text` adds the catalog `Actions` column and the per-kind tally.
+  - A Codex probe needs a `codex_app_server` route.
+- The guide also names Rust 1.92.0 and links protocol boundaries.
+- The README table's Routes row states native ACP execution under `allow_execution`, and a new Protocol engine row says both paths share the engine.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- The guide's offline commands ran from the repository root:
+  - `cargo build -p vibemux_harness_native --bins`.
+  - `vibemux_harness_native.exe catalog --config examples/harness/harness_config.json` and the documented `replay`.
+  - `vibemuxctl help harness`.
+- `vibemuxctl --format text harness replay --protocol copilot_json --input .../unverified_stream.jsonl` showed `Kinds: opaque 3`.
+- Each new statement was checked against `rust-toolchain.toml`, `contract::Protocol::native_protocol`, `session::Session::new`, and `ProtocolSession`'s probe handling.
+
+**Remaining**
+- The guide's "Current Live Boundary" section is the 2026-08-27 record and was not re-validated. No live probe was run.
+
+### 2026-10-17 - Correct the architecture overview's harness statements
+
+**Scope**
+- Documentation only. `docs/architecture.md` had three statements that no longer matched the code:
+  - The overview said ACP execution was unimplemented. The ADR 040 native dispatcher can already run an ACP turn on a route that sets `allow_execution`.
+  - The ADR 040 section listed protocol correlation as a separate native module. Correlation now lives in the shared `ProtocolSession` engine, and the native crate only adapts to it.
+  - It said only the direct OpenCode replay was the native crate's own. It did not say that all three direct JSON routes are replay-only, or that direct Copilot and Grok records stay `opaque`.
+
+**Implemented**
+- The overview now says the daemon uses ACP only for initialize-only probes. It adds that the native dispatcher can run a fixture-verified ACP turn under `allow_execution`, and that whether it should follow the daemon's rule is an open decision. Remote A2A deployment is still listed as unimplemented.
+- The ADR 040 section names the adapter over the shared protocol engine and states which direct routes are replay-only and how each is classified.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- Each corrected statement is backed by an existing test that was run:
+  - `cargo test -p vibemux_harness_native --features test_helpers --test process_dispatch all_five_harnesses`: 1 passed. It runs OpenCode, Copilot, and Grok as fixture ACP turns.
+  - `cargo test -p vibemux_harness_native --test normalization --lib`: 18 and 9 passed. These include `unverified_copilot_and_grok_streams_remain_opaque` and `unsupported_routes_keep_their_native_codes`.
+
+**Remaining**
+- No test pins `docs/architecture.md` prose, so it can drift again.
+
+### 2026-10-17 - State which plugins speak the plugin wire
+
+**Scope**
+- Documentation only. In `docs/protocol_boundaries.md`, the plugin stdio bullet said real plugins were unimplemented, and the supervisor bullet said real vendor plugins were absent. Two first-party plugins already speak the Protobuf v1 wire under `vibemux_plugin_supervisor`:
+  - `vibemux_terminal_observer` (plugin id `wezterm_observer`, kind terminal).
+  - `vibemux_harness_native_plugin` (plugin id `vibemux.harness`).
+
+**Implemented**
+- The plugin stdio bullet names both plugins and says who starts each:
+  - The daemon's plugin registry starts the observer from the operator's startup configuration.
+  - The ADR 040 dispatcher starts the harness plugin once per probe or execution, in the CLI process.
+- It says neither is live-validated, and that plugin SDKs and third-party plugins are still unimplemented.
+- The supervisor bullet now says plugin SDKs and third-party plugins remain absent. Status rows and the "Real vendor plugins" checklist item are unchanged.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- Each statement was checked against the code and existing records:
+  - `vibemux_terminal_observer/src/main.rs` and `vibemux_harness_native/src/plugin.rs` both use `vibemux_plugin_protocol` framing.
+  - `vibemux_harness_native::dispatch` calls `spawn_plugin` from its per-request `run`.
+  - The observer's "not live-verified" status comes from the PROGRESS status table.
+- Both tests that read this document still pass:
+  - `cargo test -p vibemux_harness --lib protocol_boundaries`: 1 passed.
+  - `cargo test -p vibemux_harness_native --lib protocol_boundaries`: 1 passed.
+
+**Remaining**
+- The A2A and workflow bullets were not re-audited in this change.
+
+### 2026-10-17 - Show forced termination and stderr size in the native harness text view
+
+**Scope**
+- `vibemuxctl --format text harness probe|dispatch` printed only the record count, stdout bytes, and exit code from the native `Completion`. It dropped two fields:
+  - `forced_termination`. When the native process is killed after a deadline, cancellation, protocol error, or missed shutdown grace period, the exit code comes from the kill, not the vendor, and the text view gave no hint of that.
+  - `stderr_bytes`, the only content-free sign that the vendor wrote diagnostics.
+- The existing unit test rendered hand-written JSON, so a renamed completion field would have printed `-` without failing.
+- An audit of the GUI Agents list at narrow widths found nothing to fix. The window's minimum inner size is 960x600, which leaves room for the one-line metadata and the Details button.
+
+**Implemented**
+- `crates/vibemux_cli/src/output.rs`:
+  - The completion line reads `Records: N   Stdout bytes: N   Stderr bytes: N   Native exit: N`.
+  - A forced termination adds a `Forced termination: ...` line that says the exit code is not the vendor's.
+  - JSON output is unchanged.
+- The new test `harness_outcome_text_reads_every_native_completion_field` renders a real `vibemux_harness_native::contract::Outcome`, with records built by `Record::parse`. It pins both lines in the forced and normal cases, and checks that neither the vendor text nor the request id appears.
+- `docs/protocol_boundaries.md`: the native CLI bullet mentions the forced-termination flag.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_cli --all-features --lib`: 43 passed. `--test unified_commands`: 6 passed.
+- Mutation check: reading `stderr_byte` instead of `stderr_bytes` failed the new test with `Stderr bytes: -`. The file was restored afterwards.
+- `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- No end-to-end `vibemuxctl harness probe` run against the fixture plugin. The plugin binary belongs to another crate, so `vibemux_cli` tests cannot locate it through `CARGO_BIN_EXE_*`.
+
+### 2026-10-17 - Test the native route gates before any process starts
+
+**Scope**
+- Test only. `enabled` and `allow_execution` are the operator's only authorization for the ADR 040 native path. Both layers enforce them: `Dispatcher::run` in the CLI process and `native::run` in the plugin. No test exercised either `harness_route_unavailable` or `harness_execution_disabled`.
+
+**Implemented**
+- New test `route_gates_refuse_before_any_plugin_or_vendor_process_starts` in `crates/vibemux_harness_native/tests/process_dispatch.rs`. Every route names a missing executable and working directory, so a request that slipped past a gate would fail later with `harness_invalid_cwd` instead.
+- Dispatcher cases:
+  - Execute on an enabled route without `allow_execution` gives `harness_execution_disabled`.
+  - Execute or probe on a disabled route, and a probe of a harness with no route, give `harness_route_unavailable`.
+- Plugin cases, through `native::run`, give the same codes. One extra case: a route handed in for another harness gives `harness_route_unavailable`.
+- Control rows: a probe of an enabled route without `allow_execution` passes both gates and reaches `harness_invalid_cwd`.
+- No product code changed.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_harness_native --all-features`: lib 9, normalization 18, and process_dispatch 20 passed.
+- Mutation checks, each restored afterwards. Disabling the `allow_execution` check in `dispatch.rs` failed the test with `harness_invalid_cwd` instead of `harness_execution_disabled`. Disabling the check in `native.rs` did the same.
+- `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Whether native ACP routes should execute at all is still the open policy decision. This test covers the existing gates only.
+
+### 2026-10-17 - Diagnostic TUI shows every probed harness row
+
+**Scope**
+- The read-only diagnostic TUI (`vibemux_frontend_tui`, `tui/render.rs`). The ADR 041 dashboard is unchanged.
+
+**Implemented**
+- Bug: the probe reports eleven harnesses, including DSH, but the stacked agent table had a fixed `Min(13)` height. That fit ten rows, so DSH was cut at 80x24 and 120x32 even while the status line counted it. The golden fixtures had pinned the cut table.
+- The stacked table's height now follows the agent count: top border, header, and one row per agent.
+- Its bottom edge is now the diagnostics block's collapsed top border (`├Diagnostics┤`). At 80x24 all eleven rows and the gateway, A2A, and telemetry lines still fit.
+- The side-by-side layout (160 columns and wider) keeps full borders.
+- New test `every_probed_agent_row_and_diagnostic_line_renders_at_every_size`. At 80x24, 120x32, and 160x40 it requires one table row per `AgentKind::all()` harness and all three diagnostics lines, so a twelfth harness without room fails it. It replaces the ten-name check.
+- Regenerated the twelve golden fixtures; each changed only by the DSH row and the collapsed border. Corrected the stale "ten-agent" module comments.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 124 passed (1 ignored generator); integration 6, 2, and 10 passed.
+- Mutation check, restored afterwards: restoring the stacked table's full bottom border failed the new test with `missing agent row DSH at 80x24`.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- The ADR 041 dashboard's agent table scrolls with the selection, but at 80x24 it shows five of eleven harnesses and gives no hint that more rows exist.
+
+### 2026-10-17 - Dashboard names the harnesses outside its 80x24 view
+
+**Scope**
+- The ADR 041 read-only dashboard (`vibemuxctl ui`, `vibemux_dashboard`; `dashboard/render.rs`). No model, snapshot text, or navigation change.
+
+**Implemented**
+- At 80x24 the overview's agent table holds five of the eleven harnesses and scrolls with the selection. Nothing said the other six existed. When rows are hidden, the table title now names the rows in view, for example `Agent probes 7-11/11`.
+- The table now owns its scroll window (`agent_window`), so the title and the rows always agree.
+- Below the two-pane width, the Harnesses page shows no table. Its details title now gives the selection's position, for example `Selected harness 4/11 / j,k`.
+- The native-TUI slot panel printed one `name [state]` label per harness. At 80 columns it overflowed after TRAE and hid CodeBuddy, Kimi, and DSH. It now prints one line per state, naming that state's harnesses (`reserved: ...`, `unavailable: ...`), so every name fits from 30 columns up.
+- Replaced `narrow_windows_terminal_keeps_all_agents_and_slots_visible`, which checked five names only. The replacement checks the first and scrolled range titles, the selected DSH row, the narrow details position, and both slot lines.
+- A new test requires every harness name inside the slot panel at 30, 59, 60, and 80 columns. A unit test pins the scroll window, including clamping and the empty cases.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 126 passed (1 ignored generator); cli 6, palette_parity 2, and supervisor_ui 10 passed.
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- Mutation checks, each restored afterwards:
+  - A window that never scrolls failed the window unit test and the narrow test.
+  - Per-slot labels instead of grouped names failed the slot panel test (`CodeBuddy missing` at 30 columns) and the narrow test.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- At 80x24 the overview's diagnostics panel shows the gateway and A2A lines but not telemetry.
+- The details pane says `Reserved is not running.` even when the harness's slot is `unavailable`.
+
+### 2026-10-17 - Dashboard details state each harness's own native-TUI slot
+
+**Scope**
+- The ADR 041 dashboard's Harnesses details pane (`dashboard/render.rs`). No model or snapshot text change.
+
+**Implemented**
+- Bug: the details pane ended with `Reserved is not running.` for every harness. That included harnesses whose slot is `unavailable` because no launcher was verified, so a missing or failed CLI read as reserved.
+- The line now reads that harness's own slot: `Native TUI slot: reserved, not running` or `Native TUI slot: unavailable, no verified launcher`. It finds the slot by harness kind, not by list position.
+- An exhaustive match maps each slot state to its text, so a new state must be given its own text.
+- New test `details_state_the_selected_harness_slot_not_a_fixed_reserved_line` covers three harnesses at 70 and 100 columns: a verified one, an unavailable one, and one with no observation.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 127 passed (1 ignored generator); cli 6, palette_parity 2, and supervisor_ui 10 passed.
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- Mutation check, restored afterwards: printing the reserved text for an unavailable slot failed the new test at 70 columns.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- At 80x24 the overview's diagnostics panel still omits the telemetry line.
+
+### 2026-10-17 - Dashboard overview keeps every diagnostics line and grows its agent table
+
+**Scope**
+- The ADR 041 dashboard's stacked overview, below 110 columns (`dashboard/render.rs`). The side-by-side overview is unchanged.
+
+**Implemented**
+- Bug: the stacked overview gave the agent table a fixed eight rows (five agents) and the rest to diagnostics.
+  - At 80x24 the diagnostics panel had two rows of text, so the telemetry line was cut.
+  - On taller terminals the table still showed five agents above blank diagnostics rows.
+- New split:
+  - Diagnostics get the rows their word-wrapped lines need.
+  - The table keeps at least its header and two agents, then takes the rest up to its full height.
+  - Leftover rows go back to diagnostics.
+- At 80x24 the table now shows four agents, titled `Agent probes 1-4/11`, plus all three diagnostics lines. At 100x28 it shows eight. At 100x40 it shows all eleven, with no range title.
+- `wrapped_rows` estimates greedy word wrapping, splitting a word wider than a row. A unit test pins it.
+- New test `overview_keeps_every_diagnostics_line_and_grows_the_table_with_height` covers 80x24, 60x24, 45x30, 100x28, and 100x40. The narrow-terminal test now expects the four-row window.
+
+**Evidence** (native Windows, Rust 1.92.0)
+- `cargo test -p vibemux_frontend --all-features`: lib 129 passed (1 ignored generator); cli 6, palette_parity 2, and supervisor_ui 10 passed.
+- `cargo test -p vibemux_cli --all-features --test unified_commands`: 6 passed.
+- Mutation check, restored afterwards: restoring the fixed eight-row split failed the new test with `80x24 lacks Telemetry:`.
+- `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings`: clean. `cargo fmt --all -- --check`: clean.
+
+**Remaining**
+- Below about 35 columns, the wrapped diagnostics lines can still exceed the space the table leaves.
+
+### 2026-10-17 - State adapter support in the diagnostic TUI
+
+**Scope**: Ratatui diagnostic TUI (`vibemux_frontend` `tui/render.rs`), with `docs/protocol_boundaries.md` and `docs/architecture.md`.
+
+**Implemented**:
+- The diagnostics panel gains an `Adapters:` line. It groups every probed harness under the strongest thing this build's structured adapters can do for it, strongest support first and probe order within a group, for example `execute: Claude, Codex, DSH; probe_only: OpenCode, Copilot, Grok; terminal_only: ...`. `protocol_boundaries.md` already said the TUI showed adapter support, but only the copied snapshot carried it.
+- It is a line, not a table column. At 80 columns the six-column table has no free cells. At 160 columns, a 13-cell column would clip the real Grok version string that the existing test keeps whole.
+- The line follows the gateway, A2A, and telemetry lines, so the minimum 80x24 layout keeps every probe line and does not change. At 80x24 the line has no row, and the snapshot's `adapter=` field is the record there. The two docs now name the diagnostics line and the snapshot.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemux_frontend -p vibemux_harness --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemux_frontend --all-features`: 131 library tests pass, with 1 ignored generator, plus the crate's integration tests. `cargo test -p vibemux_harness --lib capability`: 6 pass, including the documentation-table check.
+- Two new tests pin the exact grouping and the empty case, and the line at 120x32 and 160x40. The six 120x32 golden fixtures were regenerated; the 80x24 fixtures are byte-identical.
+- Mutation checks: dropping the line's content fails the render test and the goldens. Ordering the groups weakest first fails the grouping test as well.
+
+**Remaining**: No live terminal run. The line is hidden at 80x24 for lack of rows.
+
+### 2026-10-17 - Correct the dual-track protocol boundary
+
+**Scope**: The dual-track workflow bullet in `docs/protocol_boundaries.md`, with a `vibemuxd` guard test. The A2A bullet was re-audited and left unchanged.
+
+**Implemented**:
+- The bullet said "There is no AAG gateway client". Since ADR 036, the daemon has a bounded loopback AAG transport, and its AAG adapter is the only production `ModelGateway`. The bullet now says that this transport refuses every live call before submission (`gateway_live_attestation_unavailable`). It also says that only `test_helpers` builds can construct the permit its fake-server calls need, so no model call is made.
+- The bullet listed only the 15 Control v6 operations. It now names the v9 `workflow_supervisor_start` and `workflow_supervisor_status` (ADR 037) and the v10 `workflow_contract_edit` (ADR 039). Both newer answers were checked to be content-free (digests, versions, codes, IDs, and the prepare response), so "content-free except `workflow_session_prompt`" still holds.
+- A2A audit: the information-share peer, the authenticated HTTP+JSON, JSON-RPC, and gRPC task gateway, and the stated non-claims all match `vibemux_a2a` and `docs/a2a_supervisor_protocol.md`.
+- `protocol_boundaries_dual_track_bullet_matches_the_daemon` reads the bullet. It requires the v6 count to equal the test's `WORKFLOW_OPERATIONS` list, each later workflow operation's wire name to appear, and the refusal code to equal `Aag_Gateway_Error::LiveAttestationUnavailable.code()`.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemuxd --all-features --lib control::tests`: 21 pass. The other two tests that read this document, the `vibemux_harness` capability-table check and the `vibemux_harness_native` error-code check, still pass.
+- Mutation checks: dropping the v9 names, stating 14 operations, and renaming the refusal code each fail the new test at their own assertions.
+
+**Remaining**: The guard's list of later operations is maintained by hand, like the existing per-version lists. `README.md`, `CLAUDE.md`, and ADR 031 still use the shorthand "no AAG gateway client", meaning no live-capable client. They were left for the owner to reword.
+
+### 2026-10-17 - Guard the control IPC version range in the protocol boundary
+
+**Scope**: The "Local control IPC" bullet in `docs/protocol_boundaries.md`, with a `vibemuxd` guard test.
+
+**Implemented**:
+- I verified the bullet against `ControlOperation::minimum_protocol_version` and `supported_control_version`. The current version (v10), the accepted range (v1–v10), and what each version added are correct.
+- One omission is fixed. The bullet said `vibemuxctl` covers lifecycle, recovery, harness listing and switching, dispatch, and workflows. Its daemon-backed commands also include `Dsh` and `Decision`, so the bullet now names DSH sessions and advisory decisions.
+- `protocol_boundaries_ipc_bullet_states_every_accepted_version` requires the bullet to name `CONTROL_PROTOCOL_VERSION` as current, to state the accepted range ending at it, and to name what every accepted version added. A version bump now fails until the documentation follows.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemuxd --all-features --lib control::tests`: 22 pass.
+- Mutation checks: a stale current version, a stale range, and a dropped v7 clause each fail the new test at their own assertions.
+
+**Remaining**: The test checks that each version is named, not the operation names listed for it. Those come from `minimum_protocol_version`, which has no enumerable operation list.
+
+### 2026-10-17 - Stop reporting native runner failures as vendor failures
+
+**Scope**: `vibemux_harness_native` plugin completion error-code allowlist (`dispatch.rs` `safe_error_code`) and its paragraph in `docs/protocol_boundaries.md`. The "Harness dispatch" and "Native harness CLI" bullets were audited and left unchanged.
+
+**Implemented**:
+- The ADR 040 dispatcher keeps a plugin completion's `error_code` only if it is on a fixed allowlist, and otherwise reports `harness_vendor_failed`. Tracing `native::run` showed seven fixed, content-free codes that the runner can record after the vendor process starts but that were not on the list: `harness_read_failed`, `harness_wait_failed`, `harness_missing_pipe`, `harness_receiver_closed`, `harness_encode_failed`, `harness_invalid_limits`, and `harness_session_internal`. A stdout read error, a closed record channel, or an engine-internal error was therefore blamed on the vendor. They are now allowlisted. The list still admits only fixed constants, so vendor text still cannot pass through.
+- `every_runner_code_after_spawn_survives_the_allowlist` scans `native.rs` and `json_lines.rs` for code literals. Each one must survive the allowlist unless it is one of the four checks the runner makes before a vendor process exists, which end the request without a completion. A new runner failure code fails this test instead of silently becoming `harness_vendor_failed`.
+- Audit: the dispatch bullet's claims match `vibemuxd`: the trampoline, at most one dispatch per project, raw records only from `harness_dispatch_output`, and initialize-only live evidence. The native CLI bullet's commands (`catalog`, `replay`, `probe`, `dispatch`) match `vibemux_harness_native::cli::Command`.
+
+**Evidence** (native Windows, Rust 1.92.0):
+- `cargo fmt --all -- --check` and `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` pass.
+- `cargo test -p vibemux_harness_native --all-features`: 10 library tests and the 18- and 20-test integration suites pass. These include the fixture-binary process dispatch tests and the protocol error-code documentation check.
+- Mutation checks: dropping `harness_read_failed` from the allowlist fails both allowlist tests. Dropping `harness_missing_pipe`, which only the scan covers, fails the new test.
+
+**Remaining**: The scan covers the runner and its line reader. Codes from `process.rs` and `contract.rs` that are reachable mid-exchange (`harness_wait_failed`, `harness_invalid_json`, `harness_invalid_record`) are pinned by the explicit list only. No live vendor run.
+
+### 2026-10-18 - Native dispatcher keeps the plugin's pre-completion code
+
+**Scope:** `vibemux_harness_native` dispatcher (ADR 040) and `docs/protocol_boundaries.md`. No wire, schema, or control change.
+
+**Implemented:** when the native plugin answers without a completion, because it refused the request or its runner failed before the vendor process yielded one, the dispatcher discarded the plugin's code and reported `harness_plugin_rejected`. A route pointing at a missing vendor executable or a Windows `.cmd` shim therefore did not say why nothing ran. The dispatcher now keeps the plugin's code when the answer is an error and the code is on a fixed list (`REJECTION_CODES`: the plugin's request checks, the runner's checks before launch, and its launch, containment, and reaping failures); any other code, including a case-changed, padded, or content-bearing one, stays `harness_plugin_rejected`. The protocol boundary documents the second list.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. New `every_code_before_a_completion_survives_the_rejection_list` scans the runner's process code, its pre-launch checks, `Session::new`, and the plugin's request checks; new `launch_failures_keep_the_runner_code` probes and executes a missing executable through the real plugin (`harness_invalid_launch`); the Windows batch-route test now asserts `harness_native_executable_required`. Mutations (always `harness_plugin_rejected`, dropping `harness_spawn_failed` from the list, ignoring the response status) each failed the new tests. Fixture vendors only.
+
+**Remaining:** a dispatcher-built completion for a failed exchange still sets `forced_termination`, even when the plugin answered cleanly and no vendor process was killed.
+
+### 2026-10-18 - Native completion-less answers claim no forced kill and skip the drain
+
+**Scope:** `vibemux_harness_native` dispatcher (ADR 040) and `docs/protocol_boundaries.md`. No wire, schema, or control change.
+
+**Implemented:** a plugin answer without a completion (the request refused, or the vendor process never launched) went through the dispatcher's failed-exchange path. That path claimed `forced_termination: true`, so `vibemuxctl --format text harness probe` printed the forced-termination line for a process that never started. It also cancelled and drained for `shutdown_ms` (2 s by default) waiting for an answer that had already arrived. The dispatcher now builds the `failed` completion directly, with no exit code and `forced_termination: false`, as the daemon reports a vendor process that never started. It returns without the drain. Failures inside an exchange still cancel, drain, and report a forced termination.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features`, and `cargo +1.92.0 test -j 4 -p vibemux_cli --all-features harness` passed. `launch_failures_keep_the_runner_code` now uses a 3 s grace period. It asserts no forced termination and that each probe and execution returns within that period. Mutations failed as expected: claiming a forced kill failed the forced-termination assertion. Restoring the old error path failed it too, and with that assertion disabled the timing assertion failed at 3.31 s. Fixture vendors only.
+
+**Remaining:** none for this path.
+
+### 2026-10-18 - Native plugin exit no longer hides the exchange's failure
+
+**Scope:** `vibemux_harness_native` dispatcher (ADR 040) and `docs/protocol_boundaries.md`. No wire, schema, or control change.
+
+**Implemented:** after every request the dispatcher overwrote the completion with `failed` / `harness_plugin_shutdown_failed` whenever the plugin did not shut down cleanly. That replaced a failure the exchange had already recorded, such as a protocol violation or `harness_dispatch_timeout`, which was usually the cause of the unclean exit. The new `apply_plugin_exit` folds the plugin's exit the way `vibemux_harness::dispatch::decide_outcome` folds the vendor's. An unclean exit still fails a success, a protocol terminal, or an unverified completion. An exchange failure keeps its status and code. The protocol boundary states the rule.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. New `an_unclean_plugin_exit_never_hides_an_exchange_failure` covers clean and unclean exits for five completions that are demoted and five that are kept. Three mutations each failed it: the old unconditional overwrite, treating `harness_eof_without_terminal` as an exchange failure, and ignoring the exit. No fixture makes the real plugin exit uncleanly, so the rule is unit-tested only. `vibemuxctl --format text` renders a missing exit code as `-`, the same placeholder as other missing fields, so Backlog 22 needed no change.
+
+**Remaining:** an integration fixture that makes the plugin exit uncleanly after an exchange failure.
+
+### 2026-10-18 - Native route table pinned to the shared engine
+
+**Scope:** `vibemux_harness_native` contract tests only. No behavior, wire, schema, or control change.
+
+**Implemented:** the native CLI keeps its own `Harness` and `Protocol` tables (ADR 040) beside the shared engine's `AgentKind` and `NativeProtocol`, and nothing checked that they agree. If the shared engine gained an ACP harness, every frontend would show it as `probe_only` through `adapter_capability`, while `vibemuxctl harness` could not route it. Two new tests close that. `native_routes_agree_with_the_shared_engine` checks three things: every native harness is named by its command name, every engine-driven native protocol by the engine's id, and native `accepts` matches shared `accepts` for every pair. `every_shared_adapter_outside_dsh_has_a_native_route` walks every `AgentKind` and checks that each structured adapter has a native route, apart from DSH, which `vibemux_dsh` drives.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native`, `cargo +1.92.0 clippy -j 4 -p vibemux_harness_native --all-targets --all-features -- -D warnings`, and `cargo +1.92.0 test -j 4 -p vibemux_harness_native --all-features` passed. Three mutations each failed the tests: dropping native ACP for Grok, adding Qwen to the shared ACP harnesses, and mapping native `acp` to the Claude engine. Backlog checks with no change: the daemon-backed `vibemuxctl dispatch` verbs deliberately have no text view (their JSON is the contract), and the MCP host has no harness listing tool, which would be an ADR 035 tool-contract change.
+
+**Remaining:** the native `HARNESSES` and `PROTOCOLS` test arrays are maintained by hand, so a new native variant must be added to them. The shared-to-native direction is exhaustive through `AgentKind::all()` and `NativeProtocol::ALL`.
+
+### 2026-10-18 - Native route argument and environment refusals are pinned
+
+**Scope:** `vibemux_harness_native` configuration validation and the harness core guide. No wire, schema, control protocol, or policy change.
+
+**Implemented:**
+
+- The native configuration's two security-relevant refusals had no test: a route prefix carrying an approval, sandbox, sharing, or debug-log flag (`harness_unsafe_arguments`), and a bad environment name (`harness_invalid_environment`). Removing either check would not have failed any test.
+- The inline flag list is now the documented `UNSAFE_ARGUMENTS` constant near the top of `config.rs`, with unchanged contents and matching.
+- New unit tests refuse every listed flag alone and as `flag=value`, keep the Codex, Claude, and Copilot bypass flags on the list, and accept a plain launcher prefix. Environment names must be non-empty, at most 128 bytes, uppercase ASCII letters, digits, and `_`, distinct, and not `VIBEMUX_PLUGIN_SESSION_ID`; 24 names are accepted and a 25th fails the route (`harness_invalid_route`).
+- `docs/guides/harness_core_guide.md` now names both codes and says the flag list guards against mistakes and is not a sandbox.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (16 unit, 18 normalization, 21 process dispatch). Four mutations each failed a new test: dropping `--yolo` from the list, matching `flag:` instead of `flag=`, removing the reserved-name check, and ignoring duplicate names.
+
+**Remaining:** The native model field accepts a value that starts with `-`, which the daemon's shared route label check refuses; that parity fix is a separate change. The flag list is a deny list, not an allow list, so an operator prefix stays operator-trusted.
+
+### 2026-10-18 - Native model names can no longer be read as a flag
+
+**Scope:** `vibemux_harness_native` route validation and the harness core guide. No wire, schema, control protocol, or ACP policy change.
+
+**Implemented:**
+
+- A native route's `model` follows `--model` in the Claude stream-json and Codex exec argv. The daemon's shared route label check refuses a model that starts with `-`, but native validation checked only emptiness, a 256-byte bound, and NUL, so a model such as `--dangerously-skip-permissions` loaded and reached argv outside the `UNSAFE_ARGUMENTS` check.
+- Native validation now also refuses a leading `-` (`harness_invalid_route` at load, like the other model checks) and takes its length bound from the shared `MAX_MODEL_BYTES`.
+- The native check does not adopt the daemon's full label alphabet, so a model the native path accepted before still loads unless it starts with `-`.
+- A unit test accepts `sonnet`, `gpt-5.1-codex`, `claude-sonnet-4-5`, and `openai/gpt-5`, and refuses an empty name, `-m`, `--dangerously-skip-permissions`, a name one byte over the bound, and a name with NUL. The guide states the rule.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (17 unit, 18 normalization, 21 process dispatch). Two mutations each failed the new test: removing the leading-dash check and loosening the bound by one byte.
+
+**Remaining:** Whether native should adopt the daemon's full model alphabet is an owner decision, because it would refuse names the native path accepts today. Native environment names may still start with a digit, which the daemon refuses; that difference is harmless and unchanged.
+
+### 2026-10-18 - Native configuration and route-shape refusals are pinned
+
+**Scope:** `vibemux_harness_native` configuration validation tests. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- Apart from the checks pinned earlier today, no test exercised the native configuration's shape refusals: a wrong schema version, no routes, or more than `MAX_ROUTES` (`harness_invalid_config`); invalid limits (`harness_invalid_limits`); and, per route, a duplicate harness, a protocol that does not accept the harness, an empty executable or working directory, or arguments over the count, per-argument, or total byte bound, or containing NUL (`harness_invalid_route`).
+- The inline bounds are now named constants beside the other configuration bounds, with unchanged values: `MAX_ARGUMENTS` (24), `MAX_ARGUMENT_BYTES` (4096), `MAX_TOTAL_ARGUMENT_BYTES` (12 KiB), and `MAX_ENVIRONMENT_NAME_BYTES` (128).
+- Two unit tests refuse each shape with its code and accept the bounds themselves: 24 arguments totalling exactly 12 KiB, one 4096-byte argument, and a second route for another harness.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (19 unit, 18 normalization, 21 process dispatch). Five mutations each failed a new test: loosening the total argument bound by one byte, dropping the protocol-accepts check, disabling the duplicate-harness check, dropping the route cap, and refusing an argument of exactly 4096 bytes.
+
+**Remaining:** The file-level load refusals (a missing file, a file over `MAX_CONFIG_BYTES`, and malformed JSON or an unknown field) still have no test. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native configuration file loading is pinned
+
+**Scope:** `vibemux_harness_native` configuration loading tests. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- No test exercised `Config::load` itself: a missing file (`harness_config_unavailable`), a file over `MAX_CONFIG_BYTES` (`harness_config_too_large`), malformed JSON or an unknown field at the top level, in `limits`, or in a route (`harness_invalid_config`), and a structurally invalid route surfacing its validation code at load.
+- Nothing pinned that relative `executable` and `working_directory` paths resolve against the configuration file's directory rather than the caller's current directory, as the harness core guide states, or that the snapshot digest is the SHA-256 of the exact file bytes.
+- Two unit tests now load files from a temporary directory. They accept a file of exactly `MAX_CONFIG_BYTES` and refuse one byte more, check each refusal code, resolve a relative route under the configuration's canonical directory, leave an absolute route unchanged, and compare the digest with an independently computed SHA-256.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (21 unit, 18 normalization, 21 process dispatch). Four mutations each failed a new test: refusing a file of exactly the bound, dropping `deny_unknown_fields` from `Route`, not resolving a relative working directory, and hashing all but the first byte.
+
+**Remaining:** Of the eight `Limits` ranges, only `timeout_ms` has a test; the others are the next coverage gap. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native limit ranges are documented and pinned
+
+**Scope:** `vibemux_harness_native` limit validation tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The native configuration's eight `limits` ranges were not documented, and only `timeout_ms` had a test. The guide said only that invalid limits are rejected.
+- `docs/guides/harness_core_guide.md` now has a table of each field's default and accepted range, and says every field is optional and an out-of-range value rejects the whole configuration with `harness_invalid_limits`.
+- A table-driven unit test checks each default against `Limits::default()`, accepts each field at its lowest and highest value, refuses one below and one above, and checks that the capture floor follows `frame_bytes`. The same test asserts that the guide contains each row, so the table cannot drift from the code.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt -p vibemux_harness_native -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (22 unit, 18 normalization, 21 process dispatch). Five mutations each failed the new test: raising the `record_count` ceiling, lowering the `shutdown_ms` floor, fixing the capture floor at 64, editing the guide's `queue_capacity` row, and changing the `shutdown_ms` default.
+
+**Remaining:** None for native configuration validation coverage. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native request validation is pinned and documented
+
+**Scope:** `vibemux_harness_native` request contract tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- `Request::validate` had no direct test, and the guide did not state the native prompt rules. It refuses a schema version other than 1 or a nil request UUID with `harness_invalid_request`, and a blank prompt or one over 128 KiB with `harness_invalid_prompt`. The 128 KiB bound is deliberately larger than the daemon's 32 KiB dispatch prompt limit, because each caller of the shared engine owns its prompt-size policy.
+- A unit test accepts a prompt of exactly `MAX_PROMPT_BYTES`, including one made of two-byte characters, and refuses an empty prompt, a whitespace-only prompt, and one byte over the bound. It also refuses the next schema version and a nil UUID.
+- The "Explicit Execution" section of `docs/guides/harness_core_guide.md` now states these rules and the separate daemon limit. The test asserts that the guide names the same bound.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (23 unit, 18 normalization, 21 process dispatch). Six mutations each failed the new test: dropping the prompt `trim`, refusing a prompt of exactly the bound, dropping the nil UUID check, accepting any non-zero schema version, counting characters instead of bytes, and changing the guide's bound to 32 KiB.
+
+**Remaining:** `Config::catalog()` has no direct test of its per-protocol `structured_probe` and `native_execution` flags or of the fields it omits; the CLI output tests build their catalog JSON by hand. The owner decisions on load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native catalog output is pinned and its actions documented
+
+**Scope:** `vibemux_harness_native` catalog tests, a `vibemuxctl` output test, the harness core guide, and `docs/protocol_boundaries.md`. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- `Config::catalog()` had no direct test. The `vibemuxctl` output tests build catalog JSON by hand, so nothing checked the real per-protocol `structured_probe` and `native_execution` flags, that disabled routes stay listed, or that a route's executable, working directory, arguments, environment names, and model stay out of the output.
+- A unit test builds one route per native protocol, each with private paths, arguments, environment names, and a model, and compares every catalog row with an exact expected object. `codex_exec` executes without a probe; `codex_app_server`, `claude_stream_json`, and `acp` both probe and execute; the replay-only OpenCode, Copilot, and Grok JSON protocols do neither. The ACP row records today's native execution, which stays an open owner decision.
+- The guide and `docs/protocol_boundaries.md` listed the text `Actions` column values as `disabled`, `probe`, `execute`, or `none`, but a route that can do both shows `execute,probe`. Both now list all five values, and the `vibemuxctl` output test asserts that each document names each value. The guide also states which fields the catalog reports and which route settings it never includes.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 24 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Seven mutations each failed a test: gating `native_execution` on the shared engine's execution support, reporting a probe for every engine protocol, adding the executable to a row, dropping disabled routes, reporting `enabled` as `allow_execution`, and removing `execute,probe` from either document.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native frame and capture bounds are pinned at their edges
+
+**Scope:** `vibemux_harness_native` JSON-lines reader tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The integration tests covered an oversized frame, invalid UTF-8, a blank line, a final line without a newline, CRLF, cancellation safety, and the record count refusal. Nothing pinned the exact edges: `frame_bytes` counts a record's line including its line ending, so the same JSON fits a bound with LF that it overruns with CRLF, while `capture_bytes` counts only the JSON text. The guide did not state either rule.
+- Two unit tests in `json_lines.rs` check these edges:
+  - LF and CRLF records at and one byte over the frame bound, and a final unterminated line that fills the whole bound.
+  - A CRLF-only line refused as empty, and a zero bound refused as invalid limits.
+  - A replay that reaches `capture_bytes` and `record_count` exactly and is refused one byte or one record past them, with the records returned whole and numbered from 1.
+  - A replay whose limits are invalid, refused before anything is read.
+- The guide now explains how `frame_bytes` and `capture_bytes` count, names the two refusal codes, and states that no record is truncated. The frame test asserts the guide's wording.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (26 unit, 18 normalization, 21 process dispatch). The runner error code allowlist test, which scans `json_lines.rs`, still passes. Eight mutations each failed a new test:
+
+- refusing a line of exactly the frame bound;
+- not counting the LF;
+- not stripping the CR;
+- accepting a zero bound;
+- refusing a capture of exactly the bound;
+- allowing one record past `record_count`;
+- ignoring invalid limits in replay;
+- rewording the guide.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native CLI parsing and request file bounds are pinned
+
+**Scope:** `vibemux_harness_native` command-line tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The native parser, which `vibemuxctl harness` also uses, had two tests. They covered a missing option, a duplicate option, an unknown harness, and an unknown option.
+- Nothing tested the following:
+  - the help forms and `--version`;
+  - an unknown command;
+  - a missing or empty option value, or a stray trailing argument;
+  - an option that belongs to another command;
+  - protocol and harness names in the wrong case;
+  - option order;
+  - arguments that are not Unicode;
+  - the bounded file reader;
+  - the request file bound, `6 × MAX_PROMPT_BYTES + 4096`, which exists so that a maximum prompt written entirely in six-byte `\u00XX` escapes still fits;
+  - the rule that a dispatch request is validated before its configuration is opened.
+- Three unit tests now cover each of these:
+  - **Parsing.** Six help forms and `--version` parse. Fourteen malformed commands are usage errors. Replay, probe, and dispatch options parse in any order, with an optional plugin.
+  - **Non-Unicode arguments.** A configuration path that is not Unicode is kept as given. A command, option name, or harness id that is not Unicode is refused.
+  - **Request files.** The reader accepts a file of exactly its bound and refuses one byte more or a missing file. A dispatch request is refused for malformed JSON, a nil UUID, a blank prompt, or a file one byte over its bound. A maximum prompt of escaped control characters reaches the missing configuration, which shows the bound fits it.
+- The guide states that the request file is checked before the configuration is opened, and why its bound fits an all-escaped maximum prompt; the test pins that sentence.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native --all-features` passed (29 unit, 18 normalization, 21 process dispatch). Nine mutations each failed a new test:
+
+- accepting an empty value;
+- skipping the per-command option list;
+- ignoring argument parity;
+- dropping `-h` after a command;
+- refusing a file of exactly the bound;
+- shrinking or growing the request bound;
+- skipping request validation;
+- rewording the guide.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native plugin request admission is a pure, tested function
+
+**Scope:** `vibemux_harness_native` plugin request admission, the shared request size bound, and their tests. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The plugin's request checks sat inline in its stdio loop and had no test. They guard against a misbehaving core: a second request in one session, an ungranted or unknown method, under 100 ms left before the deadline, an oversized payload, and a payload whose UUID, correlation, or harness does not match. The dispatcher always sends well-formed requests, so the process tests never reach these checks. The response mapping from completion to wire status was untested too.
+- The checks moved unchanged into a pure `admit` function, which the loop now calls. The dispatcher's error code allowlist test still scans that block.
+- The request bound `MAX_PROMPT_BYTES * 6 + 4096` was written out separately in the CLI and the plugin. It is now one documented `MAX_REQUEST_BYTES` constant in the contract.
+- Three unit tests cover the new structure:
+  - **Admission.** An execute request and a blank-prompt probe are admitted; an execute request with a blank prompt is refused. Fourteen edits each yield their fixed code, and the refusal order holds when two checks fail together. A probe still refuses a wrong schema version or a nil UUID, because it skips `Request::validate`. Exactly 100 ms left and a payload of exactly `MAX_REQUEST_BYTES` are admitted.
+  - **Completion mapping.** Completed and probed answer `Ok`, cancelled answers `Cancelled`, and failed or unverified answer `Error`. A failure without a code gets `harness_vendor_failed`, and the payload is the unchanged completion.
+  - **Frame fit.** The largest admitted request fits the default plugin frame that the dispatcher's plugin policy uses.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 32 unit, 18 normalization, 21 process dispatch through the real plugin binary; CLI 43 unit, 4 bootstrap process, 6 unified commands). Twelve mutations each failed a new test. They weakened, in turn, the used-session, method, deadline, size, schema, nil UUID, correlation, harness, and probe-only prompt checks; mapped unverified to cancelled; dropped the failure code fallback; and raised the shared bound past the plugin frame.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native launch environment and executable check are pure and tested
+
+**Scope:** The launch helpers in `vibemux_harness_native` process code, plus the harness core guide. No wire, schema, or control protocol change. There is one corner-case behavior alignment with the daemon, described below.
+
+**Implemented:**
+
+- The native path builds every launch environment the same way, for both the plugin and the vendor, but its environment builder had no test. It kept its own copy of the OS startup names, which now come from the shared engine's `SYSTEM_ENVIRONMENT_NAMES`. The builder is now a pure function that takes a lookup.
+- The tested rules:
+  - A launch inherits only the startup set (`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP`) and the route's named variables. No other variable passes, not even `PATH`.
+  - A startup variable passes only when it is set and valid Unicode.
+  - A named variable that is unset or not valid Unicode fails with `harness_environment_unavailable`.
+- **Alignment:** a route that names a startup variable now treats it as optional, as the daemon's launch already did through `build_launch_spec`. Before, the native path failed when such a variable was unset.
+- The Windows `.exe` requirement is now a pure `is_native_executable` check, tested on every platform. The test covers letter case, a double extension, and the `.cmd`, `.bat`, `.ps1`, `.com`, extensionless, trailing-dot, and bare-dot names. The check still runs only on Windows, and the process test for `.cmd` and `.bat` shims is unchanged.
+- The guide now names the startup set and says what an unset or non-Unicode variable does. A test checks the guide for this.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 34 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Six mutations each failed a new test rather than compilation: requiring a route-named startup variable, forwarding an unset startup name as empty, forwarding `PATH`, skipping an unset route variable, a case-sensitive `.exe` match, and accepting a path with no extension.
+
+**Remaining:** The plugin supervisor's launch contract holds only Unicode values, so the native path still refuses non-Unicode values that the daemon would pass through. The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Native completion fold is pinned to the daemon's outcome rule
+
+**Scope:** The completion fold in `vibemux_harness_native` native code and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- At the end of a native exchange, the runner turns three things into the completion's status and code: the exchange's error, the protocol's terminal status, and the vendor's exit. This fold was inline and had no direct test. No test reached the `harness_process_failed` branch, where a vendor reports a terminal event but then exits unclean.
+- The fold moved unchanged into a pure `settle` function.
+- A parity test runs it against the shared engine's `decide_outcome`, the rule the daemon uses. It covers all 105 combinations of three exchange results, five terminal states, and seven exits, and the native status must match the daemon's outcome in every case.
+- The codes match too, with two documented differences:
+  - The native path uses its own names, `harness_eof_without_terminal` and `harness_process_failed`.
+  - A vendor-reported failure carries its `failed` status without a code. The plugin's wire answer still supplies `harness_vendor_failed`.
+- The guide now says that a terminal event stands only after a clean vendor exit, and that an exchange error keeps its own code. A test checks the guide for this.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 35 unit, 18 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Five mutations each failed the parity test:
+- letting an unclean exit outrank an exchange error;
+- ignoring forced termination;
+- misspelling the cancellation code;
+- turning end of input without a terminal into `failed`;
+- coding vendor failures.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - OpenCode replay classification is pinned record by record
+
+**Scope:** The `vibemux_harness_native` normalization tests and the harness core guide. No behavior, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The direct `opencode_json` protocol is the only stream this crate classifies itself; every other protocol uses the shared ADR 029 classifiers. Its only test was one fixture, and that fixture had no `reasoning` or `error` record, no cost-only usage, and no malformed usage data.
+- A table test now pins every classifier branch:
+  - `step_start` is started.
+  - `text` and `reasoning` are text.
+  - `tool_use` is tool activity.
+  - `error` is a failure.
+  - A `step_finish` is usage only when its part carries an object `tokens` field or a numeric `cost`.
+- The test also pins the opaque cases:
+  - a step ending with no usage data, string or non-object usage, or usage outside `part`;
+  - near-miss discriminants (case, padding, a shorter name, an array, a nested type);
+  - final-sounding records such as `step_finish` with `end_turn`, `session.idle`, and `done`. No OpenCode record completes a request.
+- The guide's replay paragraph now says this, and the test checks the guide for it.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_harness_native -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_harness_native -p vibemux_cli --all-features` passed (native 35 unit, 19 normalization, 21 process dispatch; CLI 43 unit, 4 bootstrap process, 6 unified commands). Six classifier mutations failed only the new test:
+- dropping `reasoning`;
+- accepting any non-null `tokens`;
+- accepting any non-null `cost`;
+- dropping cost-only usage;
+- making `error` opaque;
+- completing on `end_turn`.
+
+**Remaining:** The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - Frontend probe labels have one source
+
+**Scope:** The `vibemux_frontend` view model, TUI table renderer, and read-only dashboard model. No behavior, output, wire, schema, or control protocol change.
+
+**Implemented:**
+
+- The view model's `state_label` and `route_label` are documented as the labels both UIs and the snapshot use. The TUI table renderer and the dashboard model each kept a private copy instead, so the TUI table and its copied snapshot printed the same words from two definitions. The dashboard's placeholder row for a harness with no observation spelled `not_run` and `unknown` as literals.
+- Both copies are removed. The renderer and the dashboard now call the view model's functions, and the placeholder row asks them for the not-run and unknown labels.
+- The view model's tests checked only that each label was lowercase ASCII. They now pin each label exactly, since operators read and copy them from all three views.
+- The GUI's title-case `Not run` style labels are display text, not these machine labels, and are unchanged.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo +1.92.0 fmt --all -- --check` clean; `cargo +1.92.0 clippy -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings` clean; `cargo +1.92.0 test -p vibemux_frontend --all-features` passed (131 unit with 1 pre-existing ignore, plus the integration suites) and `cargo +1.92.0 test -p vibemux_cli --all-features` passed (43 unit, 4 bootstrap process, 6 unified commands). Two mutation probes confirmed the views now share one source:
+- Renaming `not_run` in the view model failed the pinned label test, three dashboard tests, and three TUI render tests, including the golden snapshots.
+- Renaming `local_gateway` failed the pinned label test and three TUI render tests.
+
+**Remaining:** The probe crate's snapshot formatter keeps its own inline state mapping in another crate, and is out of scope here. The owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet are unchanged.
+
+### 2026-10-18 - One wire name for each probe state
+
+**Scope:** `vibemux_harness` agent vocabulary, the `vibemux_probe` snapshot, and the frontend view model. No wire, store, or protocol change.
+
+**Implemented:**
+
+- `ProbeState::as_str` returns the name serde writes for each state. The existing wire-name test now checks it against the JSON encoding of every variant.
+- The probe snapshot's `reported_<state>` fallback code and the frontend's `state_label`, which the TUI, its copied snapshot, and the dashboard use, now take the name from `as_str` instead of keeping their own copies of the mapping.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_probe -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_probe -p vibemux_frontend --all-features` passed: harness 86 unit, frontend 131 unit with 1 pre-existing ignore, and the probe suites. A mutation that renamed `not_run` in `as_str` failed the harness wire-name test, the frontend label test, and the TUI and dashboard render tests; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, and the daemon's full model alphabet. New open question: the TUI diagnostics pane and its copied snapshot print allowlisted environment values such as `PATH` and `USERPROFILE`, while the GUI shows only whether each is set.
+
+### 2026-10-18 - One wire name for each route kind
+
+**Scope:** `vibemux_probe` route vocabulary and the frontend view model. No wire, cache, or protocol change.
+
+**Implemented:**
+
+- `RouteKind::as_str` returns the name serde writes for each route kind. A new probe test pins the JSON names (`direct`, `local_gateway`, `unknown`), which the probe report and its trusted cache both carry and no test had pinned, and checks `as_str` against them.
+- The frontend's `route_label`, which the TUI, its copied snapshot, and the dashboard use, now takes the name from `as_str` instead of keeping its own copy of the mapping.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_probe -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_probe -p vibemux_frontend --all-features` passed: probe 22 unit plus its integration suites, frontend 131 unit with 1 pre-existing ignore. A mutation that renamed `local_gateway` in `as_str` failed the new probe test, the frontend label test, and the TUI render tests; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
+
+### 2026-10-18 - Test the GUI agent view text
+
+**Scope:** the egui Agents view in `vibemux_frontend`. No wire, store, or protocol change.
+
+**Implemented:**
+
+- The agent list's summary line and the agent detail rows are now built by two pure functions, `agent_summary` and `agent_details`, instead of inline in the egui layout. The rendered text is unchanged.
+- New unit tests, the first for this view, pin the summary line and all seven detail rows in order for Codex, check that Kimi still shows its `terminal_only` adapter as a build fact, and pin the GUI's title-case probe state labels.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 133 unit with 1 pre-existing ignore, plus the integration suites. A mutation that showed the result code in the Version row failed the new test; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
+
+### 2026-10-18 - Correct two harness API doc comments
+
+**Scope:** documentation comments in `vibemux_harness::dispatch`. No code, wire, store, or protocol change.
+
+**Implemented:**
+
+- `AdapterCapability::summary` no longer wraps its example across two comment lines, which made `codex_exec,codex_app_server` read as if it had a space after the comma. The comment now says the protocol list has none, which the existing summary test pins. It also no longer claims that every frontend uses this line.
+- `Sha256Digest::of_fields` no longer links to the crate-private `hash_fields`. That broken link was the only thing stopping `cargo doc -p vibemux_harness --no-deps` from building with warnings denied.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness --all-features capability` passed: 6 tests. With `RUSTDOCFLAGS="-D warnings"`, `cargo doc -p vibemux_harness --no-deps` failed before this change on the private link and passed after it. CI does not build rustdoc. The generated `target/doc` output was removed.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI.
+
+### 2026-10-18 - Workspace rustdoc builds with warnings denied
+
+**Scope:** documentation comments in `vibemuxd` and `vibemux_platform`. No code, wire, store, or protocol change.
+
+**Implemented:**
+
+- Six public doc comments linked to private items: `WORKFLOW_EVALUATION_DEADLINE`, `SHUTDOWN_JOIN_MARGIN`, `release_runtime_dir`, and `SHUTDOWN_GRACE` in `vibemuxd`, and the `windows_acl_native` and `windows_security` modules in the `vibemux_platform` crate docs. Each link is now a plain code span. The wording is unchanged.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo doc --workspace --exclude vibemux_web --no-deps --all-features` reported these six warnings and no others. After the change, the same command with `RUSTDOCFLAGS="-D warnings"` passed. `cargo fmt --all -- --check` passed, and `cargo clippy -p vibemuxd -p vibemux_platform --all-targets --all-features -- -D warnings` passed. The generated `target/doc` output was removed. CI still has no rustdoc step, so nothing stops a new broken link.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only, like the GUI. Whether CI should build rustdoc with warnings denied is also open.
+
+### 2026-10-18 - Pin the GUI's presence-only environment display
+
+**Scope:** the egui Diagnostics window in `vibemux_frontend`. No wire, store, or protocol change.
+
+**Implemented:**
+
+- The rows of the allowlisted environment section are now built by a pure `environment_presence` function instead of inline in the egui layout. The window still shows each name with only `set` or `unset`.
+- The window's footnote promises that variable values are not displayed. A new unit test, the first for this window, pins that promise: a set `PATH` value, an unset `HOME`, and an empty `USERPROFILE` produce only names and `set` or `unset`, in order.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 134 unit with 1 pre-existing ignore, plus the integration suites. A mutation that swapped `set` and `unset` failed the new test; the file was restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should also show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Test the documented native harness commands
+
+**Scope:** `vibemux_harness_native` CLI tests. No code, wire, store, or protocol change.
+
+**Implemented:**
+
+- A new unit test reads the README, `docs/guides/harness_core_guide.md`, and `docs/guides/unified_cli_guide.md`, finds each `vibemux_harness_native.exe` and `vibemuxctl.exe harness` command line, and parses it with the real CLI parser. There are eight such lines today, and the test pins that count.
+- The documented `catalog` and `replay` commands run against the public example configuration and fixture and must succeed. The documented `dispatch` command's public example request must pass every request check, so that only a missing configuration stops it. The probe and dispatch configurations the docs name are private `.vibemux/` paths, and the test never opens them; no vendor process starts.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness_native --all-features` passed: 36 unit, 19 normalization, 21 process dispatch. A README mutation that misspelled the replay protocol failed the test with `harness_cli_usage`. An example request mutated to schema version 2 failed it with `harness_invalid_request`. Both files were restored.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Test the documented vibemuxctl commands
+
+**Scope:** `crates/vibemux_cli/src/command.rs` tests only. No behavior, wire, schema, or documentation change.
+
+**Implemented:**
+- `every_documented_command_line_parses` reads `CLAUDE.md`, the README, `docs/guides/unified_cli_guide.md`, and `docs/workflow/branch_workflow.md`. It finds every `vibemuxctl.exe` command line (90 today) and parses each one with the real `vibemuxctl` parser, which is pure, so nothing runs and no path or daemon is touched. Each document must contain at least one such line.
+- A `status|pause|cancel` token expands to each alternative, a `[--prompts]` token is tried present and absent, and each `<placeholder>` gets a well-formed value: a 64-character hex digest for `<sha256>` and `<confirmation_from_inspect>`, a UUID for the id placeholders, and a name for `<new_dir>`. A placeholder the test does not know fails it, so a new documented argument has to be classified.
+- Every documented line parses today, so no document changed.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_cli --all-features --lib` passed: 44 tests. A README mutation that respelled `--prompt-file` as `--prompt_file` on a `dispatch submit` line failed the test and named the line's arguments. The README was restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Test the DSH CLI synopsis
+
+**Scope:** `crates/vibemux_cli/src/command.rs` tests only. No behavior, wire, schema, or documentation change.
+
+**Implemented:**
+- `every_documented_command_line_parses` now also reads `docs/dsh_session_protocol.md`. Besides each `vibemuxctl.exe` invocation, it parses each line that starts with a `vibemuxctl` synopsis, which covers the six `vibemuxctl dsh` synopsis lines there. Prose that only mentions `vibemuxctl` inside a sentence is not a command and is skipped.
+- The synopsis grammar is expanded faithfully. An optional group that spans tokens, such as `[--after-sequence <n>]`, is tried present and absent as a whole. A placeholder that contains a bar, such as `<path|->`, is one argument and not two alternatives. The new placeholders are `<path>`, `<path|->`, and `<n>`.
+- ADR synopses, such as ADR 029's dispatch grammar, are dated decision records and stay out of this check.
+- Every line still parses, so no document changed.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_cli --all-features --lib` passed: 44 tests. A mutation that respelled `--session-id` as `--session_id` inside the `dsh open` synopsis's optional group failed the test on the group's present variant. The document was restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - One owner for GUI task labels
+
+**Scope:** `crates/vibemux_frontend/src/gui/` display text only. No wire, schema, control, or canonical state change.
+
+**Implemented:**
+- The new `gui/task_labels.rs` owns the task title, state, and executor labels and the blank-text rule behind them. The chat task rows, the sidebar recents, the task window title, and the detail drawer all call it. Before, four copies disagreed:
+  - The chat rows treated only an empty string as blank, and the other views also treated whitespace as blank.
+  - The chat rows showed `Unassigned` for a blank executor, while the detail drawer fell back to the first Run's harness.
+  - The chat rows passed a blank state straight to the status chip, while the detail drawer showed `Unknown state`.
+- The shared rule:
+  - A title, state, executor, or harness that is empty or only whitespace counts as missing.
+  - The executor falls back to the first Run's harness, then to `Unassigned`.
+  - Real text is shown verbatim.
+- A test keeps the views from restating the `Untitled task` and `Unassigned` fallbacks themselves.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 137 lib (1 ignored), 6 cli, 2 palette parity, 10 supervisor UI. Two mutations were each caught by their test:
+- Restoring the chat row's own `Unassigned` fallback failed the view guard.
+- Dropping the harness fallback from `executor_label` failed the executor test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - GUI Run labels and terminal link enablement follow the blank-text rule
+
+**Scope:** `crates/vibemux_frontend/src/gui/task_labels.rs` and `task_detail.rs` display text and button enablement only. No wire, schema, control, or canonical state change.
+
+**Implemented:**
+- `task_labels.rs` now also owns the Run labels. `single_run_label` is the caption for a task's only Run. Before, it printed a blank harness as an empty gap (`Run ·  · <id>`); now it shows the same `Harness` fallback as `run_label`, the Run picker entry that moved here from `task_detail.rs`.
+- The detail drawer's `Link terminal` button is enabled by `candidate_is_linkable`. It requires the plugin, pane, and instance identifiers of the exact reported candidate, and an identifier that is only whitespace now counts as missing, as everywhere else in the GUI. The daemon's `link` still refuses a malformed pane or instance identifier with `terminal_invalid_request` and requires the instance and pane to match its live inventory; this change only stops the GUI from offering a link it cannot name.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 139 lib (1 ignored), 6 cli, 2 palette parity, 10 supervisor UI. Two mutations were each caught by their test:
+- Dropping the trim from `candidate_is_linkable` failed the linkability test.
+- Dropping the fallback from `single_run_label` failed the Run label test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - Probe text drops bidirectional marks
+
+**Scope:** probe text sanitization and the one definition of terminal-unsafe characters, for `vibemux_harness`, `vibemux_probe`, `vibemux_cli`, and `vibemux_frontend`. No store schema, control protocol, plugin wire, or `HarnessRow` field changes.
+
+**Implemented:**
+- `vibemux_harness::terminal_text::is_terminal_unsafe` now owns the set of characters a terminal must never receive raw from untrusted text. The set is C0 and C1 controls, DEL, U+061C, U+200E-U+200F, U+2028-U+202E, and U+2066-U+2069. The module is pure logic, like the rest of the crate.
+- The probe's `sanitize_text` used to drop only `char::is_control` characters, so a bidirectional override or isolate passed through. It now drops every terminal-unsafe character. A vendor `--version` line, a resolved launcher path, or a cc-switch `app_type` with such a mark now reaches the probe report, the probe cache, `vibemux_probe` stdout, the TUI, and the GUI without it. The byte bound still counts kept bytes and never splits a character.
+- The CLI's JSON escaping and the dashboard's `safe_text` call the same predicate instead of keeping their own copies of the ranges. Their behaviour is unchanged: the CLI already escaped this set, and the dashboard's narrower range left out only U+2028 and U+2029, which `safe_text` already blanks as whitespace.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_probe -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_probe -p vibemux_frontend -p vibemux_cli` passed:
+
+| Crate | Tests passed |
+|---|---|
+| `vibemux_harness` | 88 lib (2 new), plus 12, 22, 8, 15, and 4 integration |
+| `vibemux_probe` | 23 lib (1 new) |
+| `vibemux_frontend` | 139 lib (1 ignored), 6 cli, 2 palette parity, 10 supervisor UI |
+| `vibemux_cli` | 44 lib, 5 unified commands |
+
+Two mutations were each caught:
+- Restoring the probe filter to `!character.is_control()` failed the new probe test.
+- Narrowing the predicate's range to end at U+202D failed one test in each of the four crates: the harness predicate test, the probe sanitize test, the CLI JSON escaping test, and the dashboard control-character test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - DSH terminal surface shows runtime text as one safe line
+
+**Scope:** `vibemux_dsh_tui` rendering and the shared one-line display rule, for `vibemux_harness` and `vibemux_frontend`. No DSH wire, store schema, control protocol, or plugin wire changes. The handshake still accepts the same `serverInfo.version` strings.
+
+**Implemented:**
+- `vibemux_harness::terminal_text::display_character` now owns the one-line display rule: whitespace and terminal-unsafe characters show as a space. The dashboard's `safe_text` calls it in place of its own copy, with unchanged behaviour.
+- The DSH surface's `display_text` reduces each runtime record to one display line before truncating it. Assistant text, tool names, approval tool names, status values, and error messages come from the runtime. A line break in them used to reach ratatui as text, and so did an ANSI escape or a bidirectional override. Each now shows as a space.
+- The status line applies the same rule to the runtime's `serverInfo.version`. The handshake bounds that string's length but not its characters.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness -p vibemux_frontend -p vibemux_cli --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness -p vibemux_frontend -p vibemux_cli` passed:
+
+| Crate | Tests passed |
+|---|---|
+| `vibemux_harness` | 89 lib (1 new), plus 12, 22, 8, 15, and 4 integration |
+| `vibemux_frontend` | 140 lib (1 new, 1 ignored), 6 cli, 2 palette parity, 10 supervisor UI |
+| `vibemux_cli` | 44 lib, 5 unified commands |
+
+Three mutations were each caught by their test:
+- Truncating the raw record text failed the new DSH test's record assertion.
+- Passing the raw version to the status line failed its status-line assertion.
+- Dropping the whitespace check from `display_character` failed the harness test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - GUI window size has one bounded owner
+
+**Scope:** the GUI's persisted startup window size in `vibemux_frontend` (`theme/serialize.rs`, `gui/settings.rs`, `gui/supervisor_app.rs`). The `frontend.json` layout and schema version are unchanged.
+
+An audit of `vibemuxctl`'s text output found nothing to change. Every daemon- or vendor-supplied string in the text views passes through `safe_text`, and so does the `ui --once` dashboard snapshot. Every other kind falls back to escaped JSON. The diagnostic TUI renders a live probe, whose text the probe already sanitizes.
+
+**Implemented:**
+- `WindowSize` now owns the settings range of 800-3840 by 600-2160 as constants, plus a `clamped` method. Before, three places repeated those literals: the settings dialog's two ranges and the two clamps in `supervisor_app.rs`. All of them now use the shared bounds.
+- `load_user_config_at` clamps a loaded window size into that range. Before, a hand-edited or corrupt `frontend.json` with a width of 0 or 100000 passed straight to the viewport builder at startup, although the GUI never saves such a size. Only the size is touched; the theme and the sidebar setting load as before.
+- The resize tracker no longer clamps on its own; `set_window_size` clamps once.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 142 lib (2 new, 1 ignored), 6 cli, 2 palette parity, 10 supervisor UI. Two mutations were each caught by their test:
+- Dropping the clamp on load failed the load test.
+- Dropping the clamp in `set_window_size` failed the saved-size test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:** the window's minimum inner width is still 960, above the settings minimum of 800, so a saved width below 960 opens at 960. Changing either bound is a layout decision left to the owner. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, and whether the TUI diagnostics pane and its copied snapshot should show allowlisted environment variables as set or unset only.
+
+### 2026-10-18 - TUI binaries refuse non-Unicode arguments with the usage exit
+
+**Scope:** the flag parsing of the two operator TUI binaries in `vibemux_frontend`: `vibemux_frontend_tui` and `vibemux_dsh_tui`. The flags, their messages, and exit code 4 are unchanged.
+
+**Implemented:**
+- Both binaries read their flags with `std::env::args`, which panics on an argument that is not valid Unicode. That meant exit code 101 and a panic message instead of the documented usage exit 4. Both now read `std::env::args_os` into a pure `parse_arguments` function, as `vibemuxctl` already does.
+- A non-Unicode flag is reported as `unknown argument: ...` (lossy text), and a non-Unicode `--theme` value gets the existing theme error. Both exit 4.
+- `vibemux_dsh_tui` keeps `--project-root` and `--config` values as `OsString` paths, so a project under a non-Unicode Windows path can be opened. Before, such a path panicked before the configuration was read.
+- `vibemux_dsh_tui` now takes the working directory and the environment theme as parser inputs, so its tests read no process state.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed:
+
+| Target | Tests |
+|---|---|
+| lib | 142 (1 ignored) |
+| `vibemux_dsh_tui` bin | 4 (new) |
+| `vibemux_frontend_tui` bin | 2 (new) |
+| cli | 6 (exit code 4 and stderr text unchanged) |
+| palette parity | 2 |
+| supervisor UI | 10 |
+
+The built binaries were run with an argument holding a lone UTF-16 surrogate, both as a flag and as a `--theme` value. Each of the four runs exited 4 with the usage message.
+
+Three mutations were each caught by their test:
+- Converting the `--project-root` path through lossy text failed the path test.
+- Accepting any non-Unicode `--theme` value failed the DSH usage-error test.
+- Treating a non-Unicode flag as `--json` failed the diagnostic TUI usage-error test.
+
+Both files were restored and compared byte for byte.
+
+**Remaining:**
+- `vibemux_frontend_preview`, `vibemux_harness_native_plugin`, the fixture binaries, and the `live_codex_smoke` example still read `std::env::args`.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Native harness plugin refuses non-Unicode arguments with its usage code
+
+**Scope:** the command line of `vibemux_harness_native_plugin`, the out-of-process plugin that the native dispatcher launches. The options, the `harness_plugin_usage` code, exit code 1, and the plugin wire are unchanged.
+
+**Implemented:**
+- The plugin read its options with `std::env::args`, which panics on an argument that is not valid Unicode. Run by hand with such an argument, it exited 101 with a panic message instead of its `harness_plugin_usage` code.
+- It now parses `std::env::args_os` in a pure `parse_arguments` function. A non-Unicode option name, harness name, or digest returns `harness_plugin_usage`. The `--config` value is kept as an operating-system path.
+- The parser had no direct tests; only the dispatcher's process tests exercised it. It now has four bin tests, covering:
+  - options in any order;
+  - a non-Unicode config path;
+  - non-Unicode names and values;
+  - a wrong count, a duplicate or unknown option, a short or non-hex digest, and an unknown harness.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_harness_native --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_harness_native --all-features` passed: 36 lib, 4 plugin bin (new), 19 normalization, and 21 process dispatch. The process dispatch tests launch the real plugin through the dispatcher.
+
+The built plugin was run with a lone UTF-16 surrogate, once as an option name and once as the harness name. Both runs exited 1 with `harness_plugin_usage`.
+
+Three mutations were each caught by their test:
+- Reading a non-Unicode option name as `--config` failed the non-Unicode test.
+- Converting the config path through lossy text failed the path test.
+- Dropping the digest's hex check failed the malformed-command-line test.
+
+The file was restored and compared byte for byte.
+
+**Remaining:**
+- The dispatcher still passes the config path to the plugin as lossy text, because the plugin manifest's entry point is a list of strings. A config under a non-Unicode path therefore fails closed when the plugin reads it, rather than being misread. Changing that needs a plugin wire decision.
+- `vibemux_frontend_preview`, the fixture binaries, and the `live_codex_smoke` example still read `std::env::args`.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Screenshot preview refuses unknown scenes and themes
+
+**Scope:** the command line of `vibemux_frontend_preview`, the screenshot-only binary built with `--features gui_screenshot`, plus one README sentence. The scenes, the defaults, the size and scale clamps, and the capture path are unchanged.
+
+**Implemented:**
+- An unknown scene used to fall back silently to `chat`, and an unknown theme to `claude_light`. A size or scale that was not a number fell back to its default. All of these exited 0. A typo, or one of the `switcher` and `shortcuts` scenes that plan 030 describes but the binary does not draw, therefore saved a screenshot of a different scene under the requested name.
+- These cases now print a message naming the expected values and exit 4, before any window opens. So do a non-finite scale (`NaN`, `inf`) and a seventh argument.
+- The binary read its arguments with `std::env::args`, which panics on an argument that is not valid Unicode. It now parses `std::env::args_os` in a pure `parse_arguments` function, and the screenshot path is kept as an operating-system path.
+- The README now states the refusal.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 142 lib (1 ignored), 6 preview bin (new), 4 DSH TUI bin, 2 diagnostic TUI bin, 6 cli, 2 palette parity, 10 supervisor UI.
+
+The built binary was run with four refused argument lists: the `switcher` scene, the `solarized` theme, a width of `wide`, and a scene holding a lone UTF-16 surrogate. Each exited 4 with its message. No window was opened, and no screenshot capture was run for this change.
+
+Five mutations were each caught, in two rounds so that no test masked another:
+- Falling back to `chat` for an unknown scene failed the unknown scene or theme test.
+- Falling back to `claude_light` for an unknown theme failed the same test.
+- Accepting a non-finite scale failed the malformed-argument test.
+- Allowing a seventh argument failed the same test.
+- Converting the screenshot path through lossy text failed the path test.
+
+The file was restored and compared byte for byte after each round.
+
+**Remaining:**
+- The preview's size clamps (720-3840 by 520-2160) are still separate from `WindowSize`'s 800-3840 by 600-2160. Aligning them is a choice about what the preview may show.
+- The fixture binaries and the `live_codex_smoke` example still read `std::env::args`.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Task window titles are one bounded line
+
+**Scope:** the operating-system title of the GUI's detached task windows, in `vibemux_frontend` (`gui/task_labels.rs`, `gui/supervisor_app.rs`). The task title shown inside egui is unchanged.
+
+An audit of the remaining frontend entry points found nothing else to change:
+- `vibemux_dashboard` already parses `std::env::args_os`.
+- `vibemux_frontend_dump` takes no arguments.
+- The GUI's use of the default probe port is the documented scope of `VIBEMUX_FRONTEND_PROBE_PORT`, which the README limits to the TUI JSON and dump entry points.
+- The welcome greeting and workspace hint are already tested.
+
+**Implemented:**
+- The GUI used to build a task window's title from the daemon-supplied task title with no change and no length limit. The operating system draws that title outside egui, in the title bar, the taskbar, and the window switcher. There a line break or a bidirectional override in a task title is honoured. For example, U+202E could make a title read as a different name.
+- The new `task_window_title` in `task_labels.rs` owns that title. It maps every character through the shared `display_character` rule, so whitespace and terminal-unsafe characters become spaces. It cuts the title at 80 characters with an ellipsis and appends ` · VibeMux`.
+- A title that is blank after mapping, such as one made only of bidirectional marks, falls back to `Untitled task`. A task the snapshot does not yet hold is titled `Task observation`, as before.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` passed. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` passed. `cargo test -p vibemux_frontend --all-features` passed: 143 lib (1 new, 1 ignored), 4 DSH TUI bin, 6 preview bin, 2 diagnostic TUI bin, 6 cli, 2 palette parity, 10 supervisor UI.
+
+Three mutations were each caught by the new test, one per round:
+- Dropping the `display_character` mapping.
+- Dropping the ellipsis.
+- Skipping the blank-title fallback after mapping.
+
+The file was restored and compared byte for byte after each round. The `supervisor_app.rs` call site was checked by review only. No GUI window was opened, so no title was observed in a real title bar.
+
+**Remaining:**
+- Task titles inside egui are still drawn verbatim, so a line break in a title still makes a multi-line row there. How egui draws bidirectional controls was not examined.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - GUI task and Run text is one display line
+
+**Scope:** the free text the daemon returns for a task and its Runs, as it enters the GUI. The domain checks a task title, harness, role, branch, and worktree path only for blankness and size (`vibemux_types`), and the store's frontend projection only bounds bytes. So a line break split a chat row, a sidebar entry, or a detail-drawer field across lines, and a bidirectional control could reorder the text after it. The task window title was already one line (previous entry); the in-window views were not.
+
+**Implemented:**
+
+- `supervisor_mapping` maps the task title (before the truncation ellipsis), Run harness, role, branch, and worktree path through the shared `vibemux_harness::terminal_text::display_character` rule as it builds `TaskView` and `RunView`. This covers every view that reads them: chat task rows, sidebar recents, the task window, and the detail drawer. The executor label is formatted from the mapped harness and role.
+- Ordinary text, including non-Latin script, is unchanged, and an absent worktree or branch keeps its placeholder.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 144 passed and 1 ignored, and every bin and integration target passed. The new test `task_and_run_text_becomes_one_display_line` failed under each of four separate mutations that dropped the mapping on the title, on the harness, on the worktree path, and on the branch; the source was restored byte-for-byte after each.
+
+**Remaining:** the mapping replaces unsafe characters; it does not bound them further than the daemon already does. `task_labels::task_title` still keeps text verbatim, because the rule now applies one step earlier. Event types and artifact media types were not changed. How egui itself draws bidirectional text was not examined. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Terminal candidate captions are one display line
+
+**Scope:** the WezTerm workspace name the terminal observer reports for each candidate pane, which the GUI shows as the candidate's caption in the Run's terminal panel. WezTerm lets the user name a workspace freely. `vibemux_plugin_protocol::terminal::valid_pane` refuses `char::is_control` characters in it, but bidirectional controls and the line and paragraph separators U+2028 and U+2029 are not control characters, so they reached the caption. Pane and window IDs must be ASCII digits, and the instance ID comes from the observer's own process-identity check, so neither needed a change.
+
+**Implemented:**
+
+- `supervisor_mapping::pane_display_name` builds the caption and maps the workspace through the same `display_character` rule the previous entry applied to task and Run text.
+- A workspace that is blank, or blank after mapping, no longer leaves a trailing ` · ` after `Pane N · window M`.
+- The pane, plugin, and instance IDs a link request sends back are unchanged.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 145 passed and 1 ignored, and every bin and integration target passed. The new test `a_terminal_candidate_caption_is_one_display_line` failed under each of three separate mutations: restoring the old inline caption, dropping the mapping, and dropping the blank-workspace branch. The source was restored byte-for-byte after each.
+
+**Remaining:** the plugin protocol's own validation was not tightened, because that would change the plugin wire contract. No other surface renders the pane inventory: `vibemuxctl` has no terminal command, the dashboard's workspace tab lists Git branches, and `vibemux_mcp` and `vibemux_web` have no pane fields. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Artifact media types are one display line in the GUI
+
+**Scope:** the remaining daemon text in the GUI's task detail drawer. Event types need no change: `vibemux_events::EventType` accepts only snake_case names, on construction and on deserialization. An artifact's ID is a UUID and its SHA-256 is validated hex. Its media type, however, passes the A2A `valid_label` rule (non-blank, at most 128 bytes, no `char::is_control`), which lets a line separator or bidirectional override through to the artifact row.
+
+**Implemented:**
+
+- `supervisor_mapping::task_detail` maps each artifact's media type through the shared `display_line` rule from the earlier entries today, for both the drawn `kind` and the stored `media_type`.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 146 passed and 1 ignored, and every bin and integration target passed. The new test `an_artifact_media_type_becomes_one_display_line` failed under each of two separate mutations, one dropping the mapping and one drawing the unmapped type, and the source was restored byte-for-byte after each.
+
+**Remaining:** with this entry every free-text task, Run, artifact, and pane-caption field the supervisor mapping takes from the daemon passes through one display rule. Event times come from typed timestamps and binding IDs are daemon UUIDs. The terminal instance ID is still drawn verbatim, because a link request must echo it: the first-party WezTerm observer builds it from numbers (`wezterm_<pid>_<start>_<epoch>`), but the daemon accepts any terminal plugin's ID that passes the protocol's `valid_label`. The A2A `valid_label` rule itself was not tightened, because that would change accepted A2A artifact input. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Terminal candidate cards draw display copies of their identifiers
+
+**Scope:** the one daemon field the previous entry left verbatim in the GUI, the terminal instance ID in each candidate card's "Instance" row. A link request must send it back exactly as reported, so it cannot be rewritten at the mapping boundary. The first-party WezTerm observer builds it from numbers, but the daemon accepts any terminal plugin's ID that passes the protocol's control-character check, which lets bidirectional controls and line separators through.
+
+**Implemented:**
+
+- `vibemux_harness::terminal_text::display_line` is the shared whole-string form of `display_character`. `supervisor_mapping` now uses it in place of its private copy.
+- `gui::task_detail::candidate_rows` gives the card's Plugin, Pane, and Instance rows as display lines. The card draws those rows, while `candidate_is_linkable` and the `LinkTerminal` action still read the identifiers exactly as reported.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_harness --all-features`: lib 90 passed, and every integration target passed. `cargo test -p vibemux_frontend --all-features`: lib 147 passed and 1 ignored, and every bin and integration target passed. Mutations: drawing the raw instance ID failed `candidate_rows_draw_a_display_copy_of_each_identifier`. Making `display_line` return its input unchanged failed the new harness test `a_display_line_maps_every_character` and all three display tests in `supervisor_mapping`. Both sources were restored byte-for-byte.
+
+**Remaining:** `dsh_tui::render::one_line` is the same mapping and could call `display_line`. That is a consolidation with no behavior change, so it was left out of this entry. The dashboard's `safe_text` and `task_labels::task_window_title` also cut at a length, so they keep their own chains. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - DSH TUI uses the shared display line
+
+**Scope:** the duplicate noted in the previous entry. `dsh_tui::render::one_line` was the same whole-string mapping as `vibemux_harness::terminal_text::display_line`.
+
+**Implemented:**
+
+- `dsh_tui::render` calls `display_line` for runtime record text and the runtime's version string, and its private `one_line` is gone. There is no behavior change.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 147 passed and 1 ignored, and every bin and integration target passed. Making `display_line` return its input unchanged failed the existing `runtime_text_is_one_line_without_terminal_controls`, so the TUI now depends on the shared rule. The source was restored byte-for-byte.
+
+**Remaining:** the dashboard's `safe_text` and `task_labels::task_window_title` also cut at a length, so they keep their own chains. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - Allowlisted environment values are one display line
+
+**Scope:** text sources of the Ratatui diagnostic TUI and `vibemux_frontend_dump`. Both run the probe live and read no cache. Their probe text is already bounded: agent versions and gateway telemetry `app_type` pass the probe's `sanitize_text`, endpoint hosts come from `Url::host_str`, and the gateway host shown is the fixed `127.0.0.1`. The exception was the allowlisted environment display. The TUI's environment row, its `c` debug snapshot, and `vibemux_frontend_dump` print each value (PATH, HOME, the temp directories, and so on) after only a lossy UTF-8 conversion. On POSIX a directory name may hold a line break or an ANSI escape, so a value could start a new row or reach the terminal raw. The GUI shows set or unset only, and `--json` prints the probe report rather than these values.
+
+**Implemented:**
+
+- `probe_env::collect_allowlisted_env` reads through a new pure `allowlisted_values(read)`, which maps each value through the shared `vibemux_harness::terminal_text::display_line`. The keys, their order, unset values, and empty values are unchanged.
+- The test injects a reader instead of changing the process environment.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_frontend --all-features`: lib 148 passed and 1 ignored, and every bin and integration target passed. Dropping the mapping failed the new test `allowlisted_values_are_one_display_line`, and the source was restored byte-for-byte.
+
+**Remaining:** whether the diagnostics should show these values at all, or set or unset only as the GUI does, is still the owner's decision; this entry does not change what is shown, only how. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - `dsh prompt` reads its prompt before selecting the daemon
+
+**Scope:** how the CLI reads a prompt file. `dispatch submit` and `decide route` share `read_valid_prompt`, which reads on a blocking thread before `harness_client` selects the daemon and reports a source it cannot open or read as `cli_prompt_unavailable`. `dsh prompt` kept its own reader. It ran synchronously on the async runtime after the daemon had been selected, and it reported every failure as `cli_invalid_arguments`, including a missing file. Audits in this pass needed no change: every dashboard draw site goes through `safe_text`, CLI text output goes through `safe_text` and JSON through `escape_controls`, every production binary reads `args_os`, the probe cache read is bounded and re-checks the opened file, and the daemon validates each cached detection's path and version.
+
+**Implemented:**
+
+- `run_dsh` reads and checks the prompt first, through a new `read_prompt_off_runtime` (`spawn_blocking`), the same order `run_dispatch` and `run_decision` use.
+- `read_prompt` reads at most one byte beyond the 32 KiB bound into bytes. A source it cannot open or read (a missing file, a directory) returns `cli_prompt_unavailable`. A blank, oversized, or non-UTF-8 prompt still returns `cli_invalid_arguments`.
+- `docs/dsh_session_protocol.md` names both codes in its CLI section.
+- No daemon, control protocol, or wire change.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_cli`: lib 45 passed, integration 5 passed. Two mutations were each caught and restored byte-for-byte. Selecting the daemon before the read failed `the_prompt_is_checked_before_the_daemon_is_selected`. Reporting an unreadable source as an invalid argument failed that test and `a_prompt_is_bounded_utf8_and_non_blank_and_an_unreadable_one_is_unavailable`.
+
+**Remaining:** the DSH and dispatch readers are now near copies, each with its own `PromptSource` type and bound; one shared reader could own both. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - MCP task titles follow the shared terminal-text rule
+
+**Scope:** text boundaries of the native MCP read host (ADR 035). Every field in its results is typed or checked against an allowlist, except the task title. Harness, role, and event type must be ASCII tokens. Media types must be MIME-shaped, digests hexadecimal, and timestamps RFC 3339. Dispatch status fields are typed enums. `projection::task_summary` bounded the title to 240 bytes but replaced only characters for which `char::is_control` is true. So a right-to-left override, a bidirectional isolate or mark, or a line or paragraph separator reached the MCP client verbatim, where it could reorder or break the title as shown.
+
+**Implemented:**
+
+- The title projection replaces each character for which the shared `vibemux_harness::terminal_text::is_terminal_unsafe` is true with a space. That set includes every control character, so nothing the old rule changed is kept now. Other characters are kept, including a no-break space, so `title_truncated` is not set by ordinary text.
+- `vibemux_mcp` depends directly on `vibemux_harness`, which it already reached through `vibemuxd`. `Cargo.lock` adds that one edge.
+- `docs/native_mcp_protocol.md` states the rule.
+
+**Evidence (native Windows, Rust 1.92.0):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_mcp --all-features`: lib 5, framing 5, ipc 3, lifecycle 22, and stdio 5 passed. The I: drive was full (4.9 MB free), so the `ipc` test failed to link under the repository's `target`. The full run used a scratch target directory on C:. Restoring `char::is_control` failed the new test `a_title_loses_bidirectional_controls_and_separators_but_keeps_its_text`, and the source was restored byte-for-byte.
+
+**Remaining:** the I: drive needs space before the repository `target` can build again; its existing build caches were not removed. Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800.
+
+### 2026-10-18 - One CLI module reads every `--prompt-file`
+
+**Scope:** the follow-up named by the `dsh prompt` entry above. `dispatch_commands` and `dsh_commands` each held a `PromptSource` type, a stdin marker, and a bounded reader. The readers had become near copies; only the bound and the error code for an invalid prompt differed.
+
+**Implemented:**
+
+- New private module `vibemux_cli::prompt_input` owns `PromptSource`, the `--prompt-file` argument rule (`-` reads stdin), and `read_prompt(source, max_bytes)`. The reader runs on a blocking thread and reads at most one byte beyond the bound. A two-variant `PromptReadError` reports either `Unavailable` or `Invalid` (oversized, non-UTF-8, or blank).
+- `PromptReadError::into_cli_error` maps `Unavailable` to `cli_prompt_unavailable` and `Invalid` to the caller's code. `dispatch submit` and `decide route` keep `harness_dispatch_invalid_prompt`, and `dsh prompt` keeps `cli_invalid_arguments`. Each command passes its own 32 KiB constant.
+- `dispatch_commands::PromptSource` and `dsh_commands::PromptSource` stay valid paths, now re-exports of the one type.
+- No behavior, CLI output, daemon, or wire change.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_cli`: lib 48 passed, integration 5 passed. The reader tests moved to `prompt_input` with an 8-byte bound. The dispatch and DSH tests now check each command's bound and codes end to end. Two mutations were caught and restored byte-for-byte. Refusing a prompt of exactly the bound failed three tests, as did mapping every invalid prompt to `cli_invalid_arguments`.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Bound the probe config read itself, not only the size check before it
+
+**Scope:** `vibemux_probe` reads agent config files (Claude and OpenCode JSON, Codex and Grok TOML) to discover endpoints. `read_bounded_config` checked the path's size and then called `read_to_string`, which reads to the end. A file swapped or grown after the check could make the probe read past the 256 KiB `MAX_CONFIG_FILE_BYTES`.
+
+**Implemented:**
+- `read_bounded_config` still checks the path before opening, so a FIFO found there is never opened. It then checks the opened handle's metadata (a regular file within the bound), as `cache::read_cache` already does.
+- New private `read_bounded_text(reader, max_bytes)` reads at most one byte past the bound through `take`. It refuses a longer or non-UTF-8 source rather than truncating it.
+- No change to discovered endpoints, the probe report, the cache, or any wire format.
+- Audit only, no change: `snapshot::load` (256 KiB, sanitized, stable codes) and gateway telemetry (the health check reads only the status code; the SQLite query is aggregate-only with `LIMIT 32` and a 64-byte `app_type`).
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):** `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_probe --all-targets --all-features -- -D warnings` clean. `cargo test -p vibemux_probe --all-features`: lib 24 passed. The new test `a_config_read_stops_one_byte_past_the_bound` covers an exact-bound read, an endless `std::io::repeat` source, non-UTF-8 bytes, a directory, and a missing file. One mutation was caught and restored byte-for-byte: removing the post-read length check failed the new test.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - One bounded regular-file read for workflow contracts, verifier results, and state files
+
+**Scope:** three ADR 031 workflow reads in `vibemuxd` checked a file's size on the path, then read it:
+- `prepare::read_shared_contracts` read shared contract text from the project checkout with `read_to_string`.
+- `verifier_runner::read_result` read the result file a verifier child process writes with `fs::read`.
+- `state_files::read_bounded` read through `take(maximum + 1)` but never refused the extra byte.
+
+A file swapped or grown after the size check could be read past its bound: 64 KiB for contracts, 1 MiB for results, or the state file's own bound.
+
+**Implemented:**
+- New private `workflow::bounded_file::read_regular_file(path, maximum)`. It checks the path without following a symlink, so a link, FIFO, or device found there is never opened (a link swapped in after that check is still followed by the open). It checks the opened handle again, then reads at most one byte past the bound and refuses rather than truncates.
+- `BoundedReadError` has three variants: `Missing`, `Refused`, and `Io`.
+- The three callers use it and keep their own error codes:
+  - A contract that is unreadable, oversized, or not UTF-8 is still `RequestInvalid`.
+  - An unreadable verifier result is still no result.
+  - A state file that does not exist yet is still `None`, and every other failure is `Internal`.
+- `prepare` keeps its symlink check before `canonicalize` and its containment check after it.
+- No change to request, contract, receipt, or state-file formats, the control protocol, or the store.
+- Not changed: the daemon lifecycle lock (`LifecycleLock::is_held`) and the Windows control ACL marker read whole files in the daemon's private runtime paths. They are left for a later pass.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib workflow::`: 25 passed. New tests:
+  - `a_read_stops_one_byte_past_the_bound`: an endless `std::io::repeat` source.
+  - `only_a_regular_file_within_the_bound_is_read`: exact bound, one byte over, a directory, and a missing file.
+  - `a_shared_contract_is_bounded_utf8_text_inside_the_root`: a 64 KiB contract is read, while one byte over, non-UTF-8 bytes, a missing file, a directory, and `../outside.md` are refused.
+  - A Unix-only test checks that a symlink is refused without being followed. It was not run here.
+- `cargo test -p vibemuxd --all-features --test workflow_gates --test workflow_control --test workflow_admission`: 4, 5, and 6 passed. These ran on the final production code, before the `prepare` test was added.
+- Two mutations were caught and restored byte-for-byte. Removing the post-read length check failed the bounded-read test. Passing the contract bound minus one failed the shared-contract test.
+
+**Remaining:** owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Read worker worktree files through the shared bounded reader
+
+**Scope:** the ADR 031 candidate collector (`vibemuxd::workflow::collector::observe`) reads the files a worker changed in its worktree. It checked each path with `symlink_metadata` and classified links and special files. It then used its own `read_bounded`: `File::open` plus `take(maximum + 1)` and a post-read check, but with no check of the opened handle.
+
+**Implemented:**
+- `observe` now reads through `workflow::bounded_file::read_regular_file`, and every failure stays `WorkflowError::Snapshot`. The private `collector::read_bounded` is gone, so the workflow has one owner for bounded file reads.
+- The symlink and special-file classification, the manifest's per-file and total bounds (bytes over them are never read), and `BlobStore` are unchanged. `BlobStore::get` still reads a whole blob from the daemon's private state.
+- The `bounded_file` and probe `read_bounded_config` doc comments, and the two earlier 2026-10-18 entries above, now say exactly what the path check prevents. A link, FIFO, or device found by the check is never opened, but a link swapped in between the check and the open is still followed. The size bound holds either way.
+- No change to snapshot manifests, receipts, the control protocol, or the store.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd -p vibemux_probe --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib workflow::`: 26 passed. The new test `a_worktree_file_is_read_within_its_bound_and_others_are_classified` covers a file at the bound being read, a directory classified `Special`, a missing path reported `Deleted`, and an oversized file kept out of the read with its size recorded.
+- `cargo test -p vibemuxd --all-features --test workflow_cooperate --test workflow_compare`: 2 and 2 passed.
+- One mutation was caught and restored byte-for-byte: passing the per-file bound minus one failed the new test.
+
+**Remaining:**
+- Owner decision: whether bounded reads should open without following links. On POSIX that means `O_NOFOLLOW`. On Windows it means `FILE_FLAG_OPEN_REPARSE_POINT`, which also changes how cloud-file and deduplication placeholders read. Until then, the bound, not the path check, is the guarantee against a swapped link.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Check the daemon lifecycle lock with a bounded read
+
+**Scope:** `vibemuxd`'s `LifecycleLock::is_held` decides whether the writer lock and the project compatibility lock still carry this holder's nonce. `Drop` removes the file only then, and the Windows leaf release checks the compatibility lock the same way. It used `read_to_string` on the lock path, so a lock path replaced by a large file was read whole.
+
+**Implemented:**
+- `bounded_file` moved from `vibemuxd::workflow` to the crate root (`git mv`), since the lifecycle lock is not workflow code. The four workflow callers now import `crate::bounded_file`, with unchanged behavior.
+- `is_held` reads the lock through `bounded_file::read_regular_file` with a new private `MAX_LOCK_FILE_BYTES = 256`. A nonce is `{pid}-{epoch nanoseconds}-{counter}`, under 80 bytes. A link found at the path, an oversized file, non-UTF-8 bytes, or another nonce now reads as not held, so `Drop` leaves that file in place.
+- `docs/architecture.md` (writer section) says the nonce check is bounded and what it leaves in place.
+- No change to the lock file contents, the lock path, recovery, the control protocol, or the store.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib`: 130 passed. The new test `a_lifecycle_lock_is_held_only_while_its_bounded_file_carries_the_nonce` covers the fresh lock, the nonce padded past 256 bytes, another holder's nonce, and the nonce restored. The padded case read as held under the old `read_to_string` and `trim`.
+- `cargo test -p vibemuxd --all-features --test daemon_process`: 9 passed.
+- `cargo test -p vibemux_cli --all-features`: lib 48, `bootstrap_process` 4, `unified_commands` 6 passed. `bootstrap_process` asserts the writer lock is gone after a daemon run, so the holder still recognizes its own lock.
+- One mutation was caught and restored byte-for-byte: reading the lock with no bound (`u64::MAX`) failed the new test.
+
+**Remaining:**
+- The Windows control ACL marker check (`process.rs` `acl_marker_valid`) still reads its marker whole.
+- Owner decision on no-follow opens for bounded reads (see the previous entry).
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Read the Windows control ACL marker through the bounded reader
+
+**Scope:** on Windows, `vibemuxd::process::acl_marker_valid` decides whether the shared control runtime root has a published `.acl_v1` marker. Daemon start uses it to skip or redo ACL setup, and trusted-start validation uses it to refuse. It checked the path's file type and then read the whole marker with `fs::read` to compare it with the 22-byte `vibemux_control_acl_v1`.
+
+**Implemented:**
+- `acl_marker_valid` reads through `crate::bounded_file::read_regular_file`, bounded to the marker's own length, and compares the bytes. That reader's path check, which does not follow links, replaces the separate file-type check here.
+- A link or directory found at the path, a missing file, or other bytes still read as invalid. A longer file is now refused one byte past the contents instead of being read whole.
+- The `bounded_file` module doc lists the marker among its users. A grep of `vibemuxd` code, leaving out tests and the two fixture binaries, now finds every other `read_to_end` behind a `take` bound. The only whole-file read left is `BlobStore::get`.
+- No change to the marker contents, its publication, the ACL helpers, or the control protocol.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib`: 131 passed. The new Windows test `an_acl_marker_is_valid_only_with_its_exact_contents` covers missing, exact, one byte longer, a same-length different marker, and a directory. The existing marker healing and concurrent first-touch tests also pass.
+- `cargo test -p vibemuxd --all-features --test daemon_process`: 9 passed, including `trusted_start_verifies_the_full_control_runtime_surface`.
+- One mutation was caught and restored byte-for-byte: a bound one byte shorter than the marker failed the new test, `ensure_runtime_dir_heals_a_stale_acl_marker`, and `concurrent_first_touch_serializes_marker_publication`.
+
+**Remaining:**
+- `BlobStore::get` still reads a whole blob from the daemon's private workflow state, because it has no bound of its own.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Bound candidate blob reads to the manifest's byte count
+
+**Scope:** `vibemuxd::workflow::collector::BlobStore::get` returns a candidate's collected bytes from the daemon's private workflow state. It serves materialization (`apply_manifests`), the negative-control mutation, reloading a candidate's texts for a resumed coordinator, and `put`'s check of an existing blob. It refused a non-regular file and re-hashed the bytes, but read the whole blob file first. The supervisor-context path already read the same blobs bounded by the manifest's byte count.
+
+**Implemented:**
+- `get` takes the `byte_count` the manifest recorded for the write. It reads through `crate::bounded_file::read_regular_file` bounded to that count, then requires exactly that many bytes and the digest. A blob file that has grown or been replaced is refused one byte past the count instead of being read whole.
+- Every caller passes the count from its `SnapshotChange::Write` entry, and `put` passes the length of the bytes it stores. The collector records that count as the length of the bytes it read, so collected manifests and blobs agree.
+- No change to the manifest format, the blob layout, the store schema, or the control protocol.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib`: 131 passed. `blobs_are_content_addressed_and_rehashed` now also covers a count one byte short or long, a tampered blob, and a blob grown past its count that `put` then heals.
+- `cargo test -p vibemuxd --all-features --test workflow_compare --test workflow_cooperate --test workflow_gates`: 2, 2, and 4 passed. They drive the real daemon through collection, review, verification, and isolated integration.
+- One mutation was caught and restored byte-for-byte: dropping the length comparison failed the off-by-one assertion. The bound by itself has no observable effect at this level once the length check stands; the shared reader's own tests cover the stop one byte past the bound.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Bound the GUI user settings read
+
+**Scope:** `vibemux_frontend::theme::serialize::load_user_config_at` loads `frontend.json`, the GUI's persisted theme, window size, and sidebar setting, when the `vibemux_frontend` GUI binary starts. It read the whole file with `fs::read_to_string` before parsing. A missing, unreadable, or corrupt file already fell back to the defaults.
+
+**Implemented:**
+- The file is read only if it is a regular file, and the read stops one byte past `MAX_USER_CONFIG_BYTES` (64 KiB). A larger file, a directory, or non-UTF-8 bytes fall back to the defaults like any other unreadable file. A saved settings document is a few hundred bytes.
+- The file-type check follows a link, so a settings file a dotfiles manager placed as a link still loads.
+- No change to the `frontend.json` layout, its schema version, the save path, or the window-size clamping.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_frontend --all-features --lib`: 150 passed, 1 ignored (the golden-fixture writer). New tests: `a_user_config_past_the_bound_returns_defaults` loads a valid document padded to exactly 64 KiB, and falls back for one byte more or a directory. `a_settings_read_stops_one_byte_past_the_bound` ends an endless source at the bound.
+- One mutation was caught and restored byte-for-byte: accepting one byte past the bound failed both new tests.
+- No GUI window was opened.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Stage GUI settings saves under a unique name
+
+**Scope:** `vibemux_frontend::theme::serialize::save_user_config_at` persists `frontend.json` after the GUI's theme, window size, or sidebar setting changes (debounced, and never in demo mode). It wrote the whole document to the fixed sibling `frontend.json.tmp` and renamed it over the settings file. Two GUI processes saving at once wrote through the same staged file, and a failed rename left it behind.
+
+**Implemented:**
+- Each save stages through a hidden sibling named for the process id and the current time, `.frontend.json.<pid>.<nanos>.tmp`. The staged file is opened only if it does not exist yet, so a name already taken fails that save instead of overwriting another save's file.
+- A failed write removes the file it created, and a failed rename, after the existing single retry, removes the staged file. A name already taken by another save is left alone.
+- The module doc still states that concurrent writers can lose a write. There is no lock, and the `frontend.json` layout, its schema version, and the read path are unchanged.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_frontend --all-features --lib`: 152 passed, 1 ignored (the golden-fixture writer). New tests: `a_save_leaves_only_the_settings_file` checks that a save leaves only `frontend.json`, and that a save blocked by a non-empty directory at the path fails, leaves no staged file, and leaves the directory's contents alone. `a_staged_file_is_a_hidden_sibling_named_for_this_process` pins the name.
+- After a doc-comment rewording, fmt, clippy, and `cargo test -p vibemux_frontend --all-features --lib theme::serialize` (16 passed) were rerun.
+- One mutation was caught and restored byte-for-byte: dropping the cleanup after a failed rename failed `a_save_leaves_only_the_settings_file`.
+- No GUI window was opened.
+
+**Remaining:**
+- A `frontend.json.tmp` left behind by an earlier build is not removed; nothing reads it.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the MCP host's request handling with unit tests
+
+**Scope:** `vibemux_mcp::protocol` decides how the native MCP read host (ADR 035) answers each JSON-RPC message, with no process or daemon I/O. That covers the lifecycle order, the read-tool gate, the in-flight rules while one read runs, and envelope checks. The crate's integration tests reach it through the stdio host. No `vibemux_mcp` test named the `already_initialized`, `method_not_found`, `duplicate_request_id`, `reader_unavailable`, or `invalid_request` codes. The framing test checks only the -32600 number for a batch.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_mcp/src/protocol.rs`. No production code changed, and the MCP wire is unchanged.
+- `the_lifecycle_answers_each_request_in_order`: before `initialize`, only `ping` and `initialize` answer. A second `initialize` is `already_initialized` (-32600). The tools stay closed until `notifications/initialized` arrives. An unknown method then gets `method_not_found` (-32601) with its own id.
+- `an_early_initialized_notification_is_ignored`: the notification sent before `initialize` does not open the tools later.
+- `a_read_needs_the_host_grant_and_an_available_backend`: a granted `health` call becomes a read. An unavailable backend answers a tool error naming `reader_unavailable`, and an unknown tool is `unknown_tool` (-32602). Without the host grant, read tools are `metadata_read_denied` (-32001) and `tools/list` offers only `host_status`.
+- `an_in_flight_read_admits_only_ping_and_its_own_cancellation`: a request reusing the active id is `duplicate_request_id` with a null id, and `ping` still answers. Another request is `request_busy` (-32000). Only a well-formed `notifications/cancelled` naming the active id cancels.
+- `envelopes_outside_json_rpc_2_are_invalid_requests`: these all get `invalid_request` with a null id: a non-object, another `jsonrpc` version, a missing method, a boolean, fractional, or 129-byte string id, or an extra key. A 128-byte string id is accepted.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_mcp --all-features`: lib 10 passed (5 new), framing 5, ipc 3, lifecycle 22, stdio 5.
+- Two mutations were caught and restored byte-for-byte. Disabling the second-`initialize` guard failed the lifecycle test, and disabling the duplicate-id check failed the in-flight test.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the MCP tool schemas to the argument parser
+
+**Scope:** The native MCP read host (ADR 035) advertises an input schema for each read tool in `tools/list`, and `vibemux_mcp::tools::parse_operation` decides what a `tools/call` actually accepts. The two are written separately, and only the stdio integration tests sampled a few refused arguments. No test checked that each schema describes what the parser accepts.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_mcp/src/tools.rs`. No production code changed, and the MCP wire is unchanged.
+- `listed_read_tools_are_the_tools_the_parser_knows`: with the host grant, the listed tools after `host_status` are `READ_TOOLS` in order. Without it, only `host_status` is listed, and the parser does not handle `host_status` (`unknown_tool`).
+- `each_schema_declares_exactly_the_arguments_the_parser_accepts`: for every read tool, all declared arguments together are accepted, and so are the required ones alone. Dropping any required argument is refused. So are an undeclared argument (the schema sets `additionalProperties: false`) and a non-object.
+- `the_limit_schema_states_the_parser_bounds_and_default`: the `limit` schema's `minimum` and `maximum` are 1 and `MAX_FRONTEND_TASKS`, both accepted. Omitting `limit` yields the schema's `default`. 0, one past the maximum, -1, 1.5, the string `"1"`, and null are refused.
+- `identifier_schemas_admit_what_the_parser_admits`: `after`, `task_id`, and `request_id` share one schema: a 36-character string matching a lowercase hyphenated hex pattern that is not the nil UUID. For eight candidates, the parser accepts exactly those that a hand-written reading of that schema admits. The canonical form is accepted. Uppercase, nil, unhyphenated, braced, `urn:uuid:`, space-led, and non-hex forms are refused, and so is a number.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_mcp --all-features`: lib 14 passed (4 new), framing 5, ipc 3, lifecycle 22, stdio 5.
+- Three mutations were caught and restored byte-for-byte. Each failed one new test: narrowing the parser's limit range to `1..MAX_FRONTEND_TASKS`, dropping `task_id` from the `frontend_task` schema's `required`, and dropping the canonical-text check from `canonical_uuid`.
+
+**Remaining:**
+- JSON Schema counts `1.0` as an integer, but the parser refuses a `limit` sent as a float. The parser is the stricter of the two, so this was left unchanged.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the MCP reader process's own request checks
+
+**Scope:** The native MCP read host (ADR 035) does its daemon reads in a contained child process (`vibemux_mcp --ipc_reader`, which runs `vibemux_mcp::control_reader::run`). The reader owner sends that child one JSON request per line over a private pipe. The child decodes each request with serde, so `parse_operation` never runs there, and it repeats its own checks before reading the control descriptor. It also requires a stable non-zero generation and sequences that rise by one. The integration suites send the real reader only well-formed requests, and no `vibemux_mcp` test named `reader_request_invalid`.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_mcp/src/control_reader.rs`. No production code changed, and the reader's private wire and the MCP wire are unchanged.
+- `invalid_operations_are_refused_before_the_descriptor_is_read`: limit 0, a limit one past `MAX_FRONTEND_TASKS`, and a nil `request_id` are `reader_request_invalid`. Each valid operation, including limits 1 and `MAX_FRONTEND_TASKS`, reaches a descriptor path where nothing exists and answers `producer_unavailable`. So the refusals happen before any descriptor I/O.
+- `a_request_with_a_nil_task_id_or_an_extra_key_does_not_decode`: a nil `task_id` or `after` fails to decode, as does an unknown key inside the operation or at the top level.
+- `each_request_is_answered_in_order_until_the_input_ends`: three requests in one generation get three replies carrying their own generation and sequence, and the end of input ends the run cleanly. Empty input writes nothing.
+- `a_request_out_of_generation_or_sequence_stops_the_reader`: generation 0, a first sequence other than 1, a replayed or skipped sequence, a changed generation, and an undecodable line each stop the run with `reader_request_invalid`. No reply is written for the offending line.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_mcp --all-features`: lib 18 passed (4 new), framing 5, ipc 3, lifecycle 22, stdio 5.
+- Four mutations were caught and restored byte-for-byte: dropping the zero-limit guard, dropping the nil `request_id` guard, accepting generation 0, and ignoring a changed generation.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the CLI failure type's public-code contract
+
+**Scope:** Every `vibemuxctl` error reaches the operator as a `vibemux_cli::failure::Failure`. Its module promises that public error codes are independent of private paths and process diagnostics. `Failure::new` keeps a code only if it is 1 to 96 bytes of lowercase ASCII letters, digits, and underscores. Otherwise the code becomes `cli_operation_failed`. `Display` and `Debug` show only the code. `output::error_text` adds the remediation message from `with_message` when there is one. The wrapped source is reachable only through `Error::source`. No `vibemux_cli` test exercised the code filter or checked what `Display` and `Debug` show.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_cli/src/failure.rs`. No production code changed.
+- `only_a_short_snake_case_code_is_kept`: real codes and a 96-byte code are kept. These are all replaced by `cli_operation_failed`, through both `new` and `with_source`: an empty code, a 97-byte code, one with an uppercase letter, a hyphen, a space, or a newline, a Windows path, and non-ASCII letters.
+- `display_and_debug_show_the_code_and_never_the_source_or_message`: for a failure with a source, with a message, and with a path given as its code, `Display` is exactly the code and `Debug` is exactly `Failure { code: ..., .. }`. Neither shows the source's private path or the message.
+- `the_message_and_source_stay_available_to_their_own_readers`: `message()` returns only what `with_message` set, and `Error::source` still returns the wrapped error.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_cli --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_cli --all-features --lib`: 51 passed (3 new). The CLI integration suites were not rerun, because no production code changed.
+- Four mutations were caught and restored byte-for-byte: a 97-byte code limit, an accepted hyphen, a `Display` that appends the source, and a `Debug` that lists the message.
+- `vibemux_workflow::receipts` was checked first and deferred. Its accessors feed the `vibemux_store` row checks on kind, task key, subject, and digest. The store integration tests build candidate, review, verification, integration, and selection receipts directly. How they reach bundle, decision, and model-call receipts was not traced.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin decision and model-call workflow receipts
+
+**Scope:** `vibemux_workflow::receipts::WorkflowReceipt` is the evidence the single writer persists for a workflow (ADR 031). `vibemux_store` files each receipt under its `kind()`, `receipt_id()`, `task_key()`, and `subject_digest()`, and checks those columns and `digest()` again when it recovers. The store tests build candidate, review, verification, integration, and selection receipts, and the daemon builds bundle receipts. Nothing in production or in any test builds the decision or model-call variants as a `WorkflowReceipt`. So those two arms of every accessor were never run.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_workflow/src/receipts.rs`. No production code changed, and the store schema and receipt JSON are unchanged.
+- `decision_and_model_call_receipts_name_their_own_id_and_subject`: a decision receipt is kind `decision`, takes its id from `decision_id`, and is bound to `rationale_sha256`. A model-call receipt is kind `model_call`, takes its id from `call_id`, and is bound to `request_sha256`, not to the response or the route table. Neither claims a workflow or a task.
+- `the_stored_kind_is_the_serialized_tag`: for both kinds, `kind()` equals the `kind` tag in the receipt JSON, and the decoded receipt equals the original and has the same digest.
+- `the_receipt_digest_covers_the_kind_and_every_field`: the digest is taken over the tagged receipt, not the bare record. It changes when a decision is rejected instead of accepted, and when a model call's attempt number changes.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_workflow --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_workflow --all-features`: 149 passed (3 new).
+- Three mutations were caught and restored byte-for-byte: the model-call kind spelled `model-call`, the model-call subject switched to `route_generation`, and the decision id shifted by one.
+
+**Remaining:**
+- `kind()` and the serde tag are still compared only for these two kinds. The other six are built only in store and daemon tests.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A record rules in vibemux_types
+
+**Scope:** `vibemux_types::a2a` holds the rules that `vibemux_store` applies to A2A run records. These include the remote-state transitions, the run workspace checks, the workspace key that the store compares workspaces by, and the artifact reference bounds. The module had no unit tests. Its rules were reached only through `vibemux_store` and daemon scenarios.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_types/src/a2a.rs`. No production code changed, no rule was tightened (including `valid_label`), and the record JSON is unchanged.
+- `remote_states_never_return_to_submitted_or_leave_a_terminal_state`: checks all 36 pairs. Every state may repeat. `submitted` may move to any state. `working` and `input_required` may move to each other or to any terminal state, but never back to `submitted`. `completed`, `failed`, and `cancelled` move nowhere else.
+- `a_run_workspace_needs_an_absolute_path_and_a_safe_branch`: POSIX, UNC, and drive paths with either separator are accepted, and so are 40- and 64-character base commits. These are refused: a relative path, a drive-relative `C:repo`, an empty path, a path with a control character, or one longer than 4096 bytes. So is a branch that starts with `-`, contains `..`, ends in `.lock`, contains a space, or is empty. So is a base commit of the wrong length or with a non-hex character, and an empty or spaced ownership token.
+- `workspace_path_keys_ignore_case_separators_and_trailing_slashes`: `C:\Work\Repo\` and `c:/work/repo` share the key `c:/work/repo`, and a different directory keeps a different key.
+- `artifacts_are_bounded_unique_and_lowercase_hex`: `MAX_A2A_ARTIFACTS` artifacts pass, and one more fails. A repeated artifact id fails. A size of exactly `MAX_A2A_ARTIFACT_BYTES` passes, and one byte more fails. So do an uppercase or short digest, and a media type that is blank or contains a control character.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_types --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_types --all-features`: 10 passed (4 new).
+- Five mutations were caught and restored byte-for-byte: letting `working` return to `submitted`, accepting a drive-relative path, dropping the `.lock` branch rule, keeping case in the path key, and admitting a repeated artifact id.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the remaining A2A validators in vibemux_types
+
+**Scope:** `vibemux_types::a2a` validates A2A run starts, updates, verification receipts, and stored run records. The store's A2A tests drive these checks only through its own scenarios. They never submit a run start with a transport other than `http_json`, a non-UTC or pre-1970 timestamp, a role outside worker/reviewer/verifier, a task with a description, or a stored record that fails validation as it decodes. This change pins those rules where they live. It is test-only.
+
+**Implemented:**
+- New tests in the existing unit-test module of `crates/vibemux_types/src/a2a.rs`. No production code changed, no rule was tightened (including `valid_label`), and the record JSON is unchanged.
+- `a_run_start_is_a_preparing_worker_reviewer_or_verifier_run_of_its_task`: a preparing `worker`, `reviewer`, or `verifier` run of its own task is accepted. These are refused: any other role, a task with a description, a run that has already started, a run of another task, a workspace base commit that differs from the run's, and an invalid workspace.
+- `binding_fields_name_a_known_transport_and_bounded_identifiers`: the transports `http_json`, `json_rpc`, and `grpc` are accepted, and `http`, `HTTP_JSON`, and `grpc ` are refused. The peer id (128 bytes), external task id (256), protocol version (32), and idempotency key (256) are accepted at their bound and refused one byte over it. An empty or spaced peer id and an idempotency key with `?` are refused.
+- `timestamps_must_be_utc_and_not_before_1970`: in both a run start and a run update, the Unix epoch and 9999-12-31T23:59:59Z are accepted. One second before the epoch is refused, and so is the same instant written with a `+08:00` offset. The crate's `time` build cannot represent a year after 9999, so only the lower bound can be crossed.
+- `a_verification_receipt_needs_a_reviewer_version_and_three_digests`: a receipt is valid whether it accepts or rejects. Reviewer version 0 is refused, and so is an uppercase, short, or non-hex value in any of the three digests.
+- `a_run_update_checks_its_version_key_and_action`: every action kind is accepted with valid content. These are refused: expected version 0, an empty idempotency key, an observation with a repeated artifact id, a failure code that is empty or has a space, and a verification whose receipt is invalid.
+- `a_run_record_binds_one_task_run_and_workspace`: a wrong schema version, version 0, a task, project, task id, or run id that does not match the run, and a workspace base commit that differs from the run's are each an identity mismatch. An unknown transport, an empty idempotency key, a non-UTC creation time, an update time before the creation time, an invalid workspace branch, an invalid artifact, and an invalid receipt are each invalid input.
+- `a_succeeded_run_record_carries_a_verification_receipt`: a succeeded run without a receipt is an invalid state, and the same run with a receipt is accepted.
+- `a_record_that_fails_validation_does_not_decode`: a valid record survives a JSON round trip unchanged. The same JSON with version 0, transport `http`, or a `+08:00` creation time does not decode.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_types --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_types --all-features`: 18 passed (8 new).
+- Thirteen mutations were caught and restored byte-for-byte: admitting transport `http`, dropping the UTC check, moving the year floor to 1969, admitting role `planner`, dropping the empty-description check, dropping the update-after-creation order check, letting a succeeded run skip its receipt, decoding a record without validating it, accepting reviewer version 0, accepting a spaced failure code, skipping a stored receipt's validation, accepting expected version 0, and raising the peer id bound to 129.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin task and run restoration in vibemux_types
+
+**Scope:** `crates/vibemux_types/src/restore.rs` decodes stored `Task` and `Run` JSON, for example the A2A record and the store's run check. It runs the same field checks as construction, and it keeps the stored status. Its one test covered a nil task id, a malformed base commit, and an unknown run key. Nothing pinned the title, description, or name bounds on this path, the stored status being kept, missing fields, or that a restoration failure reports the same domain error as construction. This change is test-only.
+
+**Implemented:**
+- `task()` and `run()` fixtures, plus `restore_with` and `restore_without` helpers that set or remove one key of the stored JSON and restore it. They are added to the existing unit-test module. No production code changed, and the JSON shape is unchanged.
+- `a_restored_task_keeps_its_stored_status_and_bounded_text`: an in-progress task restores equal with its status, and a stored `blocked` status is kept without any transition being replayed. A title of exactly 512 UTF-8 bytes made of two-byte characters is accepted. So are a 64 KiB description and a blank description. These are refused: a 513-byte title, a blank or empty title, a description one byte over 64 KiB, an unknown status, a nil task id, a malformed project id, an unknown key, and a missing title, description, or status.
+- `a_restored_run_keeps_its_stored_status_and_bounded_names`: a running run restores equal with its status, and a stored `stale` status is kept. `harness`, `role`, and `protocol` are each accepted at 128 bytes. Each is refused at 129 bytes, when blank, when empty, and when missing. A base commit of 7 and of 128 hex characters is accepted. These are refused: 6 or 129 characters, a non-hex commit, an unknown status, a nil run id, and an unknown key.
+- `restoration_reports_the_same_domain_error_as_construction`: an over-long title, an over-long description, and a short base commit each fail restoration with the message `Task::new` or `Run::new` gives for the same value.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_types --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_types --all-features`: 21 passed (3 new).
+- Eleven mutations were caught and restored byte-for-byte. Ten were in `restore.rs`: a blank title accepted, the description bound raised by one, a blank role accepted, the protocol bound raised by one, an unbounded harness, the base commit left unchecked, the task status or the run status reset on restore, unknown task keys admitted, and the title error replaced by a generic message. The eleventh was in the shared `validate_required` in `lib.rs`: whitespace-only values accepted.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the supervisor context-action rules in vibemux_workflow
+
+**Scope:** `crates/vibemux_workflow/src/supervisor/context_actions.rs` holds the pure least-privilege checks that the daemon (`vibemuxd/src/workflow/supervisor_context.rs`) and the store (`supervisor_commands/context_actions.rs`) apply before a supervisor context action reads a file, shares a bundle, or addresses a worker. Until now these checks were exercised only through those integration tests, and the module had no tests of its own. This change is test-only and reuses the crate's `task_spec::fixtures` Track A spec.
+
+**Implemented:**
+- A unit-test module in `context_actions.rs` with an execution fixture, a bundle fixture, and `*_with` helpers. No production code changed.
+- `effect_ids_are_stable_and_distinct_per_action_and_kind`: the same action and kind give the same id, a different kind or action gives a different one, and the id is a version 4 UUID.
+- `a_task_addressed_tool_reaches_only_a_single_slot_worker`: a task with exactly one allowed slot resolves to a worker of that task. The session id is stable, and it changes with the slot or the workflow. A comparison task with two slots, a task with no slots, and an unknown task resolve to nobody.
+- `only_a_session_of_a_current_slot_is_a_current_worker`: the sessions of both slots of a comparison task are current, and so are the supervisor, operator, and broker. These are not current: a session of another slot, a session of another workflow, an arbitrary session id, and a real session id presented under another task key.
+- `a_path_is_readable_only_in_scope_and_outside_forbidden_scopes_of_any_case`: owned and read-scope paths are readable. These are refused: paths outside every scope, an owned path in another letter case, a forbidden or protected path in its own case or in another case, an absolute path, a path with `..` or `.` (including `tests/worker_a/../../package.json` under a recursive owned scope), a backslash path, and an empty path. Without the `read_files` tool, nothing is readable.
+- `a_bundle_is_shared_only_within_budget_policy_and_scope`: a bundle is accepted at the policy's byte limit, at the 32 KiB supervisor cap when the policy allows more, with a verifier-confirmed claim, with claims only, and with a worker claim once the policy retrieves worker claims. These are refused: an empty byte count, one byte over the policy limit, one byte over the cap, public excerpts disabled, candidate snapshots not in the retrieval order, no `read_files` tool, a source from another snapshot, line 0, an end line before the start line, a source outside scope or under a protected scope, a worker claim the policy does not retrieve, and a bundle with neither sources nor claims.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_workflow --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_workflow --all-features`: 154 passed (5 new).
+- Eighteen mutations were caught and restored byte-for-byte: dropping the case-folded forbidden match, ignoring protected paths, skipping the `read_files` tool check, ignoring read scopes, skipping the relative-path check (caught only by the traversal cases), resolving a multi-slot task to its first slot, leaving the slot out of the session id, treating every worker as current, leaving the kind out of the effect id, dropping the 32 KiB cap, ignoring the public-excerpt flag, ignoring the snapshot retrieval order, admitting another snapshot digest, admitting line 0, ignoring the line order, mapping worker claims to the snapshot source, admitting an empty bundle, and admitting a zero byte count.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A SDK task mapping in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_wire.rs` maps the local task contract to the official A2A SDK types and back. It covers task states, errors, parts, the request envelope, native messages, snapshots, replies, and stream updates. The module had no tests of its own. The integration tests in `crates/vibemux_a2a/tests` reach it only through the HTTP+JSON, JSON-RPC, and gRPC gateways and the crate's own server. That server sends only replacing artifact updates and status updates for the task being watched, so none of these tests sends an append chunk, an update for another task or context, a tenant, or an unspecified state. This change is test-only; no wire format or SDK use changed.
+
+**Implemented:**
+- A unit-test module in `task_wire.rs` with request, snapshot, native-message, status-update, and artifact-update fixtures. No production code changed.
+- `every_local_state_maps_to_its_sdk_state_and_unspecified_is_refused`: each of the eight local states maps to the SDK state of the same name and back, and the SDK's `Unspecified` state is a protocol failure.
+- `errors_keep_their_code_across_the_sdk_boundary`: invalid request, unauthorized, forbidden, not found, unsupported, busy, and deadline keep their JSON-RPC code (`-32602`, `-32040`, `-32041`, `-32001`, `-32004`, and `-32603` for the last two). The SDK message is the local error code, and each error maps back to itself. Protocol, transport, server, and internal failures leave as `-32603` and come back as a protocol failure. An error from another implementation maps by its code alone: task not found to not found, unsupported operation and task not cancelable to unsupported, and anything else to a protocol failure.
+- `parts_round_trip_and_are_validated_when_read`: text, data, raw, and URL parts keep their media type and filename across the mapping. A part read from the wire is refused when its text is over 16 KiB, its URL is not http or https or carries user info, its filename has a newline, or its media type is over 128 bytes.
+- `a_request_round_trips_in_its_envelope_and_mismatched_ids_are_refused`: a request travels as one data part in the `vibemux.task.request.v1` envelope with history length 0 and an immediate return, and it comes back unchanged. These are refused as invalid: a message id, context id, or task id that differs from the envelope, a tenant, an agent role, no parts, another contract version, an unknown envelope field, and an invalid request inside the envelope. A push notification configuration is refused as unsupported, and an invalid request is refused before it is sent.
+- `a_native_message_becomes_bounded_part_data`: a message without the envelope becomes a request whose id, idempotency key, and default context are the message id, and whose payload is the parts and the request metadata. A given context and task id are kept. More than 16 parts, an invalid part, and an invalid message id are refused.
+- `snapshots_and_replies_keep_their_error_code_and_artifacts`: a snapshot's error code travels in the task metadata, and the snapshot comes back unchanged. A snapshot with no artifacts and no error code sends neither. A task in the `Unspecified` state is a protocol failure, and a snapshot with an invalid error code is not sent. Task and message replies round trip, and a message reply is sent with the agent role. A reply message with the user role or without a context is a protocol failure.
+- `stream_updates_apply_only_to_the_task_they_continue`: a status or artifact update before the first task snapshot is a protocol failure. A status update sets the state and the error code it carries, and clears a code it does not carry. An artifact chunk extends its artifact only when marked as an append, and otherwise replaces it; a chunk of a new artifact adds it. These are protocol failures that leave the stream unchanged: a status update for another task or context, an artifact update for another task, an unspecified state, a message event, and a snapshot of another task. A status update with an invalid error code is refused as invalid.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 13 library tests passed (7 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Thirty-five mutations were caught and restored byte-for-byte. They were: accepting `Unspecified`; swapping two states in both directions; the wrong code for forbidden or unsupported; dropping the forbidden message, the task-not-found code, or the task-not-cancelable code from the reverse mapping; skipping the role, part-count, tenant, or push-configuration check; skipping the contract, context, or task id check of the envelope; skipping validation of the envelope request, the native request, or a read part; dropping the zero history length; not defaulting a native context; dropping a raw part's media type or a URL part's filename; moving the error code out of `error_code` metadata; sending empty artifacts; skipping the reply role check or sending a reply as the user; accepting a status update with no prior snapshot; refusing a status update only when both its task and context ids differ; skipping the identity check of an artifact update; keeping a stale error code; ignoring or always applying the append flag; dropping a new artifact; accepting a message event; skipping validation of the next snapshot; and skipping the final identity check.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A subscription diff in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_server.rs` turns the backend's task snapshots into the A2A stream a subscriber sees. `snapshot_events` sends the first snapshot whole and later ones as artifact and status updates. `stream_finished` and the stream's `stop_on_interrupted` flag decide when the stream ends, and `validate_task_query` checks the task id and tenant of a get, cancel, or subscribe request. The module had no tests of its own; it was exercised only through the gateway integration tests. This change is test-only, and it is the server-side counterpart of the client mapping pinned in the previous entry.
+
+**Implemented:**
+- A unit-test module in `task_server.rs` with a subscription fixture (an empty backend stream, a stop channel, and one semaphore permit), plus snapshot, artifact, and expected-event helpers. No production code changed.
+- `the_first_snapshot_is_sent_whole_and_later_ones_only_as_changes`: the first snapshot is sent as one task event, and an unchanged snapshot sends nothing. A changed or new artifact is sent whole as a replacing update (`append: false`, `last_chunk: true`) in snapshot order, with no status update while the state is unchanged. A change of state, of the error code alone, or a cleared error code each sends exactly one status update; the error code travels in `error_code` metadata.
+- `applying_the_sent_events_reproduces_each_snapshot`: across six snapshots (submitted, working with a first artifact, a changed and an added artifact, input required with an error code, working again, and completed), the client's `apply_stream_response` rebuilds each snapshot exactly from the events sent. The stream ends only at the completed snapshot.
+- `a_snapshot_of_another_task_an_invalid_one_or_a_shrinking_one_is_refused`: a snapshot of another task or context is a protocol failure, both before and after the first snapshot. So is a later snapshot that drops an artifact the subscriber already has. An invalid snapshot is refused as invalid, both first and after a snapshot was sent. A refused snapshot sends nothing and leaves the last sent snapshot in place.
+- `a_terminal_state_ends_the_stream_and_an_interruption_ends_it_only_when_asked`: completed, failed, canceled, and rejected end the stream. Input required and auth required end it only when the stream stops on interruption. Submitted and working never end it.
+- `a_task_query_needs_a_valid_id_and_no_tenant`: a valid id without a tenant passes. An invalid or empty id is refused with `-32602`, and a tenant is refused as unsupported (`-32004`).
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 18 library tests passed (5 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Twenty mutations were caught and restored byte-for-byte. They were: dropping the up-front snapshot validation; refusing another task only when both ids differ, or not at all; allowing a dropped artifact; resending unchanged artifacts; setting the append flag; dropping the last-chunk flag; sending a status update only on a state change, or always; renaming the `error_code` metadata key; not sending the first snapshot; not keeping the last sent snapshot; ending the stream only on terminal states, on interruption regardless of the flag, or never on a terminal state; dropping auth required from the interrupted states, or adding working; skipping the query id check; allowing a tenant; and refusing a tenant as invalid instead of unsupported.
+- In the first version of the refusal test, the invalid snapshot came only before the first one was sent. There `snapshot_to_wire` validates again, so dropping the up-front validation survived. The final test also sends an invalid snapshot after the first one, where that validation is the only check before a status update would carry the invalid error code.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A client's origin, JSON-RPC, and event-frame checks in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_client.rs` has three pure helpers that the network client depends on. `loopback_origin` normalizes the allowed origins, the base URL, every interface an agent card advertises, and the server's gRPC base URL; it is the check that keeps the gateway loopback-only. `rpc_result` checks a JSON-RPC response before its result is used. `event_boundary` finds where a server-sent event ends in the subscription stream. The module had no tests of its own; the helpers were reached only through the gateway integration tests and their adversarial agent-card fixture. This change is test-only.
+
+**Implemented:**
+- A unit-test module in `task_client.rs`. No production code changed.
+- `only_a_numeric_loopback_http_origin_with_an_explicit_port_is_allowed`: plain-http origins on IPv4 loopback (any `127.0.0.0/8` address) or IPv6 `::1`, with a port and at most a root path, are normalized to their origin without the trailing slash. These are refused as forbidden: a host name (including `localhost`), a private or unspecified address, another IPv6 address, https, a missing port, user info, a password, a query, a fragment, and a non-root path. The URL parser drops a scheme's default port, so `http://127.0.0.1:80` also counts as a missing port. Text that is not a URL is refused as invalid.
+- `a_json_rpc_result_needs_its_id_and_exactly_one_outcome`: a `2.0` response whose numeric or string id matches yields its result. These are protocol failures: another version, another id, a string id where a number was sent, a response when no id is expected, a missing id, both a result and an error, neither, and a value that is not a response object. An error outcome maps by its local error code first (`a2a_task_not_found`, `a2a_task_busy`) and then by its JSON-RPC code (`-32004` is unsupported); any other error is a protocol failure.
+- `an_event_ends_at_its_first_blank_line_in_any_newline_style`: an event ends at the first blank line written as LF LF, CR CR, or CRLF CRLF, and the helper returns both where the event data ends and where the next event starts. A blank line at the very start counts. A partial frame, including one cut inside a CRLF CRLF, has no boundary.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 21 library tests passed (3 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Twenty-four mutations were caught and restored byte-for-byte. They were: mapping unparsable text to forbidden; accepting any non-multicast IPv4 address; refusing or accepting every IPv6 address; accepting host names; and skipping the scheme, port, user name, password, query, fragment, or path check. For the origin, keeping the trailing slash. For JSON-RPC: skipping the version, id, or single-outcome check; not mapping an error; and ignoring the error's JSON-RPC code. For event frames: shortening the CRLF CRLF frame, or dropping the CRLF CRLF, LF LF, or CR CR boundary; shifting where the data ends; and skipping the first byte.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A gRPC endpoint, error, and status checks in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_grpc.rs` has three pure helpers on the gRPC binding. `validate_grpc_endpoint` checks the endpoint `GrpcTaskClient::connect` dials. `grpc_error` maps a gRPC status back to a local error on the client. `compatible_grpc_status` rewrites the statuses the server returns so they carry the A2A error reason. The module had no tests of its own; the helpers were reached only through the `task_grpc` integration tests. This change is test-only.
+
+**Implemented:**
+- A unit-test module in `task_grpc.rs`. No production code changed.
+- `a_grpc_endpoint_is_a_numeric_loopback_http_address`: an endpoint without a scheme gets `http://`, and an accepted endpoint is returned otherwise unchanged. Plain http on IPv4 loopback or IPv6 `::1` is accepted. Unlike the HTTP client's origin check, a missing port means the default port 80. These are refused as invalid: an empty endpoint, a host name, a private address, another IPv6 address, https, user info, a password, a query, a fragment, a non-root path, port 0, and an endpoint over 2048 bytes. The length bound is tested with an endpoint whose port has leading zeros, so it is otherwise valid; it is accepted at exactly 2048 bytes and refused at 2049.
+- `grpc_statuses_map_to_local_errors`: deadline exceeded, unauthenticated, permission denied, and resource exhausted map to deadline, unauthorized, forbidden, and busy. Unavailable and cancelled map to transport. Any other status maps by its local error code first (`a2a_task_unauthorized`, `a2a_task_busy`, `a2a_task_invalid_request`) and then by the SDK's mapping of its gRPC code. Through that mapping, not found becomes not found, a failed precondition becomes unsupported, and invalid argument, unimplemented, and internal become a protocol failure.
+- `compatible_statuses_carry_the_a2a_error_reason`: these server statuses gain an A2A `ErrorInfo` with the `a2a-protocol.org` domain, and each keeps its message:
+  - `a2a_task_not_found` keeps not found and gets the reason `TASK_NOT_FOUND`.
+  - The push-notification, `a2a_task_unsupported`, and version failed preconditions become unimplemented, with `PUSH_NOTIFICATION_NOT_SUPPORTED`, `UNSUPPORTED_OPERATION`, and `VERSION_NOT_SUPPORTED`.
+  - A task that cannot be canceled stays a failed precondition with `TASK_NOT_CANCELABLE`.
+  - Unknown statuses carrying `a2a_task_unauthorized` and `a2a_task_forbidden` become unauthenticated and permission denied, without details.
+  - Every other status passes through unchanged, including a local error code under a gRPC code it is not paired with.
+  - Each rewritten local error still maps back to the same local error on the client.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 24 library tests passed (3 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Thirty mutations were caught and restored byte-for-byte.
+  - Endpoint check: raising the length bound, or refusing at exactly 2048 bytes; not adding the scheme; accepting any IPv4 address, any IPv6 address, or host names, or refusing IPv6 loopback; skipping the scheme, user name, password, query, fragment, or path check; allowing port 0; and requiring an explicit port.
+  - Status mapping: mapping deadline exceeded to transport; dropping unauthenticated, permission denied, resource exhausted, or cancelled; and replacing the fallback with a protocol failure.
+  - Status rewriting: dropping the not-found reason; keeping the push failure as a failed precondition; renaming the unsupported reason; matching the version message exactly instead of by prefix; changing the not-cancelable code; passing unauthorized through; giving forbidden the unauthenticated code; adding details to every status; and renaming the domain.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A task contract bounds in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_contract.rs` defines the local A2A task types and their validators. These cover identifiers, requests, parts, artifacts, snapshots, messages, list requests, lists, and the peer credential. The other A2A modules rely on these validators, but the module had no tests of its own; its bounds were reached only through the integration tests. This change is test-only.
+
+**Implemented:**
+- A unit-test module in `task_contract.rs`. No production code changed.
+- `task_identifiers_are_short_ascii_names`: one to 128 bytes of ASCII letters, digits, `_`, `-`, and `.` are accepted. An empty identifier, 129 bytes, a space, `/`, `:`, a non-ASCII letter, and NUL are refused.
+- `a_request_bounds_its_identifiers_and_payload`: the request, context, optional task, and idempotency-key identifiers are each checked, and a request without a task id is accepted. A payload of exactly 16 KiB of serialized JSON is accepted, and one byte more is refused.
+- `parts_bound_their_content_and_names`:
+  - Text, data, and raw parts are accepted at 16 KiB and refused one byte over.
+  - A media type is accepted at 128 bytes and refused at 129 bytes or with CR or LF. A filename is accepted at 256 bytes and refused at 257 bytes or with NUL, CR, or LF. Both checks apply to raw and URL parts.
+  - A URL is accepted at 2048 bytes and refused at 2049. An unparsable URL, an ftp URL, a user name, and a password are refused.
+  - A part list holds 1 to 16 parts, and one invalid part refuses the whole list.
+- `artifacts_snapshots_and_messages_are_bounded`:
+  - `TaskArtifact::data` builds an unnamed artifact with one data part. An artifact name is accepted at 256 bytes and refused at 257 bytes or with NUL. An invalid artifact id or an empty part list is refused.
+  - A snapshot holds at most 16 artifacts and 32 KiB of serialized JSON: two 12 KiB artifacts fit and three do not. An invalid artifact, task id, context id, or error code refuses the snapshot.
+  - A message has the same 32 KiB bound (two 12 KiB texts fit, three do not). An empty part list or an invalid id refuses it.
+- `a_list_request_and_a_list_are_bounded`:
+  - A list request's page size is 1 to 32. Its context id must be an identifier, and its page token is at most 128 bytes with no NUL.
+  - A list holds at most 32 tasks and 32 KiB. Its total size is at most `i32::MAX`, its next-page token has the same bounds as the page token, and each task is validated.
+- `a_peer_credential_is_validated_and_its_token_never_printed`: the subject must be an identifier. The bearer token is 32 to 256 bytes of ASCII letters, digits, `-`, `_`, and `.`, so a space or `+` refuses it. `Debug` prints the subject and `[redacted]`, never the token.
+- `states_bindings_and_errors_keep_their_names`: completed, failed, canceled, and rejected are the terminal states, and all eight states serialize in snake_case. The bindings report the protocol names `HTTP+JSON` and `JSONRPC` and serialize as `http_json` and `json_rpc`. All eleven error codes keep their `a2a_task_*` strings.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 31 library tests passed (7 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Fifty-three mutations were caught and restored byte-for-byte.
+  - Identifiers and parts: raising the identifier bound, allowing `/`, or accepting an empty identifier; skipping the idempotency-key, task-id, or payload check; refusing text at exactly 16 KiB or raising the text, data, or raw bound; skipping the raw or URL media type check; raising the filename bound or allowing CR in a URL filename; raising the media type bound or allowing CR; raising the URL bound; ignoring an unparsable URL; allowing ftp, a user name, or a password; allowing an empty part list or 17 parts; and making the shared JSON bound inclusive.
+  - Artifacts, snapshots, and messages: raising the artifact name bound or allowing NUL; skipping the artifact id or part check; allowing 17 artifacts; skipping the artifact or error-code check; and dropping the snapshot, message, or list size bound or the message part or id check.
+  - Lists and credentials: allowing page size 0 or 33; skipping the list context check; raising the page-token bound or allowing NUL in the next-page token; allowing 33 tasks; dropping the total-size bound or the per-task check; skipping the subject check; allowing a 31- or 257-byte token or any byte but a space; and printing the token.
+  - Names: making rejected non-terminal, renaming the JSON-RPC protocol or the server error code, and dropping the snake_case state names.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A runtime's request identity and task listing in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_runtime.rs` owns the bounded ephemeral task runtime. Three of its pure helpers decide what callers see. `canonical_identity_payload` and `input_identity` build the identity that tells a repeated request apart from a conflicting one. `list_tasks` filters and pages a caller's tasks. The module's only unit test covered subscriber lag; these helpers were reached only through the `task_runtime` integration tests. This change is test-only.
+
+**Implemented:**
+- Five unit tests in the existing `task_runtime.rs` test module. No production code changed.
+- `the_identity_payload_is_canonical`:
+  - A float with no fractional part becomes an integer: `1.0`, `-0.0`, `1e3`, and `-2.0` become `1`, `0`, `1000`, and `-2`. `1.5` stays as it is.
+  - Integers up to plus or minus 2^53 - 1 (`MAX_EXACT_INTEGER`) are kept, written either as integers or as floats. One past that bound in either direction is refused, as are `u64::MAX`, `1e300`, and an out-of-range number nested in an array or object.
+  - Strings, booleans, and null pass through. Nested arrays and objects are canonicalized, and object keys come out sorted.
+- `the_input_identity_ignores_request_ids_and_number_spelling`: the request id and idempotency key do not change the identity, nor does spelling `2` as `2.0` or reordering object keys. A different context id, a missing or different task id, or a different payload value does change it, and a payload with an out-of-range number is refused.
+- `a_listing_keeps_only_the_callers_matching_tasks`: a listing holds only the calling subject's tasks, optionally narrowed by context id, state, or both. The total size counts only the matching tasks, and a subject with no tasks gets an empty page.
+- `a_listing_pages_by_a_numeric_offset_token`: the page token is the offset of the next task. A page holds at most the page size, the last page has no next token, and a token equal to the number of matching tasks gives an empty page. A token past the end, a non-numeric token, a negative one, and an empty one are refused.
+- `a_listing_strips_artifacts_unless_asked_and_stops_at_its_size_bound`:
+  - Without `include_artifacts` the listed tasks have no artifacts, and the stored tasks keep theirs.
+  - With artifacts, a page stops before the task that would take it over the 32 KiB list bound, and its next token points at that task. Three tasks of about 12 KiB give pages of two and one.
+  - A task whose snapshot is exactly 32 KiB is valid on its own. A page stops before it rather than skipping it for a later task that would fit. A page that would start with it is refused as busy, and without artifacts it lists normally.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 36 library tests passed (5 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Twenty-eight mutations were caught and restored byte-for-byte.
+  - Identity payload: keeping integral floats as floats; refusing the largest exact integer; dropping the integer bound or only its negative side; making the float bound inclusive, dropping it, or applying it only to positive floats; and not recursing into arrays or objects.
+  - Input identity: adding the request id; dropping the task id or the context id; and using the raw payload, with or without the canonical check.
+  - Listing: dropping the subject, context, or state filter; treating a bad token as offset 0; refusing a token equal to the number of tasks; counting every task in the total size; never or always stripping artifacts; ignoring the page size; an off-by-one next token, or the token left by the task that did not fit; keeping the task that overflows the page, or skipping past it; and reporting an internal error instead of busy.
+- This crate builds `serde_json` without `preserve_order`, so its maps already keep keys sorted. Removing the explicit key sort would therefore change nothing, and it was not counted as a mutation. The sorted-key assertions hold either way.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A information-share contract in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/lib.rs` holds the loopback-only basic information-share boundary. It defines the share and acknowledgement types and their validators. It builds and parses the official A2A messages that carry them. It also checks a peer's agent card and URL before the client talks to it. Its five unit tests covered a round trip, oversized text, a correlation mismatch, two non-loopback URLs, and the SDK version. Everything else was reached only through the two `basic_information_share` integration tests. This change is test-only.
+
+**Implemented:**
+- Six unit tests in the existing `lib.rs` test module. No production code changed.
+- `a_share_bounds_its_identifiers_text_and_metadata`:
+  - Each identifier (correlation id, sender peer id, information kind) is 1 to 128 bytes of ASCII letters, digits, `_`, `-`, and `.`. A refusal names the field that failed.
+  - Text is 1 byte to 4 KiB.
+  - Metadata holds at most 16 entries. A key is 1 to 64 bytes and a value at most 256 bytes; a value may be empty. NUL in a key or a value is refused.
+- `a_share_message_is_one_data_part_from_the_user`:
+  - A share message comes from the user, carries the correlation id as its context id, and has exactly one data part: `{"contract": "vibemux.info.share.v1", "share": ...}`. An invalid share is refused before a message is built.
+  - When parsing, missing metadata reads as empty. Refused as unsupported: an agent message, two parts, a text part, the acknowledgement contract name, and an unknown field in the envelope or the share.
+  - An invalid share is refused before its context is compared. A different or missing context id is a correlation mismatch.
+- `an_acknowledgement_message_is_one_data_part_from_the_agent`:
+  - Accepted and declined acknowledgements both round trip. Each comes from the agent, with the correlation id as its context id and one data part under `vibemux.info.ack.v1`. Building one refuses an invalid correlation id or receiver id and names the field.
+  - When parsing, these are refused as unsupported: a user message, two parts, a text part, the share contract name, and an unknown field. Invalid ids are refused by field, and a different or missing context id is a mismatch. A share message is never read as an acknowledgement.
+- `only_a_loopback_card_offering_the_share_skill_is_accepted`:
+  - The built card is named after the peer, offers only the share skill, and has one HTTP+JSON interface at the given URL.
+  - A card may list other skills as long as the share skill is among them. A card is refused as unsupported without the share skill, with no interfaces or two of them, or with a JSON-RPC binding. A non-loopback interface URL is refused as such.
+- `a_peer_url_is_plain_http_on_loopback_with_an_explicit_port`:
+  - Accepted: `http://127.0.0.1` or `http://localhost` (in any case) with a port, with or without a trailing `/`.
+  - Refused: an empty or unparsable URL, https, no port, other loopback or IPv6 addresses, a host name, a user name, a password, a query, a fragment, and a path.
+  - Port 80 is refused as well, because the URL parser reports the http default port as no port.
+- `information_errors_keep_their_codes`: all nine error codes keep their `a2a_*` strings.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean. Clippy's `type_complexity` lint asked for named types for the two case tables (`ShareCase`, `CardCase`).
+- `cargo test -p vibemux_a2a --all-features`: 42 library tests passed (6 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Fifty-seven mutations were caught and restored byte-for-byte.
+  - Validation: skipping any of the three share identifier checks; allowing empty text or text one byte over 4 KiB; allowing 17 metadata entries, an empty key, a longer key or value, or NUL in a key or a value; and, in the shared identifier check, allowing an empty or 129-byte identifier or `/`, or dropping the field name.
+  - Building messages: not validating the share; sending a share as the agent or an acknowledgement as the user; leaving out either context id; renaming either contract; and skipping the acknowledgement's correlation or receiver check.
+  - Parsing messages: for both shares and acknowledgements, ignoring the role, the part count, the contract name, an invalid id or share, or the context id, and accepting unknown fields in the envelope or the payload; and requiring share metadata.
+  - Card, URL, and codes: ignoring the share skill or requiring it to be the only skill; allowing two interfaces; ignoring the binding or the interface URL; renaming the card or its skill; allowing https, another loopback address, the default port, a user name, a password, a query, a fragment, or a path, or refusing `localhost`; and renaming an error code.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch route config bounds in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/route_config.rs` validates the operator's `.vibemux/harness_dispatch.json` (ADR 029). It checks the config size and route count, the capture and timing limits, the protocol matrix, executable and entry-script paths, the DSH launcher pair, environment names, and model and provider labels. It also holds the execution and probe gates and the content-free catalog and `Debug` projections. The module had no unit tests; the 22 integration tests in `tests/dispatch_config.rs` covered it. A sweep of 182 mutants against the crate's tests left 52 alive. This change is test-only.
+
+**Implemented:**
+- A new test module in `route_config.rs` with 12 unit tests. No production code changed.
+- `a_config_holds_at_most_64_kib_and_sixteen_routes`: a valid config padded with whitespace to exactly 65,536 bytes parses, and one more byte is `ConfigTooLarge`. Sixteen routes pass the count gate and reach the duplicate-harness check (`ConfigRouteInvalid`); seventeen are `ConfigInvalid`.
+- `the_default_limits_keep_their_values`: omitted limits default to a 128 KiB frame, 16 MiB of capture, 16,384 records, a 600,000 ms deadline, and a 2,000 ms shutdown grace, and the defaults validate.
+- `only_the_read_only_protocols_admit_execution_and_only_with_consent`:
+  - Only `codex_exec`, `codex_app_server`, and `claude_stream_json` have a read-only dispatch posture.
+  - Codex app-server and Claude stream-json routes are admitted for execution.
+  - A DSH route with `allow_execution` is `ExecutionDisabled`, and so is a `codex_exec` route without `allow_execution`.
+- `a_probe_refuses_an_unsupported_protocol_before_detection`: a `codex_exec` route on an undetected harness is `ProbeUnsupported`, not `NotDetected`. The catalog reports a disabled route as disabled.
+- `the_host_policy_matches_the_platform`: Windows uses the native-image policy and refuses an extensionless executable; other hosts use the POSIX policy and accept it.
+- `route_debug_shows_only_the_shape_and_counts`: a route's `Debug` output is exactly its harness, protocol, enabled and execution flags, whether it is a launcher pair, and its environment name count. The executable, entry script, provider, model, and environment names never appear.
+- `a_launcher_pair_route_needs_a_valid_provider_and_a_model`: a DSH route whose provider is `-p`, `a b`, or empty is refused, and so is one without a model.
+- `executable_and_entry_script_paths_hold_at_most_1024_bytes`: a 1,024-byte absolute executable path and entry script are accepted; 1,025 bytes are refused.
+- `an_entry_script_refuses_nul_and_folds_the_extension_case`: NUL in an entry script is refused, and `BIN.JS` is accepted.
+- `launcher_and_harness_stems_fold_case_only_on_windows`: `NODE.EXE` is the Node image under the Windows policy. Under the POSIX policy `node` is the Node image and `Node` is not. A path with no file stem (`..`) names neither the Node image nor a harness.
+- `profiles_are_bounded_lowercase_names`: a profile is 1 to 64 bytes, starts with a lowercase letter, and continues with lowercase letters, digits, `_`, or `-`. `1sdk`, `sDk`, and `s.dk` are refused.
+- `environment_names_and_route_labels_reach_their_exact_bounds`: 24 environment names and a 128-byte name are accepted. A 256-byte route label is accepted and a 257-byte one is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 102 library tests passed (12 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 182 mutants against that suite. The existing tests caught 129. One mutant (dropping the duplicate environment-name check) did not compile; rerun in a compiling form, it was caught by `environment_names_are_upper_snake_case_unique_and_not_reserved`. The source was restored byte-for-byte.
+- The new tests catch all 50 non-equivalent survivors:
+  - Bounds: a 64 KiB config, sixteen routes, a 1,024-byte executable path or entry script, a 64-byte profile, 24 environment names, a 128-byte environment name, and a 256-byte route label, each by its comparison and by its constant.
+  - Defaults: each default limit, by its field and by its constant.
+  - Gates: dropping either read-only protocol other than `codex_exec`, ignoring `allow_execution`, checking probe detection before probe support, and reporting every catalog entry as enabled.
+  - Host policy: inverting the platform check.
+  - Debug output: printing the model, the entry script, or the provider, inverting the launcher-pair flag, or zeroing the environment name count.
+  - Launcher pair: accepting any provider label or a missing model.
+  - Entry script: allowing NUL, or comparing the extension case-sensitively.
+  - Stems: comparing the Node image case-sensitively on Windows or case-insensitively on POSIX, and accepting a path with no file stem as the Node image or as a harness.
+  - Profiles: accepting a leading digit, an uppercase letter, or `.`.
+- Two survivors are equivalent and not counted:
+  - Dropping the non-empty file-stem check on an entry script: a `.js` extension always comes with a non-empty stem.
+  - Accepting any launcher-pair model in the pair arm: the general model check that follows validates it again.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch request fingerprint and prompt bound in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/request.rs` holds the typed dispatch request (ADR 029). It validates the request's schema version, id, and prompt; derives the content-free prompt digest; computes the idempotency fingerprint that the store persists; and prints a `Debug` form without the prompt. The module had no unit tests; two integration tests in `tests/dispatch_config.rs` covered it. A sweep of 30 mutants against the crate's tests left 8 alive. This change is test-only.
+
+**Implemented:**
+- A new test module in `request.rs` with four unit tests. No production code changed.
+- `a_prompt_holds_at_most_32_kib`: a 32,768-byte prompt is valid, and 32,769 bytes is `InvalidPrompt`.
+- `the_fingerprint_is_a_known_answer_over_its_fields`:
+  - Pins the prompt digest of a synthetic prompt and the fingerprint of a fixed request, project, protocol, and config digest to literal SHA-256 values.
+  - Both values were computed outside Rust from the layout that `request_fingerprint` and `hash_fields` implement. That layout is SHA-256 over the domain `vibemux.harness_dispatch.fingerprint.v1` and a NUL byte, followed by each field as an eight-byte big-endian length and its bytes.
+  - The fields are, in order: the hyphenated project id, the hyphenated request id, the harness command name, the protocol name, the raw prompt digest, and the raw config digest. The Rust result matched on the first run.
+- `request_debug_shows_the_id_harness_and_prompt_size_only`: a request's `Debug` output is exactly its request id, harness, and prompt byte count.
+- `a_prompt_digest_refuses_unknown_fields`: a prompt digest round-trips through JSON, and an extra field is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 106 library tests passed (4 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 30 mutants against that suite. The existing tests caught 22, and the source was restored byte-for-byte.
+- The new tests catch all 8 survivors:
+  - Prompt bound: changing the 32 KiB constant.
+  - Fingerprint: changing the domain, spelling the request id without hyphens, upper-casing the harness name, and swapping the prompt and config digests.
+  - Debug output: dropping the request id or the harness.
+  - Prompt digest: accepting unknown fields.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch capture budget in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/capture_budget.rs` accounts for one dispatch attempt's stdout records (ADR 029). For each frame it enforces the capture byte and record limits before parsing, assigns the record sequence, classifies the record, and folds it into the per-kind counts and the transcript digest. Its content-free `CaptureSummary` is persisted. The module had no unit tests; two integration tests in `tests/dispatch_framing.rs` covered it, using only five of the nine observation kinds and a frame limit equal to the capture limit. A sweep of 33 mutants against the crate's tests left 15 alive. This change is test-only.
+
+**Implemented:**
+- A new test module in `capture_budget.rs` with five unit tests. No production code changed.
+- `each_kind_lands_in_its_own_count_and_the_total`: one Codex app-server notification per observation kind is classified as that kind. Each of the nine counts is then 1, and the total and the record count are 9.
+- `counts_and_their_total_saturate`: incrementing a count at `u64::MAX` keeps it there, and a total over a saturated count is `u64::MAX`.
+- `the_capture_bound_is_the_byte_limit_and_admits_an_exact_fill`: with a 64-byte frame limit and a 128-byte capture limit, two 64-byte records fill the capture exactly and are accepted. The next record is `CaptureTooLarge`, and 128 bytes stay counted.
+- `a_rejected_frame_leaves_no_trace`: a frame that is not JSON (`InvalidJson`) or not an object (`InvalidRecord`) leaves the record count, the byte count, and the transcript digest unchanged. The next accepted record is sequence 1, and the digest covers only that record and its LF.
+- `summaries_round_trip_and_refuse_unknown_fields`: a capture summary round-trips through JSON. An extra field in the summary or in its kind counts is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 111 library tests passed (5 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 33 mutants against that suite. The existing tests caught 18, and the source was restored byte-for-byte.
+- The new tests catch all 15 survivors:
+  - Counting approval, usage, failed, or cancelled records in the wrong slot, or leaving any of those four out of the total.
+  - Plain addition in place of saturation, in a count or in the total.
+  - Bounding the capture by the frame limit instead of the capture limit, and refusing a capture that fills the limit exactly.
+  - Counting a rejected frame's bytes.
+  - Accepting unknown fields in the summary or in its kind counts.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch JSON line framer in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/json_line_framer.rs`. It splits vendor stdout into LF-delimited UTF-8 frames under a byte limit. Its integration tests in `tests/dispatch_framing.rs` cover reassembly, the exact limit, and poisoning after a failed `push`. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `json_line_framer.rs` with three unit tests. No production code changed.
+- `a_failed_finish_poisons_the_framer`: an incomplete UTF-8 sequence left at `finish` fails with `InvalidUtf8`. A second `finish` and a later `push` of a valid frame return the same failure, and the later push emits no frame.
+- `the_frame_limit_counts_a_trailing_cr`: with a 4-byte limit, `123` CR LF yields the frame `123`, and `1234` CR LF is `FrameTooLarge`, because the limit covers the bytes before LF, including the CR.
+- `only_one_trailing_cr_is_removed`: `{}` CR CR LF yields `{}` CR, and a CR inside a frame is kept.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 114 library tests passed (3 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 19 mutants against that suite. The existing tests caught 16, and the source was restored byte-for-byte. A proptest regression file that a caught mutant wrote was removed.
+- The new tests catch all 3 survivors:
+  - Not poisoning the framer when `finish` fails.
+  - Leaving a trailing CR out of the frame limit.
+  - Removing every trailing CR instead of one.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch outcome wire names in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/outcome.rs`. It holds `AttemptOutcome`, `ProcessExit`, `OutcomeDecision`, and `decide_outcome`, the single rule that turns exchange, protocol, and process evidence into an attempt outcome (ADR 029 §3). The integration test `outcomes_prefer_exchange_errors_then_process_exit_then_terminal_evidence` in `tests/dispatch_attempt.rs` covers the rule. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `outcome.rs` with two unit tests. No production code changed.
+- `outcome_names_match_their_serde_form`: each of the five outcomes has the `as_str` name `completed`, `failed`, `unverified`, `cancelled`, or `probed`. Each serializes to that same name and parses back from it, and the Rust variant spelling `Completed` is refused.
+- `exits_and_decisions_round_trip_and_refuse_unknown_fields`: a `ProcessExit` and an `OutcomeDecision` round-trip through JSON, and an extra field in either is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 116 library tests passed (2 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 18 mutants against that suite. The existing tests caught all 10 that changed `decide_outcome` or `is_clean`, and the source was restored byte-for-byte.
+- The new tests catch all 8 survivors:
+  - Changing any of the five `as_str` names.
+  - Dropping the snake_case serde rename on `AttemptOutcome`.
+  - Accepting unknown fields in `ProcessExit` or `OutcomeDecision`.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch resource key in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/attempt.rs`. It holds the durable attempt phases, their Task/Run mapping, the `apply` transition table, and `resource_key`, the working-directory reservation hash the store keeps in place of the path (ADR 029 §3). The integration tests in `tests/dispatch_attempt.rs` cover the transition table, status pairs, fences, reservations, and phase names. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `attempt.rs` with one unit test. No production code changed.
+- `the_resource_key_is_a_known_answer_over_the_directory`: the keys for `C:\projects\synthetic` and for an empty directory string equal SHA-256 digests computed independently in Python. Each digest covers the domain `vibemux.harness_dispatch.resource.v1`, a NUL byte, and the directory with its u64 big-endian length prefix.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 117 library tests passed (1 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 22 mutants against that suite. The existing tests caught 19, and the source was restored byte-for-byte.
+- The new test catches 2 of the 3 survivors: a changed key domain, and an extra hashed field.
+- The third survivor is equivalent and is not counted. It drops the `from.holds_reservation()` check from `releases_reservation`, but every `Changed` transition starts in a non-terminal phase, and those phases all hold the reservation.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch event names and payloads in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/events.rs`. It builds the content-free canonical event drafts for dispatch attempts, with their deterministic idempotency keys (ADR 029 §3). The integration tests in `tests/dispatch_attempt.rs` check that every draft is valid, scoped, and content-free. They compare event types against the module's own constants and check keys only by prefix. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `events.rs` with four unit tests. No production code changed.
+- `event_types_and_idempotency_keys_have_fixed_names`: the five event types are `harness_dispatch_admitted`, `harness_dispatch_started`, `harness_dispatch_cancel_requested`, `harness_dispatch_finished`, and `harness_dispatch_recovered`. Each idempotency key is exactly `harness_dispatch:<hyphenated request id>:<suffix>`, where the suffix is the type without the `harness_dispatch_` prefix. A type without that prefix is kept whole.
+- `every_payload_refuses_unknown_fields`: each of the six payloads round-trips through JSON, and refuses an extra field.
+- `constructors_copy_every_fact`: `AdmittedPayload::new` keeps the prompt digest, the prompt size, and the config digest. `ProcessSummary::new` keeps the exit code, forced termination, and stderr byte count.
+- `a_cancel_request_records_its_from_phase_without_a_causation`: a cancel from `admitted` records `admitted`, and the draft has no causation id.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 121 library tests passed (4 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 22 mutants against that suite. The existing tests caught 3, and the source was restored byte-for-byte.
+- The new tests catch 18 of the 19 survivors:
+  - Renaming any of the five event types.
+  - Keeping the `harness_dispatch_` prefix in the key suffix, or adding a trailing separator.
+  - Accepting unknown fields in any payload.
+  - Dropping the exit code, forced termination, or prompt size.
+  - Recording a fixed from-phase in a cancel request.
+  - Setting a causation id.
+- The remaining survivor is equivalent and is not counted. It drops the final `EventDraft::validate` call, but `EventPayload::new` already validates the payload, and the fixed-suffix idempotency key is never empty or over the bound.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the writable fixture launch guard in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/fixture_guard.rs`, which is compiled only with the `test_helpers` feature. It admits launches only of exact registered copies of the built synthetic worker, and builds their fixture argv. The integration tests in `tests/writable_fixture_guard.rs` cover profile and grant arguments, byte and path changes at launch, duplicate aliases, a source inside the vendor root, and symlinked copies. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `fixture_guard.rs` with six unit tests. No production code changed. The tests write synthetic images under a unique directory in the system temporary directory and remove it on drop.
+- `registration_needs_one_or_two_aliases_and_exact_nonempty_copies`: registration refuses an empty alias list, a copy whose bytes differ from the source, and an empty image.
+- `a_route_must_be_enabled_executable_matching_and_its_own_copy`: a disabled route, a route without execution consent, and a protocol that does not accept the harness are `ExecutionDisabled`. A Codex route that points at the registered Claude copy is `ConfigExecutableInvalid`.
+- `launch_argv_is_exact_per_protocol`: Codex gets exactly `exec --json --fixture_profile codex_fixture_writable_v1 --fixture_grant_json <grant> -`, with the prompt on stdin. Claude gets the stream-json input and output flags, its own profile, and the grant, with no stdin marker.
+- `a_development_runtime_is_pinned_and_passed_by_flag`: a pinned runtime is passed as `--fixture_node <canonical path>` before the Codex stdin marker. Changing its bytes refuses the next launch.
+- `canonical_helpers_refuse_relative_paths_and_the_wrong_kind`: the file helper refuses a directory, the directory helper refuses a file, and a relative path is refused.
+- `a_drive_relative_path_is_refused` (Windows only): a drive-relative path such as `<drive>:Cargo.toml`, built at run time from the current drive, is refused. Its ancestors resolve to the current directory, so the absolute-path check is its only guard.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 127 library tests passed (6 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 25 mutants against that suite. The existing tests caught 4, and the source was restored byte-for-byte.
+- The new tests catch 15 of the 21 survivors:
+  - Admitting an empty alias list, a copy with different bytes, or an empty image.
+  - Skipping the enabled, execution-consent, or protocol check.
+  - Admitting another alias's copy.
+  - Changing the Codex or Claude argv, or always adding the stdin marker.
+  - Skipping the runtime recheck, or renaming its flag.
+  - Admitting a drive-relative path.
+  - Dropping the file or directory kind check.
+- Four survivors are equivalent and are not counted:
+  - Both copy-parent checks: a canonical path with no reparse ancestor that equals the expected copy is always directly under the vendor root.
+  - The vendor-root recheck: the route executable's ancestor reparse check and exact path match already cover it.
+  - The `is_symlink` check on Windows: the reparse-point attribute check covers it, and the Unix integration test covers it there.
+- Two survivors need host features this machine does not provide in a test:
+  - The source path recheck differs only when the source becomes a symlink, which needs symlink privilege.
+  - The reparse-attribute check differs only for a reparse point that is not a link.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch observation classifier in vibemux_harness
+
+**Scope:** test-only. `crates/vibemux_harness/src/dispatch/observation.rs` had no unit tests; the integration tests in `tests/dispatch_protocols.rs` replay four fixture streams and a few terminal tables. No production code, wire format, or classification behavior changed.
+
+**Implemented:** a unit-test module in `observation.rs` with eight tests:
+- `kind_names_match_their_serde_form_and_only_results_are_terminal`: each of the nine kinds has its exact name and serde form, and only `completed`, `failed`, and `cancelled` are terminal.
+- `parse_keeps_the_exact_bytes_and_refuses_bad_frames_by_code`: a parsed record keeps its sequence, kind, exact bytes, and byte count. `Debug` prints only the sequence, kind, and byte count. Sequence 0 is `Internal`, malformed JSON is `InvalidJson`, and an array, number, string, or null is `InvalidRecord`.
+- `codex_exec_classifies_every_verified_discriminant`: every Codex exec event type and every item type under each of the three item events, with error and future items `Opaque`.
+- `codex_app_server_classifies_every_verified_discriminant`: every method, all five approval requests, each turn status, and every item type under `item/started` and `item/completed`.
+- `claude_classifies_every_verified_discriminant`: only an `init` system record starts, only `can_use_tool` asks for approval, a user text block stays `Opaque`, and each stream event needs its own delta, tool block, or usage object.
+- `claude_results_need_root_scope_and_a_clean_success`: a success needs no error flag and no unknown terminal reason. Each error subtype and each terminal reason maps to its result, and a nested result stays `Opaque`.
+- `acp_classifies_every_verified_discriminant`: a message chunk needs text content, and a stop reason counts only when the record has no `method` key at all.
+- `dsh_classifies_turn_events_and_never_ends_on_status`: every session event type and every `turn/end` reason. A status notification, a bare `turn/end`, and an unknown reason stay `Opaque`.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 135 library tests passed (8 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 177 mutants against that suite: 159 that rename one string literal and 18 that drop or loosen a guard. The existing tests caught 91, 85 survived, and one malformed mutant did not compile; the source was restored byte-for-byte.
+- The new tests catch all 85 survivors and the corrected form of the malformed mutant. The survivors included every DSH discriminant, most Codex app-server methods and item types, the Claude `system`, `control_request`, stream-event, and success guards, the ACP `method` presence check, the kind names, `is_terminal` for `cancelled`, `byte_count`, and the `Debug` field names.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch protocol sessions and module root in vibemux_harness
+
+**Scope:** test-only. `crates/vibemux_harness/src/dispatch/protocol_session.rs` and `crates/vibemux_harness/src/dispatch/mod.rs` were the last dispatch files without unit tests. The integration tests in `tests/dispatch_protocols.rs` replay the Codex exec, Codex app-server, Claude, and ACP fixture streams and never drive a DSH session. No production code, wire format, handshake, or correlation rule changed.
+
+**Implemented:** a unit-test module in `protocol_session.rs` with sixteen tests, and one in `mod.rs` with two:
+- `terminal_names_and_debug_forms_are_pinned_and_content_free`: the four terminal serde names, and the exact `Debug` forms of `InitialInput` (the prompt's byte count only) and `ProtocolSession` (no prompt, working directory, or identifiers).
+- `construction_checks_the_route_prompt_and_working_directory`: `SessionRoute::from` copies the model and provider, the daemon's prompt bound is exactly `MAX_PROMPT_BYTES`, and a caller's bound is inclusive. An empty or whitespace prompt, an empty or NUL working directory, a harness the protocol does not accept, and a Codex exec probe are each refused by code.
+- `sessions_start_in_their_protocol_phase_and_dsh_ids_are_input_digests`: Codex exec starts at the prompt and no session starts finished. The DSH session id is `vibemux_` plus 32 hex digits of the domain-separated digest of the working directory and prompt, and it changes with either.
+- `initial_inputs_pin_every_handshake_and_offer_no_client_capability`: the exact first frame of all five protocols, including the client name, the crate version, and ACP's disabled filesystem and terminal capabilities.
+- `cancel_messages_address_only_an_identified_turn_or_session`: DSH and Codex exec have none, ACP needs its session, the app server needs both its thread and its turn, and Claude always interrupts.
+- `codex_exec_maps_each_terminal_kind_once_and_keeps_observing_progress`: each terminal kind maps to its result once, progress records still pass after the finish, and a non-terminal kind never finishes.
+- `codex_app_server_exchange_pins_every_reply` and `codex_app_server_rejects_uncorrelated_or_malformed_evidence`: every reply in order, approval declines for string and negative ids, and refusals for a non-object result, a missing thread or turn id, a turn result that contradicts a started turn, a foreign thread, a completion before any turn, and any record after the finish.
+- `acp_exchange_pins_every_reply_and_maps_each_stop_reason`: the session and prompt requests, the permission refusal, a foreign session update, and each stop reason.
+- `probes_finish_on_a_valid_handshake_and_send_nothing_more`: the app server, ACP, Claude, and DSH probes end `probed` and finished.
+- `claude_exchange_sends_one_user_message_and_refuses_every_request` and `claude_handshake_needs_a_successful_correlated_response`: the exact user message, interrupt acknowledgements before and after the handshake, a second handshake, and every refused request id shape.
+- `dsh_exchange_pins_the_prompt_and_ends_only_on_its_own_turn`, `dsh_turn_end_correlates_the_turn_and_waits_out_unknown_reasons`, and `dsh_rejects_malformed_or_uncorrelated_frames`: the crate's first DSH session coverage. Another session's turn end, status and subagent notifications, and unknown methods never end the turn. An unknown reason waits, a second turn number is uncorrelated, and each malformed frame fails with its own code.
+- `identifiers_and_rpc_ids_are_bounded`: the 512-byte identifier and RPC id bounds, signed integer ids, and the refused id shapes.
+- `root_reexports_name_their_module_items` and the feature-gated `fixture_guard_reexports_name_their_module_items` in `mod.rs`: each root re-export names the item its module defines.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 153 library tests passed (18 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed. Without features, the 146 library tests passed.
+- The `protocol_session.rs` sweep ran 386 mutants against the old suite: 213 that rename one string literal and 173 that drop or loosen a guard or change a value. The existing tests caught 196 and 190 survived, including all 68 mutants in the DSH receive path, most initialize-frame literals, the `Debug` forms, the DSH id derivation, and the identifier bounds. The source was restored byte-for-byte.
+- The new tests catch 186 of the 190. The other four are equivalent: giving every session a DSH id (only DSH paths read it), dropping or loosening the length check on the echoed DSH id (it is first compared equal to the session's own 40-byte id), and dropping the `terminal.is_none()` check after a DSH turn end (only terminal kinds reach it, and those always set a terminal).
+- The `mod.rs` sweep ran 47 mutants: 2 renames of the `test_helpers` feature literal, 27 dropped re-export items, 16 `pub mod` to `pub(crate) mod` narrowings, and 2 removed cfg gates. The compiler rejected 33 and 14 survived. The new tests make the 7 surviving dropped re-exports fail to compile: `AdapterCapability`, `AdapterSupport`, `adapter_capabilities`, `adapter_capability`, `OutcomeDecision`, `SessionRoute`, and `fixture_profile_id`.
+- A unit module cannot see the other 7. Narrowing `capability`, `digest`, `error_code`, `final_text`, or `fixture_guard` changes nothing inside the crate: a `vibemuxd` build rejects the last two, and nothing names the first three by module path. Removing either `test_helpers` gate is equivalent under `--all-features`; a default-feature build rejects the ungated re-export, while the ungated module compiles either way.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

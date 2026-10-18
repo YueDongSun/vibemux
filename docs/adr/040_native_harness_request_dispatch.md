@@ -164,6 +164,19 @@ and `vibemux_harness_native_fixture`.
   prompt is sent, and released when the parent exits or the request ends. The
   three `harness_job_*` error codes and `harness_invalid_process` collapse into
   `harness_containment_failed`.
+- **Shared protocol engine (2026-10-17).** This crate no longer carries its own
+  Codex, Claude, or ACP session state machines or vendor argv. A route whose
+  protocol has an ADR 029 counterpart is driven by
+  `vibemux_harness::dispatch::ProtocolSession`, launched with
+  `vibemux_harness::dispatch::structured_arguments`, and classified by the
+  shared `observation::classify`; only the direct OpenCode JSON replay stays
+  local. Both dispatch paths therefore launch a vendor with the same hardening:
+  native Claude routes gain `--strict-mcp-config` and `--restricted` on top of
+  the bare, tool-free `dontAsk` profile above. Protocol violations keep this
+  crate's `harness_*` codes through a fixed mapping table, and the core now
+  refuses a route the engine cannot drive before it spawns the plugin. The
+  policy split is unchanged: this slice still executes ACP routes, which ADR 029
+  keeps probe-only.
 - **Evidence.** The live checks recorded under Consequences are the branch's own
   2026-08-27 record. They were not re-run on the merged tree, and the merge ran
   no vendor CLI.

@@ -139,3 +139,109 @@ impl WorkflowReceipt {
         canonical_digest(RECEIPT_DIGEST_DOMAIN, self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gateway::{
+        CallOutcome, GatewayProtocol, ProviderAttribution, ReportedUsage, RouteRole,
+    };
+
+    const DECISION_ID: Uuid = Uuid::from_u128(1);
+    const CALL_ID: Uuid = Uuid::from_u128(2);
+
+    fn decision() -> DecisionRecord {
+        DecisionRecord {
+            decision_id: DECISION_ID,
+            tool: "assign_task".to_string(),
+            idempotency_key: "round_1".to_string(),
+            workflow_version: 3,
+            affected: vec!["task_a".to_string()],
+            rationale_sha256: Sha256Digest::of(b"rationale"),
+            rationale_bytes: 9,
+            evidence_refs: Vec::new(),
+            accepted: true,
+            rejection_codes: Vec::new(),
+        }
+    }
+
+    fn model_call() -> ModelCallReceipt {
+        ModelCallReceipt {
+            call_id: CALL_ID,
+            role: RouteRole::Supervisor,
+            requested_alias: "supervisor_model".to_string(),
+            protocol: GatewayProtocol::AnthropicMessages,
+            reported_model: None,
+            effective_provider: ProviderAttribution::Unknown,
+            usage: ReportedUsage::default(),
+            http_status: Some(200),
+            outcome: CallOutcome::Completed,
+            failure: None,
+            elapsed_ms: 10,
+            request_sha256: Sha256Digest::of(b"request"),
+            response_sha256: Some(Sha256Digest::of(b"response")),
+            route_generation: Sha256Digest::of(b"routes"),
+            attempt: 1,
+        }
+    }
+
+    // No production path or other test builds these two kinds as a
+    // `WorkflowReceipt`, yet the store files any receipt under these accessors.
+    #[test]
+    fn decision_and_model_call_receipts_name_their_own_id_and_subject() {
+        let receipt = WorkflowReceipt::Decision(decision());
+        assert_eq!(receipt.kind(), "decision");
+        assert_eq!(receipt.receipt_id(), DECISION_ID);
+        assert_eq!(
+            receipt.subject_digest().ok(),
+            Some(Sha256Digest::of(b"rationale"))
+        );
+        assert_eq!((receipt.workflow_id(), receipt.task_key()), (None, None));
+
+        let receipt = WorkflowReceipt::ModelCall(model_call());
+        assert_eq!(receipt.kind(), "model_call");
+        assert_eq!(receipt.receipt_id(), CALL_ID);
+        // The call is bound to the request it sent, not to the response or
+        // the route table it ran under.
+        assert_eq!(
+            receipt.subject_digest().ok(),
+            Some(Sha256Digest::of(b"request"))
+        );
+        assert_eq!((receipt.workflow_id(), receipt.task_key()), (None, None));
+    }
+
+    #[test]
+    fn the_stored_kind_is_the_serialized_tag() {
+        for receipt in [
+            WorkflowReceipt::Decision(decision()),
+            WorkflowReceipt::ModelCall(model_call()),
+        ] {
+            let encoded = serde_json::to_value(&receipt).expect("encode receipt");
+            assert_eq!(encoded["kind"], receipt.kind());
+            let decoded: WorkflowReceipt = serde_json::from_value(encoded).expect("decode receipt");
+            assert_eq!(decoded, receipt);
+            assert_eq!(decoded.digest(), receipt.digest());
+        }
+    }
+
+    #[test]
+    fn the_receipt_digest_covers_the_kind_and_every_field() {
+        let receipt = WorkflowReceipt::Decision(decision());
+        let digest = receipt.digest().expect("receipt digest");
+        // The tagged receipt, not the bare record, is what is digested.
+        assert_ne!(
+            canonical_digest(RECEIPT_DIGEST_DOMAIN, &decision()).ok(),
+            Some(digest)
+        );
+        let mut rejected = decision();
+        rejected.accepted = false;
+        assert_ne!(
+            WorkflowReceipt::Decision(rejected).digest().ok(),
+            Some(digest)
+        );
+        let mut retried = model_call();
+        let original = WorkflowReceipt::ModelCall(retried.clone()).digest().ok();
+        retried.attempt = 2;
+        assert_ne!(WorkflowReceipt::ModelCall(retried).digest().ok(), original);
+    }
+}

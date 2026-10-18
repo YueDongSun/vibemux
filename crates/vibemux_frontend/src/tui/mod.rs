@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Read-only TUI debug view. Per-harness details and "native-TUI
 //! reservation" copy moved to the GUI; this module renders the audited
-//! theme system and the ten-agent table.
+//! theme system and the per-harness agent table.
 
 mod footer;
 pub mod render;

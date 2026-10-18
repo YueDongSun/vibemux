@@ -914,6 +914,39 @@ fn the_dsh_launch_argv_is_the_node_pair_and_never_the_prompt() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn a_verbatim_entry_script_reaches_argv_in_the_spelling_node_can_load() {
+    // Windows `canonicalize` returns `\\?\C:\...`, and Node refuses to load a
+    // script from that spelling (`EISDIR: ... lstat 'C:'`, exit 1 before the
+    // script runs). The admitted route keeps the canonical path; only the
+    // interpreter's argument is de-verbatimized. This test is Windows-only
+    // because the verbatim form is only accepted as an absolute path there.
+    let verbatim = r"\\?\C:\tools\dsh-package\lib\bin.js";
+    let parsed = parse_route(with(
+        route_json("dsh", "dsh_sdk_json_rpc"),
+        "entry_script",
+        json!(verbatim),
+    ))
+    .expect("verbatim route");
+    let spec = build_launch_spec(&parsed.routes[0], SessionMode::Execute).expect("launch spec");
+
+    assert_eq!(
+        spec.arguments,
+        [
+            r"C:\tools\dsh-package\lib\bin.js".to_string(),
+            "--profile".to_string(),
+            "sdk".to_string(),
+        ]
+    );
+    for argument in &spec.arguments {
+        assert!(
+            !argument.starts_with(r"\\?\"),
+            "verbatim path in argv: {argument}"
+        );
+    }
+}
+
 #[test]
 fn the_dsh_catalog_entry_allows_probe_but_refuses_generic_execution() {
     let config = parse(&config_json(vec![route_json("dsh", "dsh_sdk_json_rpc")])).unwrap();

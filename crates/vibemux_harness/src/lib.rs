@@ -11,10 +11,14 @@
 //! [`dispatch`] holds the pure contracts and state machines for sending one
 //! prompt to a first-party structured harness adapter (ADR 029); `vibemuxd`
 //! owns every process, pipe, and store effect that applies them.
+//!
+//! [`terminal_text`] names the characters that must never reach a terminal
+//! raw from untrusted text, for every crate that displays such text.
 
 pub mod agent;
 pub mod dispatch;
 pub mod dsh;
+pub mod terminal_text;
 
 use std::collections::BTreeMap;
 

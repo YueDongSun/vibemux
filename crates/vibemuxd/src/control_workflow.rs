@@ -264,7 +264,7 @@ impl ControlClient {
     }
 
     /// Runs one bounded optimizer cycle; waits up to
-    /// [`WORKFLOW_EVALUATION_DEADLINE`].
+    /// `WORKFLOW_EVALUATION_DEADLINE`.
     pub async fn workflow_policy_evaluate(
         &self,
         candidate: &str,

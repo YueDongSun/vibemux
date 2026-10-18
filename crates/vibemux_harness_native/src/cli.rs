@@ -2,7 +2,7 @@
 use crate::{
     Error,
     config::{Config, Limits, MAX_CAPTURE_BYTES},
-    contract::{Harness, MAX_PROMPT_BYTES, Protocol, Request, Status},
+    contract::{Harness, MAX_REQUEST_BYTES, Protocol, Request, Status},
     dispatch::Dispatcher,
     json_lines,
 };
@@ -165,7 +165,7 @@ pub async fn run(command: Command) -> Result<Reply, Error> {
             plugin,
         } => {
             let (dispatcher, request) = blocking(move || {
-                let bytes = read_bounded(&request_path, MAX_PROMPT_BYTES * 6 + 4096)?;
+                let bytes = read_bounded(&request_path, MAX_REQUEST_BYTES)?;
                 let request: Request = serde_json::from_slice(&bytes)
                     .map_err(|source| Error::with_source("harness_invalid_request", source))?;
                 request.validate()?;
@@ -226,6 +226,7 @@ fn usage() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::MAX_PROMPT_BYTES;
     #[test]
     fn parser_preserves_paths_without_exposing_them_in_debug() {
         let command = parse_arguments(
@@ -253,5 +254,274 @@ mod tests {
                 "harness_cli_usage"
             );
         }
+    }
+
+    fn parsed(arguments: &[&str]) -> Result<Command, &'static str> {
+        parse_arguments(arguments.iter().map(OsString::from)).map_err(|error| error.code())
+    }
+
+    /// Help takes no options. A command needs each of its required options
+    /// exactly once with a non-empty value, accepts no other option, and
+    /// names protocols and harnesses by their exact lowercase ids.
+    #[test]
+    fn parser_accepts_only_complete_well_formed_commands() {
+        for arguments in [
+            &[][..],
+            &["help"],
+            &["--help"],
+            &["-h"],
+            &["catalog", "--help"],
+            &["dispatch", "-h"],
+        ] {
+            assert!(
+                matches!(parsed(arguments), Ok(Command::Help)),
+                "{arguments:?}"
+            );
+        }
+        assert!(matches!(parsed(&["--version"]), Ok(Command::Version)));
+        for arguments in [
+            &["shell"][..],
+            &["--version", "catalog"],
+            &["help", "catalog"],
+            &["catalog", "--config"],
+            &["catalog", "--config", ""],
+            &["catalog", "--config", "a", "extra"],
+            &["catalog", "--harness", "codex"],
+            &["replay", "--protocol", "codex_exec"],
+            &["replay", "--protocol", "Codex_Exec", "--input", "a"],
+            &["replay", "--protocol", "codex", "--input", "a"],
+            &["probe", "--config", "a"],
+            &["probe", "--config", "a", "--harness", "Codex"],
+            &["dispatch", "--config", "a"],
+            &[
+                "dispatch",
+                "--config",
+                "a",
+                "--request",
+                "b",
+                "--harness",
+                "codex",
+            ],
+        ] {
+            assert_eq!(
+                parsed(arguments).err(),
+                Some("harness_cli_usage"),
+                "{arguments:?}"
+            );
+        }
+        let Ok(Command::Replay {
+            protocol,
+            input_path,
+        }) = parsed(&["replay", "--input", "in.jsonl", "--protocol", "acp"])
+        else {
+            panic!("replay");
+        };
+        assert_eq!(
+            (protocol, input_path),
+            (Protocol::Acp, PathBuf::from("in.jsonl"))
+        );
+        let Ok(Command::Probe {
+            config_path,
+            harness,
+            plugin,
+        }) = parsed(&["probe", "--harness", "grok", "--config", "c.json"])
+        else {
+            panic!("probe");
+        };
+        assert_eq!(
+            (config_path, harness, plugin),
+            (PathBuf::from("c.json"), Harness::Grok, None)
+        );
+        let Ok(Command::Dispatch {
+            config_path,
+            request_path,
+            plugin,
+        }) = parsed(&[
+            "dispatch",
+            "--plugin",
+            "p.exe",
+            "--request",
+            "r.json",
+            "--config",
+            "c.json",
+        ])
+        else {
+            panic!("dispatch");
+        };
+        assert_eq!(
+            (config_path, request_path, plugin),
+            (
+                PathBuf::from("c.json"),
+                PathBuf::from("r.json"),
+                Some(PathBuf::from("p.exe"))
+            )
+        );
+    }
+
+    #[cfg(windows)]
+    fn non_unicode() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0x61, 0xD800])
+    }
+
+    #[cfg(unix)]
+    fn non_unicode() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![b'a', 0xff])
+    }
+
+    /// A path may be any operating system string, but a command, an option
+    /// name, or a fixed id that is not Unicode is a usage error.
+    #[test]
+    fn parser_keeps_non_unicode_paths_and_refuses_non_unicode_names() {
+        let parse =
+            |arguments: Vec<OsString>| parse_arguments(arguments).map_err(|error| error.code());
+        let strings = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+        let catalog = [strings(&["catalog", "--config"]), vec![non_unicode()]].concat();
+        let Ok(Command::Catalog { config_path }) = parse(catalog) else {
+            panic!("catalog");
+        };
+        assert_eq!(config_path.as_os_str(), non_unicode());
+        for arguments in [
+            vec![non_unicode()],
+            [strings(&["catalog"]), vec![non_unicode(), "a".into()]].concat(),
+            [
+                strings(&["probe", "--config", "a", "--harness"]),
+                vec![non_unicode()],
+            ]
+            .concat(),
+        ] {
+            assert_eq!(parse(arguments).err(), Some("harness_cli_usage"));
+        }
+    }
+
+    /// Input files are read up to a fixed bound plus one byte. A dispatch
+    /// request is parsed and validated before its configuration is opened,
+    /// and its bound fits a maximum prompt written entirely in six-byte
+    /// `\u00XX` escapes.
+    #[tokio::test]
+    async fn dispatch_requests_are_bounded_and_validated_before_the_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let path = directory.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let read = |path: &Path| {
+            read_bounded(path, 16)
+                .map(|bytes| bytes.len())
+                .map_err(|error| error.code())
+        };
+        assert_eq!(read(&file("exact", &[b'a'; 16])), Ok(16));
+        assert_eq!(
+            read(&file("over", &[b'a'; 17])),
+            Err("harness_input_too_large")
+        );
+        assert_eq!(
+            read(&directory.path().join("missing")),
+            Err("harness_input_unavailable")
+        );
+        let request = |prompt: &str, request_id| {
+            serde_json::to_vec(&Request {
+                schema_version: 1,
+                request_id,
+                harness: Harness::Codex,
+                prompt: prompt.to_string(),
+            })
+            .unwrap()
+        };
+        let escaped = "\u{1}".repeat(MAX_PROMPT_BYTES);
+        let escaped_request = request(&escaped, uuid::Uuid::new_v4());
+        assert!(escaped_request.len() > MAX_PROMPT_BYTES * 6);
+        let cases = [
+            (b"{".to_vec(), "harness_invalid_request"),
+            (
+                request("hello", uuid::Uuid::nil()),
+                "harness_invalid_request",
+            ),
+            (request(" ", uuid::Uuid::new_v4()), "harness_invalid_prompt"),
+            (vec![b' '; MAX_REQUEST_BYTES + 1], "harness_input_too_large"),
+            // Only a valid request reaches the missing configuration.
+            (escaped_request, "harness_config_unavailable"),
+        ];
+        for (index, (bytes, code)) in cases.into_iter().enumerate() {
+            let outcome = run(Command::Dispatch {
+                config_path: directory.path().join("missing_config.json"),
+                request_path: file(&format!("request_{index}.json"), &bytes),
+                plugin: Some(directory.path().join("missing_plugin.exe")),
+            })
+            .await;
+            assert_eq!(
+                outcome.err().map(|error| error.code()),
+                Some(code),
+                "{index}"
+            );
+        }
+        let guide = include_str!("../../../docs/guides/harness_core_guide.md");
+        assert!(guide.contains("six-byte"));
+    }
+
+    /// Every native command the README and the guides show parses, and the
+    /// public examples they name work: `catalog` and `replay` succeed, and
+    /// the example request passes every request check, so only the missing
+    /// configuration stops it. A private `.vibemux/` path is never opened.
+    #[tokio::test]
+    async fn every_documented_command_parses_and_its_public_examples_work() {
+        let documents = [
+            include_str!("../../../README.md"),
+            include_str!("../../../docs/guides/harness_core_guide.md"),
+            include_str!("../../../docs/guides/unified_cli_guide.md"),
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let directory = tempfile::tempdir().unwrap();
+        let mut commands = 0;
+        for line in documents.iter().flat_map(|document| document.lines()) {
+            let Some(arguments) = ["vibemux_harness_native.exe ", "vibemuxctl.exe harness "]
+                .iter()
+                .find_map(|program| line.split_once(program).map(|(_, rest)| rest))
+            else {
+                continue;
+            };
+            let command = parse_arguments(arguments.split_whitespace().map(|argument| {
+                if argument.starts_with("examples/") || argument.starts_with("crates/") {
+                    root.join(argument).into_os_string()
+                } else {
+                    OsString::from(argument)
+                }
+            }))
+            .unwrap_or_else(|error| panic!("{line}: {}", error.code()));
+            commands += 1;
+            match command {
+                Command::Catalog { .. } | Command::Replay { .. } => {
+                    let reply = run(command)
+                        .await
+                        .unwrap_or_else(|error| panic!("{line}: {}", error.code()));
+                    assert!(reply.success, "{line}");
+                }
+                Command::Probe { config_path, .. } => {
+                    assert!(config_path.starts_with(".vibemux"), "{line}");
+                }
+                Command::Dispatch {
+                    config_path,
+                    request_path,
+                    ..
+                } => {
+                    assert!(config_path.starts_with(".vibemux"), "{line}");
+                    let outcome = run(Command::Dispatch {
+                        config_path: directory.path().join("missing_config.json"),
+                        request_path,
+                        plugin: Some(directory.path().join("missing_plugin.exe")),
+                    })
+                    .await;
+                    assert_eq!(
+                        outcome.err().map(|error| error.code()),
+                        Some("harness_config_unavailable"),
+                        "{line}"
+                    );
+                }
+                Command::Help | Command::Version => panic!("{line}"),
+            }
+        }
+        assert_eq!(commands, 8);
     }
 }

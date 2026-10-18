@@ -8,7 +8,10 @@
 //!   (`VIBEMUX_FRONTEND_THEME` applies when no flag is given); unknown
 //!   themes or unknown arguments exit with code 4.
 
-use std::process::ExitCode;
+use std::{
+    ffi::{OsStr, OsString},
+    process::ExitCode,
+};
 
 use vibemux_frontend::{ViewModel, tui};
 
@@ -22,39 +25,50 @@ fn expected_themes() -> String {
         .join(", ")
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> ExitCode {
-    let mut theme = tui::Theme::from_environment();
+/// Parse the flags after the program name into `(json, theme)`. The
+/// arguments stay `OsString`s, so one that is not valid Unicode is a usage
+/// error rather than a panic.
+fn parse_arguments(
+    arguments: impl IntoIterator<Item = OsString>,
+    default_theme: tui::Theme,
+) -> Result<(bool, tui::Theme), String> {
+    let mut theme = default_theme;
     let mut json = false;
-    let mut arguments = std::env::args().skip(1);
+    let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
-        match argument.as_str() {
-            "--json" => json = true,
-            "--theme" => {
-                let Some(value) = arguments.next() else {
-                    eprintln!(
-                        "unknown or missing --theme value (expected one of: {})",
-                        expected_themes()
-                    );
-                    return ExitCode::from(4);
-                };
-                match tui::Theme::from_name(&value) {
-                    Some(resolved) => theme = resolved,
-                    None => {
-                        eprintln!(
+        match argument.to_str() {
+            Some("--json") => json = true,
+            Some("--theme") => {
+                theme = arguments
+                    .next()
+                    .as_deref()
+                    .and_then(OsStr::to_str)
+                    .and_then(tui::Theme::from_name)
+                    .ok_or_else(|| {
+                        format!(
                             "unknown or missing --theme value (expected one of: {})",
                             expected_themes()
-                        );
-                        return ExitCode::from(4);
-                    }
-                }
+                        )
+                    })?;
             }
-            other => {
-                eprintln!("unknown argument: {other}");
-                return ExitCode::from(4);
+            _ => {
+                return Err(format!("unknown argument: {}", argument.to_string_lossy()));
             }
         }
     }
+    Ok((json, theme))
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    let (json, theme) =
+        match parse_arguments(std::env::args_os().skip(1), tui::Theme::from_environment()) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(4);
+            }
+        };
 
     let config = match vibemux_frontend::probe_env::probe_config_from_environment() {
         Ok(config) => config,
@@ -85,4 +99,50 @@ async fn main() -> ExitCode {
         return ExitCode::from(4);
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    fn non_unicode() -> OsString {
+        use std::os::windows::ffi::OsStringExt;
+        OsString::from_wide(&[0x61, 0xD800])
+    }
+
+    #[cfg(unix)]
+    fn non_unicode() -> OsString {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(vec![b'a', 0xff])
+    }
+
+    fn parse(arguments: &[OsString]) -> Result<(bool, tui::Theme), String> {
+        parse_arguments(arguments.to_vec(), tui::Theme::Classic)
+    }
+
+    #[test]
+    fn flags_parse_over_the_default_theme() {
+        assert_eq!(parse(&[]), Ok((false, tui::Theme::Classic)));
+        assert_eq!(
+            parse(&["--theme".into(), "gruvbox".into(), "--json".into()]),
+            Ok((true, tui::Theme::Gruvbox))
+        );
+    }
+
+    #[test]
+    fn a_non_unicode_flag_or_theme_is_a_usage_error() {
+        let flag = parse(&[non_unicode()]).expect_err("flag refused");
+        assert!(flag.starts_with("unknown argument: a"), "{flag}");
+        for theme in [
+            vec!["--theme".into(), non_unicode()],
+            vec!["--theme".into()],
+        ] {
+            let error = parse(&theme).expect_err("theme refused");
+            assert!(
+                error.starts_with("unknown or missing --theme value"),
+                "{error}"
+            );
+        }
+    }
 }

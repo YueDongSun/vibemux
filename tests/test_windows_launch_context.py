@@ -153,7 +153,10 @@ def test_suppress_windows_error_dialogs_preserves_existing_bits(
 
         SetErrorMode = Fake_Function(_set_error_mode)
 
-    monkeypatch.setattr(launch_context.ctypes, "WinDLL", lambda *args, **kwargs: Fake_Kernel32())
+    # ctypes.WinDLL exists only on Windows; raising=False lets the fake stand in elsewhere.
+    monkeypatch.setattr(
+        launch_context.ctypes, "WinDLL", lambda *args, **kwargs: Fake_Kernel32(), raising=False
+    )
     launch_context.suppress_windows_error_dialogs()
     assert (
         mode["value"]
@@ -177,7 +180,9 @@ def test_suppress_windows_error_dialogs_normalizes_api_failure(
         GetErrorMode = Fake_Function(lambda: (_ for _ in ()).throw(OSError("native failure")))
         SetErrorMode = Fake_Function(lambda mode: 0)
 
-    monkeypatch.setattr(launch_context.ctypes, "WinDLL", lambda *args, **kwargs: Broken_Kernel32())
+    monkeypatch.setattr(
+        launch_context.ctypes, "WinDLL", lambda *args, **kwargs: Broken_Kernel32(), raising=False
+    )
     with pytest.raises(launch_context.Windows_Launch_Error) as error:
         launch_context.suppress_windows_error_dialogs()
     assert error.value.code == "windows_error_mode_unavailable"

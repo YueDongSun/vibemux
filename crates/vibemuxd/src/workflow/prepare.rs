@@ -36,6 +36,7 @@ use vibemux_workflow::{
 use vibemux_workflow::{gates::WorkflowPhase, supervisor::LoopBudget};
 
 use super::{error::WorkflowError, request::WorkflowRequest, settings::LoadedWorkflowConfig};
+use crate::bounded_file::read_regular_file;
 
 pub const WORKFLOW_PLAN_SCHEMA_VERSION: u32 = 1;
 const PLAN_DIGEST_DOMAIN: &str = "vibemux.workflow.plan.v1";
@@ -483,9 +484,66 @@ fn read_shared_contracts(
         if !canonical.starts_with(canonical_root) {
             return Err(WorkflowError::RequestInvalid);
         }
-        let text =
-            std::fs::read_to_string(&canonical).map_err(|_| WorkflowError::RequestInvalid)?;
+        let bytes = read_regular_file(&canonical, MAX_SHARED_CONTRACT_BYTES)
+            .map_err(|_| WorkflowError::RequestInvalid)?;
+        let text = String::from_utf8(bytes).map_err(|_| WorkflowError::RequestInvalid)?;
         texts.insert(artifact_id.clone(), text);
     }
     Ok(texts)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn request_with_contract(relative: &str) -> WorkflowRequest {
+        WorkflowRequest::parse(json!({
+            "schema_version": 1,
+            "request_key": "contracts-1",
+            "workflow_key": "contracts",
+            "mode": "cooperate",
+            "request_text": "Build it.",
+            "integration_suites": ["api"],
+            "assignments": {"track_a": ["slot_a"]},
+            "reviewer_slot": "review",
+            "shared_contract_paths": {"api_contract": relative},
+        }))
+        .expect("valid request")
+    }
+
+    #[test]
+    fn a_shared_contract_is_bounded_utf8_text_inside_the_root() {
+        let temporary = tempfile::tempdir().expect("temporary checkout");
+        let root = std::fs::canonicalize(temporary.path()).expect("canonical root");
+        std::fs::create_dir(root.join("docs")).expect("contract directory");
+        let read = |content: &[u8]| {
+            std::fs::write(root.join("docs").join("api.md"), content).expect("write contract");
+            read_shared_contracts(&request_with_contract("docs/api.md"), &root)
+        };
+        let at_bound = vec![b'x'; MAX_SHARED_CONTRACT_BYTES as usize];
+        let texts = read(&at_bound).expect("a contract at the bound");
+        assert_eq!(
+            texts.values().map(String::len).sum::<usize>(),
+            at_bound.len()
+        );
+        let refused = |result: Result<BTreeMap<SpecIdentifier, String>, WorkflowError>| {
+            matches!(result, Err(WorkflowError::RequestInvalid))
+        };
+        assert!(refused(read(&vec![
+            b'x';
+            MAX_SHARED_CONTRACT_BYTES as usize + 1
+        ])));
+        assert!(refused(read(&[0xff, 0xfe])));
+        for unreadable in ["docs/missing.md", "docs", "../outside.md"] {
+            assert!(
+                refused(read_shared_contracts(
+                    &request_with_contract(unreadable),
+                    &root
+                )),
+                "{unreadable}"
+            );
+        }
+    }
 }

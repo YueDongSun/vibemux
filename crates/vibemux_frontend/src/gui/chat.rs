@@ -4,7 +4,7 @@ use super::{
     C,
     design::{self, Icon},
     supervisor_state::{SupervisorUiState, TaskDetailTab, TaskFilter, UiActionQueue},
-    typography,
+    task_labels, typography,
 };
 use crate::supervisor_model::{SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView};
 use egui::{self, RichText, Ui, ViewportCommand, ViewportId};
@@ -181,24 +181,16 @@ fn task_row_contents(
     actions: &UiActionQueue,
 ) {
     ui.horizontal_wrapped(|ui| {
-        design::status(ui, c, &task.state);
+        design::status(ui, c, task_labels::task_state(&task.state));
         ui.label(RichText::new("/").size(12.0).color(c.muted));
         ui.label(
-            RichText::new(if task.executor.is_empty() {
-                "Unassigned"
-            } else {
-                &task.executor
-            })
-            .size(12.0)
-            .color(c.muted),
+            RichText::new(task_labels::executor_label(task))
+                .size(12.0)
+                .color(c.muted),
         );
     });
     ui.add_space(3.0);
-    let title = if task.title.is_empty() {
-        "Untitled task"
-    } else {
-        &task.title
-    };
+    let title = task_labels::task_title(&task.title);
     if ui
         .add(
             egui::Button::new(

@@ -24,7 +24,7 @@ use crate::{
 use super::{
     C, agents, chat, composer, design, diagnostics, settings, sidebar,
     supervisor_state::{MainPage, SupervisorUiState, UiActionQueue},
-    task_detail,
+    task_detail, task_labels,
 };
 
 const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -198,9 +198,7 @@ impl SupervisorApp {
     }
 
     fn set_window_size(&mut self, size: WindowSize) {
-        let width = size.width.clamp(800, 3840);
-        let height = size.height.clamp(600, 2160);
-        let size = WindowSize { width, height };
+        let size = size.clamped();
         if self.user_config.window_size != size {
             self.user_config.window_size = size;
             self.pending_resize = Some(Instant::now());
@@ -421,17 +419,15 @@ impl SupervisorApp {
         let colors = super::pal(&palette_for(theme));
         for task_id in open_tasks {
             let title = self.with_snapshot(|snapshot| {
-                snapshot
-                    .tasks
-                    .iter()
-                    .find(|task| task.task_id == task_id)
-                    .map_or_else(
-                        || "Task observation".to_owned(),
-                        |task| window_task_title(task).to_owned(),
-                    )
+                task_labels::task_window_title(
+                    snapshot
+                        .tasks
+                        .iter()
+                        .find(|task| task.task_id == task_id)
+                        .map(|task| task.title.as_str()),
+                )
             });
             let viewport_id = chat::task_viewport_id(&task_id);
-            let title = format!("{title} · VibeMux");
             let viewport = ViewportBuilder::default()
                 .with_title(title)
                 .with_inner_size(TASK_WINDOW_SIZE)
@@ -509,8 +505,8 @@ impl SupervisorApp {
             .map_or([0.0, 0.0], |rect| [rect.width(), rect.height()]);
         if self.last_size[0] > 0.0 && size != self.last_size {
             self.set_window_size(WindowSize {
-                width: (size[0] as u32).clamp(800, 3840),
-                height: (size[1] as u32).clamp(600, 2160),
+                width: size[0] as u32,
+                height: size[1] as u32,
             });
         }
         self.last_size = size;
@@ -831,7 +827,7 @@ fn drawer_contents(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(window_task_title(task))
+                        RichText::new(task_labels::task_title(&task.title))
                             .font(super::typography::display_font(
                                 ui.ctx(),
                                 super::typography::TITLE_SIZE,
@@ -923,14 +919,6 @@ fn freshness_label(observed_at: Option<&str>) -> Option<String> {
     ))
 }
 
-fn window_task_title(task: &TaskView) -> &str {
-    if task.title.trim().is_empty() {
-        "Untitled task"
-    } else {
-        &task.title
-    }
-}
-
 /// Height of everything in the welcome block that is not the composer: the
 /// spark, its gaps, the greeting line, the workspace hint, and the draft note.
 const WELCOME_HEADING_HEIGHT: f32 = 34.0 + 10.0 + 42.0 + 8.0 + 18.0 + 22.0 + 20.0;
@@ -974,6 +962,7 @@ fn test_view_model() -> ViewModel {
                 version: "-".to_string(),
                 route: RouteKind::Unknown,
                 code: "not_probed".to_string(),
+                adapter: vibemux_harness::dispatch::adapter_capability(agent),
             })
             .collect(),
         gateway_summary: "unavailable".to_string(),
@@ -1265,6 +1254,31 @@ mod tests {
             .expect("sidebar panel");
             assert!((panel.rect.width() - expected).abs() < 1.0, "{collapsed}");
         }
+    }
+
+    /// A size from the settings dialog or a manual resize is saved inside the
+    /// range `load_user_config` clamps to, and only a real change is saved.
+    #[test]
+    fn a_saved_window_size_stays_in_the_settings_range() {
+        let mut app = test_app();
+        app.set_window_size(WindowSize {
+            width: 100_000,
+            height: 1,
+        });
+        assert_eq!(
+            app.user_config.window_size,
+            WindowSize {
+                width: 3840,
+                height: 600
+            }
+        );
+        assert!(app.pending_resize.is_some());
+        app.pending_resize = None;
+        app.set_window_size(WindowSize {
+            width: 3841,
+            height: 599,
+        });
+        assert!(app.pending_resize.is_none(), "same clamped size, no write");
     }
 
     #[test]

@@ -102,9 +102,99 @@ mod tests {
     }
 
     #[test]
-    fn narrow_windows_terminal_keeps_all_agents_and_slots_visible() {
+    fn narrow_windows_terminal_names_every_harness_and_the_rows_in_view() {
+        // Regression: at 80x24 the overview table showed five of eleven
+        // harnesses with no sign of the rest, and the slot panel's
+        // `name [state]` labels overflowed before CodeBuddy, Kimi, and DSH.
+        let mut report = report();
+        for probe in report.agents.iter_mut().skip(5) {
+            probe.launcher_state = ProbeState::Unavailable;
+        }
+        let model = DashboardModel::from_report(&report);
+        let total = AgentKind::all().len();
+        let context = Context::default();
+        let first = snapshot(&model, &State::default(), &context, 80, 24).unwrap();
+        assert!(
+            first.contains(&format!("Agent probes 1-4/{total}")),
+            "{first}"
+        );
+        assert!(first.contains("> Claude"));
+        assert!(first.contains("reserved: Claude, Codex, OpenCode, Copilot, Grok"));
+        assert!(first.contains("unavailable: Qwen, iFlow, TRAE, CodeBuddy, Kimi, DSH"));
+        let last = State {
+            selected_agent: total - 1,
+            ..State::default()
+        };
+        let scrolled = snapshot(&model, &last, &context, 80, 24).unwrap();
+        assert!(
+            scrolled.contains(&format!("Agent probes {}-{total}/{total}", total - 3)),
+            "{scrolled}"
+        );
+        assert!(scrolled.contains("> DSH"));
+        assert!(!scrolled.contains("> Claude"));
+        // Below the two-pane width the Harnesses page has no table, so the
+        // details title carries the position.
+        let details = State {
+            tab: Tab::Harnesses,
+            selected_agent: 3,
+            ..State::default()
+        };
+        let narrow = snapshot(&model, &details, &context, 70, 24).unwrap();
+        assert!(narrow.contains(&format!("Selected harness 4/{total} / j,k")));
+        assert!(narrow.contains("Copilot / version"));
+    }
+
+    #[test]
+    fn every_slot_name_fits_the_slot_panel_at_every_supported_width() {
         let model = DashboardModel::from_report(&report());
-        let backend = TestBackend::new(80, 24);
+        for (width, height) in [(30u16, 24u16), (59, 24), (60, 24), (80, 24)] {
+            let rendered = snapshot(
+                &model,
+                &State::default(),
+                &Context::default(),
+                width,
+                height,
+            )
+            .unwrap();
+            let rows = rendered.lines().collect::<Vec<_>>();
+            let top = rows
+                .iter()
+                .position(|row| row.contains("Native CLI TUI surfaces"))
+                .unwrap_or_else(|| panic!("no slot panel at width {width}"));
+            let bottom = top
+                + rows[top..]
+                    .iter()
+                    .position(|row| row.contains('└'))
+                    .expect("slot panel bottom border");
+            let panel = rows[top + 1..bottom].join(" ");
+            for agent in AgentKind::all() {
+                assert!(
+                    panel.contains(agent.display_name()),
+                    "width {width}: {} missing from {panel}",
+                    agent.display_name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plain_snapshot_is_deterministic_and_read_only() {
+        let snapshot = DashboardModel::from_report(&report()).plain_snapshot();
+        assert!(snapshot.contains("Claude native TUI state=reserved"));
+        assert!(snapshot.contains("a2a: verified correlation=true listener_closed=true"));
+    }
+
+    #[test]
+    fn adapter_support_is_a_build_fact_shown_even_without_an_observation() {
+        let mut report = report();
+        report.agents.clear();
+        let model = DashboardModel::from_report(&report);
+        let snapshot = model.plain_snapshot();
+        assert!(snapshot.contains("launcher=not_run"));
+        assert!(snapshot.contains("adapter=execute protocols=claude_stream_json"));
+        assert!(snapshot.contains("adapter=probe_only protocols=acp"));
+        assert!(snapshot.contains("adapter=terminal_only protocols=-"));
+        let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         terminal
             .draw(|frame| render_dashboard(frame, &model))
@@ -116,16 +206,9 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        for expected in ["Claude", "Codex", "OpenCode", "Copilot", "Grok", "reserved"] {
+        for expected in ["Adapter", "execute", "probe", "terminal"] {
             assert!(rendered.contains(expected), "missing {expected}");
         }
-    }
-
-    #[test]
-    fn plain_snapshot_is_deterministic_and_read_only() {
-        let snapshot = DashboardModel::from_report(&report()).plain_snapshot();
-        assert!(snapshot.contains("Claude native TUI state=reserved"));
-        assert!(snapshot.contains("a2a: verified correlation=true listener_closed=true"));
     }
 
     #[test]
@@ -166,9 +249,127 @@ mod tests {
                 if tab == Tab::Harnesses {
                     assert!(rendered.contains("Native attach: disabled"));
                     assert!(rendered.contains("Inference: not_run"));
+                    assert!(rendered.contains("Adapter: "));
                 }
             }
             assert!(snapshot(&model, &state, &context, 20, 6).is_ok());
+        }
+    }
+
+    #[test]
+    fn every_agent_table_width_keeps_adapter_support() {
+        let model = DashboardModel::from_report(&report());
+        let context = Context::default();
+        // The overview table spans the terminal below the wide layout; the
+        // Harnesses page gives the table 45% of the width beside the details.
+        for (tab, width, route_column) in [
+            (Tab::Overview, 60, true),
+            (Tab::Overview, 44, false),
+            (Tab::Harnesses, 80, false),
+            (Tab::Harnesses, 120, true),
+        ] {
+            let state = State {
+                tab,
+                ..State::default()
+            };
+            let rendered = snapshot(&model, &state, &context, width, 24).unwrap();
+            let header = rendered
+                .lines()
+                .find(|line| line.contains("Agent") && line.contains("Launcher"))
+                .unwrap_or_else(|| panic!("no agent table header at width {width}"));
+            assert!(header.contains("Adapter"), "width {width}: {header}");
+            assert_eq!(
+                header.contains("Route"),
+                route_column,
+                "width {width}: {header}"
+            );
+            for label in ["execute", "probe"] {
+                assert!(rendered.contains(label), "width {width} lacks {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn overview_keeps_every_diagnostics_line_and_grows_the_table_with_height() {
+        // Regression: a fixed eight-row table cut the telemetry line at 80x24
+        // and kept five agents on screen however tall the terminal was.
+        let model = DashboardModel::from_report(&report());
+        let total = AgentKind::all().len();
+        let context = Context::default();
+        for (width, height, title) in [
+            (80u16, 24u16, format!("Agent probes 1-4/{total}")),
+            (60, 24, format!("Agent probes 1-4/{total}")),
+            (45, 30, format!("Agent probes 1-5/{total}")),
+            (100, 28, format!("Agent probes 1-8/{total}")),
+            (100, 40, "Agent probes─".to_string()),
+        ] {
+            let rendered = snapshot(&model, &State::default(), &context, width, height).unwrap();
+            for label in ["Gateway:", "A2A:", "Telemetry:"] {
+                assert!(
+                    rendered.contains(label),
+                    "{width}x{height} lacks {label}\n{rendered}"
+                );
+            }
+            assert!(
+                rendered.contains(&title),
+                "{width}x{height} lacks {title}\n{rendered}"
+            );
+        }
+        let tall = snapshot(&model, &State::default(), &context, 100, 40).unwrap();
+        for agent in AgentKind::all() {
+            let name = agent.display_name();
+            assert!(
+                tall.lines().any(|line| {
+                    line.starts_with(&format!("│  {name} "))
+                        || line.starts_with(&format!("│> {name} "))
+                }),
+                "{name} hidden at 100x40"
+            );
+        }
+    }
+
+    #[test]
+    fn details_state_the_selected_harness_slot_not_a_fixed_reserved_line() {
+        // Regression: every harness's details said "Reserved is not running."
+        // even when its slot was unavailable for lack of a verified launcher.
+        let mut report = report();
+        report.agents.truncate(AgentKind::all().len() - 1);
+        report.agents[1].launcher_state = ProbeState::Unavailable;
+        let model = DashboardModel::from_report(&report);
+        let context = Context::default();
+        // Claude is verified, Codex unavailable, and DSH has no observation.
+        for (selected, expected, absent) in [
+            (0, "reserved, not running", "unavailable"),
+            (1, "unavailable, no verified", "reserved, not running"),
+            (
+                AgentKind::all().len() - 1,
+                "unavailable, no verified",
+                "reserved, not running",
+            ),
+        ] {
+            let state = State {
+                tab: Tab::Harnesses,
+                selected_agent: selected,
+                ..State::default()
+            };
+            for width in [70u16, 100] {
+                let rendered = snapshot(&model, &state, &context, width, 28).unwrap();
+                let details = rendered
+                    .lines()
+                    .skip_while(|line| !line.contains("Selected harness"))
+                    .take_while(|line| !line.contains("Native CLI TUI surfaces"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    details.contains(&format!("Native TUI slot: {expected}")),
+                    "width {width}, agent {selected}: {details}"
+                );
+                assert!(
+                    !details.contains(&format!("Native TUI slot: {absent}")),
+                    "width {width}, agent {selected}: {details}"
+                );
+                assert!(!details.contains("Reserved is not running"));
+            }
         }
     }
 

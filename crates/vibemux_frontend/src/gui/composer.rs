@@ -4,6 +4,7 @@
 //! inserts a newline, Shift+Enter does (ADR 030 §4).
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Sense, Ui, vec2};
+use vibemux_harness::dispatch::AdapterSupport;
 use vibemux_probe::ProbeState;
 
 use super::{
@@ -11,7 +12,7 @@ use super::{
     design::{self, Icon},
     supervisor_state::{ComposerTarget, SupervisorUiState},
 };
-use crate::view_model::ViewModel;
+use crate::view_model::{AgentView, ViewModel};
 
 pub const COMPOSER_TEXT_ID: &str = "coordinator_composer_text";
 pub const SEND_BUTTON_ID: &str = "coordinator_send_button";
@@ -40,15 +41,28 @@ pub fn target_options(view_model: &ViewModel) -> Vec<TargetOption> {
         reason: None,
     }];
     options.extend(view_model.agents.iter().map(|agent| {
-        let detected = agent.launcher_state == ProbeState::Verified;
+        let reason = target_unavailable_reason(agent);
         TargetOption {
             target: ComposerTarget::Harness(agent.name.clone()),
             label: agent.name.clone(),
-            enabled: detected,
-            reason: (!detected).then(|| "Not detected on this machine".to_string()),
+            enabled: reason.is_none(),
+            reason: reason.map(str::to_string),
         }
     }));
     options
+}
+
+/// A harness can take a prompt only when it is detected and a structured
+/// adapter can execute a turn for it; the first missing fact is the reason.
+fn target_unavailable_reason(agent: &AgentView) -> Option<&'static str> {
+    if agent.launcher_state != ProbeState::Verified {
+        return Some("Not detected on this machine");
+    }
+    match agent.adapter.support {
+        AdapterSupport::Execute => None,
+        AdapterSupport::ProbeOnly => Some("Structured adapter is probe-only"),
+        AdapterSupport::TerminalOnly => Some("No structured adapter (terminal UI only)"),
+    }
 }
 
 #[must_use]
@@ -197,18 +211,20 @@ fn target_chip(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Tar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view_model::{AgentView, Health, ViewModel};
-    use vibemux_probe::RouteKind;
+    use crate::view_model::Health;
+    use vibemux_harness::dispatch::adapter_capability;
+    use vibemux_probe::{AgentKind, RouteKind};
 
-    fn agent(name: &str, launcher_state: ProbeState) -> AgentView {
+    fn agent(kind: AgentKind, launcher_state: ProbeState) -> AgentView {
         AgentView {
-            name: name.to_string(),
+            name: kind.display_name().to_string(),
             launcher_state,
             authentication_state: ProbeState::NotRun,
             inference_state: ProbeState::NotRun,
             version: "-".to_string(),
             route: RouteKind::Unknown,
             code: "test".to_string(),
+            adapter: adapter_capability(kind),
         }
     }
 
@@ -236,8 +252,8 @@ mod tests {
     #[test]
     fn coordinator_comes_first_and_undetected_harnesses_are_disabled() {
         let options = target_options(&view_model(vec![
-            agent("Codex", ProbeState::Verified),
-            agent("Grok", ProbeState::Unavailable),
+            agent(AgentKind::Codex, ProbeState::Verified),
+            agent(AgentKind::Grok, ProbeState::Unavailable),
         ]));
         assert_eq!(options[0].target, ComposerTarget::Coordinator);
         assert!(options[0].enabled);
@@ -246,6 +262,27 @@ mod tests {
         assert_eq!(
             options[2].reason.as_deref(),
             Some("Not detected on this machine")
+        );
+    }
+
+    #[test]
+    fn detected_harnesses_without_an_executing_adapter_say_why() {
+        let options = target_options(&view_model(vec![
+            agent(AgentKind::Claude, ProbeState::Verified),
+            agent(AgentKind::OpenCode, ProbeState::Verified),
+            agent(AgentKind::Kimi, ProbeState::Verified),
+        ]));
+        assert!(options[1].enabled);
+        assert_eq!(options[1].reason, None);
+        assert!(!options[2].enabled);
+        assert_eq!(
+            options[2].reason.as_deref(),
+            Some("Structured adapter is probe-only")
+        );
+        assert!(!options[3].enabled);
+        assert_eq!(
+            options[3].reason.as_deref(),
+            Some("No structured adapter (terminal UI only)")
         );
     }
 

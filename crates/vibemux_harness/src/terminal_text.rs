@@ -1,0 +1,92 @@
+//! Characters a terminal must never receive raw from untrusted text, such as
+//! a vendor CLI's `--version` output, a resolved launcher path, or a branch
+//! name. One definition keeps the probe, the CLI's JSON output, and the
+//! dashboard in agreement about what is unsafe.
+
+/// Whether `character` can change how a terminal draws the text around it:
+/// a C0 or C1 control or DEL (ESC starts an ANSI sequence), the Arabic
+/// letter mark, a left-to-right or right-to-left mark, a line or paragraph
+/// separator, or a bidirectional embedding, override, or isolate.
+#[must_use]
+pub fn is_terminal_unsafe(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// What a one-line display shows for `character`: a space for whitespace,
+/// so a line break cannot start a new row, or for a terminal-unsafe
+/// character; otherwise the character itself.
+#[must_use]
+pub fn display_character(character: char) -> char {
+    if character.is_whitespace() || is_terminal_unsafe(character) {
+        ' '
+    } else {
+        character
+    }
+}
+
+/// `text` as one display line: every character through `display_character`,
+/// with nothing removed, so the line keeps its length in characters.
+#[must_use]
+pub fn display_line(text: &str) -> String {
+    text.chars().map(display_character).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_character, display_line, is_terminal_unsafe};
+
+    #[test]
+    fn a_display_line_maps_every_character() {
+        assert_eq!(display_line("a\nb\u{202e}c\u{2066}中"), "a b c 中");
+        assert_eq!(display_line(""), "");
+        assert_eq!(display_line("plain text"), "plain text");
+    }
+
+    #[test]
+    fn a_display_line_shows_whitespace_and_unsafe_characters_as_spaces() {
+        for blanked in ['\n', '\r', '\t', '\u{1b}', '\u{a0}', '\u{2028}', '\u{202e}'] {
+            assert_eq!(
+                display_character(blanked),
+                ' ',
+                "U+{:04X}",
+                u32::from(blanked)
+            );
+        }
+        for kept in ['a', '.', 'é', '中', '\u{200d}'] {
+            assert_eq!(display_character(kept), kept);
+        }
+    }
+
+    #[test]
+    fn controls_and_bidirectional_marks_are_unsafe() {
+        for unsafe_character in [
+            '\u{0}', '\t', '\n', '\u{1b}', '\u{7f}', '\u{9b}', '\u{061c}', '\u{200e}', '\u{200f}',
+            '\u{2028}', '\u{2029}', '\u{202a}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2069}',
+        ] {
+            assert!(
+                is_terminal_unsafe(unsafe_character),
+                "U+{:04X}",
+                u32::from(unsafe_character)
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_text_and_neighbouring_code_points_are_safe() {
+        // The zero-width joiner builds emoji sequences, and U+202F and
+        // U+2065 sit just outside the unsafe ranges.
+        for safe_character in [
+            'a', ' ', '.', 'é', '中', '\u{200d}', '\u{202f}', '\u{2065}', '\u{206a}',
+        ] {
+            assert!(
+                !is_terminal_unsafe(safe_character),
+                "U+{:04X}",
+                u32::from(safe_character)
+            );
+        }
+    }
+}

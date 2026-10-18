@@ -50,7 +50,11 @@ pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// deadline, which terminates the daemon process.
 pub const DEFAULT_WRITER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
+/// A lock file holds one nonce (under 80 bytes) and a newline; a longer
+/// file is not this holder's lock and is never read whole.
+const MAX_LOCK_FILE_BYTES: u64 = 256;
 
+pub(crate) mod bounded_file;
 pub mod control;
 pub mod decision;
 pub mod decision_writer;
@@ -311,10 +315,13 @@ impl LifecycleLock {
         })
     }
 
-    /// Whether the lock file still carries this holder's nonce.
+    /// Whether the lock file is still a regular file carrying this
+    /// holder's nonce. A link, an oversized file, or another nonce means
+    /// it is not held, so `Drop` leaves that file alone.
     fn is_held(&self) -> bool {
-        std::fs::read_to_string(&self.path)
+        bounded_file::read_regular_file(&self.path, MAX_LOCK_FILE_BYTES)
             .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
             .is_some_and(|value| value.trim() == self.nonce)
     }
 }
@@ -1514,6 +1521,21 @@ mod tests {
             Ok(()) | Err(WriterError::ResponseTimeout)
         ));
         assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn a_lifecycle_lock_is_held_only_while_its_bounded_file_carries_the_nonce() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("writer.lock");
+        let lock = LifecycleLock::acquire_path(&path).expect("lock");
+        assert!(lock.is_held());
+        let padding = " ".repeat(MAX_LOCK_FILE_BYTES as usize);
+        std::fs::write(&path, format!("{}\n{padding}", lock.nonce)).expect("pad");
+        assert!(!lock.is_held(), "an oversized lock file is not read whole");
+        std::fs::write(&path, b"another-holder\n").expect("replace");
+        assert!(!lock.is_held());
+        std::fs::write(&path, format!("{}\n", lock.nonce)).expect("restore");
+        assert!(lock.is_held());
     }
 
     #[test]

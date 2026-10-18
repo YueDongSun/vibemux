@@ -19,7 +19,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use serde_json::Value;
-use vibemux_harness::dsh::{DshRecordKind, DshTurnOutcome};
+use vibemux_harness::{
+    dsh::{DshRecordKind, DshTurnOutcome},
+    terminal_text::display_line,
+};
 
 use crate::tui::Theme;
 use crate::tui::theme::{muted_style, title_style};
@@ -85,7 +88,9 @@ pub fn display_text(kind: DshRecordKind, raw_json: &str) -> String {
         }
         DshRecordKind::Other => "unrecognized frame".to_string(),
     };
-    truncate(&text, MAX_LINE_BYTES)
+    // A line break, an ANSI escape, or a bidirectional override becomes a
+    // space instead of reaching the terminal.
+    truncate(&display_line(&text), MAX_LINE_BYTES)
 }
 
 fn string_at(value: &Value, pointer: &str) -> String {
@@ -166,10 +171,11 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, theme: 
         " DeepSeek Harness session ",
         title_style(theme),
     ));
+    // The handshake bounds the runtime's version string but not its characters.
     let version = state
         .server_version
         .as_deref()
-        .unwrap_or("(no handshake yet)");
+        .map_or_else(|| "(no handshake yet)".to_string(), display_line);
     let outcome = state.last_outcome.map_or("none", DshTurnOutcome::as_str);
     let lines = vec![
         Line::from(format!(
@@ -333,6 +339,29 @@ mod tests {
             display_text(DshRecordKind::Error, r#"{"error":{"message":"boom"}}"#),
             "error: boom"
         );
+    }
+
+    /// A runtime record or version can carry a line break, an ANSI escape, or
+    /// a bidirectional override; none of them reaches the terminal raw.
+    #[test]
+    fn runtime_text_is_one_line_without_terminal_controls() {
+        let raw = serde_json::json!({"params": {"event": {"data": {"chunk": {"text": "first\nsecond\u{1b}[2J\u{202e}gnp.exe"}}}}})
+            .to_string();
+        assert_eq!(
+            display_text(DshRecordKind::Text, &raw),
+            "first second [2J gnp.exe"
+        );
+        let error = serde_json::json!({"error": {"message": "bad\r\ntool\u{2066}"}}).to_string();
+        assert_eq!(
+            display_text(DshRecordKind::Error, &error),
+            "error: bad  tool "
+        );
+
+        let mut state = state();
+        state.server_version = Some("0.0.1\u{1b}]0;title\u{7}\u{202e}".to_string());
+        let rendered = render_to_string(&state, Theme::Classic, 100, 20);
+        assert!(rendered.contains("server 0.0.1 ]0;title"), "{rendered}");
+        assert!(!rendered.contains(['\u{1b}', '\u{7}', '\u{202e}']));
     }
 
     #[test]

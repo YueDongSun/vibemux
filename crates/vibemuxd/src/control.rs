@@ -3135,6 +3135,72 @@ mod tests {
         }
     }
 
+    /// The protocol-boundaries IPC bullet names the current version, the
+    /// accepted range, and what each accepted version added, so a version
+    /// bump fails here until the documentation follows.
+    #[test]
+    fn protocol_boundaries_ipc_bullet_states_every_accepted_version() {
+        let documentation = include_str!("../../../docs/protocol_boundaries.md");
+        let bullet = documentation
+            .lines()
+            .find(|line| line.starts_with("- **Local control IPC**"))
+            .expect("local control IPC bullet");
+        assert!(
+            bullet.contains(&format!("pre-alpha v{CONTROL_PROTOCOL_VERSION} ")),
+            "stale current version"
+        );
+        assert!(
+            bullet.contains(&format!("accepts v1–v{CONTROL_PROTOCOL_VERSION} requests")),
+            "stale accepted range"
+        );
+        for version in LEGACY_CONTROL_PROTOCOL_VERSION..=CONTROL_PROTOCOL_VERSION {
+            assert!(supported_control_version(version));
+            assert!(
+                bullet.contains(&format!(" v{version} ")),
+                "v{version} additions are not documented"
+            );
+        }
+    }
+
+    /// The protocol-boundaries dual-track bullet states the v6 workflow
+    /// operation count, names each later workflow operation, and names the
+    /// AAG transport's live refusal code, so an added operation or a renamed
+    /// refusal fails here until the documentation follows.
+    #[test]
+    fn protocol_boundaries_dual_track_bullet_matches_the_daemon() {
+        let documentation = include_str!("../../../docs/protocol_boundaries.md");
+        let bullet = documentation
+            .lines()
+            .find(|line| line.starts_with("- **Dual-track workflow**"))
+            .expect("dual-track bullet");
+        assert!(
+            bullet.contains(&format!(
+                "Control v6 adds {} `workflow_*` operations",
+                WORKFLOW_OPERATIONS.len()
+            )),
+            "stale v6 workflow operation count"
+        );
+        for operation in [
+            ControlOperation::WorkflowSupervisorStart,
+            ControlOperation::WorkflowSupervisorStatus,
+            ControlOperation::WorkflowContractEdit,
+        ] {
+            assert!(operation.minimum_protocol_version() > CONTROL_PROTOCOL_V6);
+            let name = serde_json::to_value(&operation).expect("encode operation");
+            let name = name.as_str().expect("operation name");
+            assert!(
+                bullet.contains(&format!("`{name}`")),
+                "{name} is not documented"
+            );
+        }
+        let refusal =
+            crate::workflow::aag_gateway::Aag_Gateway_Error::LiveAttestationUnavailable.code();
+        assert!(
+            bullet.contains(&format!("`{refusal}`")),
+            "live refusal code is not documented"
+        );
+    }
+
     const WORKFLOW_OPERATIONS: [ControlOperation; 15] = [
         ControlOperation::WorkflowPrepare,
         ControlOperation::WorkflowStart,

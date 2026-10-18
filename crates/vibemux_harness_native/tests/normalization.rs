@@ -549,3 +549,78 @@ fn nested_claude_result_cannot_terminate_root_request() {
     });
     assert_eq!(classify(Protocol::Claude, &root_result), Kind::Completed);
 }
+
+#[test]
+fn opencode_discriminants_are_exact_and_none_completes_a_request() {
+    let cases = [
+        (
+            json!({"type":"step_start","part":{"type":"step-start"}}),
+            Kind::Started,
+        ),
+        (json!({"type":"text","part":{"text":"chunk"}}), Kind::Text),
+        (
+            json!({"type":"reasoning","part":{"text":"thought"}}),
+            Kind::Text,
+        ),
+        (
+            json!({"type":"tool_use","part":{"tool":"synthetic_tool"}}),
+            Kind::Tool,
+        ),
+        (
+            json!({"type":"error","error":{"name":"synthetic_error"}}),
+            Kind::Failed,
+        ),
+        (
+            json!({"type":"step_finish","part":{"tokens":{"input":1}}}),
+            Kind::Usage,
+        ),
+        (
+            json!({"type":"step_finish","part":{"tokens":{}}}),
+            Kind::Usage,
+        ),
+        (json!({"type":"step_finish","part":{"cost":0}}), Kind::Usage),
+        (
+            json!({"type":"step_finish","part":{"cost":0.25}}),
+            Kind::Usage,
+        ),
+        // A step ending without usage data, or with malformed data, is opaque.
+        (
+            json!({"type":"step_finish","part":{"reason":"stop"}}),
+            Kind::Opaque,
+        ),
+        (
+            json!({"type":"step_finish","part":{"tokens":7,"cost":"0.25"}}),
+            Kind::Opaque,
+        ),
+        (
+            json!({"type":"step_finish","part":{"tokens":null,"cost":null}}),
+            Kind::Opaque,
+        ),
+        (
+            json!({"type":"step_finish","tokens":{"input":1},"cost":0}),
+            Kind::Opaque,
+        ),
+        // Discriminants match exactly.
+        (json!({"type":"Step_Start"}), Kind::Opaque),
+        (json!({"type":"text "}), Kind::Opaque),
+        (json!({"type":"tool"}), Kind::Opaque),
+        (json!({"type":["error"]}), Kind::Opaque),
+        (json!({"part":{"type":"text"}}), Kind::Opaque),
+        // Names that sound final still never complete a request.
+        (
+            json!({"type":"step_finish","part":{"reason":"end_turn"}}),
+            Kind::Opaque,
+        ),
+        (json!({"type":"session.idle"}), Kind::Opaque),
+        (json!({"type":"done"}), Kind::Opaque),
+    ];
+    for (payload, expected) in cases {
+        assert_eq!(
+            classify(Protocol::Opencode, &payload),
+            expected,
+            "{payload}"
+        );
+    }
+    let guide = include_str!("../../../docs/guides/harness_core_guide.md");
+    assert!(guide.contains("No `opencode_json` record reads as a completion"));
+}

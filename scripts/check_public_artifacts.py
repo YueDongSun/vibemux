@@ -44,17 +44,30 @@ content_rules = {
 # Reviewed negative tests: synthetic values that exist to prove a rejection or
 # redaction path (loopback userinfo on a reserved host, RFC 1918 and CGNAT
 # samples for address-policy tests, fake credential shapes for redaction
-# tests, and a redacted `C:\Users\...` path elision in the ledger). Bind each
-# exception to the exact stripped source line, never to a whole file or rule.
+# tests, a redacted `C:\Users\...` path elision in the ledger, and a synthetic
+# `C:\Users\private_user` path in a CLI redaction test). Bind each exception
+# to the exact stripped source line, never to a whole file or rule.
 negative_fixture_hashes = {
+    ("crates/vibemux_a2a/src/lib.rs", "private_network_address"): (
+        "d1007c401888abb525fdf120c32f02238c7837e277d83052ad6ee4a68aa36073",
+    ),
     ("crates/vibemux_a2a/src/lib.rs", "url_credentials"): (
         "11cc70cac01312d573a72bea4b4eb5738c620ab5c5f7b5ca2d7c14c10dd47414",
+    ),
+    ("crates/vibemux_a2a/src/task_client.rs", "private_network_address"): (
+        "7f3c9d88655c68e127a26a4d3abf46808276982fc6b0de1e970b77c4bba72a2c",
+    ),
+    ("crates/vibemux_a2a/src/task_grpc.rs", "private_network_address"): (
+        "2f9fe53f132d205bda969a63ca82d51787cd40dbbce4f89fa640d5beee65dcd8",
     ),
     ("crates/vibemux_a2a/tests/task_gateway.rs", "url_credentials"): (
         "6a6ede9760c2427b14f7ae839545c7010bf2c380d5ab8924d0a78ae48b63bdd1",
     ),
     ("crates/vibemux_a2a/tests/task_grpc.rs", "url_credentials"): (
         "91cd172aafe40360ea5dd9b56940f177b9562579f7feb33e2738ab3c2aa26e7f",
+    ),
+    ("crates/vibemux_cli/src/failure.rs", "personal_home"): (
+        "75ffd24ac5d32d704d6c6932cfc18f3e4897a6980c8d8784e0de3e23915ddee9",
     ),
     ("crates/vibemux_decision_peer/src/jev_client.rs", "url_credentials"): (
         "79abed56570a1a9796d694a83a47ce7613f199543cf4f3447e7d83620d095a9d",

@@ -103,3 +103,47 @@ fn decode_frame(mut frame: Vec<u8>) -> Result<String, DispatchError> {
     }
     String::from_utf8(frame).map_err(|_| DispatchError::InvalidUtf8)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn framer(limit: usize) -> JsonLineFramer {
+        JsonLineFramer::new(NonZeroUsize::new(limit).expect("nonzero limit"))
+    }
+
+    fn frames_of(limit: usize, bytes: &[u8]) -> Result<Vec<String>, DispatchError> {
+        let mut framer = framer(limit);
+        let mut frames = Vec::new();
+        framer.push(bytes, &mut frames)?;
+        Ok(frames)
+    }
+
+    #[test]
+    fn a_failed_finish_poisons_the_framer() {
+        let mut framer = framer(8);
+        let mut frames = Vec::new();
+        framer
+            .push(b"\xe4\xbd", &mut frames)
+            .expect("partial frame");
+        assert_eq!(framer.finish(), Err(DispatchError::InvalidUtf8));
+        assert_eq!(framer.finish(), Err(DispatchError::InvalidUtf8));
+        assert_eq!(
+            framer.push(b"{}\n", &mut frames),
+            Err(DispatchError::InvalidUtf8)
+        );
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn the_frame_limit_counts_a_trailing_cr() {
+        assert_eq!(frames_of(4, b"123\r\n"), Ok(vec!["123".to_owned()]));
+        assert_eq!(frames_of(4, b"1234\r\n"), Err(DispatchError::FrameTooLarge));
+    }
+
+    #[test]
+    fn only_one_trailing_cr_is_removed() {
+        assert_eq!(frames_of(8, b"{}\r\r\n"), Ok(vec!["{}\r".to_owned()]));
+        assert_eq!(frames_of(8, b"a\rb\n"), Ok(vec!["a\rb".to_owned()]));
+    }
+}

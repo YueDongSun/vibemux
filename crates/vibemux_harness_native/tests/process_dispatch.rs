@@ -1,6 +1,10 @@
 #![cfg(feature = "test_helpers")]
 
-use std::{future::Future, path::PathBuf, time::Duration};
+use std::{
+    future::Future,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -25,6 +29,7 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 const CANCEL_DELAY: Duration = Duration::from_millis(100);
 const BLOCKED_TIMEOUT_MS: u64 = 30_000;
 const CANCEL_SHUTDOWN_MS: u64 = 300;
+const LONG_SHUTDOWN_MS: u64 = 3_000;
 const PROMPT: &str = "SYNTHETIC_PROMPT_SENTINEL ; echo injected > synthetic_injection_marker & $(synthetic_command) | < > `literal` %SYNTHETIC_ENV% \n你好";
 const HARNESSES: [Harness; 5] = [
     Harness::Codex,
@@ -95,6 +100,31 @@ impl Fixture {
             ready_path,
             dispatcher,
         }
+    }
+
+    /// Rewrites the configuration and reloads the dispatcher, whose
+    /// configuration digest the plugin checks.
+    fn reconfigure(&mut self, edit: impl FnOnce(&mut Config)) {
+        let mut config: Config =
+            serde_json::from_slice(&std::fs::read(&self.config_path).unwrap()).unwrap();
+        edit(&mut config);
+        std::fs::write(&self.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        self.dispatcher = Dispatcher::new(
+            &self.config_path,
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
+        )
+        .unwrap();
+    }
+
+    fn replace_executable(&mut self, harness: Harness, executable: PathBuf) {
+        self.reconfigure(|config| {
+            config
+                .harnesses
+                .iter_mut()
+                .find(|route| route.harness == harness)
+                .unwrap()
+                .executable = executable;
+        });
     }
 
     async fn execute(&self, harness: Harness) -> Outcome {
@@ -479,6 +509,41 @@ async fn changed_config_is_rejected_before_probe_or_prompt() {
     .await;
 }
 
+/// A vendor executable that cannot launch fails in the plugin's runner,
+/// before any completion exists. The report names that launch failure
+/// rather than `harness_plugin_rejected`, for a probe and an execution. It
+/// claims no forced kill, and it returns without waiting out the shutdown
+/// grace period for an answer the plugin has already given.
+#[tokio::test]
+async fn launch_failures_keep_the_runner_code() {
+    bounded(async {
+        let mut fixture = Fixture::new("normal");
+        fixture.reconfigure(|config| config.limits.shutdown_ms = LONG_SHUTDOWN_MS);
+        let missing = fixture.working_directory.join("missing_vendor_executable");
+        fixture.replace_executable(Harness::Codex, missing);
+        let started = Instant::now();
+        let probe = fixture.dispatcher.probe(Harness::Codex).await.unwrap();
+        let probe_elapsed = started.elapsed();
+        let started = Instant::now();
+        let execution = fixture.execute(Harness::Codex).await;
+        for (outcome, elapsed) in [(probe, probe_elapsed), (execution, started.elapsed())] {
+            assert_eq!(outcome.completion.status, Status::Failed, "{outcome:?}");
+            assert_eq!(
+                outcome.completion.error_code.as_deref(),
+                Some("harness_invalid_launch")
+            );
+            assert!(outcome.records.is_empty());
+            assert_eq!(outcome.completion.exit_code, None);
+            assert!(!outcome.completion.forced_termination);
+            assert!(
+                elapsed < Duration::from_millis(LONG_SHUTDOWN_MS),
+                "{elapsed:?}"
+            );
+        }
+    })
+    .await;
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_batch_routes_are_rejected_without_launching_a_shell() {
@@ -493,22 +558,13 @@ async fn windows_batch_routes_are_rejected_without_launching_a_shell() {
                 b"@echo off\r\necho executed>synthetic_script_executed\r\n",
             )
             .unwrap();
-            let mut config: Config =
-                serde_json::from_slice(&std::fs::read(&fixture.config_path).unwrap()).unwrap();
-            config
-                .harnesses
-                .iter_mut()
-                .find(|route| route.harness == Harness::Codex)
-                .unwrap()
-                .executable = executable;
-            std::fs::write(&fixture.config_path, serde_json::to_vec(&config).unwrap()).unwrap();
-            fixture.dispatcher = Dispatcher::new(
-                &fixture.config_path,
-                &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
-            )
-            .unwrap();
+            fixture.replace_executable(Harness::Codex, executable);
             let outcome = fixture.execute(Harness::Codex).await;
             assert_eq!(outcome.completion.status, Status::Failed, "{outcome:?}");
+            assert_eq!(
+                outcome.completion.error_code.as_deref(),
+                Some("harness_native_executable_required")
+            );
             assert!(outcome.records.is_empty());
             assert_eq!(outcome.completion.exit_code, None);
             assert!(
@@ -668,6 +724,120 @@ async fn plugin_success_contradicting_failed_vendor_terminal_is_rejected() {
         );
         assert_eq!(outcome.records.len(), 5);
         assert_eq!(outcome.records.last().unwrap().kind, Kind::Failed);
+    })
+    .await;
+}
+
+/// `enabled` and `allow_execution` are the operator's only authorization, and
+/// both the dispatcher and the plugin enforce them before anything starts.
+/// Every route names a missing executable and working directory, so a request
+/// that slipped past a gate would fail later with a different code; the
+/// control rows show that an admitted probe does reach that later step.
+#[tokio::test]
+async fn route_gates_refuse_before_any_plugin_or_vendor_process_starts() {
+    bounded(async {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let route = |harness: Harness, enabled: bool, allow_execution: bool| Route {
+            harness,
+            protocol: protocol(harness),
+            executable: missing.join("vendor.exe"),
+            arguments: vec![],
+            working_directory: missing.clone(),
+            environment_names: vec![],
+            enabled,
+            allow_execution,
+            model: None,
+        };
+        let config = Config {
+            schema_version: SCHEMA_VERSION,
+            limits: Limits::default(),
+            harnesses: vec![
+                route(Harness::Codex, true, false),
+                route(Harness::Claude, false, true),
+            ],
+        };
+        let config_path = directory.path().join("gate_config.json");
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let dispatcher = Dispatcher::new(
+            &config_path,
+            &PathBuf::from(env!("CARGO_BIN_EXE_vibemux_harness_native_plugin")),
+        )
+        .unwrap();
+        let (_sender, cancellation) = watch::channel(false);
+        let refused = |error: vibemux_harness_native::Error| error.code();
+        let execute = |harness| dispatcher.execute(request(harness), cancellation.clone());
+        assert_eq!(
+            execute(Harness::Codex).await.map_err(refused).err(),
+            Some("harness_execution_disabled")
+        );
+        for outcome in [
+            execute(Harness::Claude).await,
+            dispatcher.probe(Harness::Claude).await,
+            // No route is configured for Grok at all.
+            dispatcher.probe(Harness::Grok).await,
+        ] {
+            assert_eq!(
+                outcome.map_err(refused).err(),
+                Some("harness_route_unavailable")
+            );
+        }
+        // Control: a probe needs no execution grant, so it passes both gates.
+        assert_eq!(
+            dispatcher
+                .probe(Harness::Codex)
+                .await
+                .map_err(refused)
+                .err(),
+            Some("harness_invalid_cwd")
+        );
+
+        // The plugin re-checks the route it was handed, including a route
+        // that belongs to another harness.
+        for (route, harness, probe, expected) in [
+            (
+                route(Harness::Codex, true, false),
+                Harness::Codex,
+                false,
+                "harness_execution_disabled",
+            ),
+            (
+                route(Harness::Claude, false, true),
+                Harness::Claude,
+                false,
+                "harness_route_unavailable",
+            ),
+            (
+                route(Harness::Claude, false, true),
+                Harness::Claude,
+                true,
+                "harness_route_unavailable",
+            ),
+            (
+                route(Harness::Codex, true, true),
+                Harness::Claude,
+                true,
+                "harness_route_unavailable",
+            ),
+            (
+                route(Harness::Codex, true, false),
+                Harness::Codex,
+                true,
+                "harness_invalid_cwd",
+            ),
+        ] {
+            let (records, _receiver) = mpsc::channel(1);
+            let result = native::run(
+                route,
+                Limits::default(),
+                request(harness),
+                probe,
+                records,
+                cancellation.clone(),
+            )
+            .await;
+            assert_eq!(result.map_err(refused).err(), Some(expected));
+        }
     })
     .await;
 }

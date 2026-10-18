@@ -1,12 +1,21 @@
+use vibemux_harness::{
+    dispatch::{AdapterCapability, adapter_capability},
+    terminal_text::display_character,
+};
 use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
+
+use crate::view_model::{route_label, state_label};
 
 const MAX_DISPLAY_CHARACTERS: usize = 160;
 
+/// One display line: every whitespace or terminal-unsafe character becomes a
+/// space, and the text is cut at `MAX_DISPLAY_CHARACTERS`.
 pub fn safe_text(value: &str) -> String {
-    value.chars().take(MAX_DISPLAY_CHARACTERS).map(|character| {
-        if character.is_control() || character.is_whitespace() || matches!(character, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' }
-        else { character }
-    }).collect()
+    value
+        .chars()
+        .take(MAX_DISPLAY_CHARACTERS)
+        .map(display_character)
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +41,9 @@ pub struct AgentView {
     pub version: String,
     pub route: String,
     pub code: String,
+    /// Structured adapter support compiled into this build; independent of
+    /// whether the harness was observed.
+    pub adapter: AdapterCapability,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,15 +76,17 @@ impl DashboardModel {
                             .unwrap_or_else(|| "-".to_string()),
                         route: route_label(probe.route).to_string(),
                         code: safe_text(&probe.code),
+                        adapter: adapter_capability(agent),
                     },
                     None => AgentView {
                         name: agent.display_name().to_string(),
-                        launcher_state: "not_run".to_string(),
-                        authentication_state: "not_run".to_string(),
-                        inference_state: "not_run".to_string(),
+                        launcher_state: state_label(ProbeState::NotRun).to_string(),
+                        authentication_state: state_label(ProbeState::NotRun).to_string(),
+                        inference_state: state_label(ProbeState::NotRun).to_string(),
                         version: "-".to_string(),
-                        route: "unknown".to_string(),
+                        route: route_label(RouteKind::Unknown).to_string(),
                         code: "observation_missing".to_string(),
+                        adapter: adapter_capability(agent),
                     },
                 },
             )
@@ -154,14 +168,16 @@ impl DashboardModel {
         ];
         lines.extend(self.agents.iter().map(|agent| {
             format!(
-                "- {} launcher={} auth={} inference={} version={} route={} code={}",
+                "- {} launcher={} auth={} inference={} version={} route={} code={} adapter={} protocols={}",
                 agent.name,
                 agent.launcher_state,
                 agent.authentication_state,
                 agent.inference_state,
                 agent.version,
                 agent.route,
-                agent.code
+                agent.code,
+                agent.adapter.support.as_str(),
+                agent.adapter.protocol_list()
             )
         }));
         lines.push("native_tui_slots:".to_string());
@@ -174,23 +190,6 @@ impl DashboardModel {
             )
         }));
         lines.join("\n")
-    }
-}
-
-const fn state_label(state: ProbeState) -> &'static str {
-    match state {
-        ProbeState::Verified => "verified",
-        ProbeState::Failed => "failed",
-        ProbeState::Unavailable => "unavailable",
-        ProbeState::NotRun => "not_run",
-    }
-}
-
-const fn route_label(route: RouteKind) -> &'static str {
-    match route {
-        RouteKind::Direct => "direct",
-        RouteKind::LocalGateway => "local_gateway",
-        RouteKind::Unknown => "unknown",
     }
 }
 

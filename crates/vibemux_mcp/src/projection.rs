@@ -2,6 +2,7 @@
 
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use vibemux_harness::terminal_text::is_terminal_unsafe;
 use vibemux_types::frontend::{
     FrontendTaskDetail, FrontendTaskSummary, FrontendTasksPage, MAX_FRONTEND_ARTIFACTS,
     MAX_FRONTEND_EVENTS, MAX_FRONTEND_RUNS, MAX_FRONTEND_TASKS,
@@ -79,10 +80,13 @@ pub fn dispatch(status: HarnessDispatchStatus) -> Value {
         "evidence":EVIDENCE})
 }
 
+/// The title keeps its text but not what could reorder or break it where an
+/// MCP client shows it: a control, a bidirectional mark or control, or a line
+/// or paragraph separator becomes a space, the shared terminal-text rule.
 fn task_summary(task: &FrontendTaskSummary) -> Value {
     let mut title = String::new();
     for character in task.title.chars() {
-        let character = if character.is_control() {
+        let character = if is_terminal_unsafe(character) {
             ' '
         } else {
             character
@@ -303,5 +307,36 @@ mod tests {
         assert!(token(&"x".repeat(97)).is_none());
         assert!(timestamp("not_a_timestamp").is_none());
         assert!(digest("not_a_digest").is_none());
+    }
+
+    #[test]
+    fn a_title_loses_bidirectional_controls_and_separators_but_keeps_its_text() {
+        let project = |title: &str| {
+            task_summary(&FrontendTaskSummary {
+                task_id: TaskId::new(),
+                project_id: ProjectId::new(),
+                title: title.into(),
+                title_truncated: false,
+                status: TaskStatus::Open,
+                latest_sequence: 1,
+                detail_revision: 1,
+            })
+        };
+        // `char::is_control` is false for each of these, so only the shared
+        // rule keeps them from reordering or breaking the title.
+        let projected = project("Fix\u{202e}gpj.exe\u{2028}x\u{2066}y\u{200f}z");
+        assert_eq!(projected["title"], "Fix gpj.exe x y z");
+        assert_eq!(projected["title_truncated"], true);
+        // Ordinary text, including a no-break space and non-Latin script, is
+        // returned as it is and is not reported as changed.
+        for kept in [
+            "修复 parser",
+            "a\u{a0}b",
+            "emoji \u{1f469}\u{200d}\u{1f4bb}",
+        ] {
+            let projected = project(kept);
+            assert_eq!(projected["title"], kept);
+            assert_eq!(projected["title_truncated"], false);
+        }
     }
 }

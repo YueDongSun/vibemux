@@ -2,6 +2,7 @@
 //! Reusable overview/activity/artifact/terminal task detail view.
 
 use eframe::egui::{self, RichText, Ui};
+use vibemux_harness::terminal_text::display_line;
 
 use crate::supervisor_model::{
     RunView, SupervisorAction, SupervisorSnapshot, TaskView, TerminalCandidate,
@@ -12,6 +13,7 @@ use super::{
     chat::{demo_badge, wrapped_label},
     design,
     supervisor_state::{TaskDetailSelection, TaskDetailTab, UiActionQueue},
+    task_labels::{executor_label, nonempty, run_label, single_run_label, task_state, task_title},
 };
 
 /// Whether the detail view draws the task title itself (detached window) or
@@ -43,7 +45,7 @@ pub fn render(
             if title == TitleDisplay::Shown {
                 wrapped_label(
                     ui,
-                    RichText::new(task_title(task))
+                    RichText::new(task_title(&task.title))
                         .font(super::typography::display_font(
                             ui.ctx(),
                             super::typography::TITLE_SIZE,
@@ -53,7 +55,7 @@ pub fn render(
                 ui.add_space(3.0);
             }
             ui.horizontal_wrapped(|ui| {
-                design::status(ui, colors, task_state(task));
+                design::status(ui, colors, task_state(&task.state));
                 ui.label(
                     RichText::new(executor_label(task))
                         .size(13.0)
@@ -116,7 +118,7 @@ fn select_run(ui: &mut Ui, colors: &C, task: &TaskView, selection: &mut TaskDeta
         [run] => {
             wrapped_label(
                 ui,
-                RichText::new(format!("Run · {} · {}", run.harness, run.run_id))
+                RichText::new(single_run_label(run))
                     .size(12.0)
                     .color(colors.muted),
             );
@@ -418,16 +420,14 @@ fn terminal_candidate(
                     .strong()
                     .color(colors.txt),
             );
-            detail_row(ui, colors, "Plugin", &candidate.plugin_id);
-            detail_row(ui, colors, "Pane", &candidate.pane_id);
-            detail_row(ui, colors, "Instance", &candidate.instance_id);
+            for (label, value) in candidate_rows(candidate) {
+                detail_row(ui, colors, label, &value);
+            }
             let link = design::action_button(
                 ui,
                 colors,
                 "Link terminal",
-                !candidate.plugin_id.is_empty()
-                    && !candidate.pane_id.is_empty()
-                    && !candidate.instance_id.is_empty(),
+                candidate_is_linkable(candidate),
             )
             .on_hover_text("Link this exact reported terminal candidate to the selected Run.");
             if link.clicked() {
@@ -497,38 +497,69 @@ fn section_label(ui: &mut Ui, colors: &C, label: &str) {
     ui.add_space(5.0);
 }
 
-fn task_title(task: &TaskView) -> &str {
-    nonempty(&task.title, "Untitled task")
+/// The identifier rows of a terminal candidate card, as display lines. A
+/// terminal plugin's instance ID only has to pass the protocol's control
+/// character check, so the card draws a mapped copy; the link request still
+/// sends the identifiers exactly as reported.
+fn candidate_rows(candidate: &TerminalCandidate) -> [(&'static str, String); 3] {
+    [
+        ("Plugin", display_line(&candidate.plugin_id)),
+        ("Pane", display_line(&candidate.pane_id)),
+        ("Instance", display_line(&candidate.instance_id)),
+    ]
 }
 
-fn task_state(task: &TaskView) -> &str {
-    nonempty(&task.state, "Unknown state")
+/// Linking needs the exact reported candidate, so every identifier must be
+/// present; one that is empty or only whitespace counts as missing.
+fn candidate_is_linkable(candidate: &TerminalCandidate) -> bool {
+    [
+        &candidate.plugin_id,
+        &candidate.pane_id,
+        &candidate.instance_id,
+    ]
+    .iter()
+    .all(|id| !id.trim().is_empty())
 }
 
-fn executor_label(task: &TaskView) -> &str {
-    if !task.executor.is_empty() {
-        return &task.executor;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_candidate_is_linkable_only_with_every_identifier() {
+        let candidate = |plugin_id: &str, pane_id: &str, instance_id: &str| TerminalCandidate {
+            plugin_id: plugin_id.to_string(),
+            pane_id: pane_id.to_string(),
+            instance_id: instance_id.to_string(),
+            ..TerminalCandidate::default()
+        };
+        assert!(candidate_is_linkable(&candidate("wezterm", "3", "gui_1")));
+        for missing in [
+            candidate("", "3", "gui_1"),
+            candidate("wezterm", " ", "gui_1"),
+            candidate("wezterm", "3", "\t"),
+        ] {
+            assert!(!candidate_is_linkable(&missing), "{missing:?}");
+        }
     }
-    task.runs
-        .first()
-        .map(|run| run.harness.as_str())
-        .filter(|label| !label.is_empty())
-        .unwrap_or("Unassigned")
-}
 
-fn run_label(run: &RunView) -> String {
-    format!(
-        "{} · {} · {}",
-        nonempty(&run.harness, "Harness"),
-        nonempty(&run.role, "Run"),
-        run.run_id
-    )
-}
-
-fn nonempty<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.trim().is_empty() {
-        fallback
-    } else {
-        value
+    #[test]
+    fn candidate_rows_draw_a_display_copy_of_each_identifier() {
+        let candidate = TerminalCandidate {
+            plugin_id: "wezterm_observer".to_string(),
+            pane_id: "3".to_string(),
+            instance_id: "gui\u{2028}1\u{202e}fdp.exe".to_string(),
+            ..TerminalCandidate::default()
+        };
+        assert_eq!(
+            candidate_rows(&candidate),
+            [
+                ("Plugin", "wezterm_observer".to_string()),
+                ("Pane", "3".to_string()),
+                ("Instance", "gui 1 fdp.exe".to_string()),
+            ]
+        );
+        // The candidate a link request copies from is left as reported.
+        assert_eq!(candidate.instance_id, "gui\u{2028}1\u{202e}fdp.exe");
     }
 }

@@ -634,6 +634,7 @@ fn finish(
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use serde_json::{Value, json};
     #[tokio::test]
     async fn subscriber_lag_is_explicit_and_terminal() {
         let initial = TaskSnapshot {
@@ -654,5 +655,328 @@ mod tests {
             TaskGatewayError::Busy
         );
         assert!(stream.next().await.is_none());
+    }
+
+    const REFUSED: TaskGatewayError = TaskGatewayError::InvalidRequest;
+
+    #[test]
+    fn the_identity_payload_is_canonical() {
+        for (input, expected) in [
+            (json!(1.0), json!(1)),
+            (json!(-0.0), json!(0)),
+            (json!(1e3), json!(1000)),
+            (json!(-2.0), json!(-2)),
+            (json!(1.5), json!(1.5)),
+            (json!(MAX_EXACT_INTEGER), json!(MAX_EXACT_INTEGER)),
+            (json!(-MAX_EXACT_INTEGER), json!(-MAX_EXACT_INTEGER)),
+            (json!(MAX_EXACT_INTEGER_FLOAT), json!(MAX_EXACT_INTEGER)),
+            (json!(-MAX_EXACT_INTEGER_FLOAT), json!(-MAX_EXACT_INTEGER)),
+            (json!("1.0"), json!("1.0")),
+            (json!(true), json!(true)),
+            (json!(null), json!(null)),
+        ] {
+            assert_eq!(canonical_identity_payload(&input), Ok(expected), "{input}");
+        }
+        let nested = canonical_identity_payload(&json!([1.0, [2.0], {"b": 3.0, "a": [4.0]}]))
+            .expect("nested payload");
+        assert_eq!(nested.to_string(), r#"[1,[2],{"a":[4],"b":3}]"#);
+
+        for invalid in [
+            json!(MAX_EXACT_INTEGER + 1),
+            json!(-MAX_EXACT_INTEGER - 1),
+            json!(u64::MAX),
+            json!(9_007_199_254_740_992.0),
+            json!(-9_007_199_254_740_992.0),
+            json!(1e300),
+            json!([1, [MAX_EXACT_INTEGER + 1]]),
+            json!({"a": {"b": u64::MAX}}),
+        ] {
+            assert_eq!(
+                canonical_identity_payload(&invalid),
+                Err(REFUSED),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_input_identity_ignores_request_ids_and_number_spelling() {
+        let request = |payload: Value| TaskRequest {
+            request_id: "request_1".to_string(),
+            context_id: "context_1".to_string(),
+            task_id: Some("task_1".to_string()),
+            idempotency_key: "key_1".to_string(),
+            payload,
+        };
+        let identity = |request: &TaskRequest| input_identity(request).expect("identity");
+        let base = request(json!({"goal": "review", "limit": 2}));
+        for same in [
+            TaskRequest {
+                request_id: "request_2".to_string(),
+                idempotency_key: "key_2".to_string(),
+                ..base.clone()
+            },
+            request(json!({"limit": 2.0, "goal": "review"})),
+        ] {
+            assert_eq!(identity(&same), identity(&base), "{same:?}");
+        }
+        for different in [
+            TaskRequest {
+                context_id: "context_2".to_string(),
+                ..base.clone()
+            },
+            TaskRequest {
+                task_id: None,
+                ..base.clone()
+            },
+            TaskRequest {
+                task_id: Some("task_2".to_string()),
+                ..base.clone()
+            },
+            request(json!({"goal": "review", "limit": 2.5})),
+            request(json!({"goal": "fix", "limit": 2})),
+        ] {
+            assert_ne!(identity(&different), identity(&base), "{different:?}");
+        }
+        assert_eq!(
+            input_identity(&request(json!({"limit": u64::MAX}))),
+            Err(REFUSED)
+        );
+    }
+
+    fn entry(
+        subject: &str,
+        context_id: &str,
+        state: TaskState,
+        artifacts: Vec<TaskArtifact>,
+    ) -> Entry {
+        Entry {
+            subject: subject.to_string(),
+            key: String::new(),
+            input: Vec::new(),
+            snapshot: TaskSnapshot {
+                task_id: String::new(),
+                context_id: context_id.to_string(),
+                state,
+                artifacts,
+                error_code: None,
+            },
+            events: broadcast::channel(EVENT_CAPACITY).0,
+            cancel: watch::channel(false).0,
+            cancel_waiters: Vec::new(),
+        }
+    }
+
+    fn entries(list: Vec<(&str, Entry)>) -> BTreeMap<String, Entry> {
+        list.into_iter()
+            .map(|(id, mut entry)| {
+                entry.snapshot.task_id = id.to_string();
+                (id.to_string(), entry)
+            })
+            .collect()
+    }
+
+    fn list_request(page_size: u32, page_token: Option<&str>) -> TaskListRequest {
+        TaskListRequest {
+            context_id: None,
+            state: None,
+            page_size,
+            page_token: page_token.map(str::to_string),
+            include_artifacts: false,
+        }
+    }
+
+    /// The task ids, the next page token, and the total size of a listing.
+    fn page(list: Result<TaskList, TaskGatewayError>) -> (Vec<String>, Option<String>, u32) {
+        let list = list.expect("list");
+        let ids = list.tasks.iter().map(|task| task.task_id.clone()).collect();
+        (ids, list.next_page_token, list.total_size)
+    }
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    /// A data artifact of about 12 KiB: two fit a 32 KiB listing, three do not.
+    fn large_artifact() -> TaskArtifact {
+        TaskArtifact::data("artifact_1", json!("x".repeat(12 * 1024)))
+    }
+
+    #[test]
+    fn a_listing_keeps_only_the_callers_matching_tasks() {
+        let entries = entries(vec![
+            (
+                "task_1",
+                entry("alice", "context_a", TaskState::Working, vec![]),
+            ),
+            (
+                "task_2",
+                entry("bob", "context_a", TaskState::Working, vec![]),
+            ),
+            (
+                "task_3",
+                entry("alice", "context_b", TaskState::Completed, vec![]),
+            ),
+            (
+                "task_4",
+                entry("alice", "context_a", TaskState::Completed, vec![]),
+            ),
+            (
+                "task_5",
+                entry("alice", "context_a", TaskState::Working, vec![]),
+            ),
+        ]);
+        let filtered = |subject: &str, context_id: Option<&str>, state: Option<TaskState>| {
+            let request = TaskListRequest {
+                context_id: context_id.map(str::to_string),
+                state,
+                ..list_request(32, None)
+            };
+            page(list_tasks(&entries, subject, request))
+        };
+        assert_eq!(
+            filtered("alice", None, None),
+            (ids(&["task_1", "task_3", "task_4", "task_5"]), None, 4)
+        );
+        assert_eq!(filtered("bob", None, None), (ids(&["task_2"]), None, 1));
+        assert_eq!(filtered("carol", None, None), (ids(&[]), None, 0));
+        assert_eq!(
+            filtered("alice", Some("context_a"), None),
+            (ids(&["task_1", "task_4", "task_5"]), None, 3)
+        );
+        assert_eq!(
+            filtered("alice", None, Some(TaskState::Completed)),
+            (ids(&["task_3", "task_4"]), None, 2)
+        );
+        assert_eq!(
+            filtered("alice", Some("context_a"), Some(TaskState::Working)),
+            (ids(&["task_1", "task_5"]), None, 2)
+        );
+    }
+
+    #[test]
+    fn a_listing_pages_by_a_numeric_offset_token() {
+        let entries = entries(
+            ["task_1", "task_2", "task_3", "task_4"]
+                .into_iter()
+                .map(|id| (id, entry("alice", "context_a", TaskState::Working, vec![])))
+                .collect(),
+        );
+        let listed = |page_size: u32, page_token: Option<&str>| {
+            list_tasks(&entries, "alice", list_request(page_size, page_token))
+        };
+        let two = Some("2".to_string());
+        assert_eq!(page(listed(2, None)), (ids(&["task_1", "task_2"]), two, 4));
+        assert_eq!(
+            page(listed(2, Some("2"))),
+            (ids(&["task_3", "task_4"]), None, 4)
+        );
+        assert_eq!(
+            page(listed(2, Some("1"))),
+            (ids(&["task_2", "task_3"]), Some("3".to_string()), 4)
+        );
+        assert_eq!(
+            page(listed(3, Some("2"))),
+            (ids(&["task_3", "task_4"]), None, 4)
+        );
+        assert_eq!(page(listed(2, Some("4"))), (ids(&[]), None, 4));
+        for invalid in ["5", "x", "-1", ""] {
+            assert_eq!(listed(2, Some(invalid)), Err(REFUSED), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn a_listing_strips_artifacts_unless_asked_and_stops_at_its_size_bound() {
+        let large_entries = entries(
+            ["task_1", "task_2", "task_3"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id,
+                        entry(
+                            "alice",
+                            "context_a",
+                            TaskState::Working,
+                            vec![large_artifact()],
+                        ),
+                    )
+                })
+                .collect(),
+        );
+        let listed = |entries: &BTreeMap<String, Entry>,
+                      page_token: Option<&str>,
+                      include_artifacts: bool| {
+            let request = TaskListRequest {
+                include_artifacts,
+                ..list_request(32, page_token)
+            };
+            list_tasks(entries, "alice", request)
+        };
+        let stripped = listed(&large_entries, None, false).expect("stripped list");
+        assert_eq!(stripped.tasks.len(), 3);
+        assert!(stripped.tasks.iter().all(|task| task.artifacts.is_empty()));
+        assert_eq!(large_entries["task_1"].snapshot.artifacts.len(), 1);
+
+        let first = listed(&large_entries, None, true).expect("first page");
+        assert!(
+            first
+                .tasks
+                .iter()
+                .all(|task| task.artifacts == [large_artifact()])
+        );
+        assert_eq!(
+            page(Ok(first)),
+            (ids(&["task_1", "task_2"]), Some("2".to_string()), 3)
+        );
+        assert_eq!(
+            page(listed(&large_entries, Some("2"), true)),
+            (ids(&["task_3"]), None, 3)
+        );
+
+        // A snapshot of exactly 32 KiB is valid alone but cannot fit a listing. The page
+        // ends before it rather than skipping it for a later task that would fit.
+        let mut full = TaskSnapshot {
+            task_id: "task_2".to_string(),
+            context_id: "context_a".to_string(),
+            state: TaskState::Working,
+            artifacts: vec![
+                TaskArtifact::data("artifact_1", json!("x".repeat(MAX_TASK_PAYLOAD_BYTES - 2))),
+                TaskArtifact::data("artifact_2", json!("")),
+            ],
+            error_code: None,
+        };
+        let missing = MAX_TASK_WIRE_BYTES / 2 - serde_json::to_vec(&full).expect("size").len();
+        full.artifacts[1] = TaskArtifact::data("artifact_2", json!("x".repeat(missing)));
+        assert_eq!(
+            serde_json::to_vec(&full).expect("size").len(),
+            MAX_TASK_WIRE_BYTES / 2
+        );
+        assert_eq!(full.validate(), Ok(()));
+        let full_entries = entries(vec![
+            (
+                "task_1",
+                entry("alice", "context_a", TaskState::Working, vec![]),
+            ),
+            (
+                "task_2",
+                entry("alice", "context_a", TaskState::Working, full.artifacts),
+            ),
+            (
+                "task_3",
+                entry("alice", "context_a", TaskState::Working, vec![]),
+            ),
+        ]);
+        assert_eq!(
+            page(listed(&full_entries, None, true)),
+            (ids(&["task_1"]), Some("1".to_string()), 3)
+        );
+        assert_eq!(
+            listed(&full_entries, Some("1"), true),
+            Err(TaskGatewayError::Busy)
+        );
+        assert_eq!(
+            page(listed(&full_entries, Some("1"), false)),
+            (ids(&["task_2", "task_3"]), None, 3)
+        );
     }
 }
