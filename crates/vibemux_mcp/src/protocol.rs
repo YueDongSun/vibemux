@@ -250,3 +250,241 @@ fn metadata_only(value: &Value) -> bool {
         .is_some_and(|object| object.keys().all(|key| key == "_meta"))
         && valid_metadata(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(id: Value, method: &str, params: Value) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+    }
+
+    fn notification(method: &str, params: Value) -> Value {
+        json!({"jsonrpc":"2.0","method":method,"params":params})
+    }
+
+    fn initialize_params() -> Value {
+        json!({"protocolVersion":PROTOCOL_VERSION,"capabilities":{},
+        "clientInfo":{"name":"fixture","version":"1"}})
+    }
+
+    fn reply(action: Action) -> Value {
+        match action {
+            Action::Reply(value) => value,
+            Action::None => panic!("expected a reply, got no action"),
+            Action::Read { .. } => panic!("expected a reply, got a read"),
+        }
+    }
+
+    fn in_flight_reply(action: InFlightAction) -> Value {
+        match action {
+            InFlightAction::Reply(value) => value,
+            InFlightAction::Cancel => panic!("expected a reply, got a cancel"),
+            InFlightAction::Ignore => panic!("expected a reply, got an ignore"),
+        }
+    }
+
+    /// The JSON-RPC number and the stable code of an error reply.
+    fn failure(reply: &Value) -> (i64, &str) {
+        (
+            reply["error"]["code"].as_i64().unwrap_or_default(),
+            reply["error"]["data"]["code"].as_str().unwrap_or_default(),
+        )
+    }
+
+    fn ready(host_grant: bool) -> Protocol {
+        let backend = BackendView::default();
+        let mut protocol = Protocol::default();
+        reply(protocol.handle(
+            request(json!(0), "initialize", initialize_params()),
+            host_grant,
+            &backend,
+        ));
+        protocol.handle(
+            notification("notifications/initialized", json!({})),
+            host_grant,
+            &backend,
+        );
+        assert!(protocol.initialized);
+        protocol
+    }
+
+    fn tool_names(listed: &Value) -> Vec<&str> {
+        listed["result"]["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|tool| tool["name"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_lifecycle_answers_each_request_in_order() {
+        let backend = BackendView::default();
+        let mut protocol = Protocol::default();
+        let mut send = |message: Value| reply(protocol.handle(message, true, &backend));
+        assert_eq!(
+            failure(&send(request(json!(1), "tools/list", json!({})))),
+            (-32002, "not_initialized")
+        );
+        assert_eq!(
+            send(request(json!(2), "ping", json!({}))),
+            json!({"jsonrpc":"2.0","id":2,"result":{}})
+        );
+        let answer = send(request(json!(3), "initialize", initialize_params()));
+        assert_eq!(answer["result"]["protocolVersion"], PROTOCOL_VERSION);
+        let again = send(request(json!(4), "initialize", initialize_params()));
+        assert_eq!(again["id"], 4);
+        assert_eq!(failure(&again), (-32600, "already_initialized"));
+        // The initialize answer alone does not open the tools.
+        assert_eq!(
+            failure(&send(request(json!(5), "tools/list", json!({})))),
+            (-32002, "not_initialized")
+        );
+        let unknown = reply(protocol.handle(
+            request(json!("a"), "resources/list", json!({})),
+            true,
+            &backend,
+        ));
+        assert_eq!(failure(&unknown), (-32002, "not_initialized"));
+
+        let mut protocol = ready(true);
+        let unknown = reply(protocol.handle(
+            request(json!("a"), "resources/list", json!({})),
+            true,
+            &backend,
+        ));
+        assert_eq!(unknown["id"], "a");
+        assert_eq!(failure(&unknown), (-32601, "method_not_found"));
+        let listed =
+            reply(protocol.handle(request(json!(6), "tools/list", json!({})), true, &backend));
+        assert!(tool_names(&listed).contains(&"health"));
+    }
+
+    #[test]
+    fn an_early_initialized_notification_is_ignored() {
+        let backend = BackendView::default();
+        let mut protocol = Protocol::default();
+        assert!(matches!(
+            protocol.handle(
+                notification("notifications/initialized", json!({})),
+                true,
+                &backend
+            ),
+            Action::None
+        ));
+        reply(protocol.handle(
+            request(json!(1), "initialize", initialize_params()),
+            true,
+            &backend,
+        ));
+        assert!(!protocol.initialized);
+    }
+
+    #[test]
+    fn a_read_needs_the_host_grant_and_an_available_backend() {
+        let call =
+            |name: &str| request(json!(1), "tools/call", json!({"name":name,"arguments":{}}));
+        let available = BackendView::default();
+        let mut granted = ready(true);
+        assert!(matches!(
+            granted.handle(call("health"), true, &available),
+            Action::Read {
+                operation: ReadOperation::Health,
+                ..
+            }
+        ));
+        let unavailable = BackendView {
+            available: false,
+            ..BackendView::default()
+        };
+        let refused = reply(granted.handle(call("health"), true, &unavailable));
+        assert_eq!(refused["result"]["isError"], true);
+        assert!(
+            refused["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("reader_unavailable"))
+        );
+        assert_eq!(
+            failure(&reply(granted.handle(call("shell"), true, &available))),
+            (-32602, "unknown_tool")
+        );
+
+        let mut denied = ready(false);
+        assert_eq!(
+            failure(&reply(denied.handle(call("health"), false, &available))),
+            (-32001, "metadata_read_denied")
+        );
+        let listed = reply(denied.handle(
+            request(json!(2), "tools/list", json!({})),
+            false,
+            &available,
+        ));
+        assert_eq!(tool_names(&listed), ["host_status"]);
+    }
+
+    #[test]
+    fn an_in_flight_read_admits_only_ping_and_its_own_cancellation() {
+        let active = json!(7);
+        let duplicate =
+            in_flight_reply(while_reading(request(json!(7), "ping", json!({})), &active));
+        assert_eq!(duplicate["id"], Value::Null);
+        assert_eq!(failure(&duplicate), (-32600, "duplicate_request_id"));
+        assert_eq!(
+            in_flight_reply(while_reading(request(json!(8), "ping", json!({})), &active)),
+            json!({"jsonrpc":"2.0","id":8,"result":{}})
+        );
+        let busy = in_flight_reply(while_reading(
+            request(json!(9), "tools/list", json!({})),
+            &active,
+        ));
+        assert_eq!(busy["id"], 9);
+        assert_eq!(failure(&busy), (-32000, "request_busy"));
+
+        let cancel =
+            |params: Value| while_reading(notification("notifications/cancelled", params), &active);
+        assert!(matches!(
+            cancel(json!({"requestId":7,"reason":"user"})),
+            InFlightAction::Cancel
+        ));
+        for ignored in [
+            json!({"requestId":8}),
+            json!({"requestId":7,"reason":1}),
+            json!({"requestId":7,"extra":true}),
+        ] {
+            assert!(
+                matches!(cancel(ignored.clone()), InFlightAction::Ignore),
+                "{ignored}"
+            );
+        }
+    }
+
+    #[test]
+    fn envelopes_outside_json_rpc_2_are_invalid_requests() {
+        let backend = BackendView::default();
+        for message in [
+            json!([]),
+            json!({"jsonrpc":"1.0","id":1,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":1}),
+            json!({"jsonrpc":"2.0","id":true,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":1.5,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":"x".repeat(129),"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"ping","extra":0}),
+        ] {
+            let answer = reply(Protocol::default().handle(message.clone(), true, &backend));
+            assert_eq!(answer["id"], Value::Null, "{message}");
+            assert_eq!(failure(&answer), (-32600, "invalid_request"), "{message}");
+        }
+        let longest = json!("x".repeat(128));
+        let answer = reply(Protocol::default().handle(
+            request(longest.clone(), "ping", json!({})),
+            true,
+            &backend,
+        ));
+        assert_eq!(answer["id"], longest);
+        assert_eq!(answer["result"], json!({}));
+    }
+}

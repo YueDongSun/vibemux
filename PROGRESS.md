@@ -5421,3 +5421,24 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 - A `frontend.json.tmp` left behind by an earlier build is not removed; nothing reads it.
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the MCP host's request handling with unit tests
+
+**Scope:** `vibemux_mcp::protocol` decides how the native MCP read host (ADR 035) answers each JSON-RPC message, with no process or daemon I/O. That covers the lifecycle order, the read-tool gate, the in-flight rules while one read runs, and envelope checks. The crate's integration tests reach it through the stdio host. No `vibemux_mcp` test named the `already_initialized`, `method_not_found`, `duplicate_request_id`, `reader_unavailable`, or `invalid_request` codes. The framing test checks only the -32600 number for a batch.
+
+**Implemented:**
+- A unit-test module in `crates/vibemux_mcp/src/protocol.rs`. No production code changed, and the MCP wire is unchanged.
+- `the_lifecycle_answers_each_request_in_order`: before `initialize`, only `ping` and `initialize` answer. A second `initialize` is `already_initialized` (-32600). The tools stay closed until `notifications/initialized` arrives. An unknown method then gets `method_not_found` (-32601) with its own id.
+- `an_early_initialized_notification_is_ignored`: the notification sent before `initialize` does not open the tools later.
+- `a_read_needs_the_host_grant_and_an_available_backend`: a granted `health` call becomes a read. An unavailable backend answers a tool error naming `reader_unavailable`, and an unknown tool is `unknown_tool` (-32602). Without the host grant, read tools are `metadata_read_denied` (-32001) and `tools/list` offers only `host_status`.
+- `an_in_flight_read_admits_only_ping_and_its_own_cancellation`: a request reusing the active id is `duplicate_request_id` with a null id, and `ping` still answers. Another request is `request_busy` (-32000). Only a well-formed `notifications/cancelled` naming the active id cancels.
+- `envelopes_outside_json_rpc_2_are_invalid_requests`: these all get `invalid_request` with a null id: a non-object, another `jsonrpc` version, a missing method, a boolean, fractional, or 129-byte string id, or an extra key. A 128-byte string id is accepted.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_mcp --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_mcp --all-features`: lib 10 passed (5 new), framing 5, ipc 3, lifecycle 22, stdio 5.
+- Two mutations were caught and restored byte-for-byte. Disabling the second-`initialize` guard failed the lifecycle test, and disabling the duplicate-id check failed the in-flight test.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
