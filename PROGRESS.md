@@ -5630,3 +5630,25 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A subscription diff in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_server.rs` turns the backend's task snapshots into the A2A stream a subscriber sees. `snapshot_events` sends the first snapshot whole and later ones as artifact and status updates. `stream_finished` and the stream's `stop_on_interrupted` flag decide when the stream ends, and `validate_task_query` checks the task id and tenant of a get, cancel, or subscribe request. The module had no tests of its own; it was exercised only through the gateway integration tests. This change is test-only, and it is the server-side counterpart of the client mapping pinned in the previous entry.
+
+**Implemented:**
+- A unit-test module in `task_server.rs` with a subscription fixture (an empty backend stream, a stop channel, and one semaphore permit), plus snapshot, artifact, and expected-event helpers. No production code changed.
+- `the_first_snapshot_is_sent_whole_and_later_ones_only_as_changes`: the first snapshot is sent as one task event, and an unchanged snapshot sends nothing. A changed or new artifact is sent whole as a replacing update (`append: false`, `last_chunk: true`) in snapshot order, with no status update while the state is unchanged. A change of state, of the error code alone, or a cleared error code each sends exactly one status update; the error code travels in `error_code` metadata.
+- `applying_the_sent_events_reproduces_each_snapshot`: across six snapshots (submitted, working with a first artifact, a changed and an added artifact, input required with an error code, working again, and completed), the client's `apply_stream_response` rebuilds each snapshot exactly from the events sent. The stream ends only at the completed snapshot.
+- `a_snapshot_of_another_task_an_invalid_one_or_a_shrinking_one_is_refused`: a snapshot of another task or context is a protocol failure, both before and after the first snapshot. So is a later snapshot that drops an artifact the subscriber already has. An invalid snapshot is refused as invalid, both first and after a snapshot was sent. A refused snapshot sends nothing and leaves the last sent snapshot in place.
+- `a_terminal_state_ends_the_stream_and_an_interruption_ends_it_only_when_asked`: completed, failed, canceled, and rejected end the stream. Input required and auth required end it only when the stream stops on interruption. Submitted and working never end it.
+- `a_task_query_needs_a_valid_id_and_no_tenant`: a valid id without a tenant passes. An invalid or empty id is refused with `-32602`, and a tenant is refused as unsupported (`-32004`).
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 18 library tests passed (5 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Twenty mutations were caught and restored byte-for-byte. They were: dropping the up-front snapshot validation; refusing another task only when both ids differ, or not at all; allowing a dropped artifact; resending unchanged artifacts; setting the append flag; dropping the last-chunk flag; sending a status update only on a state change, or always; renaming the `error_code` metadata key; not sending the first snapshot; not keeping the last sent snapshot; ending the stream only on terminal states, on interruption regardless of the flag, or never on a terminal state; dropping auth required from the interrupted states, or adding working; skipping the query id check; allowing a tenant; and refusing a tenant as invalid instead of unsupported.
+- In the first version of the refusal test, the invalid snapshot came only before the first one was sent. There `snapshot_to_wire` validates again, so dropping the up-front validation survived. The final test also sends an invalid snapshot after the first one, where that validation is the only check before a status update would carry the invalid error code.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
