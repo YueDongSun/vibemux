@@ -5586,3 +5586,24 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the supervisor context-action rules in vibemux_workflow
+
+**Scope:** `crates/vibemux_workflow/src/supervisor/context_actions.rs` holds the pure least-privilege checks that the daemon (`vibemuxd/src/workflow/supervisor_context.rs`) and the store (`supervisor_commands/context_actions.rs`) apply before a supervisor context action reads a file, shares a bundle, or addresses a worker. Until now these checks were exercised only through those integration tests, and the module had no tests of its own. This change is test-only and reuses the crate's `task_spec::fixtures` Track A spec.
+
+**Implemented:**
+- A unit-test module in `context_actions.rs` with an execution fixture, a bundle fixture, and `*_with` helpers. No production code changed.
+- `effect_ids_are_stable_and_distinct_per_action_and_kind`: the same action and kind give the same id, a different kind or action gives a different one, and the id is a version 4 UUID.
+- `a_task_addressed_tool_reaches_only_a_single_slot_worker`: a task with exactly one allowed slot resolves to a worker of that task. The session id is stable, and it changes with the slot or the workflow. A comparison task with two slots, a task with no slots, and an unknown task resolve to nobody.
+- `only_a_session_of_a_current_slot_is_a_current_worker`: the sessions of both slots of a comparison task are current, and so are the supervisor, operator, and broker. These are not current: a session of another slot, a session of another workflow, an arbitrary session id, and a real session id presented under another task key.
+- `a_path_is_readable_only_in_scope_and_outside_forbidden_scopes_of_any_case`: owned and read-scope paths are readable. These are refused: paths outside every scope, an owned path in another letter case, a forbidden or protected path in its own case or in another case, an absolute path, a path with `..` or `.` (including `tests/worker_a/../../package.json` under a recursive owned scope), a backslash path, and an empty path. Without the `read_files` tool, nothing is readable.
+- `a_bundle_is_shared_only_within_budget_policy_and_scope`: a bundle is accepted at the policy's byte limit, at the 32 KiB supervisor cap when the policy allows more, with a verifier-confirmed claim, with claims only, and with a worker claim once the policy retrieves worker claims. These are refused: an empty byte count, one byte over the policy limit, one byte over the cap, public excerpts disabled, candidate snapshots not in the retrieval order, no `read_files` tool, a source from another snapshot, line 0, an end line before the start line, a source outside scope or under a protected scope, a worker claim the policy does not retrieve, and a bundle with neither sources nor claims.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_workflow --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_workflow --all-features`: 154 passed (5 new).
+- Eighteen mutations were caught and restored byte-for-byte: dropping the case-folded forbidden match, ignoring protected paths, skipping the `read_files` tool check, ignoring read scopes, skipping the relative-path check (caught only by the traversal cases), resolving a multi-slot task to its first slot, leaving the slot out of the session id, treating every worker as current, leaving the kind out of the effect id, dropping the 32 KiB cap, ignoring the public-excerpt flag, ignoring the snapshot retrieval order, admitting another snapshot digest, admitting line 0, ignoring the line order, mapping worker claims to the snapshot source, admitting an empty bundle, and admitting a zero byte count.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
