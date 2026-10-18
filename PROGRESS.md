@@ -5968,3 +5968,31 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch event names and payloads in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/events.rs`. It builds the content-free canonical event drafts for dispatch attempts, with their deterministic idempotency keys (ADR 029 §3). The integration tests in `tests/dispatch_attempt.rs` check that every draft is valid, scoped, and content-free. They compare event types against the module's own constants and check keys only by prefix. This change is test-only and has no wire or behavior change.
+
+**Implemented:**
+- A new test module in `events.rs` with four unit tests. No production code changed.
+- `event_types_and_idempotency_keys_have_fixed_names`: the five event types are `harness_dispatch_admitted`, `harness_dispatch_started`, `harness_dispatch_cancel_requested`, `harness_dispatch_finished`, and `harness_dispatch_recovered`. Each idempotency key is exactly `harness_dispatch:<hyphenated request id>:<suffix>`, where the suffix is the type without the `harness_dispatch_` prefix. A type without that prefix is kept whole.
+- `every_payload_refuses_unknown_fields`: each of the six payloads round-trips through JSON, and refuses an extra field.
+- `constructors_copy_every_fact`: `AdmittedPayload::new` keeps the prompt digest, the prompt size, and the config digest. `ProcessSummary::new` keeps the exit code, forced termination, and stderr byte count.
+- `a_cancel_request_records_its_from_phase_without_a_causation`: a cancel from `admitted` records `admitted`, and the draft has no causation id.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 121 library tests passed (4 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 22 mutants against that suite. The existing tests caught 3, and the source was restored byte-for-byte.
+- The new tests catch 18 of the 19 survivors:
+  - Renaming any of the five event types.
+  - Keeping the `harness_dispatch_` prefix in the key suffix, or adding a trailing separator.
+  - Accepting unknown fields in any payload.
+  - Dropping the exit code, forced termination, or prompt size.
+  - Recording a fixed from-phase in a cancel request.
+  - Setting a causation id.
+- The remaining survivor is equivalent and is not counted. It drops the final `EventDraft::validate` call, but `EventPayload::new` already validates the payload, and the fixed-suffix idempotency key is never empty or over the bound.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

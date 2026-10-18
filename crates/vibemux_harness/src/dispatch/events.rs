@@ -203,3 +203,164 @@ fn draft(
     draft.validate().map_err(|_| DispatchError::Internal)?;
     Ok(draft)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Debug;
+
+    use serde::de::DeserializeOwned;
+    use serde_json::json;
+
+    use super::*;
+
+    const REQUEST_ID: Uuid = Uuid::from_u128(0xabcd);
+
+    fn context() -> DispatchEventContext {
+        DispatchEventContext {
+            project_id: ProjectId::from_uuid(Uuid::from_u128(1)).expect("project id"),
+            task_id: TaskId::from_uuid(Uuid::from_u128(2)).expect("task id"),
+            run_id: RunId::from_uuid(Uuid::from_u128(3)).expect("run id"),
+            request_id: REQUEST_ID,
+            timestamp: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn prompt() -> PromptDigest {
+        PromptDigest {
+            sha256: Sha256Digest::of(b"prompt"),
+            byte_count: 6,
+        }
+    }
+
+    fn assert_refuses_an_extra_field<T>(payload: &T)
+    where
+        T: Debug + DeserializeOwned + PartialEq + Serialize,
+    {
+        let mut value = serde_json::to_value(payload).expect("serialize");
+        let parsed: T = serde_json::from_value(value.clone()).expect("deserialize");
+        assert_eq!(&parsed, payload);
+        value["extra"] = json!(1);
+        assert!(serde_json::from_value::<T>(value).is_err());
+    }
+
+    #[test]
+    fn event_types_and_idempotency_keys_have_fixed_names() {
+        let names = [
+            (
+                HARNESS_DISPATCH_ADMITTED_EVENT,
+                "harness_dispatch_admitted",
+                "admitted",
+            ),
+            (
+                HARNESS_DISPATCH_STARTED_EVENT,
+                "harness_dispatch_started",
+                "started",
+            ),
+            (
+                HARNESS_DISPATCH_CANCEL_REQUESTED_EVENT,
+                "harness_dispatch_cancel_requested",
+                "cancel_requested",
+            ),
+            (
+                HARNESS_DISPATCH_FINISHED_EVENT,
+                "harness_dispatch_finished",
+                "finished",
+            ),
+            (
+                HARNESS_DISPATCH_RECOVERED_EVENT,
+                "harness_dispatch_recovered",
+                "recovered",
+            ),
+        ];
+        for (constant, name, suffix) in names {
+            assert_eq!(constant, name);
+            assert_eq!(
+                idempotency_key(REQUEST_ID, constant),
+                format!("harness_dispatch:00000000-0000-0000-0000-00000000abcd:{suffix}")
+            );
+        }
+        assert_eq!(
+            idempotency_key(REQUEST_ID, "other_event"),
+            "harness_dispatch:00000000-0000-0000-0000-00000000abcd:other_event"
+        );
+    }
+
+    #[test]
+    fn every_payload_refuses_unknown_fields() {
+        let process = ProcessSummary::new(
+            ProcessExit {
+                exit_code: Some(3),
+                forced_termination: true,
+            },
+            7,
+        );
+        assert_refuses_an_extra_field(&AdmittedPayload::new(
+            REQUEST_ID,
+            AgentKind::Codex,
+            NativeProtocol::CodexExec,
+            prompt(),
+            Sha256Digest::of(b"config"),
+            "0".repeat(40),
+        ));
+        assert_refuses_an_extra_field(&StartedPayload {
+            request_id: REQUEST_ID,
+        });
+        assert_refuses_an_extra_field(&CancelRequestedPayload {
+            request_id: REQUEST_ID,
+            from_phase: DispatchPhase::Admitted,
+        });
+        assert_refuses_an_extra_field(&process);
+        assert_refuses_an_extra_field(&FinishedPayload {
+            request_id: REQUEST_ID,
+            from_phase: DispatchPhase::Running,
+            phase: DispatchPhase::Failed,
+            outcome: Some(AttemptOutcome::Failed),
+            error_code: Some(DispatchError::ProcessFailed),
+            process: Some(process),
+            capture: None,
+        });
+        assert_refuses_an_extra_field(&RecoveredPayload {
+            request_id: REQUEST_ID,
+            from_phase: DispatchPhase::Running,
+            phase: DispatchPhase::RecoveryPending,
+            error_code: DispatchError::Interrupted,
+        });
+    }
+
+    #[test]
+    fn constructors_copy_every_fact() {
+        let config = Sha256Digest::of(b"config");
+        let admitted = AdmittedPayload::new(
+            REQUEST_ID,
+            AgentKind::Codex,
+            NativeProtocol::CodexExec,
+            prompt(),
+            config,
+            "0".repeat(40),
+        );
+        assert_eq!(admitted.prompt_sha256, prompt().sha256);
+        assert_eq!(admitted.prompt_bytes, 6);
+        assert_eq!(admitted.config_sha256, config);
+        assert_eq!(
+            ProcessSummary::new(
+                ProcessExit {
+                    exit_code: Some(3),
+                    forced_termination: true,
+                },
+                7,
+            ),
+            ProcessSummary {
+                exit_code: Some(3),
+                forced_termination: true,
+                stderr_bytes: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn a_cancel_request_records_its_from_phase_without_a_causation() {
+        let draft = cancel_requested(&context(), DispatchPhase::Admitted).expect("draft");
+        assert_eq!(draft.payload.value()["from_phase"], json!("admitted"));
+        assert!(draft.causation_id.is_none());
+    }
+}
