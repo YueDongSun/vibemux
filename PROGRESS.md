@@ -6033,3 +6033,27 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch observation classifier in vibemux_harness
+
+**Scope:** test-only. `crates/vibemux_harness/src/dispatch/observation.rs` had no unit tests; the integration tests in `tests/dispatch_protocols.rs` replay four fixture streams and a few terminal tables. No production code, wire format, or classification behavior changed.
+
+**Implemented:** a unit-test module in `observation.rs` with eight tests:
+- `kind_names_match_their_serde_form_and_only_results_are_terminal`: each of the nine kinds has its exact name and serde form, and only `completed`, `failed`, and `cancelled` are terminal.
+- `parse_keeps_the_exact_bytes_and_refuses_bad_frames_by_code`: a parsed record keeps its sequence, kind, exact bytes, and byte count. `Debug` prints only the sequence, kind, and byte count. Sequence 0 is `Internal`, malformed JSON is `InvalidJson`, and an array, number, string, or null is `InvalidRecord`.
+- `codex_exec_classifies_every_verified_discriminant`: every Codex exec event type and every item type under each of the three item events, with error and future items `Opaque`.
+- `codex_app_server_classifies_every_verified_discriminant`: every method, all five approval requests, each turn status, and every item type under `item/started` and `item/completed`.
+- `claude_classifies_every_verified_discriminant`: only an `init` system record starts, only `can_use_tool` asks for approval, a user text block stays `Opaque`, and each stream event needs its own delta, tool block, or usage object.
+- `claude_results_need_root_scope_and_a_clean_success`: a success needs no error flag and no unknown terminal reason. Each error subtype and each terminal reason maps to its result, and a nested result stays `Opaque`.
+- `acp_classifies_every_verified_discriminant`: a message chunk needs text content, and a stop reason counts only when the record has no `method` key at all.
+- `dsh_classifies_turn_events_and_never_ends_on_status`: every session event type and every `turn/end` reason. A status notification, a bare `turn/end`, and an unknown reason stay `Opaque`.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt -p vibemux_harness -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 135 library tests passed (8 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 177 mutants against that suite: 159 that rename one string literal and 18 that drop or loosen a guard. The existing tests caught 91, 85 survived, and one malformed mutant did not compile; the source was restored byte-for-byte.
+- The new tests catch all 85 survivors and the corrected form of the malformed mutant. The survivors included every DSH discriminant, most Codex app-server methods and item types, the Claude `system`, `control_request`, stream-event, and success guards, the ACP `method` presence check, the kind names, `is_terminal` for `cancelled`, `byte_count`, and the `Debug` field names.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
