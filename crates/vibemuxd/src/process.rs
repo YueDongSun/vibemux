@@ -561,14 +561,13 @@ fn publish_acl_marker(marker: &Path) -> Result<(), DaemonPathError> {
     std::fs::rename(&temporary, marker).map_err(|_| DaemonPathError::ControlRuntimeSecurityInvalid)
 }
 
+/// Whether the marker is a regular file holding exactly the marker
+/// contents. The read stops one byte past them, so a longer file is
+/// refused without being read whole.
 #[cfg(windows)]
 fn acl_marker_valid(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .ok()
-        .is_some_and(|metadata| {
-            metadata.file_type().is_file() && !metadata.file_type().is_symlink()
-        })
-        && std::fs::read(path).ok().as_deref() == Some(CONTROL_ACL_MARKER_CONTENTS)
+    crate::bounded_file::read_regular_file(path, CONTROL_ACL_MARKER_CONTENTS.len() as u64)
+        .is_ok_and(|bytes| bytes == CONTROL_ACL_MARKER_CONTENTS)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -759,6 +758,25 @@ mod tests {
                 .expect_err("legacy descriptor must block new daemon"),
             DaemonPathError::LegacyRuntimeConflict
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_acl_marker_is_valid_only_with_its_exact_contents() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let marker = temp.path().join(CONTROL_ACL_MARKER_FILE_NAME);
+        assert!(!acl_marker_valid(&marker), "a missing marker");
+        std::fs::write(&marker, CONTROL_ACL_MARKER_CONTENTS).expect("marker");
+        assert!(acl_marker_valid(&marker));
+        let mut longer = CONTROL_ACL_MARKER_CONTENTS.to_vec();
+        longer.push(b'\n');
+        std::fs::write(&marker, &longer).expect("longer marker");
+        assert!(!acl_marker_valid(&marker), "one byte past the contents");
+        std::fs::write(&marker, b"vibemux_control_acl_v0").expect("other marker");
+        assert!(!acl_marker_valid(&marker));
+        std::fs::remove_file(&marker).expect("remove marker");
+        std::fs::create_dir(&marker).expect("directory marker");
+        assert!(!acl_marker_valid(&marker), "a directory");
     }
 
     #[cfg(windows)]

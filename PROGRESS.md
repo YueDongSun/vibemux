@@ -5341,3 +5341,24 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 - The Windows control ACL marker check (`process.rs` `acl_marker_valid`) still reads its marker whole.
 - Owner decision on no-follow opens for bounded reads (see the previous entry).
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Read the Windows control ACL marker through the bounded reader
+
+**Scope:** on Windows, `vibemuxd::process::acl_marker_valid` decides whether the shared control runtime root has a published `.acl_v1` marker. Daemon start uses it to skip or redo ACL setup, and trusted-start validation uses it to refuse. It checked the path's file type and then read the whole marker with `fs::read` to compare it with the 22-byte `vibemux_control_acl_v1`.
+
+**Implemented:**
+- `acl_marker_valid` reads through `crate::bounded_file::read_regular_file`, bounded to the marker's own length, and compares the bytes. That reader's path check, which does not follow links, replaces the separate file-type check here.
+- A link or directory found at the path, a missing file, or other bytes still read as invalid. A longer file is now refused one byte past the contents instead of being read whole.
+- The `bounded_file` module doc lists the marker among its users. A grep of `vibemuxd` code, leaving out tests and the two fixture binaries, now finds every other `read_to_end` behind a `take` bound. The only whole-file read left is `BlobStore::get`.
+- No change to the marker contents, its publication, the ACL helpers, or the control protocol.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemuxd --all-features --lib`: 131 passed. The new Windows test `an_acl_marker_is_valid_only_with_its_exact_contents` covers missing, exact, one byte longer, a same-length different marker, and a directory. The existing marker healing and concurrent first-touch tests also pass.
+- `cargo test -p vibemuxd --all-features --test daemon_process`: 9 passed, including `trusted_start_verifies_the_full_control_runtime_surface`.
+- One mutation was caught and restored byte-for-byte: a bound one byte shorter than the marker failed the new test, `ensure_runtime_dir_heals_a_stale_acl_marker`, and `concurrent_first_touch_serializes_marker_publication`.
+
+**Remaining:**
+- `BlobStore::get` still reads a whole blob from the daemon's private workflow state, because it has no bound of its own.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
