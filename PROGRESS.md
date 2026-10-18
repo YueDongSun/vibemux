@@ -5671,3 +5671,31 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A gRPC endpoint, error, and status checks in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/task_grpc.rs` has three pure helpers on the gRPC binding. `validate_grpc_endpoint` checks the endpoint `GrpcTaskClient::connect` dials. `grpc_error` maps a gRPC status back to a local error on the client. `compatible_grpc_status` rewrites the statuses the server returns so they carry the A2A error reason. The module had no tests of its own; the helpers were reached only through the `task_grpc` integration tests. This change is test-only.
+
+**Implemented:**
+- A unit-test module in `task_grpc.rs`. No production code changed.
+- `a_grpc_endpoint_is_a_numeric_loopback_http_address`: an endpoint without a scheme gets `http://`, and an accepted endpoint is returned otherwise unchanged. Plain http on IPv4 loopback or IPv6 `::1` is accepted. Unlike the HTTP client's origin check, a missing port means the default port 80. These are refused as invalid: an empty endpoint, a host name, a private address, another IPv6 address, https, user info, a password, a query, a fragment, a non-root path, port 0, and an endpoint over 2048 bytes. The length bound is tested with an endpoint whose port has leading zeros, so it is otherwise valid; it is accepted at exactly 2048 bytes and refused at 2049.
+- `grpc_statuses_map_to_local_errors`: deadline exceeded, unauthenticated, permission denied, and resource exhausted map to deadline, unauthorized, forbidden, and busy. Unavailable and cancelled map to transport. Any other status maps by its local error code first (`a2a_task_unauthorized`, `a2a_task_busy`, `a2a_task_invalid_request`) and then by the SDK's mapping of its gRPC code. Through that mapping, not found becomes not found, a failed precondition becomes unsupported, and invalid argument, unimplemented, and internal become a protocol failure.
+- `compatible_statuses_carry_the_a2a_error_reason`: these server statuses gain an A2A `ErrorInfo` with the `a2a-protocol.org` domain, and each keeps its message:
+  - `a2a_task_not_found` keeps not found and gets the reason `TASK_NOT_FOUND`.
+  - The push-notification, `a2a_task_unsupported`, and version failed preconditions become unimplemented, with `PUSH_NOTIFICATION_NOT_SUPPORTED`, `UNSUPPORTED_OPERATION`, and `VERSION_NOT_SUPPORTED`.
+  - A task that cannot be canceled stays a failed precondition with `TASK_NOT_CANCELABLE`.
+  - Unknown statuses carrying `a2a_task_unauthorized` and `a2a_task_forbidden` become unauthenticated and permission denied, without details.
+  - Every other status passes through unchanged, including a local error code under a gRPC code it is not paired with.
+  - Each rewritten local error still maps back to the same local error on the client.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_a2a --all-features`: 24 library tests passed (3 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Thirty mutations were caught and restored byte-for-byte.
+  - Endpoint check: raising the length bound, or refusing at exactly 2048 bytes; not adding the scheme; accepting any IPv4 address, any IPv6 address, or host names, or refusing IPv6 loopback; skipping the scheme, user name, password, query, fragment, or path check; allowing port 0; and requiring an explicit port.
+  - Status mapping: mapping deadline exceeded to transport; dropping unauthenticated, permission denied, resource exhausted, or cancelled; and replacing the fallback with a protocol failure.
+  - Status rewriting: dropping the not-found reason; keeping the push failure as a failed precondition; renaming the unsupported reason; matching the version message exactly instead of by prefix; changing the not-cancelable code; passing unauthorized through; giving forbidden the unauthenticated code; adding details to every status; and renaming the domain.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
