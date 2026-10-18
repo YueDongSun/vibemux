@@ -5849,3 +5849,31 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch request fingerprint and prompt bound in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/request.rs` holds the typed dispatch request (ADR 029). It validates the request's schema version, id, and prompt; derives the content-free prompt digest; computes the idempotency fingerprint that the store persists; and prints a `Debug` form without the prompt. The module had no unit tests; two integration tests in `tests/dispatch_config.rs` covered it. A sweep of 30 mutants against the crate's tests left 8 alive. This change is test-only.
+
+**Implemented:**
+- A new test module in `request.rs` with four unit tests. No production code changed.
+- `a_prompt_holds_at_most_32_kib`: a 32,768-byte prompt is valid, and 32,769 bytes is `InvalidPrompt`.
+- `the_fingerprint_is_a_known_answer_over_its_fields`:
+  - Pins the prompt digest of a synthetic prompt and the fingerprint of a fixed request, project, protocol, and config digest to literal SHA-256 values.
+  - Both values were computed outside Rust from the layout that `request_fingerprint` and `hash_fields` implement. That layout is SHA-256 over the domain `vibemux.harness_dispatch.fingerprint.v1` and a NUL byte, followed by each field as an eight-byte big-endian length and its bytes.
+  - The fields are, in order: the hyphenated project id, the hyphenated request id, the harness command name, the protocol name, the raw prompt digest, and the raw config digest. The Rust result matched on the first run.
+- `request_debug_shows_the_id_harness_and_prompt_size_only`: a request's `Debug` output is exactly its request id, harness, and prompt byte count.
+- `a_prompt_digest_refuses_unknown_fields`: a prompt digest round-trips through JSON, and an extra field is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 106 library tests passed (4 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 30 mutants against that suite. The existing tests caught 22, and the source was restored byte-for-byte.
+- The new tests catch all 8 survivors:
+  - Prompt bound: changing the 32 KiB constant.
+  - Fingerprint: changing the domain, spelling the request id without hyphens, upper-casing the harness name, and swapping the prompt and config digests.
+  - Debug output: dropping the request id or the harness.
+  - Prompt digest: accepting unknown fields.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
