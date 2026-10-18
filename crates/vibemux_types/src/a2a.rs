@@ -415,6 +415,7 @@ fn valid_label(value: &str, maximum: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{RunCompletionAuthority, RunSpec, TaskSpec};
 
     const STATES: [A2aRemoteState; 6] = [
         A2aRemoteState::Submitted,
@@ -447,6 +448,106 @@ mod tests {
             size_bytes: 1,
             media_type: "text/plain".to_string(),
         }
+    }
+
+    fn at(unix_seconds: i64) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(unix_seconds).expect("timestamp")
+    }
+
+    fn task() -> Task {
+        Task::new(TaskSpec {
+            project_id: ProjectId::new(),
+            title: "a2a fixture".to_string(),
+            description: String::new(),
+        })
+        .expect("task")
+    }
+
+    fn run_for(task: &Task, role: &str) -> Run {
+        Run::new(RunSpec {
+            project_id: task.project_id(),
+            task_id: task.task_id(),
+            harness: "mock".to_string(),
+            role: role.to_string(),
+            protocol: "a2a".to_string(),
+            base_commit: "a".repeat(40),
+        })
+        .expect("run")
+    }
+
+    fn start() -> A2aRunStart {
+        let task = task();
+        A2aRunStart {
+            run: run_for(&task, "worker"),
+            task,
+            peer_id: "peer_1".to_string(),
+            external_task_id: "external_1".to_string(),
+            transport: "http_json".to_string(),
+            protocol_version: "1.0".to_string(),
+            workspace: workspace(),
+            timestamp: at(1_800_000_000),
+            idempotency_key: "start_1".to_string(),
+        }
+    }
+
+    fn start_with(change: impl FnOnce(&mut A2aRunStart)) -> A2aRunStart {
+        let mut start = start();
+        change(&mut start);
+        start
+    }
+
+    fn receipt() -> VerificationReceipt {
+        VerificationReceipt {
+            reviewer_run_id: RunId::new(),
+            reviewer_expected_version: 1,
+            artifact_sha256: "a".repeat(64),
+            review_sha256: "b".repeat(64),
+            verification_sha256: "c".repeat(64),
+            accepted: false,
+        }
+    }
+
+    fn update(action: A2aRunAction) -> A2aRunUpdate {
+        A2aRunUpdate {
+            run_id: RunId::new(),
+            expected_version: 1,
+            timestamp: at(1_800_000_000),
+            idempotency_key: "update_1".to_string(),
+            action,
+        }
+    }
+
+    fn record() -> A2aRunRecord {
+        let start = start();
+        A2aRunRecord {
+            schema_version: A2A_RECORD_SCHEMA_VERSION,
+            binding: A2aBinding {
+                project_id: start.run.project_id(),
+                task_id: start.run.task_id(),
+                run_id: start.run.run_id(),
+                peer_id: start.peer_id,
+                external_task_id: start.external_task_id,
+                transport: start.transport,
+                protocol_version: start.protocol_version,
+                created_at: start.timestamp,
+                updated_at: start.timestamp,
+                idempotency_key: start.idempotency_key,
+                last_remote_state: A2aRemoteState::Submitted,
+                cancellation_state: A2aCancellationState::None,
+                artifacts: Vec::new(),
+                verification: None,
+            },
+            task: start.task,
+            run: start.run,
+            workspace: start.workspace,
+            version: 1,
+        }
+    }
+
+    fn record_with(change: impl FnOnce(&mut A2aRunRecord)) -> A2aRunRecord {
+        let mut record = record();
+        change(&mut record);
+        record
     }
 
     #[test]
@@ -550,6 +651,264 @@ mod tests {
                 invalid.validate(),
                 Err(A2aStateError::InvalidInput),
                 "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_start_is_a_preparing_worker_reviewer_or_verifier_run_of_its_task() {
+        for role in ["worker", "reviewer", "verifier"] {
+            let valid = start_with(|s| s.run = run_for(&s.task, role));
+            assert_eq!(valid.validate(), Ok(()), "{role}");
+        }
+        let other_task = task();
+        for invalid in [
+            start_with(|s| s.run = run_for(&s.task, "planner")),
+            start_with(|s| {
+                s.task = Task::new(TaskSpec {
+                    project_id: s.task.project_id(),
+                    title: "a2a fixture".to_string(),
+                    description: "instructions travel in the message, not the task".to_string(),
+                })
+                .expect("task");
+                s.run = run_for(&s.task, "worker");
+            }),
+            start_with(|s| {
+                s.run = s
+                    .run
+                    .transitioned(RunStatus::Running, None)
+                    .expect("running");
+            }),
+            start_with(|s| s.run = run_for(&other_task, "worker")),
+            start_with(|s| s.workspace.base_commit = "b".repeat(40)),
+            start_with(|s| s.workspace.path = "repo".to_string()),
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn binding_fields_name_a_known_transport_and_bounded_identifiers() {
+        for valid in [
+            start_with(|s| s.transport = "json_rpc".to_string()),
+            start_with(|s| s.transport = "grpc".to_string()),
+            start_with(|s| s.peer_id = "p".repeat(128)),
+            start_with(|s| s.external_task_id = "e".repeat(256)),
+            start_with(|s| s.protocol_version = "1".repeat(32)),
+            start_with(|s| s.idempotency_key = "k".repeat(256)),
+        ] {
+            assert_eq!(valid.validate(), Ok(()), "{valid:?}");
+        }
+        for invalid in [
+            start_with(|s| s.transport = "http".to_string()),
+            start_with(|s| s.transport = "HTTP_JSON".to_string()),
+            start_with(|s| s.transport = "grpc ".to_string()),
+            start_with(|s| s.peer_id = "p".repeat(129)),
+            start_with(|s| s.peer_id = "peer 1".to_string()),
+            start_with(|s| s.peer_id = String::new()),
+            start_with(|s| s.external_task_id = "e".repeat(257)),
+            start_with(|s| s.protocol_version = "1".repeat(33)),
+            start_with(|s| s.idempotency_key = "k".repeat(257)),
+            start_with(|s| s.idempotency_key = "start?1".to_string()),
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn timestamps_must_be_utc_and_not_before_1970() {
+        let east = UtcOffset::from_hms(8, 0, 0).expect("offset");
+        let latest = time::PrimitiveDateTime::new(
+            time::Date::from_calendar_date(9999, time::Month::December, 31).expect("date"),
+            time::Time::from_hms(23, 59, 59).expect("time"),
+        )
+        .assume_utc();
+        for valid in [at(0), latest] {
+            assert_eq!(start_with(|s| s.timestamp = valid).validate(), Ok(()));
+            let mut later = update(A2aRunAction::Start);
+            later.timestamp = valid;
+            assert_eq!(later.validate(), Ok(()));
+        }
+        // The same instant written with a non-UTC offset is still refused.
+        for invalid in [at(-1), at(1_800_000_000).to_offset(east)] {
+            assert_eq!(
+                start_with(|s| s.timestamp = invalid).validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid}"
+            );
+            let mut later = update(A2aRunAction::Start);
+            later.timestamp = invalid;
+            assert_eq!(later.validate(), Err(A2aStateError::InvalidInput));
+        }
+    }
+
+    #[test]
+    fn a_verification_receipt_needs_a_reviewer_version_and_three_digests() {
+        assert_eq!(receipt().validate(), Ok(()));
+        let with = |change: fn(&mut VerificationReceipt)| {
+            let mut receipt = receipt();
+            change(&mut receipt);
+            receipt
+        };
+        assert_eq!(with(|r| r.accepted = true).validate(), Ok(()));
+        for invalid in [
+            with(|r| r.reviewer_expected_version = 0),
+            with(|r| r.artifact_sha256 = "A".repeat(64)),
+            with(|r| r.review_sha256 = "b".repeat(63)),
+            with(|r| r.verification_sha256 = "g".repeat(64)),
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_update_checks_its_version_key_and_action() {
+        for valid in [
+            A2aRunAction::Start,
+            A2aRunAction::Observe {
+                state: A2aRemoteState::Working,
+                artifacts: vec![artifact(1), artifact(2)],
+            },
+            A2aRunAction::RequestCancellation,
+            A2aRunAction::ConfirmCancellation,
+            A2aRunAction::FinalizeCancellation,
+            A2aRunAction::Fail {
+                code: "remote_failed".to_string(),
+            },
+            A2aRunAction::Verify { receipt: receipt() },
+        ] {
+            assert_eq!(update(valid.clone()).validate(), Ok(()), "{valid:?}");
+        }
+        let repeated = artifact(3);
+        let mut unversioned = update(A2aRunAction::Start);
+        unversioned.expected_version = 0;
+        let mut unkeyed = update(A2aRunAction::Start);
+        unkeyed.idempotency_key = String::new();
+        for invalid in [
+            unversioned,
+            unkeyed,
+            update(A2aRunAction::Observe {
+                state: A2aRemoteState::Working,
+                artifacts: vec![repeated.clone(), repeated],
+            }),
+            update(A2aRunAction::Fail {
+                code: "remote failed".to_string(),
+            }),
+            update(A2aRunAction::Fail {
+                code: String::new(),
+            }),
+            update(A2aRunAction::Verify {
+                receipt: VerificationReceipt {
+                    reviewer_expected_version: 0,
+                    ..receipt()
+                },
+            }),
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_record_binds_one_task_run_and_workspace() {
+        assert_eq!(record().validate(), Ok(()));
+        let other_task = task();
+        for mismatched in [
+            record_with(|r| r.schema_version = A2A_RECORD_SCHEMA_VERSION + 1),
+            record_with(|r| r.version = 0),
+            record_with(|r| r.task = other_task.clone()),
+            record_with(|r| r.binding.project_id = ProjectId::new()),
+            record_with(|r| r.binding.task_id = TaskId::new()),
+            record_with(|r| r.binding.run_id = RunId::new()),
+            record_with(|r| r.workspace.base_commit = "b".repeat(40)),
+        ] {
+            assert_eq!(
+                mismatched.validate(),
+                Err(A2aStateError::IdentityMismatch),
+                "{mismatched:?}"
+            );
+        }
+        let east = UtcOffset::from_hms(8, 0, 0).expect("offset");
+        for invalid in [
+            record_with(|r| r.binding.transport = "http".to_string()),
+            record_with(|r| r.binding.idempotency_key = String::new()),
+            record_with(|r| r.binding.created_at = r.binding.created_at.to_offset(east)),
+            record_with(|r| r.binding.updated_at = at(1_799_999_999)),
+            record_with(|r| r.workspace.branch = "-run".to_string()),
+            record_with(|r| {
+                r.binding.artifacts = vec![ArtifactReference {
+                    sha256: "F".repeat(64),
+                    ..artifact(4)
+                }];
+            }),
+            record_with(|r| {
+                r.binding.verification = Some(VerificationReceipt {
+                    reviewer_expected_version: 0,
+                    ..receipt()
+                });
+            }),
+        ] {
+            assert_eq!(
+                invalid.validate(),
+                Err(A2aStateError::InvalidInput),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_succeeded_run_record_carries_a_verification_receipt() {
+        let succeeded = |run: &Run| {
+            run.transitioned(RunStatus::Running, None)
+                .and_then(|running| {
+                    running
+                        .transitioned(RunStatus::Succeeded, Some(RunCompletionAuthority::Verifier))
+                })
+                .expect("succeeded")
+        };
+        let unverified = record_with(|r| r.run = succeeded(&r.run));
+        assert_eq!(unverified.validate(), Err(A2aStateError::InvalidState));
+        let verified = record_with(|r| {
+            r.run = succeeded(&r.run);
+            r.binding.verification = Some(receipt());
+        });
+        assert_eq!(verified.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_record_that_fails_validation_does_not_decode() {
+        let valid = record();
+        let encoded = serde_json::to_value(&valid).expect("encode");
+        let decoded: A2aRunRecord = serde_json::from_value(encoded.clone()).expect("decode");
+        assert_eq!(decoded, valid);
+        for (pointer, value) in [
+            ("/version", serde_json::json!(0)),
+            ("/binding/transport", serde_json::json!("http")),
+            (
+                "/binding/created_at",
+                serde_json::json!("2027-01-15T08:00:00+08:00"),
+            ),
+        ] {
+            let mut tampered = encoded.clone();
+            *tampered.pointer_mut(pointer).expect(pointer) = value;
+            assert!(
+                serde_json::from_value::<A2aRunRecord>(tampered).is_err(),
+                "{pointer}"
             );
         }
     }

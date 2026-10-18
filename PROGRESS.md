@@ -5543,3 +5543,27 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the remaining A2A validators in vibemux_types
+
+**Scope:** `vibemux_types::a2a` validates A2A run starts, updates, verification receipts, and stored run records. The store's A2A tests drive these checks only through its own scenarios. They never submit a run start with a transport other than `http_json`, a non-UTC or pre-1970 timestamp, a role outside worker/reviewer/verifier, a task with a description, or a stored record that fails validation as it decodes. This change pins those rules where they live. It is test-only.
+
+**Implemented:**
+- New tests in the existing unit-test module of `crates/vibemux_types/src/a2a.rs`. No production code changed, no rule was tightened (including `valid_label`), and the record JSON is unchanged.
+- `a_run_start_is_a_preparing_worker_reviewer_or_verifier_run_of_its_task`: a preparing `worker`, `reviewer`, or `verifier` run of its own task is accepted. These are refused: any other role, a task with a description, a run that has already started, a run of another task, a workspace base commit that differs from the run's, and an invalid workspace.
+- `binding_fields_name_a_known_transport_and_bounded_identifiers`: the transports `http_json`, `json_rpc`, and `grpc` are accepted, and `http`, `HTTP_JSON`, and `grpc ` are refused. The peer id (128 bytes), external task id (256), protocol version (32), and idempotency key (256) are accepted at their bound and refused one byte over it. An empty or spaced peer id and an idempotency key with `?` are refused.
+- `timestamps_must_be_utc_and_not_before_1970`: in both a run start and a run update, the Unix epoch and 9999-12-31T23:59:59Z are accepted. One second before the epoch is refused, and so is the same instant written with a `+08:00` offset. The crate's `time` build cannot represent a year after 9999, so only the lower bound can be crossed.
+- `a_verification_receipt_needs_a_reviewer_version_and_three_digests`: a receipt is valid whether it accepts or rejects. Reviewer version 0 is refused, and so is an uppercase, short, or non-hex value in any of the three digests.
+- `a_run_update_checks_its_version_key_and_action`: every action kind is accepted with valid content. These are refused: expected version 0, an empty idempotency key, an observation with a repeated artifact id, a failure code that is empty or has a space, and a verification whose receipt is invalid.
+- `a_run_record_binds_one_task_run_and_workspace`: a wrong schema version, version 0, a task, project, task id, or run id that does not match the run, and a workspace base commit that differs from the run's are each an identity mismatch. An unknown transport, an empty idempotency key, a non-UTC creation time, an update time before the creation time, an invalid workspace branch, an invalid artifact, and an invalid receipt are each invalid input.
+- `a_succeeded_run_record_carries_a_verification_receipt`: a succeeded run without a receipt is an invalid state, and the same run with a receipt is accepted.
+- `a_record_that_fails_validation_does_not_decode`: a valid record survives a JSON round trip unchanged. The same JSON with version 0, transport `http`, or a `+08:00` creation time does not decode.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_types --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_types --all-features`: 18 passed (8 new).
+- Thirteen mutations were caught and restored byte-for-byte: admitting transport `http`, dropping the UTC check, moving the year floor to 1969, admitting role `planner`, dropping the empty-description check, dropping the update-after-creation order check, letting a succeeded run skip its receipt, decoding a record without validating it, accepting reviewer version 0, accepting a spaced failure code, skipping a stored receipt's validation, accepting expected version 0, and raising the peer id bound to 129.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
