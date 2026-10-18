@@ -5766,3 +5766,42 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the A2A information-share contract in vibemux_a2a
+
+**Scope:** `crates/vibemux_a2a/src/lib.rs` holds the loopback-only basic information-share boundary. It defines the share and acknowledgement types and their validators. It builds and parses the official A2A messages that carry them. It also checks a peer's agent card and URL before the client talks to it. Its five unit tests covered a round trip, oversized text, a correlation mismatch, two non-loopback URLs, and the SDK version. Everything else was reached only through the two `basic_information_share` integration tests. This change is test-only.
+
+**Implemented:**
+- Six unit tests in the existing `lib.rs` test module. No production code changed.
+- `a_share_bounds_its_identifiers_text_and_metadata`:
+  - Each identifier (correlation id, sender peer id, information kind) is 1 to 128 bytes of ASCII letters, digits, `_`, `-`, and `.`. A refusal names the field that failed.
+  - Text is 1 byte to 4 KiB.
+  - Metadata holds at most 16 entries. A key is 1 to 64 bytes and a value at most 256 bytes; a value may be empty. NUL in a key or a value is refused.
+- `a_share_message_is_one_data_part_from_the_user`:
+  - A share message comes from the user, carries the correlation id as its context id, and has exactly one data part: `{"contract": "vibemux.info.share.v1", "share": ...}`. An invalid share is refused before a message is built.
+  - When parsing, missing metadata reads as empty. Refused as unsupported: an agent message, two parts, a text part, the acknowledgement contract name, and an unknown field in the envelope or the share.
+  - An invalid share is refused before its context is compared. A different or missing context id is a correlation mismatch.
+- `an_acknowledgement_message_is_one_data_part_from_the_agent`:
+  - Accepted and declined acknowledgements both round trip. Each comes from the agent, with the correlation id as its context id and one data part under `vibemux.info.ack.v1`. Building one refuses an invalid correlation id or receiver id and names the field.
+  - When parsing, these are refused as unsupported: a user message, two parts, a text part, the share contract name, and an unknown field. Invalid ids are refused by field, and a different or missing context id is a mismatch. A share message is never read as an acknowledgement.
+- `only_a_loopback_card_offering_the_share_skill_is_accepted`:
+  - The built card is named after the peer, offers only the share skill, and has one HTTP+JSON interface at the given URL.
+  - A card may list other skills as long as the share skill is among them. A card is refused as unsupported without the share skill, with no interfaces or two of them, or with a JSON-RPC binding. A non-loopback interface URL is refused as such.
+- `a_peer_url_is_plain_http_on_loopback_with_an_explicit_port`:
+  - Accepted: `http://127.0.0.1` or `http://localhost` (in any case) with a port, with or without a trailing `/`.
+  - Refused: an empty or unparsable URL, https, no port, other loopback or IPv6 addresses, a host name, a user name, a password, a query, a fragment, and a path.
+  - Port 80 is refused as well, because the URL parser reports the http default port as no port.
+- `information_errors_keep_their_codes`: all nine error codes keep their `a2a_*` strings.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_a2a --all-targets --all-features -- -D warnings` clean. Clippy's `type_complexity` lint asked for named types for the two case tables (`ShareCase`, `CardCase`).
+- `cargo test -p vibemux_a2a --all-features`: 42 library tests passed (6 new), and the 24 integration tests in `basic_information_share`, `task_gateway`, `task_grpc`, and `task_runtime` passed.
+- Fifty-seven mutations were caught and restored byte-for-byte.
+  - Validation: skipping any of the three share identifier checks; allowing empty text or text one byte over 4 KiB; allowing 17 metadata entries, an empty key, a longer key or value, or NUL in a key or a value; and, in the shared identifier check, allowing an empty or 129-byte identifier or `/`, or dropping the field name.
+  - Building messages: not validating the share; sending a share as the agent or an acknowledgement as the user; leaving out either context id; renaming either contract; and skipping the acknowledgement's correlation or receiver check.
+  - Parsing messages: for both shares and acknowledgements, ignoring the role, the part count, the contract name, an invalid id or share, or the context id, and accepting unknown fields in the envelope or the payload; and requiring share metadata.
+  - Card, URL, and codes: ignoring the share skill or requiring it to be the only skill; allowing two interfaces; ignoring the binding or the interface URL; renaming the card or its skill; allowing https, another loopback address, the default port, a user name, a password, a query, a fragment, or a path, or refusing `localhost`; and renaming an error code.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

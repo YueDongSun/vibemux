@@ -498,6 +498,7 @@ fn ensure_loopback_url(url: &str) -> Result<(), InformationShareError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
 
     fn valid_share() -> InformationShare {
         InformationShare {
@@ -555,5 +556,447 @@ mod tests {
     #[test]
     fn selected_sdk_matches_recorded_a2a_service_version() {
         assert_eq!(a2a::VERSION, A2A_SPEC_VERSION);
+    }
+
+    const UNSUPPORTED: &str = "a2a_unsupported_message";
+    const MISMATCH: &str = "a2a_correlation_mismatch";
+
+    /// A change to a valid share and the outcome it should have.
+    type ShareCase = (fn(&mut InformationShare), &'static str);
+    /// A change to a valid agent card and the outcome it should have.
+    type CardCase = (fn(&mut AgentCard), &'static str);
+
+    /// "ok", or the error code of a refusal, with the field of an identifier error.
+    fn outcome<T>(result: Result<T, InformationShareError>) -> String {
+        match result {
+            Ok(_) => "ok".to_string(),
+            Err(InformationShareError::InvalidIdentifier(field)) => {
+                format!("a2a_invalid_identifier:{field}")
+            }
+            Err(error) => error.code().to_string(),
+        }
+    }
+
+    fn data_message(role: Role, context_id: &str, data: Value) -> Message {
+        let mut message = Message::new(role, vec![Part::data(data)]);
+        message.context_id = Some(context_id.to_string());
+        message
+    }
+
+    fn the_only_data_part(message: &Message) -> &Value {
+        let [part] = message.parts.as_slice() else {
+            panic!("expected one part: {message:?}");
+        };
+        let PartContent::Data(data) = &part.content else {
+            panic!("expected a data part: {message:?}");
+        };
+        data
+    }
+
+    fn numbered_metadata(count: usize) -> BTreeMap<String, String> {
+        (0..count)
+            .map(|index| (format!("key_{index}"), "value".to_string()))
+            .collect()
+    }
+
+    fn valid_acknowledgement() -> InformationAcknowledgement {
+        InformationAcknowledgement {
+            correlation_id: "correlation_1".to_string(),
+            receiver_peer_id: "receiver_1".to_string(),
+            accepted: true,
+        }
+    }
+
+    #[test]
+    fn a_share_bounds_its_identifiers_text_and_metadata() {
+        let invalid_correlation = "a2a_invalid_identifier:correlation_id";
+        let cases: [ShareCase; 22] = [
+            (|_| {}, "ok"),
+            (|share| share.correlation_id = "A-z_0.9".to_string(), "ok"),
+            (|share| share.correlation_id = "c".repeat(128), "ok"),
+            (
+                |share| share.correlation_id = "c".repeat(129),
+                invalid_correlation,
+            ),
+            (
+                |share| share.correlation_id = String::new(),
+                invalid_correlation,
+            ),
+            (
+                |share| share.sender_peer_id = "sender 1".to_string(),
+                "a2a_invalid_identifier:sender_peer_id",
+            ),
+            (
+                |share| share.information_kind = "kind\0".to_string(),
+                "a2a_invalid_identifier:information_kind",
+            ),
+            (
+                |share| share.information_kind = "kind/1".to_string(),
+                "a2a_invalid_identifier:information_kind",
+            ),
+            (|share| share.text = "x".to_string(), "ok"),
+            (
+                |share| share.text = "x".repeat(MAX_INFORMATION_TEXT_BYTES),
+                "ok",
+            ),
+            (|share| share.text = String::new(), "a2a_invalid_text"),
+            (
+                |share| share.text = "x".repeat(MAX_INFORMATION_TEXT_BYTES + 1),
+                "a2a_invalid_text",
+            ),
+            (|share| share.metadata.clear(), "ok"),
+            (
+                |share| share.metadata = numbered_metadata(MAX_METADATA_ENTRIES),
+                "ok",
+            ),
+            (
+                |share| share.metadata = numbered_metadata(MAX_METADATA_ENTRIES + 1),
+                "a2a_invalid_metadata",
+            ),
+            (
+                |share| {
+                    share.metadata.insert(
+                        "k".repeat(MAX_METADATA_KEY_BYTES),
+                        "v".repeat(MAX_METADATA_VALUE_BYTES),
+                    );
+                },
+                "ok",
+            ),
+            (
+                |share| {
+                    share.metadata.insert("note".to_string(), String::new());
+                },
+                "ok",
+            ),
+            (
+                |share| {
+                    share.metadata.insert(String::new(), "v".to_string());
+                },
+                "a2a_invalid_metadata",
+            ),
+            (
+                |share| {
+                    share
+                        .metadata
+                        .insert("k".repeat(MAX_METADATA_KEY_BYTES + 1), "v".to_string());
+                },
+                "a2a_invalid_metadata",
+            ),
+            (
+                |share| {
+                    share
+                        .metadata
+                        .insert("note".to_string(), "v".repeat(MAX_METADATA_VALUE_BYTES + 1));
+                },
+                "a2a_invalid_metadata",
+            ),
+            (
+                |share| {
+                    share.metadata.insert("no\0te".to_string(), "v".to_string());
+                },
+                "a2a_invalid_metadata",
+            ),
+            (
+                |share| {
+                    share.metadata.insert("note".to_string(), "v\0".to_string());
+                },
+                "a2a_invalid_metadata",
+            ),
+        ];
+        for (index, (change, expected)) in cases.into_iter().enumerate() {
+            let mut share = valid_share();
+            change(&mut share);
+            assert_eq!(outcome(share.validate()), expected, "case {index}");
+        }
+    }
+
+    #[test]
+    fn a_share_message_is_one_data_part_from_the_user() {
+        let share = valid_share();
+        let message = information_share_message(&share).expect("share message");
+        assert_eq!(message.role, Role::User);
+        assert_eq!(message.context_id.as_deref(), Some("correlation_1"));
+        let share_data = || json!({"contract": "vibemux.info.share.v1", "share": valid_share()});
+        assert_eq!(the_only_data_part(&message), &share_data());
+        let empty_text = InformationShare {
+            text: String::new(),
+            ..valid_share()
+        };
+        assert_eq!(
+            outcome(information_share_message(&empty_text)),
+            "a2a_invalid_text"
+        );
+
+        let parse = |message: &Message| outcome(parse_information_share(message));
+        let mut without_metadata = share_data();
+        without_metadata["share"]
+            .as_object_mut()
+            .expect("share object")
+            .remove("metadata");
+        let parsed =
+            parse_information_share(&data_message(Role::User, "correlation_1", without_metadata))
+                .expect("share without metadata");
+        assert!(parsed.metadata.is_empty());
+
+        let mut two_parts = data_message(Role::User, "correlation_1", share_data());
+        two_parts.parts.push(Part::data(share_data()));
+        let mut text_part = data_message(Role::User, "correlation_1", share_data());
+        text_part.parts = vec![Part::text("VIBEMUX_A2A_INFO_SHARE_OK")];
+        let mut no_context = data_message(Role::User, "correlation_1", share_data());
+        no_context.context_id = None;
+        let mut unknown_field = share_data();
+        unknown_field["extra"] = json!(1);
+        let mut unknown_share_field = share_data();
+        unknown_share_field["share"]["extra"] = json!(1);
+        let mut invalid_text = share_data();
+        invalid_text["share"]["text"] = json!("");
+        let ack_contract = json!({"contract": "vibemux.info.ack.v1", "share": valid_share()});
+        for (message, expected) in [
+            (
+                data_message(Role::Agent, "correlation_1", share_data()),
+                UNSUPPORTED,
+            ),
+            (two_parts, UNSUPPORTED),
+            (text_part, UNSUPPORTED),
+            (
+                data_message(Role::User, "correlation_1", ack_contract),
+                UNSUPPORTED,
+            ),
+            (
+                data_message(Role::User, "correlation_1", unknown_field),
+                UNSUPPORTED,
+            ),
+            (
+                data_message(Role::User, "correlation_1", unknown_share_field),
+                UNSUPPORTED,
+            ),
+            (
+                data_message(Role::User, "correlation_2", invalid_text),
+                "a2a_invalid_text",
+            ),
+            (
+                data_message(Role::User, "correlation_2", share_data()),
+                MISMATCH,
+            ),
+            (no_context, MISMATCH),
+        ] {
+            assert_eq!(parse(&message), expected, "{message:?}");
+        }
+    }
+
+    #[test]
+    fn an_acknowledgement_message_is_one_data_part_from_the_agent() {
+        for accepted in [true, false] {
+            let acknowledgement = InformationAcknowledgement {
+                accepted,
+                ..valid_acknowledgement()
+            };
+            let message = acknowledgement_message(&acknowledgement).expect("ack message");
+            assert_eq!(message.role, Role::Agent);
+            assert_eq!(message.context_id.as_deref(), Some("correlation_1"));
+            assert_eq!(
+                the_only_data_part(&message),
+                &json!({"contract": "vibemux.info.ack.v1", "acknowledgement": acknowledgement})
+            );
+            assert_eq!(
+                parse_acknowledgement(&message).expect("parse ack"),
+                acknowledgement
+            );
+        }
+        let build = |change: fn(&mut InformationAcknowledgement)| {
+            let mut acknowledgement = valid_acknowledgement();
+            change(&mut acknowledgement);
+            outcome(acknowledgement_message(&acknowledgement))
+        };
+        assert_eq!(
+            build(|ack| ack.correlation_id = "correlation 1".to_string()),
+            "a2a_invalid_identifier:correlation_id"
+        );
+        assert_eq!(
+            build(|ack| ack.receiver_peer_id = String::new()),
+            "a2a_invalid_identifier:receiver_peer_id"
+        );
+
+        let parse = |message: &Message| outcome(parse_acknowledgement(message));
+        let ack_data = || json!({"contract": "vibemux.info.ack.v1", "acknowledgement": valid_acknowledgement()});
+        let mut two_parts = data_message(Role::Agent, "correlation_1", ack_data());
+        two_parts.parts.push(Part::data(ack_data()));
+        let mut text_part = data_message(Role::Agent, "correlation_1", ack_data());
+        text_part.parts = vec![Part::text("accepted")];
+        let mut no_context = data_message(Role::Agent, "correlation_1", ack_data());
+        no_context.context_id = None;
+        let mut unknown_field = ack_data();
+        unknown_field["extra"] = json!(1);
+        let mut unknown_ack_field = ack_data();
+        unknown_ack_field["acknowledgement"]["extra"] = json!(1);
+        let mut invalid_correlation = ack_data();
+        invalid_correlation["acknowledgement"]["correlation_id"] = json!("");
+        let mut invalid_receiver = ack_data();
+        invalid_receiver["acknowledgement"]["receiver_peer_id"] = json!("receiver 1");
+        let share_contract = json!({
+            "contract": "vibemux.info.share.v1",
+            "acknowledgement": valid_acknowledgement()
+        });
+        for (message, expected) in [
+            (
+                data_message(Role::User, "correlation_1", ack_data()),
+                UNSUPPORTED,
+            ),
+            (two_parts, UNSUPPORTED),
+            (text_part, UNSUPPORTED),
+            (
+                data_message(Role::Agent, "correlation_1", share_contract),
+                UNSUPPORTED,
+            ),
+            (
+                data_message(Role::Agent, "correlation_1", unknown_field),
+                UNSUPPORTED,
+            ),
+            (
+                data_message(Role::Agent, "correlation_1", unknown_ack_field),
+                UNSUPPORTED,
+            ),
+            (
+                data_message(Role::Agent, "correlation_1", invalid_correlation),
+                "a2a_invalid_identifier:correlation_id",
+            ),
+            (
+                data_message(Role::Agent, "correlation_1", invalid_receiver),
+                "a2a_invalid_identifier:receiver_peer_id",
+            ),
+            (
+                data_message(Role::Agent, "correlation_2", ack_data()),
+                MISMATCH,
+            ),
+            (no_context, MISMATCH),
+        ] {
+            assert_eq!(parse(&message), expected, "{message:?}");
+        }
+        // A share message is never read as an acknowledgement.
+        let share_message = information_share_message(&valid_share()).expect("share message");
+        assert_eq!(parse(&share_message), UNSUPPORTED);
+    }
+
+    #[test]
+    fn only_a_loopback_card_offering_the_share_skill_is_accepted() {
+        let card = build_agent_card("http://127.0.0.1:4100/", "peer_1");
+        assert_eq!(card.name, "VibeMux peer_1");
+        assert_eq!(
+            card.skills
+                .iter()
+                .map(|skill| skill.id.as_str())
+                .collect::<Vec<_>>(),
+            ["vibemux_basic_information_share"]
+        );
+        assert_eq!(card.supported_interfaces.len(), 1);
+        assert_eq!(
+            (
+                card.supported_interfaces[0].url.as_str(),
+                card.supported_interfaces[0].protocol_binding.as_str()
+            ),
+            ("http://127.0.0.1:4100/", "HTTP+JSON")
+        );
+        assert_eq!(outcome(validate_agent_card(&card)), "ok");
+
+        let cases: [CardCase; 7] = [
+            (
+                |card| {
+                    let mut other = card.skills[0].clone();
+                    other.id = "other_skill".to_string();
+                    card.skills.insert(0, other);
+                },
+                "ok",
+            ),
+            (|card| card.skills.clear(), UNSUPPORTED),
+            (
+                |card| card.skills[0].id = "other_skill".to_string(),
+                UNSUPPORTED,
+            ),
+            (|card| card.supported_interfaces.clear(), UNSUPPORTED),
+            (
+                |card| {
+                    let copy = card.supported_interfaces[0].clone();
+                    card.supported_interfaces.push(copy);
+                },
+                UNSUPPORTED,
+            ),
+            (
+                |card| card.supported_interfaces[0].protocol_binding = "JSONRPC".to_string(),
+                UNSUPPORTED,
+            ),
+            (
+                |card| card.supported_interfaces[0].url = "http://192.168.1.2:4100/".to_string(),
+                "a2a_non_loopback_url",
+            ),
+        ];
+        for (index, (change, expected)) in cases.into_iter().enumerate() {
+            let mut changed = card.clone();
+            change(&mut changed);
+            assert_eq!(
+                outcome(validate_agent_card(&changed)),
+                expected,
+                "case {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_peer_url_is_plain_http_on_loopback_with_an_explicit_port() {
+        for url in [
+            "http://127.0.0.1:4100",
+            "http://127.0.0.1:4100/",
+            "http://localhost:4100/",
+            "http://LOCALHOST:4100",
+        ] {
+            assert_eq!(outcome(ensure_loopback_url(url)), "ok", "{url}");
+        }
+        // Port 80 is the http default, which the parser reports as no port.
+        for url in [
+            "",
+            "not a url",
+            "https://127.0.0.1:4100/",
+            "http://127.0.0.1/",
+            "http://127.0.0.1:80/",
+            "http://127.0.0.2:4100/",
+            "http://[::1]:4100/",
+            "http://example.test:4100/",
+            "http://user@127.0.0.1:4100/",
+            "http://:secret@127.0.0.1:4100/",
+            "http://127.0.0.1:4100/?a=1",
+            "http://127.0.0.1:4100/#a",
+            "http://127.0.0.1:4100/a2a",
+        ] {
+            assert_eq!(
+                outcome(ensure_loopback_url(url)),
+                "a2a_non_loopback_url",
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn information_errors_keep_their_codes() {
+        for (error, code) in [
+            (
+                InformationShareError::InvalidIdentifier("correlation_id"),
+                "a2a_invalid_identifier",
+            ),
+            (InformationShareError::InvalidText, "a2a_invalid_text"),
+            (
+                InformationShareError::InvalidMetadata,
+                "a2a_invalid_metadata",
+            ),
+            (InformationShareError::UnsupportedMessage, UNSUPPORTED),
+            (InformationShareError::CorrelationMismatch, MISMATCH),
+            (InformationShareError::Sdk, "a2a_sdk_error"),
+            (InformationShareError::Server, "a2a_server_error"),
+            (InformationShareError::Deadline, "a2a_deadline"),
+            (
+                InformationShareError::NonLoopbackUrl,
+                "a2a_non_loopback_url",
+            ),
+        ] {
+            assert_eq!(error.code(), code);
+        }
     }
 }
