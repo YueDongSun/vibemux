@@ -572,3 +572,308 @@ fn is_valid_route_label(label: &str) -> bool {
             byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'/')
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::dispatch::request::DISPATCH_REQUEST_SCHEMA_VERSION;
+
+    const HOST: ExecutablePolicy = ExecutablePolicy::for_host();
+
+    fn host_path(name: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!(r"C:\tools\{name}"))
+        } else {
+            PathBuf::from(format!("/opt/tools/{name}"))
+        }
+    }
+
+    /// An absolute path on this host that is exactly `length` bytes long and
+    /// ends in `suffix`.
+    fn absolute_of_length(length: usize, suffix: &str) -> PathBuf {
+        let prefix = if cfg!(windows) { r"C:\" } else { "/" };
+        let filler = "x".repeat(length - prefix.len() - suffix.len());
+        PathBuf::from(format!("{prefix}{filler}{suffix}"))
+    }
+
+    fn route_value(harness: AgentKind, protocol: NativeProtocol) -> Value {
+        let mut value = json!({
+            "harness": harness,
+            "protocol": protocol,
+            "executable": host_path(&format!("{}.exe", harness.command_name())),
+            "enabled": true,
+            "allow_execution": protocol.supports_execution(),
+        });
+        if protocol.requires_launcher_pair() {
+            value["executable"] = json!(host_path("node.exe"));
+            value["entry_script"] = json!(host_path("dsh/bin.js"));
+            value["provider"] = json!("synthetic_provider");
+            value["model"] = json!("synthetic_model");
+        }
+        value
+    }
+
+    fn with(mut route: Value, key: &str, value: Value) -> Value {
+        route[key] = value;
+        route
+    }
+
+    fn config_bytes(routes: Vec<Value>) -> Vec<u8> {
+        serde_json::to_vec(&json!({ "schema_version": 1, "routes": routes })).expect("config")
+    }
+
+    fn parse_routes(routes: Vec<Value>) -> Result<DispatchConfig, DispatchError> {
+        DispatchConfig::parse(&config_bytes(routes), HOST).map(|pinned| pinned.config)
+    }
+
+    fn outcome(routes: Vec<Value>) -> Result<(), DispatchError> {
+        parse_routes(routes).map(|_| ())
+    }
+
+    fn request(harness: AgentKind) -> DispatchRequest {
+        DispatchRequest {
+            schema_version: DISPATCH_REQUEST_SCHEMA_VERSION,
+            request_id: Uuid::from_u128(0x5eed),
+            harness,
+            prompt: "synthetic prompt".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_config_holds_at_most_64_kib_and_sixteen_routes() {
+        let mut padded = config_bytes(vec![route_value(
+            AgentKind::Codex,
+            NativeProtocol::CodexExec,
+        )]);
+        padded.resize(65_536, b' ');
+        assert!(DispatchConfig::parse(&padded, HOST).is_ok());
+        padded.push(b' ');
+        assert_eq!(
+            DispatchConfig::parse(&padded, HOST).err(),
+            Some(DispatchError::ConfigTooLarge)
+        );
+        // Sixteen routes pass the count gate and reach the duplicate check.
+        let codex = route_value(AgentKind::Codex, NativeProtocol::CodexExec);
+        assert_eq!(
+            outcome(vec![codex.clone(); 16]),
+            Err(DispatchError::ConfigRouteInvalid)
+        );
+        assert_eq!(outcome(vec![codex; 17]), Err(DispatchError::ConfigInvalid));
+    }
+
+    #[test]
+    fn the_default_limits_keep_their_values() {
+        let limits = DispatchLimits::default();
+        assert_eq!(
+            limits,
+            DispatchLimits {
+                frame_bytes: 131_072,
+                capture_bytes: 16_777_216,
+                record_count: 16_384,
+                deadline_ms: 600_000,
+                shutdown_grace_ms: 2_000,
+            }
+        );
+        assert_eq!(limits.validate(), Ok(()));
+    }
+
+    #[test]
+    fn only_the_read_only_protocols_admit_execution_and_only_with_consent() {
+        let read_only: Vec<_> = NativeProtocol::ALL
+            .into_iter()
+            .filter(|protocol| protocol.supports_read_only_dispatch())
+            .collect();
+        assert_eq!(
+            read_only,
+            [
+                NativeProtocol::CodexExec,
+                NativeProtocol::CodexAppServer,
+                NativeProtocol::ClaudeStreamJson,
+            ]
+        );
+        let config = parse_routes(vec![
+            route_value(AgentKind::Codex, NativeProtocol::CodexAppServer),
+            route_value(AgentKind::Claude, NativeProtocol::ClaudeStreamJson),
+            route_value(AgentKind::Dsh, NativeProtocol::DshSdkJsonRpc),
+        ])
+        .expect("config");
+        for harness in [AgentKind::Codex, AgentKind::Claude] {
+            assert_eq!(
+                config
+                    .execution_route(&request(harness), true)
+                    .map(|route| route.harness),
+                Ok(harness)
+            );
+        }
+        assert_eq!(
+            config.execution_route(&request(AgentKind::Dsh), true).err(),
+            Some(DispatchError::ExecutionDisabled)
+        );
+        // A read-only protocol still needs the operator's consent.
+        let refused = parse_routes(vec![with(
+            route_value(AgentKind::Codex, NativeProtocol::CodexExec),
+            "allow_execution",
+            json!(false),
+        )])
+        .expect("config");
+        assert_eq!(
+            refused
+                .execution_route(&request(AgentKind::Codex), true)
+                .err(),
+            Some(DispatchError::ExecutionDisabled)
+        );
+    }
+
+    #[test]
+    fn a_probe_refuses_an_unsupported_protocol_before_detection() {
+        let config = parse_routes(vec![
+            route_value(AgentKind::Codex, NativeProtocol::CodexExec),
+            with(
+                route_value(AgentKind::Claude, NativeProtocol::ClaudeStreamJson),
+                "enabled",
+                json!(false),
+            ),
+        ])
+        .expect("config");
+        assert_eq!(
+            config.probe_route(AgentKind::Codex, false).err(),
+            Some(DispatchError::ProbeUnsupported)
+        );
+        let enabled: Vec<_> = config.catalog().iter().map(|entry| entry.enabled).collect();
+        assert_eq!(enabled, [true, false]);
+    }
+
+    #[test]
+    fn the_host_policy_matches_the_platform() {
+        let extensionless = validate_executable(&host_path("codex"), ExecutablePolicy::for_host());
+        if cfg!(windows) {
+            assert_eq!(
+                ExecutablePolicy::for_host(),
+                ExecutablePolicy::WindowsNativeImage
+            );
+            assert_eq!(extensionless, Err(DispatchError::ConfigExecutableInvalid));
+        } else {
+            assert_eq!(
+                ExecutablePolicy::for_host(),
+                ExecutablePolicy::PosixExecutable
+            );
+            assert_eq!(extensionless, Ok(()));
+        }
+    }
+
+    #[test]
+    fn route_debug_shows_only_the_shape_and_counts() {
+        let config = parse_routes(vec![
+            with(
+                route_value(AgentKind::Dsh, NativeProtocol::DshSdkJsonRpc),
+                "environment_names",
+                json!(["SYNTHETIC_KEY"]),
+            ),
+            route_value(AgentKind::Codex, NativeProtocol::CodexExec),
+        ])
+        .expect("config");
+        assert_eq!(
+            format!("{:?}", config.routes[0]),
+            "DispatchRoute { harness: Dsh, protocol: DshSdkJsonRpc, enabled: true, \
+             allow_execution: true, launcher_pair: true, environment_name_count: 1, .. }"
+        );
+        assert_eq!(
+            format!("{:?}", config.routes[1]),
+            "DispatchRoute { harness: Codex, protocol: CodexExec, enabled: true, \
+             allow_execution: true, launcher_pair: false, environment_name_count: 0, .. }"
+        );
+    }
+
+    #[test]
+    fn a_launcher_pair_route_needs_a_valid_provider_and_a_model() {
+        let dsh = route_value(AgentKind::Dsh, NativeProtocol::DshSdkJsonRpc);
+        assert_eq!(outcome(vec![dsh.clone()]), Ok(()));
+        for provider in [json!("-p"), json!("a b"), json!("")] {
+            assert_eq!(
+                outcome(vec![with(dsh.clone(), "provider", provider.clone())]),
+                Err(DispatchError::ConfigRouteInvalid),
+                "{provider}"
+            );
+        }
+        let mut without_model = dsh;
+        without_model
+            .as_object_mut()
+            .expect("route object")
+            .remove("model");
+        assert_eq!(
+            outcome(vec![without_model]),
+            Err(DispatchError::ConfigRouteInvalid)
+        );
+    }
+
+    #[test]
+    fn executable_and_entry_script_paths_hold_at_most_1024_bytes() {
+        assert_eq!(
+            validate_executable(&absolute_of_length(1024, ".exe"), HOST),
+            Ok(())
+        );
+        assert_eq!(
+            validate_executable(&absolute_of_length(1025, ".exe"), HOST),
+            Err(DispatchError::ConfigExecutableInvalid)
+        );
+        assert_eq!(
+            validate_entry_script_shape(&absolute_of_length(1024, ".js")),
+            Ok(())
+        );
+        assert_eq!(
+            validate_entry_script_shape(&absolute_of_length(1025, ".js")),
+            Err(DispatchError::ConfigRouteInvalid)
+        );
+    }
+
+    #[test]
+    fn an_entry_script_refuses_nul_and_folds_the_extension_case() {
+        assert_eq!(
+            validate_entry_script_shape(&host_path("dsh\0bin.js")),
+            Err(DispatchError::ConfigRouteInvalid)
+        );
+        assert_eq!(validate_entry_script_shape(&host_path("BIN.JS")), Ok(()));
+    }
+
+    #[test]
+    fn launcher_and_harness_stems_fold_case_only_on_windows() {
+        let windows = ExecutablePolicy::WindowsNativeImage;
+        let posix = ExecutablePolicy::PosixExecutable;
+        assert!(executable_is_node_image(Path::new("NODE.EXE"), windows));
+        assert!(executable_is_node_image(Path::new("node"), posix));
+        assert!(!executable_is_node_image(Path::new("Node"), posix));
+        // A path without a file stem names no image at all.
+        for policy in [windows, posix] {
+            assert!(!executable_is_node_image(Path::new(".."), policy));
+            assert!(!executable_names_harness(
+                Path::new(".."),
+                AgentKind::Codex,
+                policy
+            ));
+        }
+    }
+
+    #[test]
+    fn profiles_are_bounded_lowercase_names() {
+        assert!(profile_is_valid(&"a".repeat(64)));
+        assert!(!profile_is_valid(&"a".repeat(65)));
+        for valid in ["sdk", "sdk_2", "sdk-v2"] {
+            assert!(profile_is_valid(valid), "{valid}");
+        }
+        for invalid in ["1sdk", "sDk", "s.dk"] {
+            assert!(!profile_is_valid(invalid), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn environment_names_and_route_labels_reach_their_exact_bounds() {
+        let names: Vec<String> = (0..24).map(|index| format!("NAME_{index}")).collect();
+        assert_eq!(validate_environment_names(&names), Ok(()));
+        assert_eq!(validate_environment_names(&["X".repeat(128)]), Ok(()));
+        assert!(is_valid_route_label(&"m".repeat(256)));
+        assert!(!is_valid_route_label(&"m".repeat(257)));
+    }
+}

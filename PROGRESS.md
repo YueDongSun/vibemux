@@ -5805,3 +5805,47 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Pin the harness dispatch route config bounds in vibemux_harness
+
+**Scope:** `crates/vibemux_harness/src/dispatch/route_config.rs` validates the operator's `.vibemux/harness_dispatch.json` (ADR 029). It checks the config size and route count, the capture and timing limits, the protocol matrix, executable and entry-script paths, the DSH launcher pair, environment names, and model and provider labels. It also holds the execution and probe gates and the content-free catalog and `Debug` projections. The module had no unit tests; the 22 integration tests in `tests/dispatch_config.rs` covered it. A sweep of 182 mutants against the crate's tests left 52 alive. This change is test-only.
+
+**Implemented:**
+- A new test module in `route_config.rs` with 12 unit tests. No production code changed.
+- `a_config_holds_at_most_64_kib_and_sixteen_routes`: a valid config padded with whitespace to exactly 65,536 bytes parses, and one more byte is `ConfigTooLarge`. Sixteen routes pass the count gate and reach the duplicate-harness check (`ConfigRouteInvalid`); seventeen are `ConfigInvalid`.
+- `the_default_limits_keep_their_values`: omitted limits default to a 128 KiB frame, 16 MiB of capture, 16,384 records, a 600,000 ms deadline, and a 2,000 ms shutdown grace, and the defaults validate.
+- `only_the_read_only_protocols_admit_execution_and_only_with_consent`:
+  - Only `codex_exec`, `codex_app_server`, and `claude_stream_json` have a read-only dispatch posture.
+  - Codex app-server and Claude stream-json routes are admitted for execution.
+  - A DSH route with `allow_execution` is `ExecutionDisabled`, and so is a `codex_exec` route without `allow_execution`.
+- `a_probe_refuses_an_unsupported_protocol_before_detection`: a `codex_exec` route on an undetected harness is `ProbeUnsupported`, not `NotDetected`. The catalog reports a disabled route as disabled.
+- `the_host_policy_matches_the_platform`: Windows uses the native-image policy and refuses an extensionless executable; other hosts use the POSIX policy and accept it.
+- `route_debug_shows_only_the_shape_and_counts`: a route's `Debug` output is exactly its harness, protocol, enabled and execution flags, whether it is a launcher pair, and its environment name count. The executable, entry script, provider, model, and environment names never appear.
+- `a_launcher_pair_route_needs_a_valid_provider_and_a_model`: a DSH route whose provider is `-p`, `a b`, or empty is refused, and so is one without a model.
+- `executable_and_entry_script_paths_hold_at_most_1024_bytes`: a 1,024-byte absolute executable path and entry script are accepted; 1,025 bytes are refused.
+- `an_entry_script_refuses_nul_and_folds_the_extension_case`: NUL in an entry script is refused, and `BIN.JS` is accepted.
+- `launcher_and_harness_stems_fold_case_only_on_windows`: `NODE.EXE` is the Node image under the Windows policy. Under the POSIX policy `node` is the Node image and `Node` is not. A path with no file stem (`..`) names neither the Node image nor a harness.
+- `profiles_are_bounded_lowercase_names`: a profile is 1 to 64 bytes, starts with a lowercase letter, and continues with lowercase letters, digits, `_`, or `-`. `1sdk`, `sDk`, and `s.dk` are refused.
+- `environment_names_and_route_labels_reach_their_exact_bounds`: 24 environment names and a 128-byte name are accepted. A 256-byte route label is accepted and a 257-byte one is refused.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_harness --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_harness --all-features`: 102 library tests passed (12 new), and the 61 integration tests in `dispatch_attempt`, `dispatch_config`, `dispatch_framing`, `dispatch_protocols`, and `writable_fixture_guard` passed.
+- The sweep ran 182 mutants against that suite. The existing tests caught 129. One mutant (dropping the duplicate environment-name check) did not compile; rerun in a compiling form, it was caught by `environment_names_are_upper_snake_case_unique_and_not_reserved`. The source was restored byte-for-byte.
+- The new tests catch all 50 non-equivalent survivors:
+  - Bounds: a 64 KiB config, sixteen routes, a 1,024-byte executable path or entry script, a 64-byte profile, 24 environment names, a 128-byte environment name, and a 256-byte route label, each by its comparison and by its constant.
+  - Defaults: each default limit, by its field and by its constant.
+  - Gates: dropping either read-only protocol other than `codex_exec`, ignoring `allow_execution`, checking probe detection before probe support, and reporting every catalog entry as enabled.
+  - Host policy: inverting the platform check.
+  - Debug output: printing the model, the entry script, or the provider, inverting the launcher-pair flag, or zeroing the environment name count.
+  - Launcher pair: accepting any provider label or a missing model.
+  - Entry script: allowing NUL, or comparing the extension case-sensitively.
+  - Stems: comparing the Node image case-sensitively on Windows or case-insensitively on POSIX, and accepting a path with no file stem as the Node image or as a harness.
+  - Profiles: accepting a leading digit, an uppercase letter, or `.`.
+- Two survivors are equivalent and not counted:
+  - Dropping the non-empty file-stem check on an entry script: a `.js` extension always comes with a non-empty stem.
+  - Accepting any launcher-pair model in the pair arm: the general model check that follows validates it again.
+
+**Remaining:**
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
