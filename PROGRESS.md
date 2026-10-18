@@ -5400,3 +5400,24 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+### 2026-10-18 - Stage GUI settings saves under a unique name
+
+**Scope:** `vibemux_frontend::theme::serialize::save_user_config_at` persists `frontend.json` after the GUI's theme, window size, or sidebar setting changes (debounced, and never in demo mode). It wrote the whole document to the fixed sibling `frontend.json.tmp` and renamed it over the settings file. Two GUI processes saving at once wrote through the same staged file, and a failed rename left it behind.
+
+**Implemented:**
+- Each save stages through a hidden sibling named for the process id and the current time, `.frontend.json.<pid>.<nanos>.tmp`. The staged file is opened only if it does not exist yet, so a name already taken fails that save instead of overwriting another save's file.
+- A failed write removes the file it created, and a failed rename, after the existing single retry, removes the staged file. A name already taken by another save is left alone.
+- The module doc still states that concurrent writers can lose a write. There is no lock, and the `frontend.json` layout, its schema version, and the read path are unchanged.
+
+**Evidence (native Windows, Rust 1.92.0; `CARGO_TARGET_DIR` on C: because I: is full):**
+- `cargo fmt --all -- --check` clean. `cargo clippy -p vibemux_frontend --all-targets --all-features -- -D warnings` clean.
+- `cargo test -p vibemux_frontend --all-features --lib`: 152 passed, 1 ignored (the golden-fixture writer). New tests: `a_save_leaves_only_the_settings_file` checks that a save leaves only `frontend.json`, and that a save blocked by a non-empty directory at the path fails, leaves no staged file, and leaves the directory's contents alone. `a_staged_file_is_a_hidden_sibling_named_for_this_process` pins the name.
+- After a doc-comment rewording, fmt, clippy, and `cargo test -p vibemux_frontend --all-features --lib theme::serialize` (16 passed) were rerun.
+- One mutation was caught and restored byte-for-byte: dropping the cleanup after a failed rename failed `a_save_leaves_only_the_settings_file`.
+- No GUI window was opened.
+
+**Remaining:**
+- A `frontend.json.tmp` left behind by an earlier build is not removed; nothing reads it.
+- Owner decision on no-follow opens for bounded reads.
+- Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.

@@ -7,14 +7,16 @@
 //!   back to `$HOME/.config/vibemux/frontend.json`)
 //!
 //! All reads are tolerant: missing, corrupt, or oversized files return
-//! [`UserConfig::default`]. Writes are atomic (write tmp, rename).
+//! [`UserConfig::default`]. Writes are atomic (write a uniquely named
+//! staged file, rename), and a failed save removes the file it staged.
 //! We never hold an OS lock; concurrent writers can clobber each
 //! other, but the worst case is a lost write of the theme id.
 
 use std::{
     env, fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -167,17 +169,48 @@ pub fn save_user_config_at(cfg: &UserConfig, path: &Path) -> std::io::Result<()>
     }
     let serialised = serde_json::to_string_pretty(cfg)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serialised)?;
-    match fs::rename(&tmp, path) {
-        Ok(()) => Ok(()),
-        Err(first) => {
+    let staging = staging_path(path);
+    write_new(&staging, serialised.as_bytes())?;
+    fs::rename(&staging, path)
+        .or_else(|first| {
             // Retry once after a small delay; another process may be
             // closing the file on Windows. We do not retry forever.
             std::thread::sleep(std::time::Duration::from_millis(50));
-            fs::rename(&tmp, path).map_err(|_| first)
-        }
+            fs::rename(&staging, path).map_err(|_| first)
+        })
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&staging);
+        })
+}
+
+/// A hidden sibling of `path` named for this process and moment. Two
+/// saves that still draw the same name do not share it: the second
+/// open fails instead of overwriting the first.
+fn staging_path(path: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(".{}.{nanos}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Writes `bytes` to a file created at `path`, which must not exist yet.
+/// A failed write removes the file it created; a name already taken is
+/// left alone, since another save owns it.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let written = file.write_all(bytes);
+    drop(file);
+    if written.is_err() {
+        let _ = fs::remove_file(path);
     }
+    written
 }
 
 /// Build the active `ThemePalette` for the configured theme id.
@@ -349,6 +382,44 @@ mod tests {
         );
         // An endless source ends at the bound instead of exhausting memory.
         assert_eq!(read_at_most(std::io::repeat(b' '), 8), None);
+    }
+
+    #[test]
+    fn a_save_leaves_only_the_settings_file() {
+        let file_names = |directory: &Path| -> Vec<std::ffi::OsString> {
+            fs::read_dir(directory)
+                .expect("read dir")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect()
+        };
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("frontend.json");
+        save_user_config_at(&UserConfig::default(), &path).expect("save");
+        assert_eq!(file_names(directory.path()), ["frontend.json"]);
+
+        // A non-empty directory at the path refuses the rename; the staged
+        // file is removed and the directory is left as it was.
+        let blocked = tempfile::tempdir().expect("tempdir");
+        let path = blocked.path().join("frontend.json");
+        fs::create_dir(&path).expect("mkdir");
+        fs::write(path.join("kept"), b"").expect("write");
+        assert!(save_user_config_at(&UserConfig::default(), &path).is_err());
+        assert_eq!(file_names(blocked.path()), ["frontend.json"]);
+        assert_eq!(file_names(&path), ["kept"]);
+    }
+
+    #[test]
+    fn a_staged_file_is_a_hidden_sibling_named_for_this_process() {
+        let path = Path::new("settings").join("frontend.json");
+        let staging = staging_path(&path);
+        assert_eq!(staging.parent(), path.parent());
+        let name = staging
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("name");
+        let prefix = format!(".frontend.json.{}.", std::process::id());
+        assert!(name.starts_with(&prefix), "{name}");
+        assert!(name.ends_with(".tmp"), "{name}");
     }
 
     #[test]
