@@ -82,7 +82,8 @@ pub struct DshPoll {
     /// evicted by the bounds before it could read them.
     pub truncated: bool,
     pub summary: DshSessionSummary,
-    /// Whether the runtime's stdout was still open when the page was taken.
+    /// Whether the transport was still open when the page was taken: the
+    /// runtime's stdout had not ended and no write had found its stdin closed.
     pub transport_open: bool,
 }
 
@@ -190,8 +191,14 @@ impl DshDriver {
         let actions = driver
             .with_machine(|machine| machine.start())
             .map_err(map_session_error)?;
-        driver.apply(actions).await?;
-        Ok(driver)
+        match driver.apply(actions).await {
+            // A runtime that exits before reading `initialize` can close its
+            // stdin before the frame is written. That is the transport failure
+            // stdout EOF reports, already recorded on the session, so the
+            // caller learns it from `await_ready` whichever pipe noticed first.
+            Ok(()) | Err(DshDriverError::TransportClosed) => Ok(driver),
+            Err(error) => Err(error),
+        }
     }
 
     #[must_use]
@@ -199,7 +206,8 @@ impl DshDriver {
         lock(&self.state).machine.phase()
     }
 
-    /// Whether the runtime's stdout is still open.
+    /// Whether the transport is still open: the runtime's stdout has not ended
+    /// and no write has found its stdin closed.
     #[must_use]
     pub fn transport_open(&self) -> bool {
         lock(&self.state).transport_open
@@ -414,14 +422,13 @@ impl DshDriver {
                         .stdin
                         .as_mut()
                         .ok_or(DshDriverError::StdinUnavailable)?;
-                    stdin
-                        .write_all(&encoded)
-                        .await
-                        .map_err(|_| DshDriverError::WriteFailed)?;
-                    stdin
-                        .flush()
-                        .await
-                        .map_err(|_| DshDriverError::WriteFailed)?;
+                    let written = match stdin.write_all(&encoded).await {
+                        Ok(()) => stdin.flush().await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = written {
+                        return Err(self.write_failed(&error));
+                    }
                 }
                 DshAction::Terminate => {
                     self.terminate()?;
@@ -429,6 +436,35 @@ impl DshDriver {
             }
         }
         Ok(())
+    }
+
+    /// Records a failed frame write. A closed stdin is a transport failure,
+    /// so it fails the session exactly as stdout EOF does; any other error is
+    /// a local write fault and leaves the session state to the caller.
+    fn write_failed(&mut self, error: &std::io::Error) -> DshDriverError {
+        let failure = write_failure(error);
+        if failure == DshDriverError::TransportClosed {
+            self.stdin = None;
+            let mut state = lock(&self.state);
+            state.transport_open = false;
+            if state.transport_error.is_none() {
+                state.transport_error = Some(failure.clone());
+            }
+            state.machine.fail(map_driver_to_session(&failure));
+        }
+        failure
+    }
+}
+
+/// Classifies a failed write to the runtime's stdin. Writing to a pipe whose
+/// reader is gone reports `BrokenPipe` on every platform (`EPIPE`, or
+/// `ERROR_BROKEN_PIPE` and `ERROR_NO_DATA` on Windows): the runtime closed
+/// its end, normally by exiting.
+fn write_failure(error: &std::io::Error) -> DshDriverError {
+    if error.kind() == std::io::ErrorKind::BrokenPipe {
+        DshDriverError::TransportClosed
+    } else {
+        DshDriverError::WriteFailed
     }
 }
 
@@ -564,5 +600,45 @@ fn map_session_error(error: DshError) -> DshDriverError {
         }
         DshError::InvalidPrompt => DshDriverError::ConfigInvalid,
         _ => DshDriverError::InvalidState,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn a_closed_runtime_pipe_is_a_transport_failure_and_other_errors_are_write_faults() {
+        assert_eq!(
+            write_failure(&Error::from(ErrorKind::BrokenPipe)),
+            DshDriverError::TransportClosed
+        );
+        for kind in [
+            ErrorKind::WouldBlock,
+            ErrorKind::Interrupted,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Other,
+        ] {
+            assert_eq!(
+                write_failure(&Error::from(kind)),
+                DshDriverError::WriteFailed,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pipe_closure_codes_are_transport_failures() {
+        const ERROR_BROKEN_PIPE: i32 = 109;
+        const ERROR_NO_DATA: i32 = 232;
+        for code in [ERROR_BROKEN_PIPE, ERROR_NO_DATA] {
+            assert_eq!(
+                write_failure(&Error::from_raw_os_error(code)),
+                DshDriverError::TransportClosed,
+                "{code}"
+            );
+        }
     }
 }
