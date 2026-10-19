@@ -149,6 +149,24 @@ async fn a_runtime_that_exits_early_is_reported_as_a_transport_failure() {
 }
 
 #[tokio::test]
+async fn closing_after_the_runtime_exited_on_its_own_is_still_a_clean_close() {
+    let mut driver = open("exit-after-ready").await;
+    // Wait for stdout to end, so `close` writes `shutdown` into a pipe whose
+    // reader is gone on every platform.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while driver.transport_open() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!driver.transport_open(), "the runtime should have exited");
+    // `close` documents that a peer that already died cannot receive the
+    // frame and that the teardown still runs: the reaped exit closes the
+    // session rather than failing it.
+    driver.close().await.expect("close");
+    assert_eq!(driver.phase(), DshPhase::Closed);
+    assert_eq!(driver.poll(0).expect("poll").summary.error_code, None);
+}
+
+#[tokio::test]
 async fn a_structured_turn_error_is_failed_not_completed() {
     let mut driver = open("error-turn").await;
     driver.prompt("fail please").await.expect("prompt");

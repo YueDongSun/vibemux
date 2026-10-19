@@ -441,11 +441,18 @@ impl DshDriver {
     /// Records a failed frame write. A closed stdin is a transport failure,
     /// so it fails the session exactly as stdout EOF does; any other error is
     /// a local write fault and leaves the session state to the caller.
+    ///
+    /// A session that is already closing is left to `close`: a runtime that
+    /// exited first cannot read `shutdown`, and the reaped exit closes the
+    /// session there.
     fn write_failed(&mut self, error: &std::io::Error) -> DshDriverError {
         let failure = write_failure(error);
         if failure == DshDriverError::TransportClosed {
             self.stdin = None;
             let mut state = lock(&self.state);
+            if state.machine.phase() == DshPhase::Closing {
+                return failure;
+            }
             state.transport_open = false;
             if state.transport_error.is_none() {
                 state.transport_error = Some(failure.clone());

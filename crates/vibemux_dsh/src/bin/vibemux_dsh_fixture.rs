@@ -23,6 +23,7 @@
 //! | `no-turn-end` | streams text but never ends the turn |
 //! | `flood` | streams [`FLOOD_CHUNKS`] text chunks in one burst before each turn ends |
 //! | `exit-early` | exits before answering anything |
+//! | `exit-after-ready` | answers `initialize`, then exits |
 
 use std::io::{self, BufRead, Write};
 
@@ -84,6 +85,9 @@ fn main() {
                     &serde_json::json!({"serverInfo": {
                         "name": SERVER_NAME, "version": SERVER_VERSION}}),
                 );
+                if mode == "exit-after-ready" {
+                    return;
+                }
             }
             "session/prompt" => {
                 let session_id = frame
