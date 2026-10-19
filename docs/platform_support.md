@@ -10,6 +10,7 @@
 | WezTerm | Windows primary backend | Command contract implemented; live requires local dependencies |
 | tmux | POSIX backend | Command contract implemented |
 | ConPTY | Future native backend | Not implemented |
+| Git for `vibemuxctl status` / `workspace status` / `ui` | Local read-only inventory | 2.36 or newer; a partial clone (promisor remote) needs 2.45 or newer for `--no-lazy-fetch`, and older Git fails closed with `workspace_git_too_old`. Exercised with Git 2.51 (Windows) and 2.43 (Ubuntu 24.04) |
 | `vibemuxd` / `vibemuxctl` | Windows named pipe / POSIX UDS | Real-machine Windows process smoke and Linux-container process smoke passed for M3 |
 | Harness dispatch process tree | Windows Job Object (kill-on-close, no breakaway) / POSIX process group, entered through the launch trampoline | Native Windows and Linux-container (`rust:1.85-slim-bookworm`) tests with fixture binaries (ADR 029); live initialize-only probes of five vendor CLIs on native Windows ([evidence](evidence/harness_dispatch_validation.md)); live execution turns not validated |
 | Windows control runtime | Protected per-user DACL + hashed project leaf | Effective ACL verified for current SID / `SYSTEM` / Administrators, re-verified natively (read-only Win32, no helper process) in two phases on every trusted daemon start — before and after descriptor publication (ADR-020/ADR-025) |

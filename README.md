@@ -333,7 +333,7 @@ cargo build --locked --workspace --bins
 .\target\debug\vibemuxctl.exe --format text workspace status
 ```
 
-These commands do not install a global command, start a daemon, or invoke a model. `status` combines the local Git inventory with an existing daemon's health when one is already running. `workspace status` disables Git filter drivers, so its change counts can differ from normal `git status`; it never fetches, merges, or deletes anything.
+These commands do not install a global command, start a daemon, or invoke a model. `status` combines the local Git inventory with an existing daemon's health when one is already running. `workspace status` disables Git filter drivers, so its change counts can differ from normal `git status`; it never fetches, merges, or deletes anything. Both commands need Git 2.36 or newer, and a partial clone needs Git 2.45 or newer (for `--no-lazy-fetch`); older Git fails with `workspace_git_too_old` rather than risk a network fetch.
 
 Use `--format text`, `--format json`, or `--json` before the command. Auto mode prints readable text in a terminal and JSON when redirected; `help` and `version` stay text. The daemon-backed verbs (`daemon`, `harnesses`, `switch`, `dispatch`, `decide`, `decisions`, `dsh`, `workflow`, and the rest) keep their JSON contracts and their actionable `error` text in every mode; `daemon` prints text in a terminal and JSON when piped.
 
