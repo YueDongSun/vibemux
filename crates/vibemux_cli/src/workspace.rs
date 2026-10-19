@@ -1,4 +1,6 @@
 //! Read-only Git inventory. No fetch, branch change, cleanup, or source content.
+mod git_compatibility;
+
 use crate::failure::Failure;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -15,6 +17,26 @@ const MAX_BRANCHES: usize = 4096;
 const MAX_WORKTREES: usize = 256;
 const MAX_FILTER_DRIVERS: usize = 32;
 const MAX_FILTER_NAME_BYTES: usize = 128;
+/// Global options every supported Git accepts: no pager, filesystem monitor,
+/// untracked cache, or trace2 output.
+const PORTABLE_OPTIONS: [&str; 11] = [
+    "--no-pager",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+    "-c",
+    "trace2.eventTarget=",
+    "-c",
+    "trace2.perfTarget=",
+    "-c",
+    "trace2.normalTarget=",
+];
+/// Repository options for Git 2.45 or newer.
+const LOCAL_ONLY_OPTIONS: &[&str] = &["--no-optional-locks", "--no-lazy-fetch"];
+/// Repository options for older Git, used only after
+/// `git_compatibility::require_local_objects` found no promisor remote.
+const LEGACY_OPTIONS: &[&str] = &["--no-optional-locks"];
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Branch {
@@ -55,18 +77,23 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
         None => std::env::current_dir()
             .map_err(|source| Failure::with_source("workspace_unavailable", source))?,
     };
-    let head = required(&root, &["rev-parse", "--verify", "HEAD"])
+    let (git, config_keys) = Git::open(&root).await?;
+    let head = git
+        .required(&["rev-parse", "--verify", "HEAD"])
         .await?
         .trim()
         .to_string();
     if !valid_commit(&head) {
         return Err(Failure::new("workspace_invalid_git_output"));
     }
-    let current = query(&root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await?;
+    let current = git
+        .query(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .await?;
     let current_branch = current.success.then(|| current.text.trim().to_string());
     let mut baseline = "HEAD";
     for candidate in ["refs/remotes/origin/main", "refs/heads/main"] {
-        if query(&root, &["rev-parse", "--verify", candidate])
+        if git
+            .query(&["rev-parse", "--verify", candidate])
             .await?
             .success
         {
@@ -75,7 +102,9 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
         }
     }
     let comparison = format!("{baseline}...HEAD");
-    let divergence = required(&root, &["rev-list", "--left-right", "--count", &comparison]).await?;
+    let divergence = git
+        .required(&["rev-list", "--left-right", "--count", &comparison])
+        .await?;
     let counts = divergence
         .split_whitespace()
         .map(str::parse::<u64>)
@@ -85,26 +114,22 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
         return Err(Failure::new("workspace_invalid_git_output"));
     }
     let merged_option = format!("--merged={baseline}");
-    let merged = required(
-        &root,
-        &[
+    let merged = git
+        .required(&[
             "for-each-ref",
             &merged_option,
             "--format=%(refname:short)",
             "refs/heads",
-        ],
-    )
-    .await?;
+        ])
+        .await?;
     let integrated = merged.lines().collect::<BTreeSet<_>>();
-    let refs = required(
-        &root,
-        &[
+    let refs = git
+        .required(&[
             "for-each-ref",
             "--format=%(refname:short)%00%(objectname)%00%(upstream:short)",
             "refs/heads",
-        ],
-    )
-    .await?;
+        ])
+        .await?;
     let mut branches = Vec::new();
     for line in refs.lines() {
         if branches.len() >= MAX_BRANCHES {
@@ -135,18 +160,18 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
             integrated: merged,
         });
     }
-    let common = required(
-        &root,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .await?;
+    let common = git
+        .required(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .await?;
     let common = PathBuf::from(common.trim_end_matches(['\r', '\n']));
     let primary = common
         .parent()
         .ok_or_else(|| Failure::new("workspace_invalid_git_output"))?;
-    let inventory = required(&root, &["worktree", "list", "--porcelain", "-z"]).await?;
+    let inventory = git
+        .required(&["worktree", "list", "--porcelain", "-z"])
+        .await?;
     let worktrees = parse_worktrees(&inventory, primary)?;
-    let mut status_arguments = disabled_filter_arguments(&root).await?;
+    let mut status_arguments = disabled_filter_arguments(&config_keys)?;
     let change_detection = if status_arguments.is_empty() {
         "git_status"
     } else {
@@ -166,7 +191,7 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let status = required(&root, &status_arguments).await?;
+    let status = git.required(&status_arguments).await?;
     let (staged, unstaged, untracked) = status_counts(&status)?;
     Ok(Report {
         schema_version: 1,
@@ -188,11 +213,11 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
     })
 }
 
-async fn disabled_filter_arguments(root: &Path) -> Result<Vec<String>, Failure> {
-    // Read key names only. Filter commands can contain private values and are never needed.
-    let keys = required(root, &["config", "--null", "--name-only", "--list"]).await?;
+/// The `-c` overrides that disable every configured filter driver, from the
+/// NUL-separated configuration key names.
+fn disabled_filter_arguments(config_keys: &str) -> Result<Vec<String>, Failure> {
     let mut drivers = BTreeSet::new();
-    for key in keys.split('\0') {
+    for key in config_keys.split('\0') {
         let Some((driver, setting)) = key.rsplit_once('.') else {
             continue;
         };
@@ -335,33 +360,61 @@ struct Output {
     text: String,
 }
 
-async fn required(root: &Path, arguments: &[&str]) -> Result<String, Failure> {
-    let output = query(root, arguments).await?;
-    if !output.success {
-        return Err(Failure::new("workspace_git_query_failed"));
+impl Output {
+    fn required(self) -> Result<String, Failure> {
+        if !self.success {
+            return Err(Failure::new("workspace_git_query_failed"));
+        }
+        Ok(self.text)
     }
-    Ok(output.text)
 }
 
-async fn query(root: &Path, arguments: &[&str]) -> Result<Output, Failure> {
+/// The inventory's queries in one repository, with the options the installed
+/// Git supports. The release is probed once, before any repository query.
+struct Git<'a> {
+    root: &'a Path,
+    options: &'static [&'static str],
+}
+
+impl<'a> Git<'a> {
+    /// Probes the Git release, then lists configuration key names once for
+    /// both the promisor check and the filter overrides. A configuration
+    /// listing loads no objects, so it is local on every supported release.
+    async fn open(root: &'a Path) -> Result<(Self, String), Failure> {
+        let reported = run_git(root, &[], &["version"]).await?.required()?;
+        let version = git_compatibility::supported_version(&reported)?;
+        let git = Self {
+            root,
+            options: if version.has_no_lazy_fetch() {
+                LOCAL_ONLY_OPTIONS
+            } else {
+                LEGACY_OPTIONS
+            },
+        };
+        // Read key names only. Filter commands and remote settings can contain
+        // private values and are never needed.
+        let config_keys = git
+            .required(&["config", "--null", "--name-only", "--list"])
+            .await?;
+        git_compatibility::require_local_objects(version, config_keys.split('\0'))?;
+        Ok((git, config_keys))
+    }
+
+    async fn query(&self, arguments: &[&str]) -> Result<Output, Failure> {
+        run_git(self.root, self.options, arguments).await
+    }
+
+    async fn required(&self, arguments: &[&str]) -> Result<String, Failure> {
+        self.query(arguments).await?.required()
+    }
+}
+
+async fn run_git(root: &Path, options: &[&str], arguments: &[&str]) -> Result<Output, Failure> {
     let mut command = Command::new("git");
     command
-        .args([
-            "--no-optional-locks",
-            "--no-lazy-fetch",
-            "--no-pager",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-            "-c",
-            "trace2.eventTarget=",
-            "-c",
-            "trace2.perfTarget=",
-            "-c",
-            "trace2.normalTarget=",
-            "-C",
-        ])
+        .args(options)
+        .args(PORTABLE_OPTIONS)
+        .arg("-C")
         .arg(root)
         .args(arguments)
         .stdin(Stdio::null())
@@ -449,6 +502,24 @@ mod tests {
             (1, 1, 1)
         );
         assert!(status_counts("R  current\0").is_err());
+    }
+
+    #[test]
+    fn filter_overrides_come_from_key_names_alone() {
+        let arguments = disabled_filter_arguments(
+            "core.bare\0filter.lfs.clean\0filter.lfs.required\0filter.other.smudge\0",
+        )
+        .unwrap();
+        assert_eq!(arguments.len(), 16);
+        assert_eq!(arguments[..2], ["-c", "filter.lfs.clean="]);
+        assert_eq!(arguments[14..], ["-c", "filter.other.required=false"]);
+        assert!(disabled_filter_arguments("core.bare\0").unwrap().is_empty());
+        assert_eq!(
+            disabled_filter_arguments("filter.bad name.clean\0")
+                .unwrap_err()
+                .code(),
+            "workspace_filter_name_unsupported"
+        );
     }
 
     #[test]

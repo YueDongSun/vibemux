@@ -44,6 +44,14 @@ impl Failure {
         failure
     }
 
+    /// A failure the CLI detects itself, with a fixed actionable message and
+    /// no underlying error. The message names only the remediation.
+    pub fn actionable(code: &str, message: &'static str) -> Self {
+        let mut failure = Self::new(code);
+        failure.message = Some(message.to_string());
+        failure
+    }
+
     pub fn code(&self) -> &str {
         &self.code
     }
@@ -162,5 +170,10 @@ mod tests {
         );
         assert_eq!(actionable.message(), Some("start the daemon first"));
         assert!(actionable.source().is_some());
+        let detected = Failure::actionable("workspace_git_too_old", "upgrade Git");
+        assert_eq!(detected.code(), "workspace_git_too_old");
+        assert_eq!(detected.message(), Some("upgrade Git"));
+        assert!(detected.source().is_none());
+        assert_eq!(detected.to_string(), "workspace_git_too_old");
     }
 }

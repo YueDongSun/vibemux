@@ -46,8 +46,17 @@ configuration. When any are configured, JSON reports
 `change_detection=external_filters_disabled` and text/TUI show a warning:
 change counts may differ from ordinary filtered Git status (for example with
 Git LFS). Do not use these counts to authorize cleanup. Unusual filter names
-or excessive driver counts fail closed. Local inspection also requires Git's
-`--no-lazy-fetch` support so partial clones cannot start an implicit download.
+or excessive driver counts fail closed.
+
+Inspection needs Git 2.36 or newer and probes the installed version once per
+run. Git 2.45 and newer get `--no-lazy-fetch`, so a partial clone cannot start
+an implicit download. Older Git has no such option, so inspection reads the
+configuration key names first and continues only when nothing can create a
+promisor remote (`extensions.partialClone`, `remote.<name>.promisor`, or
+`remote.<name>.partialCloneFilter`). Otherwise it fails with
+`workspace_git_too_old` and an upgrade message instead of risking a network
+fetch. Git older than 2.36 fails with the same code, and a version string that
+cannot be read fails with `workspace_git_version_unrecognized`.
 
 `status` adds an existing daemon health observation. It never starts, stops,
 recovers, or migrates the daemon. The explicit `daemon` group retains its

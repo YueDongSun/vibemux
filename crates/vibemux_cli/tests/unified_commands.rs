@@ -105,6 +105,58 @@ fn workspace_inventory_reads_local_graph_without_urls_subjects_or_index_changes(
     assert!(!directory.path().join(".vibemux").exists());
 }
 
+/// Whether the installed Git accepts `--no-lazy-fetch`, observed directly
+/// rather than through the version parser under test.
+fn git_has_no_lazy_fetch() -> bool {
+    Command::new("git")
+        .args(["--no-lazy-fetch", "version"])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn a_promisor_remote_is_inventoried_only_where_git_can_disable_lazy_fetch() {
+    let directory = repository();
+    // The fixture has every object, so the only network risk is a lazy
+    // fetch from the configured promisor (an unresolvable host).
+    git(
+        directory.path(),
+        &["config", "remote.origin.promisor", "true"],
+    );
+    let index_before = std::fs::read(directory.path().join(".git/index")).unwrap();
+    let output = run(directory.path(), &["workspace", "status"]);
+    if git_has_no_lazy_fetch() {
+        assert!(
+            output.status.success(),
+            "inventory failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["current_branch"], "main");
+    } else {
+        assert_eq!(output.status.code(), Some(4));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let error: Value = serde_json::from_str(&stderr).unwrap();
+        assert_eq!(error["error_code"], "workspace_git_too_old");
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap()
+                .contains("Git 2.45 or newer")
+        );
+        assert!(!stderr.contains("PRIVATE_"));
+        assert!(!stderr.contains(directory.path().to_string_lossy().as_ref()));
+        assert!(output.stdout.is_empty());
+    }
+    assert_eq!(
+        std::fs::read(directory.path().join(".git/index")).unwrap(),
+        index_before
+    );
+    assert!(!directory.path().join(".vibemux").exists());
+}
+
 /// The filter fixture's path as a Git filter command. Forward slashes keep
 /// the path free of shell metacharacters, so Git executes it directly instead
 /// of through `sh -c`.
