@@ -148,22 +148,50 @@ async fn a_runtime_that_exits_early_is_reported_as_a_transport_failure() {
     let _ = driver.close().await;
 }
 
-#[tokio::test]
-async fn closing_after_the_runtime_exited_on_its_own_is_still_a_clean_close() {
-    let mut driver = open("exit-after-ready").await;
-    // Wait for stdout to end, so `close` writes `shutdown` into a pipe whose
-    // reader is gone on every platform.
+/// Opens a session whose runtime exits right after the handshake, and waits
+/// for its stdout to end, so `close` writes `shutdown` into a pipe whose
+/// reader is gone on every platform.
+async fn open_until_exited(mode: &str) -> DshDriver {
+    let driver = open(mode).await;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     while driver.transport_open() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(!driver.transport_open(), "the runtime should have exited");
+    driver
+}
+
+#[tokio::test]
+async fn closing_after_the_runtime_exited_on_its_own_is_still_a_clean_close() {
+    let mut driver = open_until_exited("exit-after-ready").await;
     // `close` documents that a peer that already died cannot receive the
-    // frame and that the teardown still runs: the reaped exit closes the
+    // frame and that the teardown still runs: a successful exit closes the
     // session rather than failing it.
     driver.close().await.expect("close");
     assert_eq!(driver.phase(), DshPhase::Closed);
     assert_eq!(driver.poll(0).expect("poll").summary.error_code, None);
+}
+
+#[tokio::test]
+async fn a_runtime_that_crashed_before_close_fails_the_session() {
+    let mut driver = open_until_exited("crash-after-ready").await;
+    // The child is reaped, but a nonzero exit without a `shutdown` answer is
+    // an unexpected exit, never a clean close.
+    driver.close().await.expect("close");
+    assert_eq!(driver.phase(), DshPhase::Failed);
+    assert_eq!(
+        driver.poll(0).expect("poll").summary.error_code,
+        Some("dsh_unexpected_exit")
+    );
+}
+
+#[tokio::test]
+async fn a_closed_session_never_reports_an_open_transport() {
+    let mut driver = open("serve").await;
+    driver.close().await.expect("close");
+    assert_eq!(driver.phase(), DshPhase::Closed);
+    assert!(!driver.transport_open());
+    assert!(!driver.poll(0).expect("poll").transport_open);
 }
 
 #[tokio::test]
@@ -216,11 +244,25 @@ async fn a_non_json_stdout_line_ends_the_session() {
 async fn cancellation_terminates_the_runtime() {
     let mut driver = open("no-turn-end").await;
     driver.prompt("cancel me").await.expect("prompt");
+    // Cancel a turn that is running, after the prompt's response arrived.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while driver
+        .summary()
+        .current_turn
+        .and_then(|turn| turn.turn)
+        .is_none()
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     driver.cancel().await.expect("cancel");
     let summary = driver.poll(0).expect("poll").summary;
     assert_eq!(summary.cancelled_turns, 1);
-    // A cancelled session still closes cleanly enough to reap the child.
+    // A cancelled session still closes cleanly enough to reap the child, and
+    // the exit the driver caused by terminating the tree is not a crash.
     let _ = driver.close().await;
+    assert_eq!(driver.phase(), DshPhase::Closed);
+    assert_eq!(driver.poll(0).expect("poll").summary.error_code, None);
 }
 
 #[tokio::test]

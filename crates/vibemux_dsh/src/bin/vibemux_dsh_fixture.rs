@@ -23,7 +23,8 @@
 //! | `no-turn-end` | streams text but never ends the turn |
 //! | `flood` | streams [`FLOOD_CHUNKS`] text chunks in one burst before each turn ends |
 //! | `exit-early` | exits before answering anything |
-//! | `exit-after-ready` | answers `initialize`, then exits |
+//! | `exit-after-ready` | answers `initialize`, then exits successfully |
+//! | `crash-after-ready` | answers `initialize`, then exits with status 3 |
 
 use std::io::{self, BufRead, Write};
 
@@ -87,6 +88,9 @@ fn main() {
                 );
                 if mode == "exit-after-ready" {
                     return;
+                }
+                if mode == "crash-after-ready" {
+                    std::process::exit(3);
                 }
             }
             "session/prompt" => {
