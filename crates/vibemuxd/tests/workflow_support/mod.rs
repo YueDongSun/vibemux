@@ -627,14 +627,19 @@ impl WorkflowFixture {
     }
 
     /// Stops the server (pausing any running coordinator) and starts a new
-    /// one over the same database, as a daemon restart would.
-    pub async fn restart(&mut self) {
+    /// one over the same database, as a daemon restart would. Returns how
+    /// long the shutdown took; the new server's start, which rehashes the
+    /// pinned fixture images, is not part of it.
+    pub async fn restart(&mut self) -> Duration {
+        let began = Instant::now();
         if let Some(server) = self.server.take() {
             server.shutdown().await.expect("server shutdown");
         }
+        let shutdown = began.elapsed();
         let (server, client) = self.paths.start_server().await;
         self.server = Some(server);
         self.client = client;
+        shutdown
     }
 
     /// Stops the daemon while retaining this fixture's temporary state so a

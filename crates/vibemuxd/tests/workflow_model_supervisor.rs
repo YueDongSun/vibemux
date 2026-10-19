@@ -37,11 +37,18 @@ use vibemuxd::{
     },
 };
 use workflow_support::{
-    FixtureOptions, WorkflowFixture, cooperative_request, phase, policy, review_pass,
+    FixtureOptions, WorkflowFixture, cooperative_request, phase, policy, rendezvous, review_pass,
     taskboard_file, track_a, track_b, workflow_id,
 };
 
 const SYNTAX: [&str; 1] = ["syntax"];
+/// Both model-assigned implementation turns wait here for each other, so
+/// they overlap however far apart a slow host launches them.
+const IMPLEMENT_OVERLAP_GROUP: &str = "model_implement_overlap";
+const IMPLEMENT_PARTIES: usize = 2;
+/// Held after the rendezvous so each turn finishes strictly after the other
+/// one has started.
+const TURN_DELAY_MS: u64 = 100;
 const SUPERVISOR_ALIAS: &str = "supervisor_fixture";
 
 #[derive(Clone, Copy)]
@@ -297,9 +304,12 @@ fn write_model_worker_script(fixture: &WorkflowFixture) {
     store.push_str("\n// model supervisor fixture candidate\n");
     let mut page = taskboard_file("calibration/good/public/app.mjs");
     page.push_str("\n// model supervisor fixture candidate\n");
+    let overlap = rendezvous(IMPLEMENT_OVERLAP_GROUP, IMPLEMENT_PARTIES);
     fixture.write_script(&json!({"steps":{
-        "track_a/implement_1":{"write":{"src/store.mjs":store},"delay_ms":1500},
-        "track_b/implement_1":{"write":{"public/app.mjs":page},"delay_ms":1500},
+        "track_a/implement_1":{"write":{"src/store.mjs":store},
+            "rendezvous":overlap,"delay_ms":TURN_DELAY_MS},
+        "track_b/implement_1":{"write":{"public/app.mjs":page},
+            "rendezvous":overlap,"delay_ms":TURN_DELAY_MS},
         "track_a/review_1":review_pass(),"track_b/review_1":review_pass()
     }}));
 }
@@ -334,9 +344,21 @@ async fn model_supervisor_runs_owned_workers_and_accepts_only_after_real_gates()
         .await
         .expect("explicit model driver start");
     assert_ne!(started["phase"], "blocked", "{started:#}");
+    // A failed rendezvous also ends the wait: the group will never run
+    // together, so report that instead of waiting out the model's retries.
     let status = fixture
-        .wait_phase(workflow, &["accepted", "failed", "blocked"])
+        .wait_until(workflow, |status| {
+            fixture.rendezvous_failed()
+                || (status["running_here"] == false
+                    && ["accepted", "failed", "blocked"]
+                        .iter()
+                        .any(|expected| status["phase"] == *expected))
+        })
         .await;
+    assert!(
+        !fixture.rendezvous_failed(),
+        "a model-assigned implementation turn never saw the other one running: {status:#}"
+    );
     assert_eq!(phase(&status), "accepted", "{status:#}");
     {
         let actions = model.actions.lock().expect("action log");
@@ -356,6 +378,8 @@ async fn model_supervisor_runs_owned_workers_and_accepts_only_after_real_gates()
     }
     assert_eq!(fixture.started("track_a/implement_1").len(), 1);
     assert_eq!(fixture.started("track_b/implement_1").len(), 1);
+    // Each turn held itself open until the other had started, so the
+    // ordering below follows from the rendezvous and not from launch timing.
     let log = fixture.log();
     let turn_time = |key: &str, event: &str| {
         log.iter()
