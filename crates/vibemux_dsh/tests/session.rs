@@ -265,6 +265,53 @@ async fn cancellation_terminates_the_runtime() {
     assert_eq!(driver.poll(0).expect("poll").summary.error_code, None);
 }
 
+/// Sessions each race test opens. The late answer loses the race in most
+/// rounds, so a regression fails within a few of them.
+const RACE_ROUNDS: usize = 8;
+
+#[tokio::test]
+async fn cancelling_before_the_prompt_is_answered_still_closes_cleanly() {
+    for round in 0..RACE_ROUNDS {
+        let mut driver = open("no-turn-end").await;
+        driver.prompt("cancel at once").await.expect("prompt");
+        // `prompt` returns once the frame is written, so the runtime's
+        // receipt and the turn's first events usually arrive after this.
+        driver.cancel().await.expect("cancel");
+        let _ = driver.close().await;
+        let summary = driver.poll(0).expect("poll").summary;
+        assert_eq!(
+            (driver.phase(), summary.error_code),
+            (DshPhase::Closed, None),
+            "round {round}"
+        );
+        assert_eq!(summary.cancelled_turns, 1, "round {round}");
+    }
+}
+
+#[tokio::test]
+async fn closing_before_the_prompt_is_answered_still_closes_cleanly() {
+    for round in 0..RACE_ROUNDS {
+        let mut driver = open("serve").await;
+        driver.prompt("close at once").await.expect("prompt");
+        // `shutdown` supersedes the unanswered prompt, and the runtime answers
+        // both: the receipt and the whole turn arrive before its `{}`.
+        driver.close().await.expect("close");
+        let summary = driver.poll(0).expect("poll").summary;
+        assert_eq!(
+            (driver.phase(), summary.error_code),
+            (DshPhase::Closed, None),
+            "round {round}"
+        );
+        // A turn that settled before `shutdown` was written is completed;
+        // otherwise closing cancelled it. It is never counted twice.
+        assert_eq!(
+            summary.completed_turns + summary.cancelled_turns,
+            1,
+            "round {round}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn polling_advances_the_cursor_and_a_stale_cursor_reports_a_gap() {
     let mut driver = open("serve").await;
