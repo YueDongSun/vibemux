@@ -166,7 +166,26 @@ Rules the driver enforces:
    attribution exact.
 3. **Responses must correlate.** A response whose `id` is not the pending
    request, or that carries `error`, or whose `result` is not an object, ends
-   the session with a fixed code instead of being retried.
+   the session with a fixed code instead of being retried. The one exception
+   is a request the session abandoned. `cancel` stops waiting for the pending
+   request, and `shutdown` supersedes it, but the runtime may already be
+   answering it, because `prompt` returns once the frame is written. The
+   session remembers each abandoned id (the four most recent). The first
+   answer to one is dropped whatever it carries, and is counted in
+   `late_frames` on the driver's session summary (the Control v7 status does
+   not carry it). A second answer to that id, or an id the session
+   never abandoned, still ends the session with `dsh_uncorrelated_response`,
+   so a closing session still catches a malformed runtime. The same holds for
+   the turn the session abandoned: its `turn/start`, if none had arrived, and
+   then its `turn/end` are dropped and counted once each. Both must carry a
+   valid turn number, and an end must match a start observed before or after
+   cancellation. They never change the turn's outcome. Any other `turn/start`
+   or `turn/end` outside a running turn is `dsh_unexpected_turn_end`. This
+   draining continues after the `shutdown` answer: JSON-RPC does not order
+   responses, so the runtime may acknowledge `shutdown` before it answers the
+   request `shutdown` superseded. A closed session drops those frames the same
+   way. It refuses anything else with `dsh_session_closed` and stays closed,
+   so such a frame never turns a clean close into a failure.
 4. **Notifications are filtered by session.** The stream is runtime-wide and
    unfiltered, so `session.event` and `session.status` are matched against the
    session's own id and everything else is counted and dropped.
@@ -209,7 +228,9 @@ The protocol publishes no cancel and no session-close method, and the runtime's
 own documentation says a client abandons a turn by closing the process. So:
 
 - **Cancel** marks the in-flight turn `cancelled` and terminates the contained
-  process tree.
+  process tree. Frames the runtime wrote before it died still arrive. The
+  prompt's receipt and the turn's events are dropped under §4 rule 3, so a
+  cancel that beats the receipt still closes the session cleanly.
 - **Close** writes `shutdown`, waits `shutdown_grace_ms`, and then terminates
   and reaps. A runtime that was asked to close and ignored the request is
   `dsh_driver_shutdown_timeout`; a runtime that had already failed is torn down

@@ -32,6 +32,11 @@ use super::{
 };
 use crate::dispatch::Sha256Digest;
 
+/// Abandoned request ids the machine remembers. Each `begin_close` or
+/// `cancel` abandons at most one request, so a real teardown leaves one or
+/// two; the bound only stops a caller that loops from growing the list.
+const MAX_ABANDONED_REQUESTS: usize = 4;
+
 /// How one turn ended, from the runtime's own structured reason.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +115,10 @@ pub struct DshSessionSummary {
     pub record_bytes: u64,
     /// Records the runtime produced for other sessions in the same process.
     pub foreign_notifications: u64,
+    /// Records that arrived for work this session had already abandoned and
+    /// were dropped: an answer to a request it stopped waiting for, or an
+    /// event of a turn it gave up on while closing.
+    pub late_frames: u64,
     pub turns_started: u64,
     pub completed_turns: u64,
     pub failed_turns: u64,
@@ -135,6 +144,17 @@ struct Pending {
     kind: PendingKind,
 }
 
+/// How far the runtime had reported a turn the session gave up on while
+/// closing. The runtime may still be running it, so its remaining events can
+/// arrive after the turn already has its outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AbandonedTurn {
+    /// No `turn/start` yet: it, and then `turn/end`, may still arrive.
+    NotStarted,
+    /// Only `turn/end` for this turn number may still arrive.
+    Started(u64),
+}
+
 /// Client-side state machine for one DSH session.
 pub struct DshSessionMachine {
     settings: DshSessionSettings,
@@ -142,6 +162,10 @@ pub struct DshSessionMachine {
     phase: DshPhase,
     sequence: u64,
     pending: Option<Pending>,
+    /// Ids of requests the session stopped waiting for before the runtime
+    /// answered them. Each may still be answered once.
+    abandoned_requests: Vec<String>,
+    abandoned_turn: Option<AbandonedTurn>,
     server_version: Option<String>,
     current_turn: Option<DshTurnSummary>,
     last_outcome: Option<DshTurnOutcome>,
@@ -152,6 +176,7 @@ pub struct DshSessionMachine {
     unverified_turns: u64,
     prompt_bytes_total: u64,
     foreign_notifications: u64,
+    late_frames: u64,
     error_code: Option<&'static str>,
 }
 
@@ -177,6 +202,8 @@ impl DshSessionMachine {
             phase: DshPhase::Starting,
             sequence: 0,
             pending: None,
+            abandoned_requests: Vec::new(),
+            abandoned_turn: None,
             server_version: None,
             current_turn: None,
             last_outcome: None,
@@ -187,6 +214,7 @@ impl DshSessionMachine {
             unverified_turns: 0,
             prompt_bytes_total: 0,
             foreign_notifications: 0,
+            late_frames: 0,
             error_code: None,
         })
     }
@@ -280,11 +308,20 @@ impl DshSessionMachine {
     }
 
     /// Advances the session with one decoded frame.
+    ///
+    /// A closed session keeps draining. JSON-RPC does not order responses,
+    /// so the runtime may acknowledge `shutdown` before it answers the
+    /// request `shutdown` superseded, or before it finishes reporting the
+    /// abandoned turn. Those frames are dropped and counted as in `Closing`,
+    /// and notifications that never change state are tolerated. A frame a
+    /// closed session cannot place is refused with `Closed`, and the session
+    /// stays closed.
     pub fn receive(&mut self, frame: &Value) -> Result<Vec<DshAction>, DshError> {
-        if self.phase.is_terminal() {
+        if self.phase == DshPhase::Failed {
             return Err(DshError::Closed);
         }
         match wire::frame_kind(frame).map_err(|error| self.violate(error))? {
+            DshFrameKind::Request if self.phase == DshPhase::Closed => Err(DshError::Closed),
             DshFrameKind::Request => {
                 // Server-to-client requests are a dead capability in this
                 // protocol version, but a future one must not desynchronize
@@ -308,6 +345,7 @@ impl DshSessionMachine {
             return Err(DshError::Closed);
         }
         let id = self.allocate_id();
+        self.abandon_pending();
         self.pending = Some(Pending {
             id: id.clone(),
             kind: PendingKind::Shutdown,
@@ -322,13 +360,15 @@ impl DshSessionMachine {
     }
 
     /// Cancels the session. The SDK protocol has no cancel method, so the
-    /// answer is always to terminate the contained process tree.
+    /// answer is always to terminate the contained process tree. Frames the
+    /// runtime wrote for the abandoned request and turn before it died can
+    /// still arrive; they are dropped, not treated as violations.
     pub fn cancel(&mut self) -> Vec<DshAction> {
         if self.phase.is_terminal() {
             return Vec::new();
         }
         self.abandon_turn(DshTurnOutcome::Cancelled);
-        self.pending = None;
+        self.abandon_pending();
         self.phase = DshPhase::Closing;
         vec![DshAction::Terminate]
     }
@@ -371,6 +411,7 @@ impl DshSessionMachine {
             records: 0,
             record_bytes: 0,
             foreign_notifications: self.foreign_notifications,
+            late_frames: self.late_frames,
             turns_started: self.turns_started,
             completed_turns: self.completed_turns,
             failed_turns: self.failed_turns,
@@ -384,14 +425,14 @@ impl DshSessionMachine {
     }
 
     fn receive_response(&mut self, frame: &Value) -> Result<Vec<DshAction>, DshError> {
-        let Some(pending) = self.pending.take() else {
-            return Err(self.violate(DshError::UncorrelatedResponse));
-        };
         let id = frame.get("id").and_then(Value::as_str);
-        if id != Some(pending.id.as_str()) {
-            self.pending = Some(pending);
-            return Err(self.violate(DshError::UncorrelatedResponse));
-        }
+        let pending = match self.pending.take() {
+            Some(pending) if id == Some(pending.id.as_str()) => pending,
+            other => {
+                self.pending = other;
+                return self.drop_abandoned_response(id);
+            }
+        };
         if frame.get("error").is_some() {
             return Err(self.violate(DshError::RpcError));
         }
@@ -473,7 +514,7 @@ impl DshSessionMachine {
         match wire::session_event_type(frame) {
             Some(EVENT_TURN_START) => {
                 if self.phase != DshPhase::Prompting {
-                    return Err(self.violate(DshError::UnexpectedTurnEnd));
+                    return self.drop_abandoned_turn_event(frame, EVENT_TURN_START);
                 }
                 if let Ok(turn) = wire::event_turn_number(frame)
                     && let Some(current) = self.current_turn.as_mut()
@@ -489,7 +530,7 @@ impl DshSessionMachine {
 
     fn receive_turn_end(&mut self, frame: &Value) -> Result<Vec<DshAction>, DshError> {
         if self.phase != DshPhase::Prompting {
-            return Err(self.violate(DshError::UnexpectedTurnEnd));
+            return self.drop_abandoned_turn_event(frame, EVENT_TURN_END);
         }
         let turn = match wire::event_turn_number(frame) {
             Ok(turn) => turn,
@@ -542,10 +583,87 @@ impl DshSessionMachine {
     fn abandon_turn(&mut self, outcome: DshTurnOutcome) {
         if self.phase == DshPhase::Prompting {
             self.resolve_turn(None, outcome);
+            self.abandoned_turn = Some(match self.current_turn.and_then(|turn| turn.turn) {
+                Some(turn) => AbandonedTurn::Started(turn),
+                None => AbandonedTurn::NotStarted,
+            });
         }
     }
 
+    /// Drops a late event of the abandoned turn: its `turn/start`, if the
+    /// runtime had not reported one, and then its `turn/end`, once each. Both
+    /// must carry a valid turn number, and the `turn/end` must match the
+    /// observed `turn/start`. The turn already has its outcome, and neither
+    /// event changes it. Any other turn event outside a running turn is still
+    /// a protocol violation.
+    fn drop_abandoned_turn_event(
+        &mut self,
+        frame: &Value,
+        event_type: &str,
+    ) -> Result<Vec<DshAction>, DshError> {
+        if self.abandoned_turn.is_none() {
+            return Err(self.violate(DshError::UnexpectedTurnEnd));
+        }
+        let turn = match wire::event_turn_number(frame) {
+            Ok(turn) => turn,
+            Err(error) => return Err(self.violate(error)),
+        };
+        self.abandoned_turn = match (self.abandoned_turn, event_type) {
+            (Some(AbandonedTurn::NotStarted), EVENT_TURN_START) => {
+                Some(AbandonedTurn::Started(turn))
+            }
+            (Some(AbandonedTurn::NotStarted), EVENT_TURN_END) => None,
+            (Some(AbandonedTurn::Started(expected_turn)), EVENT_TURN_END)
+                if turn == expected_turn =>
+            {
+                None
+            }
+            _ => return Err(self.violate(DshError::UnexpectedTurnEnd)),
+        };
+        self.late_frames = self.late_frames.saturating_add(1);
+        Ok(Vec::new())
+    }
+
+    /// Stops waiting for the pending request. The runtime may already have
+    /// answered it, so its id is kept and one late answer is dropped.
+    fn abandon_pending(&mut self) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        if self.abandoned_requests.len() == MAX_ABANDONED_REQUESTS {
+            // Forget the oldest. A late answer to it then fails the session,
+            // which is the conservative side.
+            self.abandoned_requests.remove(0);
+        }
+        self.abandoned_requests.push(pending.id);
+    }
+
+    /// Drops the late answer to an abandoned request, whatever it carries:
+    /// nothing waits for its result. Each abandoned id is consumed by its
+    /// first answer, so a repeated answer or an id this session never
+    /// abandoned is still a protocol violation while closing, and is refused
+    /// once closed.
+    fn drop_abandoned_response(&mut self, id: Option<&str>) -> Result<Vec<DshAction>, DshError> {
+        let position = id.and_then(|id| {
+            self.abandoned_requests
+                .iter()
+                .position(|abandoned| abandoned == id)
+        });
+        let Some(position) = position else {
+            return Err(self.violate(DshError::UncorrelatedResponse));
+        };
+        self.abandoned_requests.remove(position);
+        self.late_frames = self.late_frames.saturating_add(1);
+        Ok(Vec::new())
+    }
+
     fn violate(&mut self, error: DshError) -> DshError {
+        if self.phase == DshPhase::Closed {
+            // The runtime already acknowledged `shutdown` or exited cleanly.
+            // A frame the session cannot place is refused, but it does not
+            // turn a clean close into a failure.
+            return DshError::Closed;
+        }
         self.error_code = Some(error.code());
         // Resolve the in-flight turn before the phase moves to `Failed`, so
         // `abandon_turn` still sees a prompting session.
@@ -620,6 +738,16 @@ mod tests {
             "params": {"sessionId": session, "event": {
                 "type": "turn/end", "seq": 9, "time": 1,
                 "data": {"turn": turn, "reason": {"kind": reason}}}}})
+    }
+
+    fn turn_start(session: &str, turn: u64) -> Value {
+        json!({"jsonrpc": "2.0", "method": "session.event",
+            "params": {"sessionId": session, "event": {
+                "type": "turn/start", "seq": 1, "time": 1, "data": {"turn": turn}}}})
+    }
+
+    fn receipt(id: &str) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "result": {"messageId": "msg_1"}})
     }
 
     #[test]
@@ -1007,6 +1135,306 @@ mod tests {
         assert_eq!(machine.summary().cancelled_turns, 1);
         machine.observe_exit(true);
         assert_eq!(machine.phase(), DshPhase::Closed);
+    }
+
+    #[test]
+    fn a_prompt_answered_after_cancel_is_dropped_and_the_session_still_closes() {
+        // Regression: the driver returns from `prompt` once the frame is
+        // written, so cancelling at once can beat the runtime's receipt. The
+        // late receipt and the turn's first events then arrive while closing.
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        assert_eq!(machine.cancel(), vec![DshAction::Terminate]);
+        for late in [
+            receipt(&prompt),
+            turn_start("vibemux_session_1", 1),
+            turn_end("vibemux_session_1", 1, "aborted"),
+        ] {
+            assert!(machine.receive(&late).expect("late frame").is_empty());
+            assert_eq!(machine.phase(), DshPhase::Closing);
+        }
+        machine.observe_exit(true);
+        assert_eq!(machine.phase(), DshPhase::Closed);
+        let summary = machine.summary();
+        assert_eq!(summary.error_code, None);
+        assert_eq!(summary.late_frames, 3);
+        // The late events never re-resolve the cancelled turn.
+        assert_eq!(summary.cancelled_turns, 1);
+        assert_eq!(summary.failed_turns, 0);
+        assert_eq!(summary.unverified_turns, 0);
+        assert_eq!(
+            summary.current_turn.expect("turn").outcome,
+            Some(DshTurnOutcome::Cancelled)
+        );
+    }
+
+    #[test]
+    fn a_prompt_answered_after_shutdown_was_written_is_dropped() {
+        // `begin_close` supersedes the unanswered prompt; the runtime answers
+        // it, finishes the turn, and only then answers `shutdown`.
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        let shutdown = written_id(&machine.begin_close().expect("close")[0]);
+        for late in [
+            receipt(&prompt),
+            turn_start("vibemux_session_1", 1),
+            turn_end("vibemux_session_1", 1, "completed"),
+        ] {
+            assert!(machine.receive(&late).expect("late frame").is_empty());
+            assert_eq!(machine.phase(), DshPhase::Closing);
+        }
+        let reply = json!({"jsonrpc": "2.0", "id": shutdown, "result": {}});
+        assert!(machine.receive(&reply).expect("shutdown reply").is_empty());
+        assert_eq!(machine.phase(), DshPhase::Closed);
+        let summary = machine.summary();
+        assert_eq!(summary.error_code, None);
+        assert_eq!(summary.late_frames, 3);
+        // Closing already cancelled the turn; a late completion is not success.
+        assert_eq!(summary.completed_turns, 0);
+        assert_eq!(summary.cancelled_turns, 1);
+    }
+
+    #[test]
+    fn a_closed_session_still_drains_work_answered_after_the_shutdown_reply() {
+        // JSON-RPC does not order responses: the runtime may acknowledge
+        // `shutdown` before it answers the prompt `shutdown` superseded, and
+        // before it finishes reporting that turn.
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        let shutdown = written_id(&machine.begin_close().expect("close")[0]);
+        let reply = json!({"jsonrpc": "2.0", "id": shutdown, "result": {}});
+        assert!(machine.receive(&reply).expect("shutdown reply").is_empty());
+        assert_eq!(machine.phase(), DshPhase::Closed);
+        let chunk = json!({"jsonrpc": "2.0", "method": "session.event",
+            "params": {"sessionId": "vibemux_session_1", "event": {
+                "type": "assistant/chunk", "seq": 3, "time": 2, "data": {"turn": 1}}}});
+        for late in [
+            receipt(&prompt),
+            turn_start("vibemux_session_1", 1),
+            chunk,
+            turn_end("vibemux_session_1", 1, "completed"),
+        ] {
+            assert!(machine.receive(&late).expect("late frame").is_empty());
+            assert_eq!(machine.phase(), DshPhase::Closed);
+        }
+        let summary = machine.summary();
+        assert_eq!(summary.error_code, None);
+        // The receipt and both turn events; the chunk is tolerated as in
+        // every phase, not counted.
+        assert_eq!(summary.late_frames, 3);
+        assert_eq!(summary.completed_turns, 0);
+        assert_eq!(summary.cancelled_turns, 1);
+    }
+
+    #[test]
+    fn a_closed_session_refuses_what_it_cannot_place_and_stays_closed() {
+        let mut machine = ready();
+        let shutdown = written_id(&machine.begin_close().expect("close")[0]);
+        let reply = json!({"jsonrpc": "2.0", "id": shutdown, "result": {}});
+        machine.receive(&reply).expect("shutdown reply");
+        assert_eq!(machine.phase(), DshPhase::Closed);
+        for frame in [
+            receipt("vibemux_999"),
+            // A second answer to the request that closed the session.
+            reply,
+            // No turn was abandoned, so no turn event is expected.
+            turn_end("vibemux_session_1", 1, "completed"),
+            json!({"jsonrpc": "2.0", "id": "srv_1",
+                "method": "session/request_permission", "params": {}}),
+            json!({}),
+        ] {
+            assert_eq!(machine.receive(&frame), Err(DshError::Closed), "{frame}");
+            assert_eq!(machine.phase(), DshPhase::Closed);
+        }
+        let summary = machine.summary();
+        assert_eq!(summary.error_code, None);
+        assert_eq!(summary.late_frames, 0);
+    }
+
+    #[test]
+    fn a_late_error_answer_to_an_abandoned_request_is_dropped() {
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        machine.cancel();
+        let error = json!({"jsonrpc": "2.0", "id": prompt,
+            "error": {"code": -32603, "message": "session closed"}});
+        assert!(machine.receive(&error).expect("late error").is_empty());
+        assert_eq!(machine.phase(), DshPhase::Closing);
+        assert_eq!(machine.summary().late_frames, 1);
+    }
+
+    #[test]
+    fn an_abandoned_request_is_answered_at_most_once() {
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        machine.cancel();
+        machine.receive(&receipt(&prompt)).expect("late receipt");
+        // A second answer to the same id is a malformed runtime.
+        assert_eq!(
+            machine.receive(&receipt(&prompt)),
+            Err(DshError::UncorrelatedResponse)
+        );
+        assert_eq!(machine.phase(), DshPhase::Failed);
+        assert_eq!(
+            machine.summary().error_code,
+            Some("dsh_uncorrelated_response")
+        );
+    }
+
+    #[test]
+    fn an_unknown_response_id_while_closing_still_fails_the_session() {
+        for close_by_cancel in [true, false] {
+            let mut machine = ready();
+            machine.prompt("turn").expect("prompt");
+            if close_by_cancel {
+                machine.cancel();
+            } else {
+                machine.begin_close().expect("close");
+            }
+            assert_eq!(machine.phase(), DshPhase::Closing);
+            assert_eq!(
+                machine.receive(&receipt("vibemux_999")),
+                Err(DshError::UncorrelatedResponse),
+                "cancel: {close_by_cancel}"
+            );
+            assert_eq!(machine.phase(), DshPhase::Failed);
+        }
+    }
+
+    #[test]
+    fn an_abandoned_turn_reports_each_remaining_event_once() {
+        // Not started when abandoned: one `turn/start`, then one `turn/end`.
+        let mut machine = ready();
+        machine.prompt("turn").expect("prompt");
+        machine.cancel();
+        machine
+            .receive(&turn_start("vibemux_session_1", 1))
+            .expect("late start");
+        assert_eq!(
+            machine.receive(&turn_start("vibemux_session_1", 1)),
+            Err(DshError::UnexpectedTurnEnd)
+        );
+
+        // Already started when abandoned: only its `turn/end` may follow.
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        machine.receive(&receipt(&prompt)).expect("receipt");
+        machine
+            .receive(&turn_start("vibemux_session_1", 1))
+            .expect("turn start");
+        machine.cancel();
+        assert_eq!(
+            machine.receive(&turn_start("vibemux_session_1", 2)),
+            Err(DshError::UnexpectedTurnEnd)
+        );
+
+        let mut machine = ready();
+        machine.prompt("turn").expect("prompt");
+        machine.cancel();
+        machine
+            .receive(&turn_end("vibemux_session_1", 1, "aborted"))
+            .expect("late end");
+        assert_eq!(
+            machine.receive(&turn_end("vibemux_session_1", 1, "aborted")),
+            Err(DshError::UnexpectedTurnEnd)
+        );
+    }
+
+    #[test]
+    fn a_turn_event_while_closing_an_idle_session_is_still_a_violation() {
+        // No turn was abandoned, so nothing is expected to arrive late.
+        let mut machine = ready();
+        machine.begin_close().expect("close");
+        assert_eq!(
+            machine.receive(&turn_end("vibemux_session_1", 1, "completed")),
+            Err(DshError::UnexpectedTurnEnd)
+        );
+        assert_eq!(machine.phase(), DshPhase::Failed);
+    }
+
+    #[test]
+    fn malformed_late_turn_events_still_fail_the_session() {
+        for event_type in [EVENT_TURN_START, EVENT_TURN_END] {
+            for turn in [None, Some(json!(null)), Some(json!("1")), Some(json!(-1))] {
+                let mut machine = ready();
+                machine.prompt("turn").expect("prompt");
+                machine.cancel();
+                let mut late = turn_end("vibemux_session_1", 1, "aborted");
+                late["params"]["event"]["type"] = json!(event_type);
+                let data = late["params"]["event"]["data"]
+                    .as_object_mut()
+                    .expect("data");
+                data.remove("turn");
+                if let Some(turn) = turn {
+                    data.insert("turn".to_string(), turn);
+                }
+                assert_eq!(machine.receive(&late), Err(DshError::InvalidTurnEnd));
+                assert_eq!(machine.phase(), DshPhase::Failed);
+                let summary = machine.summary();
+                assert_eq!(summary.error_code, Some("dsh_invalid_turn_end"));
+                assert_eq!(summary.cancelled_turns, 1);
+                assert_eq!(summary.completed_turns, 0);
+                assert_eq!(summary.late_frames, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_late_turn_end_must_match_the_observed_turn() {
+        for start_before_cancel in [true, false] {
+            for end_turn in [7, 99] {
+                let mut machine = ready();
+                machine.prompt("turn").expect("prompt");
+                if !start_before_cancel {
+                    machine.cancel();
+                }
+                machine
+                    .receive(&turn_start("vibemux_session_1", 7))
+                    .expect("turn start");
+                if start_before_cancel {
+                    machine.cancel();
+                }
+                let result = machine.receive(&turn_end("vibemux_session_1", end_turn, "completed"));
+                if end_turn == 7 {
+                    assert_eq!(result, Ok(Vec::new()));
+                    assert_eq!(machine.phase(), DshPhase::Closing);
+                    machine.observe_exit(true);
+                    assert_eq!(machine.phase(), DshPhase::Closed);
+                    assert_eq!(machine.summary().error_code, None);
+                } else {
+                    assert_eq!(result, Err(DshError::UnexpectedTurnEnd));
+                    assert_eq!(machine.phase(), DshPhase::Failed);
+                    assert_eq!(
+                        machine.summary().error_code,
+                        Some("dsh_unexpected_turn_end")
+                    );
+                }
+                let summary = machine.summary();
+                assert_eq!(summary.cancelled_turns, 1);
+                assert_eq!(summary.completed_turns, 0);
+                assert_eq!(summary.last_outcome, Some(DshTurnOutcome::Cancelled));
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_most_recent_abandoned_requests_are_remembered() {
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        // Each repeated close abandons the previous `shutdown`, so the prompt
+        // is the oldest id and is forgotten once the bound is exceeded.
+        let mut newest = String::new();
+        for _ in 0..=MAX_ABANDONED_REQUESTS {
+            newest = written_id(&machine.begin_close().expect("close")[0]);
+        }
+        machine.cancel();
+        machine
+            .receive(&json!({"jsonrpc": "2.0", "id": newest, "result": {}}))
+            .expect("newest abandoned shutdown");
+        assert_eq!(
+            machine.receive(&receipt(&prompt)),
+            Err(DshError::UncorrelatedResponse)
+        );
     }
 
     #[test]

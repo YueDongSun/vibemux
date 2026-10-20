@@ -6088,3 +6088,63 @@ A file swapped or grown after the size check could be read past its bound: 64 Ki
 **Remaining:**
 - Owner decision on no-follow opens for bounded reads.
 - Also open: owner decisions on ACP execution, load-time refusal of Windows non-`.exe` executables, ACP routes with a model, the daemon's full model alphabet, a CI rustdoc step, the TUI diagnostics environment display, and the GUI's minimum inner width of 960 against the settings minimum of 800. The I: drive still needs space before the repository `target` can build.
+
+## DSH cancellation response race: local review and repair (2026-10-20)
+
+**Scope:** the dedicated SDK session state machine and its local fixture coverage.
+The cancellation fix in `0c7e116` was reviewed independently of the existing
+runtime-exit close fixes. A prompt response that arrives after cancel or close
+is correlated against the bounded abandoned-request set and consumed once;
+unknown and duplicate response IDs still fail. Cancellation remains process-tree
+termination and resolves the turn once, without turning a late completion into
+success. Daemon ownership, Control v7 status, persistence, and the production
+close path are unchanged by this follow-up.
+
+**Local review repair:** the new late-turn allowance now validates the event's
+turn number and matches it to a start observed before or after cancellation.
+Missing, null, string, and negative numbers fail with `dsh_invalid_turn_end`;
+a mismatched late end fails with `dsh_unexpected_turn_end`. Both new regression
+tests failed before the repair and passed afterward. The original cancellation
+ordering was also replayed against `94d2a0c` and reproduced
+`UncorrelatedResponse`; the temporary baseline source was then restored.
+
+The `late_prompt` synthetic runtime withholds prompt frames until it receives
+shutdown. Driver tests cover cancellation before any receipt and closing after
+abandoning a prompt, without repeated timing trials. Exact buffered-frame
+acceptance is asserted by the pure-machine tests: driver close may stop the
+reader after process exit, so the integration test does not require every
+buffered frame to have been consumed.
+
+**Validation executed locally on native Windows, Rust 1.92.0:**
+
+- `cargo test --locked --offline -p vibemux_harness --lib dsh::session::tests -- --nocapture`: 39 passed.
+- `cargo test --locked --offline --quiet -p vibemux_harness -p vibemux_dsh --all-features`: 249 passed, zero failures or ignored tests.
+- `cargo test --locked --offline --quiet -p vibemuxd --features test_helpers --test dsh_session`: 10 passed, zero failures or ignored tests.
+- `cargo clippy --locked --offline --quiet -p vibemux_harness -p vibemux_dsh -p vibemuxd --all-targets --all-features -- -D warnings`: passed.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+
+Initial sandbox runs hit path-canonicalization permission errors. Normal local
+execution resolved those; fixture tests also required command-local `TEMP` and
+`TMP` under the task's `target/dsh_test_tmp`. The final broader checks used
+`CARGO_INCREMENTAL=0`, `CARGO_PROFILE_TEST_DEBUG=0`,
+`CARGO_PROFILE_DEV_DEBUG=0`, and `CARGO_BUILD_JOBS=2` after MSVC D8050 blocked
+C dependency debug-record generation. These are invocation settings only; no
+source guard, test assertion, dependency, or machine configuration was weakened.
+
+**Coverage limits:** local source review and synthetic SDK processes only.
+Hosted PR review/CI, the full workspace test/release matrix, Linux/WSL, live
+vendor inference, and a live terminal backend were not run. This evidence does
+not change the project's release or live-runtime qualification.
+
+**Integration into PR #28:** this repair was written on `0c7e116` and then
+cherry-picked onto `4dbaaac`, which lets a closed session keep draining late
+frames for abandoned work. The fixture keeps both the `shutdown-first` and
+`late_prompt` modes. The `shutdown-first` driver test keeps its repeated
+rounds. On the combined commit, these checks passed on native Windows: fmt;
+clippy for vibemux_harness and vibemux_dsh; 165 vibemux_harness library tests;
+and 18 vibemux_dsh session tests. These passed in WSL Ubuntu 24.04: fmt;
+clippy for vibemux_harness, vibemux_dsh, vibemuxd and vibemux_frontend; the
+vibemux_harness and vibemux_dsh tests; `vibemuxd --test dsh_session` (10/10);
+the vibemux_frontend dsh tests; and the vibemux_dsh session suite 60 times
+pinned to one loaded core, with no failures. Hosted CI covers the full
+workspace on the PR.

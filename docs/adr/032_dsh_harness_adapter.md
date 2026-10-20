@@ -181,7 +181,9 @@ Starting -> Initializing -> Ready -> Prompting -> Ready -> ... -> Closing -> Clo
   `Prompting` is refused rather than queued.
 - Each request carries a client-allocated `id`; a response with an unexpected
   `id`, a non-object `result`, or an `error` member is a protocol violation
-  that ends the session, not a retryable condition.
+  that ends the session, not a retryable condition. A late answer to a request
+  the session abandoned by cancelling or closing is expected, and is dropped
+  once (`docs/dsh_session_protocol.md` §4 rule 3).
 - Only notifications whose `sessionId` equals the session's own id advance that
   session. Notifications for other sessions in the same runtime are counted and
   dropped, because the protocol is unfiltered by design.

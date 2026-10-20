@@ -328,7 +328,10 @@ async fn cancellation_terminates_the_runtime_and_records_the_turn() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    client.dsh_session_close().await.expect("close");
+    // The cancel can beat the runtime's prompt receipt. That late answer is
+    // dropped, so the session closes instead of failing.
+    let closed = client.dsh_session_close().await.expect("close");
+    assert_eq!(closed.phase, DshPhase::Closed);
     server.shutdown().await.expect("shutdown");
 }
 

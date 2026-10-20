@@ -266,6 +266,68 @@ async fn cancellation_terminates_the_runtime() {
 }
 
 #[tokio::test]
+async fn cancelling_immediately_after_prompt_still_closes_cleanly() {
+    let mut driver = open("late_prompt").await;
+    driver.prompt("cancel at once").await.expect("prompt");
+    // This fixture cannot answer until shutdown, so cancellation always
+    // precedes the receipt. The pure-machine test injects a buffered reply.
+    driver.cancel().await.expect("cancel");
+    driver.close().await.expect("close");
+    let summary = driver.poll(0).expect("poll").summary;
+    assert_eq!(
+        (driver.phase(), summary.error_code),
+        (DshPhase::Closed, None)
+    );
+    assert_eq!(summary.cancelled_turns, 1);
+    assert_eq!(summary.completed_turns, 0);
+    assert!(!driver.transport_open());
+}
+
+#[tokio::test]
+async fn closing_before_the_prompt_is_answered_still_closes_cleanly() {
+    let mut driver = open("late_prompt").await;
+    driver.prompt("close at once").await.expect("prompt");
+    // The fixture withholds every prompt frame until it reads shutdown.
+    // Closing may stop the reader before all buffered frames are consumed;
+    // the pure-machine regression verifies their acceptance and exact count.
+    driver.close().await.expect("close");
+    let summary = driver.poll(0).expect("poll").summary;
+    assert_eq!(
+        (driver.phase(), summary.error_code),
+        (DshPhase::Closed, None)
+    );
+    assert_eq!(summary.cancelled_turns, 1);
+    assert_eq!(summary.completed_turns, 0);
+    assert!(!driver.transport_open());
+}
+
+/// Sessions the shutdown-first test opens. Whether the reader consumes the
+/// late frames before `close` stops it varies by run, so several rounds make
+/// a regression surface reliably.
+const RACE_ROUNDS: usize = 8;
+
+#[tokio::test]
+async fn a_prompt_answered_after_the_shutdown_reply_still_closes_cleanly() {
+    for round in 0..RACE_ROUNDS {
+        // The fixture answers `shutdown` first, then the prompt it held and
+        // that prompt's whole turn, so they reach a session already closed.
+        let mut driver = open("shutdown-first").await;
+        driver.prompt("answer me last").await.expect("prompt");
+        driver.close().await.expect("close");
+        let summary = driver.poll(0).expect("poll").summary;
+        assert_eq!(
+            (driver.phase(), summary.error_code),
+            (DshPhase::Closed, None),
+            "round {round}"
+        );
+        // A late frame the closed session refused would surface here, and
+        // the terminal UI would report the transport as ended in error.
+        assert_eq!(driver.transport_error(), None, "round {round}");
+        assert_eq!(summary.cancelled_turns, 1, "round {round}");
+    }
+}
+
+#[tokio::test]
 async fn polling_advances_the_cursor_and_a_stale_cursor_reports_a_gap() {
     let mut driver = open("serve").await;
     driver.prompt("one").await.expect("prompt");
