@@ -405,6 +405,47 @@ async fn an_empty_tool_policy_stays_empty_and_has_no_winner() {
     fixture.shutdown().await;
 }
 
+/// The fixture guard revalidates the worker image before every launch, not
+/// only at startup: a copy changed after the daemon started is refused
+/// before any worker process runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_worker_copy_changed_after_startup_is_refused_at_launch() {
+    let fixture = WorkflowFixture::start(FixtureOptions::default()).await;
+    let copy = fixture.vendor_dir.join(format!(
+        "{}{}",
+        AgentKind::Codex.command_name(),
+        std::env::consts::EXE_SUFFIX
+    ));
+    let mut image = std::fs::read(&copy).expect("worker copy");
+    image.push(0);
+    std::fs::write(&copy, image).expect("changed worker copy");
+    let prepared = fixture
+        .prepare(
+            store_request(
+                "changed_worker_copy",
+                &fixture.head,
+                "cooperate",
+                &store_task(&SYNTAX),
+                false,
+            ),
+            policy(&SYNTAX, 2, false),
+        )
+        .await;
+    let workflow = workflow_id(&prepared);
+    fixture.start_workflow(&prepared).await;
+    let status = fixture
+        .wait_phase(workflow, &["accepted", "failed", "blocked"])
+        .await;
+    assert_eq!(phase(&status), "failed", "status: {status:#}");
+    assert_eq!(
+        status["blocked_reason"], "harness_dispatch_config_executable_invalid",
+        "status: {status:#}"
+    );
+    assert_eq!(fixture.started_keys(), Vec::<String>::new());
+    assert_eq!(fixture.checkout_status(), "");
+    fixture.shutdown().await;
+}
+
 /// A route's provider registry labels and `allow_execution` flag are only
 /// declarations. Without the opaque fixture guard, Codex stays uncertified
 /// for writable workflow admission and no worker process is launched.

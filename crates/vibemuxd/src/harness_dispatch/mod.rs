@@ -46,7 +46,7 @@ use vibemux_harness::{
         DispatchRoute, NativeProtocol, ProtocolSession, attempt,
         capture_budget::{CaptureBudget, CaptureSummary},
         events::ProcessSummary,
-        launch_spec::{SessionMode, build_launch_spec},
+        launch_spec::{LaunchSpec, SessionMode, build_launch_spec},
         request::DISPATCH_REQUEST_SCHEMA_VERSION,
         route_config::DispatchCatalogEntry,
         writable_profile::{self, WritableGrant, build_writable_launch_spec},
@@ -248,6 +248,16 @@ struct DispatchSetup {
     fixture_guard: Option<vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard>,
 }
 
+/// What one workflow turn launches with.
+struct WorkflowLaunch {
+    launch: LaunchPlan,
+    /// The canonical owned directory, in the form a child process uses.
+    working_directory: String,
+    resource_key: Sha256Digest,
+    /// Recorded as both the harness profile and the effective route profile.
+    profile: &'static str,
+}
+
 struct AttemptRegistry {
     accepting: bool,
     /// Cancel signal of each attempt task still running.
@@ -433,29 +443,23 @@ impl HarnessDispatchService {
         let detected = self.detected(turn.harness).await?;
         let config = setup.config.config();
         let route = config.execution_route(&request, detected)?;
-        let directory = turn.working_directory.clone();
-        let (working_directory, resource_key) =
-            tokio::task::spawn_blocking(move || Self::workflow_resource_key(&directory))
-                .await
-                .ok()
-                .flatten()
-                .ok_or(DispatchError::WorkingDirectoryInvalid)?;
-        let launch = LaunchPlan {
-            trampoline: setup
-                .trampoline
-                .clone()
-                .ok_or(DispatchError::ExecutableUnavailable)?,
-            executable: PathBuf::from(
-                child_path_text(setup.config.executable(route.harness)?)
-                    .ok_or(DispatchError::ExecutableUnavailable)?,
-            ),
-            spec: setup.workflow_launch_spec(route, turn.grant, turn.evidence_class)?,
-            working_directory: PathBuf::from(&working_directory),
-        };
+        // The coordinator polls every turn of a step in one task, so the
+        // blocking launch preparation must not run on it.
+        let inner = Arc::clone(&self.inner);
+        let launch_route = route.clone();
+        let (grant, evidence_class) = (turn.grant, turn.evidence_class);
+        let directory = turn.working_directory;
+        let prepared = tokio::task::spawn_blocking(move || {
+            inner
+                .setup()?
+                .workflow_launch(&launch_route, grant, evidence_class, &directory)
+        })
+        .await
+        .unwrap_or(Err(DispatchError::Internal))?;
         let session = ProtocolSession::for_execution(
             route,
             request.prompt.clone(),
-            working_directory.clone(),
+            prepared.working_directory,
         )?;
         let budget = CaptureBudget::new(route.protocol, &config.limits)?;
         let binding = turn.binding;
@@ -495,7 +499,7 @@ impl HarnessDispatchService {
                 .into_iter()
                 .filter_map(|(allowed, tool)| allowed.then_some(tool))
                 .collect(),
-                harness_profile: setup.workflow_profile(route)?.to_string(),
+                harness_profile: prepared.profile.to_string(),
                 route_config_digest: setup.config.digest(),
                 evidence_class: turn.evidence_class,
                 route_label: turn.route_label,
@@ -505,7 +509,7 @@ impl HarnessDispatchService {
                     model_alias: route.model.clone(),
                     endpoint: None,
                     config_digest: setup.config.digest(),
-                    profile: setup.workflow_profile(route)?.to_string(),
+                    profile: prepared.profile.to_string(),
                 },
             },
             dispatch: HarnessDispatchAdmission {
@@ -514,7 +518,7 @@ impl HarnessDispatchService {
                 protocol: route.protocol,
                 prompt: request.prompt_digest(),
                 config_sha256: setup.config.digest(),
-                resource_key,
+                resource_key: prepared.resource_key,
                 base_commit: turn.base_commit,
                 timestamp: OffsetDateTime::now_utc(),
             },
@@ -536,7 +540,7 @@ impl HarnessDispatchService {
             }
             delivery_applied = true;
             let plan = ExecutionPlan {
-                launch,
+                launch: prepared.launch,
                 session,
                 budget,
                 limits: config.limits,
@@ -888,27 +892,68 @@ impl DispatchSetup {
         writable_profile::writable_profile_id(route.protocol)
     }
 
-    fn workflow_launch_spec(
+    /// Resolves the owned working directory and builds the launch plan and
+    /// profile of one workflow turn. Blocking: besides the filesystem
+    /// lookups, a fixture guard rehashes its pinned images here.
+    fn workflow_launch(
         &self,
         route: &DispatchRoute,
         grant: WritableGrant,
         evidence_class: vibemux_workflow::slots::EvidenceClass,
-    ) -> Result<vibemux_harness::dispatch::launch_spec::LaunchSpec, DispatchError> {
+        directory: &Path,
+    ) -> Result<WorkflowLaunch, DispatchError> {
+        let (working_directory, resource_key) =
+            HarnessDispatchService::workflow_resource_key(directory)
+                .ok_or(DispatchError::WorkingDirectoryInvalid)?;
+        let trampoline = self
+            .trampoline
+            .clone()
+            .ok_or(DispatchError::ExecutableUnavailable)?;
+        let executable = child_path_text(self.config.executable(route.harness)?)
+            .ok_or(DispatchError::ExecutableUnavailable)?;
+        let (spec, profile) = self.workflow_spec(route, grant, evidence_class)?;
+        Ok(WorkflowLaunch {
+            launch: LaunchPlan {
+                trampoline,
+                executable: PathBuf::from(executable),
+                spec,
+                working_directory: PathBuf::from(&working_directory),
+            },
+            working_directory,
+            resource_key,
+            profile,
+        })
+    }
+
+    /// The launch spec and profile of a workflow turn. A fixture guard
+    /// revalidates the registered images once for both.
+    fn workflow_spec(
+        &self,
+        route: &DispatchRoute,
+        grant: WritableGrant,
+        evidence_class: vibemux_workflow::slots::EvidenceClass,
+    ) -> Result<(LaunchSpec, &'static str), DispatchError> {
         #[cfg(feature = "test_helpers")]
         if let Some(guard) = &self.fixture_guard {
             if evidence_class != vibemux_workflow::slots::EvidenceClass::Fixture {
                 return Err(DispatchError::ExecutionDisabled);
             }
-            return vibemux_harness::dispatch::fixture_guard::build_writable_fixture_launch_spec(
-                route, grant, guard,
-            );
+            // Revalidates the registered image before every fixture launch.
+            let spec =
+                vibemux_harness::dispatch::fixture_guard::build_writable_fixture_launch_spec(
+                    route, grant, guard,
+                )?;
+            let profile =
+                vibemux_harness::dispatch::fixture_guard::fixture_profile_id(route.harness)?;
+            return Ok((spec, profile));
         }
-        let _ = evidence_class;
         if evidence_class == vibemux_workflow::slots::EvidenceClass::Fixture {
             return Err(DispatchError::ExecutionDisabled);
         }
-        build_writable_launch_spec(route, grant)
+        let spec = build_writable_launch_spec(route, grant)?;
+        Ok((spec, writable_profile::writable_profile_id(route.protocol)?))
     }
+
     fn launch_plan(
         &self,
         route: &DispatchRoute,
