@@ -25,6 +25,7 @@
 //! | `exit-early` | exits before answering anything |
 //! | `exit-after-ready` | answers `initialize`, then exits successfully |
 //! | `crash-after-ready` | answers `initialize`, then exits with status 3 |
+//! | `shutdown-first` | holds each prompt; on `shutdown`, answers it first, then the held prompt and its whole turn |
 
 use std::io::{self, BufRead, Write};
 
@@ -60,6 +61,8 @@ fn main() {
     }
     let stdin = io::stdin();
     let mut turn: u64 = 0;
+    // `shutdown-first` only: the prompt held until `shutdown` arrives.
+    let mut held_prompt: Option<serde_json::Value> = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { return };
         let line = line.trim();
@@ -93,69 +96,19 @@ fn main() {
                     std::process::exit(3);
                 }
             }
+            "session/prompt" if mode == "shutdown-first" => {
+                held_prompt = Some(frame);
+            }
             "session/prompt" => {
-                let session_id = frame
-                    .pointer("/params/sessionId")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                reply(id, &serde_json::json!({"messageId": format!("msg_{turn}")}));
-                turn += 1;
-                if mode == "foreign" {
-                    // The real runtime streams every session in the process,
-                    // so a sibling's completion can arrive first.
-                    notify(
-                        "session.event",
-                        &serde_json::json!({"sessionId": "another_session",
-                            "event": {"type": "turn/end", "seq": 1, "time": 1,
-                                "data": {"turn": 99, "reason": {"kind": "completed"}}}}),
-                    );
-                }
-                if mode == "garbage" {
-                    let mut stdout = io::stdout();
-                    let _ = stdout.write_all(b"this is not a JSON frame\n");
-                    let _ = stdout.flush();
-                    continue;
-                }
-                notify(
-                    "session.event",
-                    &serde_json::json!({"sessionId": session_id,
-                        "event": {"type": "turn/start", "seq": 2, "time": 1,
-                            "data": {"turn": turn}}}),
-                );
-                notify(
-                    "session.event",
-                    &serde_json::json!({"sessionId": session_id,
-                        "event": {"type": "assistant/chunk", "seq": 3, "time": 2,
-                            "data": {"turn": turn, "step": 1, "chunk": {
-                                "type": "text-delta", "index": 0,
-                                "text": "fixture reply"}}}}),
-                );
-                if mode == "flood" {
-                    flood(&session_id, turn);
-                }
-                notify(
-                    "session.status",
-                    &serde_json::json!({"sessionId": session_id, "status": "idle"}),
-                );
-                if mode == "no-turn-end" {
-                    continue;
-                }
-                let reason = if mode == "error-turn" {
-                    serde_json::json!({"kind": "error", "error": {
-                        "message": "fixture failure", "code": "FIXTURE"}})
-                } else {
-                    serde_json::json!({"kind": "completed"})
-                };
-                notify(
-                    "session.event",
-                    &serde_json::json!({"sessionId": session_id,
-                        "event": {"type": "turn/end", "seq": 4, "time": 3,
-                            "data": {"turn": turn, "reason": reason}}}),
-                );
+                answer_prompt(&mode, &frame, &mut turn);
             }
             "shutdown" => {
                 reply(id, &serde_json::json!({}));
+                // JSON-RPC does not order responses, so a runtime may answer
+                // `shutdown` before a request it received earlier.
+                if let Some(prompt) = held_prompt.take() {
+                    answer_prompt(&mode, &prompt, &mut turn);
+                }
                 let _ = io::stdout().flush();
                 return;
             }
@@ -172,6 +125,71 @@ fn main() {
             }
         }
     }
+}
+
+/// Answers one `session/prompt` and streams its turn as `mode` dictates.
+fn answer_prompt(mode: &str, frame: &serde_json::Value, turn: &mut u64) {
+    let id = frame.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let session_id = frame
+        .pointer("/params/sessionId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    reply(id, &serde_json::json!({"messageId": format!("msg_{turn}")}));
+    *turn += 1;
+    let turn = *turn;
+    if mode == "foreign" {
+        // The real runtime streams every session in the process, so a
+        // sibling's completion can arrive first.
+        notify(
+            "session.event",
+            &serde_json::json!({"sessionId": "another_session",
+                "event": {"type": "turn/end", "seq": 1, "time": 1,
+                    "data": {"turn": 99, "reason": {"kind": "completed"}}}}),
+        );
+    }
+    if mode == "garbage" {
+        let mut stdout = io::stdout();
+        let _ = stdout.write_all(b"this is not a JSON frame\n");
+        let _ = stdout.flush();
+        return;
+    }
+    notify(
+        "session.event",
+        &serde_json::json!({"sessionId": session_id,
+            "event": {"type": "turn/start", "seq": 2, "time": 1,
+                "data": {"turn": turn}}}),
+    );
+    notify(
+        "session.event",
+        &serde_json::json!({"sessionId": session_id,
+            "event": {"type": "assistant/chunk", "seq": 3, "time": 2,
+                "data": {"turn": turn, "step": 1, "chunk": {
+                    "type": "text-delta", "index": 0,
+                    "text": "fixture reply"}}}}),
+    );
+    if mode == "flood" {
+        flood(&session_id, turn);
+    }
+    notify(
+        "session.status",
+        &serde_json::json!({"sessionId": session_id, "status": "idle"}),
+    );
+    if mode == "no-turn-end" {
+        return;
+    }
+    let reason = if mode == "error-turn" {
+        serde_json::json!({"kind": "error", "error": {
+            "message": "fixture failure", "code": "FIXTURE"}})
+    } else {
+        serde_json::json!({"kind": "completed"})
+    };
+    notify(
+        "session.event",
+        &serde_json::json!({"sessionId": session_id,
+            "event": {"type": "turn/end", "seq": 4, "time": 3,
+                "data": {"turn": turn, "reason": reason}}}),
+    );
 }
 
 fn reply(id: serde_json::Value, result: &serde_json::Value) {

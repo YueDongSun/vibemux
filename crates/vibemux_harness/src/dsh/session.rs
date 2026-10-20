@@ -308,11 +308,20 @@ impl DshSessionMachine {
     }
 
     /// Advances the session with one decoded frame.
+    ///
+    /// A closed session keeps draining. JSON-RPC does not order responses,
+    /// so the runtime may acknowledge `shutdown` before it answers the
+    /// request `shutdown` superseded, or before it finishes reporting the
+    /// abandoned turn. Those frames are dropped and counted as in `Closing`,
+    /// and notifications that never change state are tolerated. A frame a
+    /// closed session cannot place is refused with `Closed`, and the session
+    /// stays closed.
     pub fn receive(&mut self, frame: &Value) -> Result<Vec<DshAction>, DshError> {
-        if self.phase.is_terminal() {
+        if self.phase == DshPhase::Failed {
             return Err(DshError::Closed);
         }
         match wire::frame_kind(frame).map_err(|error| self.violate(error))? {
+            DshFrameKind::Request if self.phase == DshPhase::Closed => Err(DshError::Closed),
             DshFrameKind::Request => {
                 // Server-to-client requests are a dead capability in this
                 // protocol version, but a future one must not desynchronize
@@ -614,7 +623,8 @@ impl DshSessionMachine {
     /// Drops the late answer to an abandoned request, whatever it carries:
     /// nothing waits for its result. Each abandoned id is consumed by its
     /// first answer, so a repeated answer or an id this session never
-    /// abandoned is still a protocol violation, even while closing.
+    /// abandoned is still a protocol violation while closing, and is refused
+    /// once closed.
     fn drop_abandoned_response(&mut self, id: Option<&str>) -> Result<Vec<DshAction>, DshError> {
         let position = id.and_then(|id| {
             self.abandoned_requests
@@ -630,6 +640,12 @@ impl DshSessionMachine {
     }
 
     fn violate(&mut self, error: DshError) -> DshError {
+        if self.phase == DshPhase::Closed {
+            // The runtime already acknowledged `shutdown` or exited cleanly.
+            // A frame the session cannot place is refused, but it does not
+            // turn a clean close into a failure.
+            return DshError::Closed;
+        }
         self.error_code = Some(error.code());
         // Resolve the in-flight turn before the phase moves to `Failed`, so
         // `abandon_turn` still sees a prompting session.
@@ -1158,6 +1174,63 @@ mod tests {
         // Closing already cancelled the turn; a late completion is not success.
         assert_eq!(summary.completed_turns, 0);
         assert_eq!(summary.cancelled_turns, 1);
+    }
+
+    #[test]
+    fn a_closed_session_still_drains_work_answered_after_the_shutdown_reply() {
+        // JSON-RPC does not order responses: the runtime may acknowledge
+        // `shutdown` before it answers the prompt `shutdown` superseded, and
+        // before it finishes reporting that turn.
+        let mut machine = ready();
+        let prompt = written_id(&machine.prompt("turn").expect("prompt")[0]);
+        let shutdown = written_id(&machine.begin_close().expect("close")[0]);
+        let reply = json!({"jsonrpc": "2.0", "id": shutdown, "result": {}});
+        assert!(machine.receive(&reply).expect("shutdown reply").is_empty());
+        assert_eq!(machine.phase(), DshPhase::Closed);
+        let chunk = json!({"jsonrpc": "2.0", "method": "session.event",
+            "params": {"sessionId": "vibemux_session_1", "event": {
+                "type": "assistant/chunk", "seq": 3, "time": 2, "data": {"turn": 1}}}});
+        for late in [
+            receipt(&prompt),
+            turn_start("vibemux_session_1", 1),
+            chunk,
+            turn_end("vibemux_session_1", 1, "completed"),
+        ] {
+            assert!(machine.receive(&late).expect("late frame").is_empty());
+            assert_eq!(machine.phase(), DshPhase::Closed);
+        }
+        let summary = machine.summary();
+        assert_eq!(summary.error_code, None);
+        // The receipt and both turn events; the chunk is tolerated as in
+        // every phase, not counted.
+        assert_eq!(summary.late_frames, 3);
+        assert_eq!(summary.completed_turns, 0);
+        assert_eq!(summary.cancelled_turns, 1);
+    }
+
+    #[test]
+    fn a_closed_session_refuses_what_it_cannot_place_and_stays_closed() {
+        let mut machine = ready();
+        let shutdown = written_id(&machine.begin_close().expect("close")[0]);
+        let reply = json!({"jsonrpc": "2.0", "id": shutdown, "result": {}});
+        machine.receive(&reply).expect("shutdown reply");
+        assert_eq!(machine.phase(), DshPhase::Closed);
+        for frame in [
+            receipt("vibemux_999"),
+            // A second answer to the request that closed the session.
+            reply,
+            // No turn was abandoned, so no turn event is expected.
+            turn_end("vibemux_session_1", 1, "completed"),
+            json!({"jsonrpc": "2.0", "id": "srv_1",
+                "method": "session/request_permission", "params": {}}),
+            json!({}),
+        ] {
+            assert_eq!(machine.receive(&frame), Err(DshError::Closed), "{frame}");
+            assert_eq!(machine.phase(), DshPhase::Closed);
+        }
+        let summary = machine.summary();
+        assert_eq!(summary.error_code, None);
+        assert_eq!(summary.late_frames, 0);
     }
 
     #[test]
