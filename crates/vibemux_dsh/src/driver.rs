@@ -105,6 +105,9 @@ pub struct DshDriver {
     phase: watch::Receiver<DshPhase>,
     reader: Option<JoinHandle<()>>,
     limits: DshSessionLimits,
+    /// Whether this driver terminated the process tree, so the exit it
+    /// caused is not mistaken for a crash.
+    terminated: bool,
 }
 
 impl std::fmt::Debug for DshDriver {
@@ -187,6 +190,7 @@ impl DshDriver {
             phase,
             reader: Some(reader),
             limits,
+            terminated: false,
         };
         let actions = driver
             .with_machine(|machine| machine.start())
@@ -315,22 +319,30 @@ impl DshDriver {
             }
         }
         let grace = Duration::from_millis(self.limits.shutdown_grace_ms);
-        let reaped = match timeout(grace, self.child.wait()).await {
-            Ok(Ok(_)) => true,
+        let exit = match timeout(grace, self.child.wait()).await {
+            Ok(Ok(status)) => Some(status),
             Ok(Err(_)) => return Err(DshDriverError::SpawnFailed),
             // The grace period expired; escalate below.
-            Err(_) => false,
+            Err(_) => None,
         };
+        let reaped = exit.is_some();
+        // A clean exit is a successful one, or one this driver caused by
+        // terminating the tree (cancellation's documented teardown). A runtime
+        // that crashed on its own fails the session even though it was reaped.
+        let clean_exit = exit.is_some_and(|status| status.success() || self.terminated);
         if !reaped {
             self.terminate()?;
             // Reap after the kill so no process handle is left behind.
             let _ = timeout(Duration::from_secs(5), self.child.wait()).await;
         }
-        self.record_exit(reaped);
+        self.record_exit(clean_exit);
         if let Some(reader) = self.reader.take() {
             reader.abort();
             let _ = reader.await;
         }
+        // The process is gone and its reader stopped, whether or not the
+        // reader saw stdout end first.
+        lock(&self.state).transport_open = false;
         if !reaped && cooperative {
             return Err(DshDriverError::ShutdownTimeout);
         }
@@ -338,6 +350,7 @@ impl DshDriver {
     }
 
     fn terminate(&mut self) -> Result<(), DshDriverError> {
+        self.terminated = true;
         if let Some(tree) = self.tree.as_mut() {
             // A tree that is already gone is not an error; the child handle is
             // still reaped below.
@@ -347,11 +360,11 @@ impl DshDriver {
         Ok(())
     }
 
-    /// Folds a process exit into the machine. `reaped` records whether the
-    /// child was observed to have exited.
-    fn record_exit(&mut self, reaped: bool) {
+    /// Folds a process exit into the machine. `clean_exit` is false when the
+    /// child was not reaped or exited unsuccessfully on its own.
+    fn record_exit(&mut self, clean_exit: bool) {
         let mut state = lock(&self.state);
-        state.machine.observe_exit(reaped);
+        state.machine.observe_exit(clean_exit);
     }
 
     async fn await_phase(
@@ -441,12 +454,19 @@ impl DshDriver {
     /// Records a failed frame write. A closed stdin is a transport failure,
     /// so it fails the session exactly as stdout EOF does; any other error is
     /// a local write fault and leaves the session state to the caller.
+    ///
+    /// A session that is already closing is left to `close`: a runtime that
+    /// exited first cannot read `shutdown`, and the reaped exit closes the
+    /// session there.
     fn write_failed(&mut self, error: &std::io::Error) -> DshDriverError {
         let failure = write_failure(error);
         if failure == DshDriverError::TransportClosed {
             self.stdin = None;
             let mut state = lock(&self.state);
             state.transport_open = false;
+            if state.machine.phase() == DshPhase::Closing {
+                return failure;
+            }
             if state.transport_error.is_none() {
                 state.transport_error = Some(failure.clone());
             }
