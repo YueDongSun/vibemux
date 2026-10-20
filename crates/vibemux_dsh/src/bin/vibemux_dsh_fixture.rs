@@ -26,6 +26,7 @@
 //! | `exit-after-ready` | answers `initialize`, then exits successfully |
 //! | `crash-after-ready` | answers `initialize`, then exits with status 3 |
 //! | `shutdown-first` | holds each prompt; on `shutdown`, answers it first, then the held prompt and its whole turn |
+//! | `late_prompt` | holds the prompt receipt and turn events until `shutdown` |
 
 use std::io::{self, BufRead, Write};
 
@@ -63,6 +64,8 @@ fn main() {
     let mut turn: u64 = 0;
     // `shutdown-first` only: the prompt held until `shutdown` arrives.
     let mut held_prompt: Option<serde_json::Value> = None;
+    // `late_prompt` only: the prompt id and session held until `shutdown`.
+    let mut pending_prompt = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { return };
         let line = line.trim();
@@ -100,9 +103,37 @@ fn main() {
                 held_prompt = Some(frame);
             }
             "session/prompt" => {
+                if mode == "late_prompt" {
+                    let session_id = frame
+                        .pointer("/params/sessionId")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    pending_prompt = Some((id, session_id));
+                    continue;
+                }
                 answer_prompt(&mode, &frame, &mut turn);
             }
             "shutdown" => {
+                if let Some((prompt_id, session_id)) = pending_prompt.take() {
+                    // Reading shutdown is the barrier: the client has already
+                    // abandoned this request before any of its frames arrive.
+                    reply(prompt_id, &serde_json::json!({"messageId": "late_message"}));
+                    for (event_type, data) in [
+                        ("turn/start", serde_json::json!({"turn": 1})),
+                        (
+                            "turn/end",
+                            serde_json::json!({"turn": 1, "reason": {"kind": "completed"}}),
+                        ),
+                    ] {
+                        notify(
+                            "session.event",
+                            &serde_json::json!({"sessionId": session_id,
+                                "event": {"type": event_type, "seq": 1, "time": 1,
+                                    "data": data}}),
+                        );
+                    }
+                }
                 reply(id, &serde_json::json!({}));
                 // JSON-RPC does not order responses, so a runtime may answer
                 // `shutdown` before a request it received earlier.

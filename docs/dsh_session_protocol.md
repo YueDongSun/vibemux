@@ -177,14 +177,15 @@ Rules the driver enforces:
    never abandoned, still ends the session with `dsh_uncorrelated_response`,
    so a closing session still catches a malformed runtime. The same holds for
    the turn the session abandoned: its `turn/start`, if none had arrived, and
-   then its `turn/end` are dropped and counted once each. They never change
-   the turn's outcome. Any other `turn/start` or `turn/end` outside a running
-   turn is `dsh_unexpected_turn_end`. This draining continues after the
-   `shutdown` answer: JSON-RPC does not order responses, so the runtime may
-   acknowledge `shutdown` before it answers the request `shutdown`
-   superseded. A closed session drops those frames the same way. It refuses
-   anything else with `dsh_session_closed` and stays closed, so such a frame
-   never turns a clean close into a failure.
+   then its `turn/end` are dropped and counted once each. Both must carry a
+   valid turn number, and an end must match a start observed before or after
+   cancellation. They never change the turn's outcome. Any other `turn/start`
+   or `turn/end` outside a running turn is `dsh_unexpected_turn_end`. This
+   draining continues after the `shutdown` answer: JSON-RPC does not order
+   responses, so the runtime may acknowledge `shutdown` before it answers the
+   request `shutdown` superseded. A closed session drops those frames the same
+   way. It refuses anything else with `dsh_session_closed` and stays closed,
+   so such a frame never turns a clean close into a failure.
 4. **Notifications are filtered by session.** The stream is runtime-wide and
    unfiltered, so `session.event` and `session.status` are matched against the
    session's own id and everything else is counted and dropped.

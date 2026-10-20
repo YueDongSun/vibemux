@@ -151,8 +151,8 @@ struct Pending {
 enum AbandonedTurn {
     /// No `turn/start` yet: it, and then `turn/end`, may still arrive.
     NotStarted,
-    /// Only `turn/end` may still arrive.
-    Started,
+    /// Only `turn/end` for this turn number may still arrive.
+    Started(u64),
 }
 
 /// Client-side state machine for one DSH session.
@@ -514,7 +514,7 @@ impl DshSessionMachine {
         match wire::session_event_type(frame) {
             Some(EVENT_TURN_START) => {
                 if self.phase != DshPhase::Prompting {
-                    return self.drop_abandoned_turn_event(EVENT_TURN_START);
+                    return self.drop_abandoned_turn_event(frame, EVENT_TURN_START);
                 }
                 if let Ok(turn) = wire::event_turn_number(frame)
                     && let Some(current) = self.current_turn.as_mut()
@@ -530,7 +530,7 @@ impl DshSessionMachine {
 
     fn receive_turn_end(&mut self, frame: &Value) -> Result<Vec<DshAction>, DshError> {
         if self.phase != DshPhase::Prompting {
-            return self.drop_abandoned_turn_event(EVENT_TURN_END);
+            return self.drop_abandoned_turn_event(frame, EVENT_TURN_END);
         }
         let turn = match wire::event_turn_number(frame) {
             Ok(turn) => turn,
@@ -583,23 +583,41 @@ impl DshSessionMachine {
     fn abandon_turn(&mut self, outcome: DshTurnOutcome) {
         if self.phase == DshPhase::Prompting {
             self.resolve_turn(None, outcome);
-            let started = self.current_turn.is_some_and(|turn| turn.turn.is_some());
-            self.abandoned_turn = Some(if started {
-                AbandonedTurn::Started
-            } else {
-                AbandonedTurn::NotStarted
+            self.abandoned_turn = Some(match self.current_turn.and_then(|turn| turn.turn) {
+                Some(turn) => AbandonedTurn::Started(turn),
+                None => AbandonedTurn::NotStarted,
             });
         }
     }
 
     /// Drops a late event of the abandoned turn: its `turn/start`, if the
-    /// runtime had not reported one, and then its `turn/end`, once each. The
-    /// turn already has its outcome, and neither event changes it. Any other
-    /// turn event outside a running turn is still a protocol violation.
-    fn drop_abandoned_turn_event(&mut self, event_type: &str) -> Result<Vec<DshAction>, DshError> {
+    /// runtime had not reported one, and then its `turn/end`, once each. Both
+    /// must carry a valid turn number, and the `turn/end` must match the
+    /// observed `turn/start`. The turn already has its outcome, and neither
+    /// event changes it. Any other turn event outside a running turn is still
+    /// a protocol violation.
+    fn drop_abandoned_turn_event(
+        &mut self,
+        frame: &Value,
+        event_type: &str,
+    ) -> Result<Vec<DshAction>, DshError> {
+        if self.abandoned_turn.is_none() {
+            return Err(self.violate(DshError::UnexpectedTurnEnd));
+        }
+        let turn = match wire::event_turn_number(frame) {
+            Ok(turn) => turn,
+            Err(error) => return Err(self.violate(error)),
+        };
         self.abandoned_turn = match (self.abandoned_turn, event_type) {
-            (Some(AbandonedTurn::NotStarted), EVENT_TURN_START) => Some(AbandonedTurn::Started),
-            (Some(_), EVENT_TURN_END) => None,
+            (Some(AbandonedTurn::NotStarted), EVENT_TURN_START) => {
+                Some(AbandonedTurn::Started(turn))
+            }
+            (Some(AbandonedTurn::NotStarted), EVENT_TURN_END) => None,
+            (Some(AbandonedTurn::Started(expected_turn)), EVENT_TURN_END)
+                if turn == expected_turn =>
+            {
+                None
+            }
             _ => return Err(self.violate(DshError::UnexpectedTurnEnd)),
         };
         self.late_frames = self.late_frames.saturating_add(1);
@@ -1332,6 +1350,71 @@ mod tests {
             Err(DshError::UnexpectedTurnEnd)
         );
         assert_eq!(machine.phase(), DshPhase::Failed);
+    }
+
+    #[test]
+    fn malformed_late_turn_events_still_fail_the_session() {
+        for event_type in [EVENT_TURN_START, EVENT_TURN_END] {
+            for turn in [None, Some(json!(null)), Some(json!("1")), Some(json!(-1))] {
+                let mut machine = ready();
+                machine.prompt("turn").expect("prompt");
+                machine.cancel();
+                let mut late = turn_end("vibemux_session_1", 1, "aborted");
+                late["params"]["event"]["type"] = json!(event_type);
+                let data = late["params"]["event"]["data"]
+                    .as_object_mut()
+                    .expect("data");
+                data.remove("turn");
+                if let Some(turn) = turn {
+                    data.insert("turn".to_string(), turn);
+                }
+                assert_eq!(machine.receive(&late), Err(DshError::InvalidTurnEnd));
+                assert_eq!(machine.phase(), DshPhase::Failed);
+                let summary = machine.summary();
+                assert_eq!(summary.error_code, Some("dsh_invalid_turn_end"));
+                assert_eq!(summary.cancelled_turns, 1);
+                assert_eq!(summary.completed_turns, 0);
+                assert_eq!(summary.late_frames, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_late_turn_end_must_match_the_observed_turn() {
+        for start_before_cancel in [true, false] {
+            for end_turn in [7, 99] {
+                let mut machine = ready();
+                machine.prompt("turn").expect("prompt");
+                if !start_before_cancel {
+                    machine.cancel();
+                }
+                machine
+                    .receive(&turn_start("vibemux_session_1", 7))
+                    .expect("turn start");
+                if start_before_cancel {
+                    machine.cancel();
+                }
+                let result = machine.receive(&turn_end("vibemux_session_1", end_turn, "completed"));
+                if end_turn == 7 {
+                    assert_eq!(result, Ok(Vec::new()));
+                    assert_eq!(machine.phase(), DshPhase::Closing);
+                    machine.observe_exit(true);
+                    assert_eq!(machine.phase(), DshPhase::Closed);
+                    assert_eq!(machine.summary().error_code, None);
+                } else {
+                    assert_eq!(result, Err(DshError::UnexpectedTurnEnd));
+                    assert_eq!(machine.phase(), DshPhase::Failed);
+                    assert_eq!(
+                        machine.summary().error_code,
+                        Some("dsh_unexpected_turn_end")
+                    );
+                }
+                let summary = machine.summary();
+                assert_eq!(summary.cancelled_turns, 1);
+                assert_eq!(summary.completed_turns, 0);
+                assert_eq!(summary.last_outcome, Some(DshTurnOutcome::Cancelled));
+            }
+        }
     }
 
     #[test]
