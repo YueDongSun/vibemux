@@ -2,7 +2,7 @@
 //! No daemon startup, SQLite access, provider invocation, or implicit retries
 //! of focus/link actions occur here.
 
-use crate::{supervisor_mapping, supervisor_model::*};
+use crate::{daemon_session::DaemonSession, supervisor_mapping, supervisor_model::*};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -16,7 +16,7 @@ use vibemux_types::{
     frontend::{FrontendTaskDetail, FrontendTasksQuery},
 };
 use vibemuxd::{
-    control::{ControlClient, ControlError, ControlGeneration},
+    control::{ControlClient, ControlError},
     process::DaemonPaths,
     terminal_observer::{TerminalLinkRequest, TerminalQuery},
 };
@@ -125,7 +125,7 @@ async fn read_loop(
     // and re-reading the descriptor on every 5s tick was pure overhead: the
     // descriptor only changes when the daemon restarts, which the generation
     // check below already detects.
-    let mut session = ClientSession::default();
+    let mut session = DaemonSession::default();
     let mut ticks_since_metadata: u32 = METADATA_INTERVAL_TICKS;
     // Held across iterations so a poll that changes nothing republishes the same
     // allocation instead of rebuilding the task tree.
@@ -176,69 +176,11 @@ async fn read_loop(
     }
 }
 
-/// Connection state carried between polls so a healthy daemon is verified once
-/// instead of once per tick.
-#[derive(Default)]
-struct ClientSession {
-    client: Option<ControlClient>,
-    generation: Option<ControlGeneration>,
-}
-
-impl ClientSession {
-    fn invalidate(&mut self) {
-        self.client = None;
-        self.generation = None;
-    }
-}
-
-/// Read the published descriptor and resolve a client from it, without
-/// re-verifying the runtime ACLs.
-fn read_published(root: &Path) -> Result<(DaemonPaths, ControlClient), String> {
+/// Resolve the project's daemon paths and return a usable client plus whether
+/// the runtime generation changed (see `DaemonSession::connect`).
+fn client_for(root: &Path, session: &mut DaemonSession) -> Result<(ControlClient, bool), String> {
     let paths = DaemonPaths::from_project_root(root).map_err(|error| error.code().to_string())?;
-    if !paths.descriptor_path().exists() {
-        return Err("daemon_not_running".into());
-    }
-    let client = ControlClient::from_descriptor(paths.descriptor_path())
-        .map_err(|error| error.code().to_string())?;
-    Ok((paths, client))
-}
-
-/// Verify that the runtime this descriptor belongs to is still restricted.
-fn verify_runtime(paths: &DaemonPaths) -> Result<(), String> {
-    paths
-        .validate_runtime_dir()
-        .map_err(|error| error.code().to_string())?;
-    #[cfg(windows)]
-    paths
-        .verify_control_security()
-        .map_err(|error| error.code().to_string())?;
-    Ok(())
-}
-
-/// Return a usable client plus whether the runtime generation changed.
-///
-/// The runtime ACL walk is the expensive part of connecting on Windows, and it
-/// was previously repeated on every 5s poll and every user click. It is now
-/// performed once per generation: the descriptor is re-read every time (cheap,
-/// and the only way to notice a daemon that stopped), but the verification is
-/// redone only when the published descriptor is not the one already verified.
-/// Any call failure invalidates the cache, so a dropped connection forces a
-/// fresh verification before it is trusted again.
-fn client_for(root: &Path, session: &mut ClientSession) -> Result<(ControlClient, bool), String> {
-    let (paths, published) = read_published(root)?;
-    let generation = published.generation();
-    if session.client.is_some() && session.generation.as_ref() == Some(&generation) {
-        return Ok((published, false));
-    }
-    // Fail closed: nothing is used before the runtime behind it is verified.
-    verify_runtime(&paths)?;
-    let changed = session
-        .generation
-        .as_ref()
-        .is_some_and(|previous| *previous != generation);
-    session.client = Some(published.clone());
-    session.generation = Some(generation);
-    Ok((published, changed))
+    session.connect(&paths)
 }
 
 async fn apply_action(
@@ -246,7 +188,7 @@ async fn apply_action(
     snapshot: &mut SupervisorSnapshot,
     action: SupervisorAction,
     observed: &mut BTreeSet<(String, String)>,
-    session: &mut ClientSession,
+    session: &mut DaemonSession,
     refresh_metadata: bool,
 ) -> Result<(), String> {
     let (client, restarted) = client_for(root, session)?;
@@ -889,7 +831,7 @@ mod tests {
         writer.shutdown().unwrap();
         let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
 
-        let mut session = ClientSession::default();
+        let mut session = DaemonSession::default();
         let first = client_for(temp.path(), &mut session)
             .expect("first client")
             .0;

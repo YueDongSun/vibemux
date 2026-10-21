@@ -59,4 +59,6 @@ time = { workspace = true, features = ["local-offset"] }
 image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
 
 [dev-dependencies]
+# Real-daemon feed tests use the Windows private-runtime path helper.
+vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
 tempfile.workspace = true
