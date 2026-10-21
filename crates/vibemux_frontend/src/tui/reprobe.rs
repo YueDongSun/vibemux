@@ -6,12 +6,22 @@
 //! blocks on it.
 use std::{
     io,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, TryRecvError},
     thread::JoinHandle,
 };
 
 pub use vibemux_probe::ProbeConfig;
 use vibemux_probe::ProbeReport;
+
+/// Where a re-probe stands.
+#[derive(Debug)]
+pub enum ReprobePoll {
+    Running,
+    Done(Box<ProbeReport>),
+    /// The worker ended without a report (its runtime could not start), or
+    /// the report was already taken.
+    Failed,
+}
 
 pub struct Reprobe {
     reports: Receiver<ProbeReport>,
@@ -20,19 +30,25 @@ pub struct Reprobe {
 
 impl Reprobe {
     pub fn start(config: ProbeConfig) -> io::Result<Self> {
-        // Capacity one: the worker sends exactly one report and exits.
+        Self::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            Some(runtime.block_on(vibemux_probe::run_probe(&config)))
+        })
+    }
+
+    /// Runs `job` on the worker thread and delivers its report, if any.
+    fn spawn(job: impl FnOnce() -> Option<ProbeReport> + Send + 'static) -> io::Result<Self> {
+        // Capacity one: the worker sends at most one report and exits.
         let (sender, reports) = mpsc::sync_channel(1);
         let worker = std::thread::Builder::new()
             .name("tui_reprobe".into())
             .spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                let report = runtime.block_on(vibemux_probe::run_probe(&config));
-                let _ = sender.send(report);
+                if let Some(report) = job() {
+                    let _ = sender.send(report);
+                }
             })?;
         Ok(Self {
             reports,
@@ -40,10 +56,12 @@ impl Reprobe {
         })
     }
 
-    /// The report, once it has arrived. `None` while the probe runs, and
-    /// after the report was taken.
-    pub fn try_take(&mut self) -> Option<ProbeReport> {
-        self.reports.try_recv().ok()
+    pub fn poll(&mut self) -> ReprobePoll {
+        match self.reports.try_recv() {
+            Ok(report) => ReprobePoll::Done(Box::new(report)),
+            Err(TryRecvError::Empty) => ReprobePoll::Running,
+            Err(TryRecvError::Disconnected) => ReprobePoll::Failed,
+        }
     }
 }
 
@@ -64,6 +82,25 @@ mod tests {
     use vibemux_probe::{AgentKind, ProbeState};
 
     #[test]
+    fn a_worker_that_ends_without_a_report_counts_as_finished() {
+        // A runtime that cannot be built sends nothing; `r` must work again.
+        let mut reprobe = Reprobe::spawn(|| None).expect("worker");
+        let started = Instant::now();
+        loop {
+            match reprobe.poll() {
+                ReprobePoll::Running => {}
+                ReprobePoll::Failed => break,
+                ReprobePoll::Done(_) => panic!("no report was produced"),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "never finished"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
     fn a_reprobe_delivers_one_report_without_any_launcher() {
         // No PATH entries and a private home: no vendor CLI can be found or
         // run, and nothing listens on port 1.
@@ -80,7 +117,7 @@ mod tests {
         let mut reprobe = Reprobe::start(config).expect("worker");
         let started = Instant::now();
         let report = loop {
-            if let Some(report) = reprobe.try_take() {
+            if let ReprobePoll::Done(report) = reprobe.poll() {
                 break report;
             }
             assert!(started.elapsed() < Duration::from_secs(20), "no report");
@@ -93,6 +130,9 @@ mod tests {
                 .iter()
                 .all(|agent| agent.launcher_state != ProbeState::Verified)
         );
-        assert!(reprobe.try_take().is_none(), "one report per run");
+        assert!(
+            !matches!(reprobe.poll(), ReprobePoll::Done(_)),
+            "one report per run"
+        );
     }
 }

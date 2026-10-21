@@ -26,7 +26,7 @@ pub use render::render_debug_dashboard;
 pub use snapshot::debug_snapshot;
 pub use theme::Theme;
 
-use reprobe::{ProbeConfig, Reprobe};
+use reprobe::{ProbeConfig, Reprobe, ReprobePoll};
 use state::{DebugCommand, DebugState};
 
 /// Run the TUI debug view. Returns when the user quits (`q`/`Esc`).
@@ -44,6 +44,23 @@ pub fn run_tui(
     theme: Theme,
     config: Option<ProbeConfig>,
 ) -> io::Result<()> {
+    // Declared before the terminal guard, so it is dropped after it: quitting
+    // during a re-probe restores the terminal first, then waits for the probe.
+    let mut pending: Option<Reprobe> = None;
+    let result = run_loop(&mut view_model, theme, config, &mut pending);
+    if pending.is_some() {
+        eprintln!("vibemux: waiting for the running probe to finish");
+    }
+    drop(pending);
+    result
+}
+
+fn run_loop(
+    view_model: &mut ViewModel,
+    theme: Theme,
+    config: Option<ProbeConfig>,
+    pending: &mut Option<Reprobe>,
+) -> io::Result<()> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(io::stdout(), EnterAlternateScreen)?;
@@ -54,19 +71,26 @@ pub fn run_tui(
         theme,
         ..DebugState::default()
     };
-    let mut pending: Option<Reprobe> = None;
 
     loop {
-        if let Some(report) = pending.as_mut().and_then(Reprobe::try_take) {
-            view_model = ViewModel::from_report(&report);
-            state.probing = false;
-            pending = None;
+        match pending.as_mut().map(Reprobe::poll) {
+            Some(ReprobePoll::Done(report)) => {
+                *view_model = ViewModel::from_report(&report);
+                state.probing = false;
+                *pending = None;
+            }
+            Some(ReprobePoll::Failed) => {
+                state.probing = false;
+                *pending = None;
+            }
+            Some(ReprobePoll::Running) | None => {}
         }
+        let view_model = &*view_model;
         terminal.draw(|frame| {
-            render::render_debug_dashboard(frame, &view_model, state.theme, Some(state.selected));
+            render::render_debug_dashboard(frame, view_model, state.theme, Some(state.selected));
             footer::render_footer(
                 frame,
-                &view_model,
+                view_model,
                 state.theme,
                 Some(state.selected),
                 state.probing,
@@ -82,12 +106,12 @@ pub fn run_tui(
             DebugCommand::Quit => break,
             DebugCommand::Continue => {}
             DebugCommand::Reprobe => match config.clone().map(Reprobe::start) {
-                Some(Ok(reprobe)) => pending = Some(reprobe),
+                Some(Ok(reprobe)) => *pending = Some(reprobe),
                 // No config, or the worker could not start: nothing runs.
                 Some(Err(_)) | None => state.probing = false,
             },
             DebugCommand::Snapshot => {
-                let snap = snapshot::debug_snapshot(&view_model);
+                let snap = snapshot::debug_snapshot(view_model);
                 // We deliberately write to stdout (not the alternate screen)
                 // by leaving the alternate screen temporarily.
                 execute!(io::stdout(), LeaveAlternateScreen)?;
