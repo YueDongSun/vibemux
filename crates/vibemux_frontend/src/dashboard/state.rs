@@ -252,6 +252,8 @@ pub struct Workspace {
 pub struct Context {
     pub source: String,
     pub workspace: Option<Workspace>,
+    /// The newest daemon observation; `None` when no feed runs (`--once`).
+    pub daemon: Option<std::sync::Arc<super::DaemonView>>,
 }
 
 impl Default for Context {
@@ -259,6 +261,7 @@ impl Default for Context {
         Self {
             source: "snapshot".to_string(),
             workspace: None,
+            daemon: None,
         }
     }
 }

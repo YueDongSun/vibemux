@@ -2,12 +2,14 @@
 //! behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It consumes a
 //! probe report plus optional local Git inventory and never starts a daemon,
 //! a harness, or a model turn.
+pub mod daemon_model;
 pub mod filter;
 mod model;
 pub mod panes;
 mod render;
 mod runtime;
 mod state;
+pub use daemon_model::{DaemonView, Section};
 pub use model::{AgentView, DashboardModel, NativeTuiSlot, NativeTuiSlotState, safe_text};
 pub use render::{render_dashboard, render_with_state};
 pub use runtime::{run_interactive, snapshot};
@@ -252,6 +254,7 @@ mod tests {
         let context = Context {
             source: "saved_report".to_string(),
             workspace: Some(workspace),
+            ..Context::default()
         };
         for tab in [Tab::Overview, Tab::Harnesses, Tab::Workspace] {
             let state = State {

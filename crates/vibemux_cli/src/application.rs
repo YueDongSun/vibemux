@@ -114,6 +114,7 @@ pub async fn run(command: Command, format: Format) -> Result<Outcome, Failure> {
             let context = Context {
                 source: snapshot.source.to_string(),
                 workspace: Some(frontend_workspace(&report)),
+                ..Context::default()
             };
             if once {
                 let rendered =
