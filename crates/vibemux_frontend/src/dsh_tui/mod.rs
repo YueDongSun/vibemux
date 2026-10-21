@@ -18,7 +18,7 @@ use std::{io, time::Duration};
 
 use crossterm::{
     cursor::Show,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -172,9 +172,11 @@ pub fn run_dsh_tui(
         if event::poll(POLL_INTERVAL)? {
             let event = event::read()?;
             let Event::Key(key) = event else { continue };
-            match handle_key(key, handle, driver, &mut state, theme) {
-                KeyOutcome::Quit => break,
-                KeyOutcome::Continue => {}
+            if route_key(&mut state, key) == KeyRoute::Prompt {
+                match handle_key(key, handle, driver, &mut state, theme) {
+                    KeyOutcome::Quit => break,
+                    KeyOutcome::Continue => {}
+                }
             }
             frames_since_poll = 0;
         } else {
@@ -190,6 +192,29 @@ enum KeyOutcome {
     Quit,
 }
 
+/// Where a key event goes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyRoute {
+    /// A key release. Windows terminals report one for every key; acting on
+    /// it would repeat the key, and an Esc release after closing the search
+    /// would cancel the running turn.
+    Ignored,
+    /// Search or a scroll jump consumed it.
+    Search,
+    /// The prompt editor and session controls handle it.
+    Prompt,
+}
+
+pub(crate) fn route_key(state: &mut DshTuiState, key: KeyEvent) -> KeyRoute {
+    if key.kind == KeyEventKind::Release {
+        return KeyRoute::Ignored;
+    }
+    if search::handle_search_key(state, key) {
+        return KeyRoute::Search;
+    }
+    KeyRoute::Prompt
+}
+
 fn handle_key(
     key: KeyEvent,
     handle: &Handle,
@@ -197,9 +222,6 @@ fn handle_key(
     state: &mut DshTuiState,
     _theme: Theme,
 ) -> KeyOutcome {
-    if search::handle_search_key(state, key) {
-        return KeyOutcome::Continue;
-    }
     use KeyCode::*;
     match key.code {
         Char('c') | Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -347,6 +369,56 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, modifiers, kind)
+    }
+
+    #[test]
+    fn an_esc_release_after_closing_search_never_reaches_the_turn_cancel() {
+        // Windows terminals report a release for every key. Only presses act.
+        let mut state = DshTuiState::new("provider".into(), "model".into());
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        for (event, expected) in [
+            (
+                key(KeyCode::Char('f'), ctrl, KeyEventKind::Press),
+                KeyRoute::Search,
+            ),
+            (
+                key(KeyCode::Char('f'), ctrl, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+            (
+                key(KeyCode::Char('a'), none, KeyEventKind::Press),
+                KeyRoute::Search,
+            ),
+            (
+                key(KeyCode::Char('a'), none, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+            (
+                key(KeyCode::Esc, none, KeyEventKind::Press),
+                KeyRoute::Search,
+            ),
+            (
+                key(KeyCode::Esc, none, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+            (
+                key(KeyCode::Char('x'), none, KeyEventKind::Press),
+                KeyRoute::Prompt,
+            ),
+            (
+                key(KeyCode::Char('x'), none, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+        ] {
+            assert_eq!(route_key(&mut state, event), expected, "{event:?}");
+        }
+        assert!(!state.search.open);
+        assert_eq!(state.search.query, "a", "the query is not doubled");
+    }
 
     #[test]
     fn the_transcript_is_bounded_and_keeps_the_scroll_stable() {
