@@ -43,6 +43,12 @@ pub fn unavailable(code: &str) -> Unavailable {
         | "workflow_unconfigured"
         | "decision_not_configured" => "not configured",
         "dsh_session_not_found" => "no DSH session is open",
+        // A descriptor whose endpoint is gone: a crashed or hung daemon.
+        "control_endpoint_unavailable"
+        | "control_deadline_exceeded"
+        | "control_server_terminated" => {
+            "the daemon is not answering; check vibemuxctl daemon inspect"
+        }
         _ => "see vibemuxctl daemon health",
     };
     Unavailable {
@@ -470,6 +476,14 @@ mod tests {
             ("workflow_unconfigured", "not configured"),
             ("decision_not_configured", "not configured"),
             ("dsh_session_not_found", "no DSH session is open"),
+            (
+                "control_endpoint_unavailable",
+                "the daemon is not answering; check vibemuxctl daemon inspect",
+            ),
+            (
+                "control_deadline_exceeded",
+                "the daemon is not answering; check vibemuxctl daemon inspect",
+            ),
             ("control_timeout", "see vibemuxctl daemon health"),
         ] {
             let unavailable = unavailable(code);

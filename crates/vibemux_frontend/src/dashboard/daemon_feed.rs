@@ -25,6 +25,9 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub const REQUEST_CAPACITY: usize = 8;
 pub const MAX_DECISION_PAGES_PER_POLL: usize = 4;
 pub const DECISION_PAGE_LIMIT: usize = 50;
+/// Health is read first and bounds how long a crashed daemon (a descriptor
+/// with nothing listening) can keep the views on their last observation.
+pub const HEALTH_DEADLINE: Duration = Duration::from_secs(2);
 
 /// What the console asks of the feed. Both are reads.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -172,7 +175,7 @@ async fn poll(paths: &DaemonPaths, state: &mut FeedState) -> DaemonView {
         }
     };
     // Health first: a daemon that cannot answer it cannot answer the rest.
-    let health = match client.health().await {
+    let health = match client.health_with_deadline(HEALTH_DEADLINE).await {
         Ok(health) => project_health(&health),
         Err(error) => {
             state.session.invalidate();

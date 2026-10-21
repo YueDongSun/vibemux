@@ -180,6 +180,79 @@ async fn feed_reads_a_real_daemon_without_writing() {
     server.shutdown().await.expect("stop control server");
 }
 
+fn tasks_loaded(view: &DaemonView) -> bool {
+    matches!(&view.tasks, Section::Loaded(list) if list.rows.len() == 1)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feed_follows_a_daemon_that_stops_and_starts_again() {
+    let temp = tempfile::tempdir().expect("temporary project");
+    let paths = daemon_paths(temp.path());
+    seed_one_task(&paths);
+    let server = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .expect("control server");
+    let mut feed = DaemonFeed::start_for_paths(paths.clone()).expect("feed");
+    wait_for(&mut feed, "loaded tasks", tasks_loaded).await;
+
+    server.shutdown().await.expect("stop control server");
+    assert!(feed.request(FeedRequest::Refresh));
+    wait_for(&mut feed, "daemon_not_running", |view| {
+        matches!(&view.tasks, Section::Unavailable(reason) if reason.code == "daemon_not_running")
+    })
+    .await;
+
+    let server = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .expect("restarted control server");
+    assert!(feed.request(FeedRequest::Refresh));
+    let view = wait_for(&mut feed, "tasks after restart", tasks_loaded).await;
+    assert_eq!(view.connection, "connected");
+    drop(feed);
+    server
+        .shutdown()
+        .await
+        .expect("stop restarted control server");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feed_notices_a_crashed_daemon_within_one_short_poll() {
+    let temp = tempfile::tempdir().expect("temporary project");
+    let paths = daemon_paths(temp.path());
+    seed_one_task(&paths);
+    let server = DaemonControlServer::start_for_paths(&paths)
+        .await
+        .expect("control server");
+    let descriptor_path = server.descriptor_path().to_path_buf();
+    let descriptor = std::fs::read(&descriptor_path).expect("descriptor");
+    let mut feed = DaemonFeed::start_for_paths(paths.clone()).expect("feed");
+    wait_for(&mut feed, "loaded tasks", tasks_loaded).await;
+
+    // A crashed daemon leaves its descriptor behind with nothing listening.
+    server.shutdown().await.expect("stop control server");
+    paths.ensure_runtime_dir().expect("runtime directory");
+    std::fs::write(&descriptor_path, &descriptor).expect("stale descriptor");
+    let crashed = Instant::now();
+    assert!(feed.request(FeedRequest::Refresh));
+    let view = wait_for(&mut feed, "an unavailable daemon", |view| {
+        matches!(&view.tasks, Section::Unavailable(_))
+    })
+    .await;
+    assert!(
+        crashed.elapsed() < Duration::from_secs(6),
+        "took {:?}: {}",
+        crashed.elapsed(),
+        view.connection
+    );
+    assert!(
+        view.connection.contains("vibemuxctl daemon inspect"),
+        "{}",
+        view.connection
+    );
+    drop(feed);
+    std::fs::remove_file(&descriptor_path).expect("remove stale descriptor");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn feed_reports_not_running_then_recovers_after_start() {
     let temp = tempfile::tempdir().expect("temporary project");
