@@ -6148,3 +6148,61 @@ vibemux_harness and vibemux_dsh tests; `vibemuxd --test dsh_session` (10/10);
 the vibemux_frontend dsh tests; and the vibemux_dsh session suite 60 times
 pinned to one loaded core, with no failures. Hosted CI covers the full
 workspace on the PR.
+
+### 2026-10-21 - ADR 042 multi-pane console and terminal UI functions
+
+**Status:** "Probe and frontend shell" and "Rust CLI" stay `PARTIAL`. No control
+operation, protocol version, schema, plugin payload, or persisted setting
+changed. See [ADR 042](docs/adr/042_multi_pane_console_and_ui_functions.md).
+
+**Implemented (`vibemux_frontend`, plus the `vibemuxctl ui` wiring):**
+
+- `vibemuxctl ui` and `vibemux_dashboard` are a read-only multi-pane console:
+  seven views (Overview, Harnesses, Workspace, and the daemon views Tasks,
+  Daemon, Sessions, Decisions), single, split, and grid layouts with a
+  size-based fallback, pane focus and zoom, per-list filters, refresh, and the
+  six terminal themes. `vibemux_dashboard` gains `--project-root`.
+- `dashboard::daemon_feed` polls only content-free reads (health, plugins,
+  dispatch catalog, task list and detail, DSH status, workflow slots,
+  decisions) on one background thread, through the `daemon_session` cache now
+  shared with the GUI client. Health has a 2-second deadline, so a crashed
+  daemon shows "not answering" within one short poll.
+- The diagnostic TUI re-runs the read-only probe on a worker thread (`r`) and
+  selects harnesses (`j`/`k`) with a details footer; golden fixtures are
+  unchanged.
+- The DSH surface searches its in-memory transcript (`Ctrl-F`) and jumps with
+  `Home`/`End`.
+- The GUI gains ADR 030's shortcut table, `Ctrl+/` overlay, and `Ctrl+K` quick
+  switcher. Send stays unavailable.
+- Fixed in passing: the DSH surface and the diagnostic TUI ignore key release
+  events, which Windows terminals report. Before, every key acted twice in the
+  DSH prompt, and an Esc release could cancel a running turn.
+
+**Not implemented:** dispatch or workflow list views (they need a new control
+operation), PTY/ConPTY attach or embedded vendor TUIs, the GUI Send action,
+and ADR 030's Match system, Reduce motion, spark animation, and copy buttons.
+Interactive terminals and windows were not driven by hand: rendering is
+verified with Ratatui `TestBackend` and headless egui frames only.
+
+**Validation executed (Rust 1.92.0):**
+
+- Native Windows 11, at `6c5d2e3`, with `CARGO_TARGET_DIR` under `%TEMP%`:
+  - `cargo +1.92.0 fmt --all -- --check`: passed.
+  - `cargo +1.92.0 clippy --workspace --all-targets --all-features --exclude vibemux_web -j 6 --locked -- -D warnings`: passed.
+  - `cargo +1.92.0 test -p vibemux_frontend -p vibemux_cli --all-features -j 6 --locked`: passed. `vibemux_frontend` lib 202 passed (1 ignored: the golden fixture generator), `daemon_feed` 4, `cli` 6, `supervisor_ui` 10, `palette_parity` 2, binaries 2 + 4 + 6 + 2; `vibemux_cli` lib 59, `unified_commands` 7, `bootstrap_process` 4.
+- WSL Ubuntu 24.04 (Git 2.43.0), a fresh clone at `6c5d2e3`: the same three
+  commands passed with the same counts, except `vibemux_cli` lib 55 (its
+  Windows-only tests do not build on Linux).
+- `vibemux_web` was excluded because its web frontend was not built in these
+  checkouts. No vendor CLI or paid API ran: the re-probe test uses an empty
+  `PATH`, and the feed tests start a local test daemon in a temporary project.
+
+**Review:** one fresh whole-branch review. It found one critical defect (the
+Esc release above) and minor ones. The critical defect, a crash that kept the
+console "connected" for the 10-second pipe retry, a search highlight that
+drifted at the 2000-line cap, and a re-probe that could stay "probing" forever
+were fixed with tests that failed first. Deferred minors: a feed thread that
+exits early leaves the last view on screen; kept decision rows survive a
+database reset; held `r` keys queue several polls; the diagnostic TUI cuts
+long versions without an ellipsis at 80 columns; operator-typed filter text is
+not sanitized; GUI chords repeat while held.
