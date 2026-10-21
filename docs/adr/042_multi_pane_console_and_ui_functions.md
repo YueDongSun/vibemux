@@ -100,17 +100,24 @@ The feed reads only content-free data: `health`, `plugin_status`,
 `frontend_tasks` (the first page, at most 32 tasks), `frontend_task` for the
 task opened with `Enter` (re-read on each poll while it stays open),
 `harness_dispatch_catalog`, `dsh_session_status`, `workflow_slots`, and
-`decision_list`. Decisions are immutable once recorded, so the feed keeps the
-sequence cursor of the last decision it saw, reads at most four pages per poll
-from it, and keeps the newest 64. It never calls
+`decision_list`. A decision can be consumed by a dispatch after it is
+recorded, so each poll re-reads from the oldest decision the feed keeps, reads
+at most four pages of 50, replaces kept rows by id, and keeps the newest 64; a
+longer history catches up over the next polls. It never calls
 `dsh_session_poll`, `harness_dispatch_output`, `workflow_session_inspect`, or
 any operation that sends a prompt or changes state. Every string passes
 through `safe_text` before it reaches a renderer.
 
 `DaemonView` and its projection from daemon types are pure
 (`dashboard::daemon_model`); the renderer (`dashboard::daemon_render`) takes
-only presentation data. The `--once` path keeps its current output and does
-not read the daemon.
+only presentation data. The `--once` path does not read the daemon and renders
+the probe and workspace views only.
+
+An unconfigured dispatch service answers the catalog with
+`harness_dispatch_unconfigured`; the decision list answers without a decision
+config, because decisions are stored records. A feed that cannot start (for
+example, an invalid project root) leaves the daemon views showing the error
+code; the probe views stay usable.
 
 ### 3. Diagnostic TUI functions
 
@@ -123,7 +130,10 @@ not read the daemon.
   adapter support, and the keys move to the footer's title.
 
 The golden fixtures render without a selection and stay unchanged; the
-selection marker and the details line have their own snapshot tests.
+selection marker and the details line have their own snapshot tests. The key
+loop now ignores key release events, which Windows terminals also report.
+Quitting while a re-probe runs waits for the probe's own deadlines, so its
+child processes are reaped.
 
 ### 4. DSH surface functions
 
@@ -131,10 +141,12 @@ selection marker and the details line have their own snapshot tests.
   is open, typed characters edit the query, `Enter` and `Down` go to the next
   older match, `Up` goes to the next newer match, and `Esc` closes the search.
   `Esc` cancels a turn only when search is closed, as before.
-- `Home` and `End` jump to the oldest and newest retained lines.
+- `Home` and `End` jump to the oldest and newest retained lines. Scrolling
+  past the first page now pins the first page, so `Home` shows a full page.
 
 Search reads the same bounded transcript the screen already shows. Nothing is
-written to disk.
+written to disk. The `[scrolled back N lines]` marker now leads the hint line,
+so a narrow terminal still shows it next to the longer key hint.
 
 ### 5. GUI shortcuts and quick switcher (ADR 030 phase 2 subset)
 
@@ -160,9 +172,12 @@ remain unimplemented.
 - No control operation, protocol version, plugin payload, database schema, or
   persisted setting changes. A daemon older than an operation shows that
   section as unsupported.
-- `vibemuxctl ui` and `vibemux_dashboard` keep their flags and their `--once`
-  output. `vibemux_dashboard` gains `--project-root <path>` (default: the
-  current directory) for the daemon feed; `vibemuxctl ui` already has it.
+- `vibemuxctl ui` and `vibemux_dashboard` keep their flags. The JSON
+  `ui --once` output and `vibemux_dashboard --once` are unchanged; the
+  `--format text ui --once` render keeps its content but shows the seven-view
+  tab bar (every name down to 76 columns) and the new footer keys.
+  `vibemux_dashboard` gains `--project-root <path>` (default: the current
+  directory) for the daemon feed; `vibemuxctl ui` already has it.
 - The diagnostic TUI's `--json` output, `vibemux_frontend_dump`, and the
   golden fixtures are unchanged.
 - Rollback is reverting the change. No state needs cleanup.
