@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::filter::FilterState;
 use super::panes::{LayoutMode, PaneState, effective_layout};
+use crate::tui::Theme;
 
 /// One console view. The first three read the probe report and the Git
 /// inventory; the rest read the daemon.
@@ -105,6 +106,7 @@ pub struct State {
     pub selected_decision: usize,
     pub help_visible: bool,
     pub filter: FilterState,
+    pub theme: Theme,
 }
 
 impl State {
