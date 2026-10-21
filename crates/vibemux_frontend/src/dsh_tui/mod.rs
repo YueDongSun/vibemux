@@ -12,6 +12,7 @@
 //! diagnostics rather than as completion.
 
 pub mod render;
+pub mod search;
 
 use std::{io, time::Duration};
 
@@ -90,6 +91,8 @@ pub struct DshTuiState {
     pub scroll: u16,
     pub status: String,
     pub shutting_down: bool,
+    /// Ctrl-F transcript search; never written to disk.
+    pub search: search::TranscriptSearch,
 }
 
 impl DshTuiState {
@@ -114,8 +117,9 @@ impl DshTuiState {
             record_count: 0,
             records_dropped: 0,
             scroll: 0,
-            status: "Enter sends  Esc cancels the turn  Ctrl-C quits".to_string(),
+            status: "Enter sends  Esc cancels the turn  Ctrl-F searches  Ctrl-C quits".to_string(),
             shutting_down: false,
+            search: search::TranscriptSearch::default(),
         }
     }
 
@@ -193,6 +197,9 @@ fn handle_key(
     state: &mut DshTuiState,
     _theme: Theme,
 ) -> KeyOutcome {
+    if search::handle_search_key(state, key) {
+        return KeyOutcome::Continue;
+    }
     use KeyCode::*;
     match key.code {
         Char('c') | Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
