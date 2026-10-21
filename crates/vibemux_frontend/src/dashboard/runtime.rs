@@ -1,5 +1,5 @@
 //! Terminal ownership and deterministic in-memory snapshots.
-use super::{Context, DashboardModel, State, render_with_state};
+use super::{Command, Context, DashboardModel, ListCounts, State, render_with_state};
 use crossterm::{
     cursor::Show,
     event::{self, Event},
@@ -43,16 +43,18 @@ pub fn run_interactive(model: DashboardModel, context: Context) -> io::Result<()
     let mut state = State::default();
     loop {
         terminal.draw(|frame| render_with_state(frame, &model, &state, &context))?;
+        let size = terminal.size()?;
+        let counts = ListCounts {
+            agents: model.agents.len(),
+            branches: context
+                .workspace
+                .as_ref()
+                .map_or(0, |workspace| workspace.branches.len()),
+            ..ListCounts::default()
+        };
         if event::poll(EVENT_POLL_INTERVAL)?
             && let Event::Key(key) = event::read()?
-            && state.handle_key(
-                key,
-                model.agents.len(),
-                context
-                    .workspace
-                    .as_ref()
-                    .map_or(0, |workspace| workspace.branches.len()),
-            )
+            && state.handle_key(key, counts, (size.width, size.height)) == Command::Quit
         {
             break;
         }

@@ -3,13 +3,14 @@
 //! probe report plus optional local Git inventory and never starts a daemon,
 //! a harness, or a model turn.
 mod model;
+pub mod panes;
 mod render;
 mod runtime;
 mod state;
 pub use model::{AgentView, DashboardModel, NativeTuiSlot, NativeTuiSlotState, safe_text};
 pub use render::{render_dashboard, render_with_state};
 pub use runtime::{run_interactive, snapshot};
-pub use state::{Branch, Context, State, Tab, Workspace};
+pub use state::{Branch, Command, Context, ListCounts, State, Tab, Workspace};
 
 #[cfg(test)]
 mod tests {

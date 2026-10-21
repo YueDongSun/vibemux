@@ -86,6 +86,11 @@ pub fn render_with_state(
         Tab::Overview => overview(frame, areas[2], model, state),
         Tab::Harnesses => harnesses(frame, areas[2], model, state),
         Tab::Workspace => workspace_view(frame, areas[2], context.workspace.as_ref(), state),
+        Tab::Tasks | Tab::Daemon | Tab::Sessions | Tab::Decisions => frame.render_widget(
+            Paragraph::new("Daemon views need the interactive console")
+                .block(Block::default().borders(Borders::ALL)),
+            areas[2],
+        ),
     }
     frame.render_widget(
         Paragraph::new(slot_lines(&model.native_tui_slots))
