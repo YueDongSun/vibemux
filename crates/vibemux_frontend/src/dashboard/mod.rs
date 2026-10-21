@@ -15,7 +15,7 @@ pub use daemon_model::{DaemonView, Section};
 pub use daemon_render::{visible_decisions, visible_task_ids, visible_tasks};
 pub use model::{AgentView, DashboardModel, NativeTuiSlot, NativeTuiSlotState, safe_text};
 pub use render::{list_counts, render_dashboard, render_with_state};
-pub use runtime::{run_interactive, snapshot};
+pub use runtime::{feed_request, run_interactive, snapshot};
 pub use state::{Branch, Command, Context, ListCounts, State, Tab, Workspace};
 
 #[cfg(test)]
@@ -637,6 +637,60 @@ mod tests {
             let daemon = context.daemon.as_deref().unwrap();
             assert_eq!(visible_task_ids(daemon, "alp"), ["task_alpha"]);
             assert_eq!(visible_task_ids(daemon, "").len(), 2);
+        }
+
+        #[test]
+        fn commands_become_feed_requests_for_the_visible_rows() {
+            use crate::dashboard::daemon_feed::FeedRequest;
+            let context = context(Some(loaded()));
+            let mut state = showing(Tab::Tasks, LayoutMode::Single);
+            assert_eq!(
+                feed_request(Command::Refresh, &context, &state),
+                Some(FeedRequest::Refresh)
+            );
+            assert_eq!(
+                feed_request(Command::OpenTask(1), &context, &state),
+                Some(FeedRequest::OpenTask("task_beta".to_string()))
+            );
+            // The index counts the filtered rows, not the daemon's list.
+            state.filter.start(Tab::Tasks);
+            state.filter.handle_editing_key(KeyCode::Char('b').into());
+            assert_eq!(
+                feed_request(Command::OpenTask(0), &context, &state),
+                Some(FeedRequest::OpenTask("task_beta".to_string()))
+            );
+            assert_eq!(feed_request(Command::OpenTask(1), &context, &state), None);
+            for command in [Command::Continue, Command::Quit, Command::CycleTheme] {
+                assert_eq!(feed_request(command, &context, &state), None);
+            }
+            assert_eq!(
+                feed_request(Command::OpenTask(0), &Context::default(), &state),
+                None
+            );
+        }
+
+        #[test]
+        fn the_tab_bar_names_every_view_down_to_76_columns() {
+            // `vibemuxctl --format text ui --once` renders 80x24 by default,
+            // and its test finds the Workspace view by name.
+            let model = DashboardModel::from_report(&report());
+            for width in [76u16, 80, 100, 130] {
+                let rendered =
+                    snapshot(&model, &State::default(), &context(None), width, 24).unwrap();
+                for view in Tab::ALL {
+                    let title = format!("{} {}", view.index() + 1, view.label());
+                    assert!(rendered.contains(&title), "{width}: {title}\n{rendered}");
+                }
+            }
+            let narrow = snapshot(
+                &model,
+                &showing(Tab::Decisions, LayoutMode::Single),
+                &context(None),
+                60,
+                24,
+            )
+            .unwrap();
+            assert!(narrow.contains("7 Decisions"), "{narrow}");
         }
 
         #[test]

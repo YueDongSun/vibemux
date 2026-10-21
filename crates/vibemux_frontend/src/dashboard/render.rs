@@ -32,8 +32,12 @@ const AGENT_TABLE_CHROME_ROWS: u16 = 3;
 /// The stacked overview's smallest agent table: its chrome plus two agents.
 const AGENT_TABLE_MIN_HEIGHT: u16 = AGENT_TABLE_CHROME_ROWS + 2;
 
-/// Narrowest terminal whose tab bar spells out every view's name.
-const FULL_TAB_LABELS_WIDTH: u16 = 100;
+/// Narrowest terminal whose tab bar spells out every view's name with
+/// padded ` | ` dividers (100 cells).
+const PADDED_TAB_BAR_WIDTH: u16 = 100;
+/// Narrowest terminal whose tab bar still spells out every view's name, with
+/// bare `|` dividers (74 cells).
+const FULL_TAB_LABELS_WIDTH: u16 = 76;
 /// Narrowest terminal whose footer also names the zoom key.
 const FULL_FOOTER_WIDTH: u16 = 100;
 
@@ -141,13 +145,15 @@ pub fn render_with_state(
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, areas[0]);
-    frame.render_widget(
-        Tabs::new(tab_titles(view, area.width))
-            .select(view.index())
-            .highlight_style(title_style(theme).add_modifier(Modifier::BOLD))
-            .divider(" | "),
-        areas[1],
-    );
+    let tabs = Tabs::new(tab_titles(view, area.width))
+        .select(view.index())
+        .highlight_style(title_style(theme).add_modifier(Modifier::BOLD));
+    let tabs = if area.width >= PADDED_TAB_BAR_WIDTH {
+        tabs.divider(" | ")
+    } else {
+        tabs.padding("", "").divider("|")
+    };
+    frame.render_widget(tabs, areas[1]);
 
     let filtered = filtered_model(model, state.filter.query(Tab::Overview));
     let workspace = context
@@ -208,8 +214,8 @@ pub fn render_with_state(
 
 const HELP_TEXT: &str = "READ-ONLY CONSOLE\n\n1-7: views (Overview, Harnesses, Workspace, Tasks, Daemon, Sessions, Decisions)\nTab: next view, or next pane in split and grid\nL: cycle layouts (single, split, grid)\nz: zoom the focused pane\nj/k or arrows: move the selection\nEnter: open the selected task or harness details\n/: filter the focused list (Enter keeps, Esc clears)\nr: refresh the daemon views now\nt: theme\n?: close this help\nq/Esc: quit\n\nNative TUI attach and tool execution are disabled. Daemon views read content-free state; no prompt or transcript is shown.\nLauncher, authentication, inference and task completion are separate evidence.\nWorkspace information uses cached Git refs; no fetch or cleanup occurs.";
 
-/// Tab bar labels: every name on a wide terminal, otherwise digits plus the
-/// current view's name.
+/// Tab bar labels: every name down to `FULL_TAB_LABELS_WIDTH`, otherwise
+/// digits plus the current view's name.
 fn tab_titles(view: Tab, width: u16) -> Vec<String> {
     Tab::ALL
         .iter()
