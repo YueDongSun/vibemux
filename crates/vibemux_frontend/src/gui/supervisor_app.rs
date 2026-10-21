@@ -11,6 +11,7 @@ use eframe::egui::{self, Key, Modifiers, RichText, ViewportBuilder};
 use vibemux_probe::AgentKind;
 
 use crate::{
+    quick_search::{self, QuickAction, SearchTarget},
     supervisor_model::{
         ConnectionStatus, SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView,
     },
@@ -22,7 +23,11 @@ use crate::{
 };
 
 use super::{
-    C, agents, chat, composer, design, diagnostics, settings, sidebar,
+    C, agents, chat, composer, design, diagnostics,
+    quick_switcher::{self, QuickSwitcherState},
+    settings, shortcuts,
+    shortcuts::ShortcutAction,
+    sidebar,
     supervisor_state::{MainPage, SupervisorUiState, UiActionQueue},
     task_detail, task_labels,
 };
@@ -52,6 +57,9 @@ pub struct SupervisorApp {
     actions: UiActionQueue,
     settings_open: bool,
     diagnostics_open: bool,
+    /// The `Ctrl+/` shortcut overlay.
+    shortcuts_open: bool,
+    quick_switcher: QuickSwitcherState,
     last_size: [f32; 2],
     pending_write: Option<Instant>,
     pending_resize: Option<Instant>,
@@ -76,6 +84,8 @@ impl SupervisorApp {
             actions,
             settings_open: false,
             diagnostics_open: false,
+            shortcuts_open: false,
+            quick_switcher: QuickSwitcherState::default(),
             last_size: [0.0, 0.0],
             pending_write: None,
             pending_resize: None,
@@ -205,11 +215,67 @@ impl SupervisorApp {
         }
     }
 
+    /// Applies a table chord (ADR 030 §5). Each only changes what this
+    /// window shows; none sends anything.
+    fn apply_shortcut(&mut self, action: ShortcutAction) {
+        match action {
+            ShortcutAction::QuickSwitcher => self.quick_switcher.open(),
+            ShortcutAction::NewTask => self.request_new_task(),
+            ShortcutAction::ToggleSidebar => {
+                self.set_sidebar_collapsed(!self.user_config.sidebar_collapsed);
+            }
+            ShortcutAction::Settings => self.settings_open = true,
+            ShortcutAction::Overlay => self.shortcuts_open = !self.shortcuts_open,
+        }
+    }
+
+    /// Opens what the quick switcher picked. A task opens its drawer.
+    pub(crate) fn apply_search_target(&mut self, target: SearchTarget) {
+        match target {
+            SearchTarget::Task(task_id) => {
+                let _ = self.select_task(&task_id);
+            }
+            SearchTarget::Agent(index) => {
+                if let Ok(mut state) = self.ui_state.lock() {
+                    state.select_agent(index, self.view_model.agents.len());
+                }
+            }
+            SearchTarget::Action(action) => match action {
+                QuickAction::NewTask => self.request_new_task(),
+                QuickAction::Settings => self.settings_open = true,
+                QuickAction::Diagnostics => self.diagnostics_open = true,
+                QuickAction::KeyboardShortcuts => self.shortcuts_open = true,
+                QuickAction::ToggleSidebar => {
+                    self.set_sidebar_collapsed(!self.user_config.sidebar_collapsed);
+                }
+                QuickAction::Light => self.set_theme(ThemeId::ClaudeLight),
+                QuickAction::Dark => self.set_theme(ThemeId::Claude),
+            },
+        }
+    }
+
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() || ime_composition_active(ctx) {
+        if ime_composition_active(ctx) {
+            return;
+        }
+        // Table chords are consumed before any text widget sees them, so
+        // they also work while the composer has focus.
+        if let Some(action) = shortcuts::consume(ctx) {
+            self.apply_shortcut(action);
+            return;
+        }
+        if ctx.egui_wants_keyboard_input() {
             return;
         }
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            if self.quick_switcher.open {
+                self.quick_switcher.close();
+                return;
+            }
+            if self.shortcuts_open {
+                self.shortcuts_open = false;
+                return;
+            }
             if let Ok(mut state) = self.ui_state.lock()
                 && state.discard_prompt_open()
             {
@@ -562,6 +628,7 @@ impl SupervisorApp {
         let mut selected_agent_change = None;
         // A poisoned lock means no readable snapshot; drop the frame rather than
         // drawing from a fabricated one.
+        let mut switcher_target = None;
         let snapshot_arc = match self.snapshot.read() {
             Ok(guard) => Arc::clone(&guard),
             Err(_) => return,
@@ -750,6 +817,23 @@ impl SupervisorApp {
                     &self.view_model,
                 );
             }
+            if self.shortcuts_open {
+                shortcuts::render_overlay(ctx, &colors, &mut self.shortcuts_open);
+            }
+            if self.quick_switcher.open {
+                let agent_names: Vec<String> = self
+                    .view_model
+                    .agents
+                    .iter()
+                    .map(|agent| agent.name.clone())
+                    .collect();
+                let entries = quick_search::build_entries(&snapshot.tasks, &agent_names);
+                switcher_target =
+                    quick_switcher::show(ctx, &colors, &mut self.quick_switcher, &entries);
+            }
+        }
+        if let Some(target) = switcher_target {
+            self.apply_search_target(target);
         }
         if let Some(selected) = selected_agent_change
             && let Ok(mut state) = self.ui_state.lock()
@@ -1125,6 +1209,8 @@ mod tests {
             actions: UiActionQueue::default(),
             settings_open: false,
             diagnostics_open: false,
+            shortcuts_open: false,
+            quick_switcher: QuickSwitcherState::default(),
             last_size: [0.0, 0.0],
             pending_write: None,
             pending_resize: None,
@@ -1211,6 +1297,85 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_k_opens_the_switcher() {
+        let mut app = test_app();
+        key_event(&egui::Context::default(), &mut app, Key::K, true, false);
+        assert!(app.quick_switcher.open);
+        // Esc closes the switcher before anything else.
+        app.settings_open = true;
+        key_event(
+            &egui::Context::default(),
+            &mut app,
+            Key::Escape,
+            false,
+            false,
+        );
+        assert!(!app.quick_switcher.open);
+        assert!(app.settings_open);
+    }
+
+    #[test]
+    fn ctrl_b_toggles_the_sidebar() {
+        let mut app = test_app();
+        let collapsed = app.user_config.sidebar_collapsed;
+        key_event(&egui::Context::default(), &mut app, Key::B, true, false);
+        assert_eq!(app.user_config.sidebar_collapsed, !collapsed);
+        key_event(&egui::Context::default(), &mut app, Key::B, true, false);
+        assert_eq!(app.user_config.sidebar_collapsed, collapsed);
+    }
+
+    #[test]
+    fn ctrl_slash_opens_the_overlay_and_ctrl_comma_settings() {
+        let mut app = test_app();
+        key_event(&egui::Context::default(), &mut app, Key::Slash, true, false);
+        assert!(app.shortcuts_open);
+        key_event(
+            &egui::Context::default(),
+            &mut app,
+            Key::Escape,
+            false,
+            false,
+        );
+        assert!(!app.shortcuts_open);
+        key_event(&egui::Context::default(), &mut app, Key::Comma, true, false);
+        assert!(app.settings_open);
+        key_event(&egui::Context::default(), &mut app, Key::N, true, false);
+        assert!(app.ui_state.lock().unwrap().welcome_active());
+    }
+
+    #[test]
+    fn global_shortcuts_are_ignored_during_ime_composition() {
+        let mut app = test_app();
+        for key in [Key::K, Key::B, Key::Slash, Key::Comma, Key::N] {
+            key_event(&egui::Context::default(), &mut app, key, true, true);
+        }
+        assert!(!app.quick_switcher.open);
+        assert!(!app.shortcuts_open);
+        assert!(!app.settings_open);
+        assert!(!app.ui_state.lock().unwrap().welcome_active());
+    }
+
+    #[test]
+    fn switcher_targets_open_tasks_and_run_actions_but_never_send() {
+        let mut app = test_app();
+        app.apply_search_target(SearchTarget::Task("task_1".to_string()));
+        assert_eq!(
+            app.ui_state.lock().unwrap().selected_task_id(),
+            Some("task_1")
+        );
+        assert!(app.ui_state.lock().unwrap().details_open());
+        app.apply_search_target(SearchTarget::Action(QuickAction::Diagnostics));
+        assert!(app.diagnostics_open);
+        app.apply_search_target(SearchTarget::Action(QuickAction::Light));
+        assert_eq!(app.user_config.theme, ThemeId::ClaudeLight);
+        app.apply_search_target(SearchTarget::Action(QuickAction::Dark));
+        assert_eq!(app.user_config.theme, ThemeId::Claude);
+        app.apply_search_target(SearchTarget::Agent(2));
+        assert_eq!(app.ui_state.lock().unwrap().selected_agent(), Some(2));
+        assert!(!app.ui_state.lock().unwrap().send_enabled());
+    }
+
+    #[test]
     fn ime_preedit_does_not_trigger_harness_shortcuts() {
         let mut app = test_app();
         key_event(&egui::Context::default(), &mut app, Key::Num1, true, true);
@@ -1236,6 +1401,23 @@ mod tests {
         let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
         let output = context.run_ui(raw, |context| app.render_frame(context));
         (context, output)
+    }
+
+    #[test]
+    fn switcher_and_shortcut_overlay_render_and_focus_the_query() {
+        let mut app = test_app();
+        app.quick_switcher.open();
+        app.shortcuts_open = true;
+        let (context, _) = render_at(&mut app, 1280.0, 800.0);
+        assert!(app.quick_switcher.open, "rendering alone picks nothing");
+        assert!(app.shortcuts_open);
+        assert!(
+            context.memory(|memory| memory.has_focus(egui::Id::new("quick_switcher_query"))),
+            "the query field takes the keyboard"
+        );
+        // The smallest supported window still draws both.
+        let _ = render_at(&mut app, 960.0, 600.0);
+        assert!(!app.ui_state.lock().unwrap().send_enabled());
     }
 
     #[test]
