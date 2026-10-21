@@ -82,7 +82,12 @@ The connection code moves from `supervisor_client.rs` into a shared
 `daemon_session` module that the GUI client and the feed both use. It re-reads
 the published descriptor on every poll, verifies the runtime directory and, on
 Windows, the control ACLs once per daemon generation, and drops the cached
-client after any failure. It never starts a daemon or performs recovery.
+client after any connection failure; a daemon's own error answer (for example
+"not configured") or an unsupported operation keeps it. It never starts a
+daemon or performs recovery. Health is read first with a 2-second deadline, so
+a crashed daemon whose descriptor is left behind shows "the daemon is not
+answering; check vibemuxctl daemon inspect" within one short poll instead of
+waiting out the 10-second pipe retry.
 
 Each read is independent. A failure marks only its own section, with a code
 and an operator hint:
