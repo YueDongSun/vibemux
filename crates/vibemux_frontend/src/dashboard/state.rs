@@ -2,6 +2,7 @@
 //! The only requests a key can make are daemon reads (`Refresh`, `OpenTask`).
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use super::filter::FilterState;
 use super::panes::{LayoutMode, PaneState, effective_layout};
 
 /// One console view. The first three read the probe report and the Git
@@ -103,6 +104,7 @@ pub struct State {
     pub selected_task: usize,
     pub selected_decision: usize,
     pub help_visible: bool,
+    pub filter: FilterState,
 }
 
 impl State {
@@ -126,10 +128,20 @@ impl State {
         }
         let effective = effective_layout(self.panes.mode, size.0, size.1);
         let view = self.view(size.0, size.1);
+        // A filter can shrink a list under its selection between two keys.
+        self.clamp_selections(counts);
+        if self.filter.handle_editing_key(key) {
+            return Command::Continue;
+        }
         match key.code {
             KeyCode::Char('q') => return Command::Quit,
             KeyCode::Esc if self.help_visible => self.help_visible = false,
-            KeyCode::Esc => return Command::Quit,
+            KeyCode::Esc => {
+                if !self.filter.clear(view) {
+                    return Command::Quit;
+                }
+            }
+            KeyCode::Char('/') => self.filter.start(view),
             KeyCode::Char('?') => self.help_visible = !self.help_visible,
             KeyCode::Char('r') => return Command::Refresh,
             KeyCode::Char('t') => return Command::CycleTheme,
@@ -159,6 +171,17 @@ impl State {
             _ => {}
         }
         Command::Continue
+    }
+
+    fn clamp_selections(&mut self, counts: ListCounts) {
+        for (selected, count) in [
+            (&mut self.selected_agent, counts.agents),
+            (&mut self.selected_branch, counts.branches),
+            (&mut self.selected_task, counts.tasks),
+            (&mut self.selected_decision, counts.decisions),
+        ] {
+            *selected = (*selected).min(count.saturating_sub(1));
+        }
     }
 
     fn cycle(&mut self, effective: LayoutMode, forward: bool) {
@@ -314,6 +337,67 @@ mod tests {
         state.handle_key(KeyCode::Char('2').into(), ListCounts::default(), (80, 24));
         assert_eq!(state.tab, Tab::Harnesses);
         assert_eq!(state.view(80, 24), Tab::Harnesses);
+    }
+
+    #[test]
+    fn filter_clamps_selection_and_enter_on_empty_list_is_noop() {
+        let mut state = State {
+            tab: Tab::Tasks,
+            selected_task: 2,
+            ..State::default()
+        };
+        let none = ListCounts::default();
+        press(&mut state, KeyCode::Char('j'), none);
+        assert_eq!(state.selected_task, 0);
+        assert_eq!(press(&mut state, KeyCode::Enter, none), Command::Continue);
+        // A filter that leaves one row clamps a selection past it.
+        state.selected_task = 5;
+        let one = ListCounts {
+            tasks: 1,
+            ..ListCounts::default()
+        };
+        assert_eq!(press(&mut state, KeyCode::Enter, one), Command::OpenTask(0));
+        assert_eq!(state.selected_task, 0);
+    }
+
+    #[test]
+    fn typing_q_while_editing_does_not_quit() {
+        let mut state = State {
+            tab: Tab::Tasks,
+            ..State::default()
+        };
+        press(&mut state, KeyCode::Char('/'), ListCounts::default());
+        for character in ['q', 'r', 't', 'L', '4'] {
+            assert_eq!(
+                press(&mut state, KeyCode::Char(character), ListCounts::default()),
+                Command::Continue
+            );
+        }
+        assert_eq!(state.filter.query(Tab::Tasks), "qrtL4");
+        assert_eq!(state.tab, Tab::Tasks);
+        press(&mut state, KeyCode::Enter, ListCounts::default());
+        assert_eq!(state.filter.editing, None);
+        assert_eq!(state.filter.query(Tab::Tasks), "qrtL4");
+    }
+
+    #[test]
+    fn esc_clears_filter_before_quitting() {
+        let mut state = State {
+            tab: Tab::Tasks,
+            ..State::default()
+        };
+        press(&mut state, KeyCode::Char('/'), ListCounts::default());
+        press(&mut state, KeyCode::Char('a'), ListCounts::default());
+        press(&mut state, KeyCode::Enter, ListCounts::default());
+        assert_eq!(
+            press(&mut state, KeyCode::Esc, ListCounts::default()),
+            Command::Continue
+        );
+        assert_eq!(state.filter.query(Tab::Tasks), "");
+        assert_eq!(
+            press(&mut state, KeyCode::Esc, ListCounts::default()),
+            Command::Quit
+        );
     }
 
     #[test]

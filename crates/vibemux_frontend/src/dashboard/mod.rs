@@ -2,6 +2,7 @@
 //! behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It consumes a
 //! probe report plus optional local Git inventory and never starts a daemon,
 //! a harness, or a model turn.
+pub mod filter;
 mod model;
 pub mod panes;
 mod render;
@@ -176,6 +177,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn filtered_agents_match_name_state_and_adapter() {
+        let mut report = report();
+        report.agents[1].launcher_state = ProbeState::Unavailable;
+        let model = DashboardModel::from_report(&report);
+        let names = |query: &str| {
+            model
+                .filtered_agents(query)
+                .into_iter()
+                .map(|agent| agent.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("claude"), ["Claude"]);
+        assert_eq!(names("UNAVAILABLE"), ["Codex"]);
+        assert!(names("probe_only").contains(&"OpenCode".to_string()));
+        assert_eq!(names("").len(), AgentKind::all().len());
+        assert!(names("no such harness").is_empty());
     }
 
     #[test]
