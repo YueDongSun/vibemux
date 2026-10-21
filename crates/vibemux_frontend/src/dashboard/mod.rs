@@ -2,14 +2,21 @@
 //! behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It consumes a
 //! probe report plus optional local Git inventory and never starts a daemon,
 //! a harness, or a model turn.
+pub mod daemon_feed;
+pub mod daemon_model;
+mod daemon_render;
+pub mod filter;
 mod model;
+pub mod panes;
 mod render;
 mod runtime;
 mod state;
+pub use daemon_model::{DaemonView, Section};
+pub use daemon_render::{visible_decisions, visible_task_ids, visible_tasks};
 pub use model::{AgentView, DashboardModel, NativeTuiSlot, NativeTuiSlotState, safe_text};
-pub use render::{render_dashboard, render_with_state};
-pub use runtime::{run_interactive, snapshot};
-pub use state::{Branch, Context, State, Tab, Workspace};
+pub use render::{list_counts, render_dashboard, render_with_state};
+pub use runtime::{feed_request, run_interactive, snapshot};
+pub use state::{Branch, Command, Context, ListCounts, State, Tab, Workspace};
 
 #[cfg(test)]
 mod tests {
@@ -178,6 +185,25 @@ mod tests {
     }
 
     #[test]
+    fn filtered_agents_match_name_state_and_adapter() {
+        let mut report = report();
+        report.agents[1].launcher_state = ProbeState::Unavailable;
+        let model = DashboardModel::from_report(&report);
+        let names = |query: &str| {
+            model
+                .filtered_agents(query)
+                .into_iter()
+                .map(|agent| agent.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("claude"), ["Claude"]);
+        assert_eq!(names("UNAVAILABLE"), ["Codex"]);
+        assert!(names("probe_only").contains(&"OpenCode".to_string()));
+        assert_eq!(names("").len(), AgentKind::all().len());
+        assert!(names("no such harness").is_empty());
+    }
+
+    #[test]
     fn plain_snapshot_is_deterministic_and_read_only() {
         let snapshot = DashboardModel::from_report(&report()).plain_snapshot();
         assert!(snapshot.contains("Claude native TUI state=reserved"));
@@ -231,6 +257,7 @@ mod tests {
         let context = Context {
             source: "saved_report".to_string(),
             workspace: Some(workspace),
+            ..Context::default()
         };
         for tab in [Tab::Overview, Tab::Harnesses, Tab::Workspace] {
             let state = State {
@@ -407,5 +434,299 @@ mod tests {
         assert!(!text.contains('\u{1b}'));
         assert!(!text.contains('\u{202e}'));
         assert!(!text.contains("127.0.0.1"));
+    }
+
+    mod console {
+        use super::*;
+        use crate::dashboard::{
+            daemon_model::{
+                DecisionRow, DshView, HealthView, PluginRow, RouteRow, SlotsView, TaskDetailView,
+                TaskList, TaskRow,
+            },
+            panes::LayoutMode,
+        };
+        use crossterm::event::KeyCode;
+        use std::sync::Arc;
+
+        fn task(title: &str) -> TaskRow {
+            TaskRow {
+                task_id: format!("task_{title}"),
+                title: title.to_string(),
+                status: "in_progress".to_string(),
+            }
+        }
+
+        fn loaded() -> DaemonView {
+            DaemonView {
+                connection: "connected".to_string(),
+                observed_at: Some("2026-10-21T10:00:00Z".to_string()),
+                health: Section::Loaded(HealthView {
+                    status: "healthy".to_string(),
+                    schema: "9".to_string(),
+                    queue: "0/64 (peak 1)".to_string(),
+                }),
+                plugins: Section::Loaded(vec![PluginRow {
+                    plugin_id: "wezterm_observer".to_string(),
+                    state: "active".to_string(),
+                    restarts: "0/5".to_string(),
+                    last_error: "-".to_string(),
+                }]),
+                routes: Section::Loaded(vec![RouteRow {
+                    harness: "Codex".to_string(),
+                    protocol: "codex_exec".to_string(),
+                    mode: "executes".to_string(),
+                }]),
+                tasks: Section::Loaded(TaskList {
+                    rows: vec![task("alpha"), task("beta")],
+                    more: false,
+                }),
+                task_detail: Some(Section::Loaded(TaskDetailView {
+                    task_id: "task_alpha".to_string(),
+                    title: "alpha".to_string(),
+                    runs: vec!["abc12345 codex implementer running".to_string()],
+                    events: vec!["#3 run_started 2026-10-21T10:00:00Z".to_string()],
+                    artifacts: Vec::new(),
+                    truncated: true,
+                })),
+                dsh: Section::Loaded(DshView::new(
+                    "ready",
+                    "deepseek",
+                    "chat",
+                    [0, 0, 0, 0, 0],
+                    true,
+                )),
+                slots: Section::Loaded(SlotsView {
+                    evidence_class: "fixture".to_string(),
+                    rows: vec!["track_a codex executes".to_string()],
+                }),
+                decisions: Section::Loaded(vec![DecisionRow::new(
+                    "0123456789abcdef",
+                    "resolved",
+                    Some("Codex"),
+                    "local_rule",
+                    "2026-10-21T10:00:00Z",
+                    false,
+                    4,
+                )]),
+            }
+        }
+
+        fn context(daemon: Option<DaemonView>) -> Context {
+            Context {
+                source: "local_probe".to_string(),
+                daemon: daemon.map(Arc::new),
+                ..Context::default()
+            }
+        }
+
+        fn showing(view: Tab, mode: LayoutMode) -> State {
+            let mut state = State {
+                tab: view,
+                ..State::default()
+            };
+            state.panes.mode = mode;
+            state.panes.views[0] = view;
+            state
+        }
+
+        #[test]
+        fn every_view_renders_in_every_layout() {
+            let model = DashboardModel::from_report(&report());
+            for (daemon, connected) in [
+                (loaded(), true),
+                (DaemonView::not_running("daemon_not_running"), false),
+            ] {
+                let context = context(Some(daemon));
+                for mode in [LayoutMode::Single, LayoutMode::Split, LayoutMode::Grid] {
+                    for (width, height) in [(130u16, 40u16), (80, 24)] {
+                        for view in Tab::ALL {
+                            let state = showing(view, mode);
+                            let rendered =
+                                snapshot(&model, &state, &context, width, height).unwrap();
+                            let at = format!("{view:?} {mode:?} {width}x{height}\n{rendered}");
+                            assert!(rendered.contains("READ ONLY"), "{at}");
+                            assert!(rendered.contains(view.label()), "{at}");
+                            if view.is_daemon() && !connected {
+                                assert!(rendered.contains("daemon_not_running"), "{at}");
+                            }
+                        }
+                    }
+                }
+            }
+            // The Daemon view's lines span the terminal, so the hint is whole.
+            let state = showing(Tab::Daemon, LayoutMode::Single);
+            let not_running = context(Some(DaemonView::not_running("daemon_not_running")));
+            let wide = snapshot(&model, &state, &not_running, 130, 40).unwrap();
+            assert!(
+                wide.contains("start it with vibemuxctl daemon start"),
+                "{wide}"
+            );
+        }
+
+        #[test]
+        fn grid_shows_four_titled_panes() {
+            let model = DashboardModel::from_report(&report());
+            let mut state = State::default();
+            state.panes.mode = LayoutMode::Grid;
+            let rendered = snapshot(&model, &state, &context(Some(loaded())), 130, 40).unwrap();
+            for title in ["1 Overview", "4 Tasks", "5 Daemon", "6 Sessions"] {
+                assert!(rendered.contains(title), "{title}\n{rendered}");
+            }
+            assert!(
+                rendered.contains("> 1 Overview"),
+                "the focused pane is marked"
+            );
+            assert!(rendered.contains("layout grid"), "{rendered}");
+        }
+
+        #[test]
+        fn loaded_daemon_views_show_their_rows() {
+            let model = DashboardModel::from_report(&report());
+            let context = context(Some(loaded()));
+            for (view, expected) in [
+                (
+                    Tab::Tasks,
+                    vec!["alpha", "beta", "run_started", "truncated"],
+                ),
+                (
+                    Tab::Daemon,
+                    vec!["healthy", "wezterm_observer", "codex_exec"],
+                ),
+                (
+                    Tab::Sessions,
+                    vec!["ready", "deepseek", "track_a codex executes"],
+                ),
+                (
+                    Tab::Decisions,
+                    vec!["01234567", "resolved", "Codex", "local_rule"],
+                ),
+            ] {
+                let rendered = snapshot(
+                    &model,
+                    &showing(view, LayoutMode::Single),
+                    &context,
+                    130,
+                    40,
+                )
+                .unwrap();
+                for text in expected {
+                    assert!(rendered.contains(text), "{view:?} lacks {text}\n{rendered}");
+                }
+            }
+        }
+
+        #[test]
+        fn filter_title_and_rows() {
+            let model = DashboardModel::from_report(&report());
+            let context = context(Some(loaded()));
+            let mut state = showing(Tab::Tasks, LayoutMode::Single);
+            state.filter.start(Tab::Tasks);
+            for character in "alp".chars() {
+                state
+                    .filter
+                    .handle_editing_key(KeyCode::Char(character).into());
+            }
+            state.filter.editing = None;
+            let rendered = snapshot(&model, &state, &context, 130, 40).unwrap();
+            assert!(rendered.contains("filter: alp"), "{rendered}");
+            assert!(rendered.contains("alpha"));
+            assert!(!rendered.contains("beta"), "{rendered}");
+            let counts = list_counts(&model, &context, &state);
+            assert_eq!(counts.tasks, 1);
+            assert_eq!(counts.agents, AgentKind::all().len());
+            let daemon = context.daemon.as_deref().unwrap();
+            assert_eq!(visible_task_ids(daemon, "alp"), ["task_alpha"]);
+            assert_eq!(visible_task_ids(daemon, "").len(), 2);
+        }
+
+        #[test]
+        fn commands_become_feed_requests_for_the_visible_rows() {
+            use crate::dashboard::daemon_feed::FeedRequest;
+            let context = context(Some(loaded()));
+            let mut state = showing(Tab::Tasks, LayoutMode::Single);
+            assert_eq!(
+                feed_request(Command::Refresh, &context, &state),
+                Some(FeedRequest::Refresh)
+            );
+            assert_eq!(
+                feed_request(Command::OpenTask(1), &context, &state),
+                Some(FeedRequest::OpenTask("task_beta".to_string()))
+            );
+            // The index counts the filtered rows, not the daemon's list.
+            state.filter.start(Tab::Tasks);
+            state.filter.handle_editing_key(KeyCode::Char('b').into());
+            assert_eq!(
+                feed_request(Command::OpenTask(0), &context, &state),
+                Some(FeedRequest::OpenTask("task_beta".to_string()))
+            );
+            assert_eq!(feed_request(Command::OpenTask(1), &context, &state), None);
+            for command in [Command::Continue, Command::Quit, Command::CycleTheme] {
+                assert_eq!(feed_request(command, &context, &state), None);
+            }
+            assert_eq!(
+                feed_request(Command::OpenTask(0), &Context::default(), &state),
+                None
+            );
+        }
+
+        #[test]
+        fn the_tab_bar_names_every_view_down_to_76_columns() {
+            // `vibemuxctl --format text ui --once` renders 80x24 by default,
+            // and its test finds the Workspace view by name.
+            let model = DashboardModel::from_report(&report());
+            for width in [76u16, 80, 100, 130] {
+                let rendered =
+                    snapshot(&model, &State::default(), &context(None), width, 24).unwrap();
+                for view in Tab::ALL {
+                    let title = format!("{} {}", view.index() + 1, view.label());
+                    assert!(rendered.contains(&title), "{width}: {title}\n{rendered}");
+                }
+            }
+            let narrow = snapshot(
+                &model,
+                &showing(Tab::Decisions, LayoutMode::Single),
+                &context(None),
+                60,
+                24,
+            )
+            .unwrap();
+            assert!(narrow.contains("7 Decisions"), "{narrow}");
+        }
+
+        #[test]
+        fn no_feed_message_without_daemon_view() {
+            let model = DashboardModel::from_report(&report());
+            let rendered = snapshot(
+                &model,
+                &showing(Tab::Tasks, LayoutMode::Single),
+                &context(None),
+                100,
+                28,
+            )
+            .unwrap();
+            assert!(rendered.contains("Daemon views need the interactive console"));
+        }
+
+        #[test]
+        fn help_lists_every_console_key() {
+            let model = DashboardModel::from_report(&report());
+            let state = State {
+                help_visible: true,
+                ..State::default()
+            };
+            let rendered = snapshot(&model, &state, &context(None), 130, 40).unwrap();
+            for key in [
+                "L: cycle layouts",
+                "z: zoom",
+                "r: refresh",
+                "/: filter",
+                "t: theme",
+                "1-7: views",
+                "Tab: next",
+                "q/Esc: quit",
+            ] {
+                assert!(rendered.contains(key), "{key}\n{rendered}");
+            }
+        }
     }
 }

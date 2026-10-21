@@ -17,8 +17,11 @@ use serde_json::{Value, json};
 use std::{
     io::{self, IsTerminal},
     path::PathBuf,
+    sync::Arc,
 };
-use vibemux_frontend::dashboard::{self, Context, DashboardModel, State};
+use vibemux_frontend::dashboard::{
+    self, Context, DaemonView, DashboardModel, State, daemon_feed::DaemonFeed,
+};
 use vibemuxd::control::DaemonHealth;
 
 pub enum Outcome {
@@ -98,6 +101,9 @@ pub async fn run(command: Command, format: Format) -> Result<Outcome, Failure> {
             {
                 return Err(Failure::new("ui_terminal_required"));
             }
+            // Resolved before the inventory takes the root; only the live
+            // console reads the daemon.
+            let paths = (!once).then(|| daemon_paths(project_root.as_deref()));
             let report = workspace::inspect(project_root).await?;
             let snapshot = probe::load(report_path)
                 .await
@@ -111,9 +117,10 @@ pub async fn run(command: Command, format: Format) -> Result<Outcome, Failure> {
                 });
             }
             let model = DashboardModel::from_report(&snapshot.report);
-            let context = Context {
+            let mut context = Context {
                 source: snapshot.source.to_string(),
                 workspace: Some(frontend_workspace(&report)),
+                ..Context::default()
             };
             if once {
                 let rendered =
@@ -121,7 +128,22 @@ pub async fn run(command: Command, format: Format) -> Result<Outcome, Failure> {
                         .map_err(|source| Failure::with_source("ui_render_failed", source))?;
                 return Ok(Outcome::Text(rendered));
             }
-            tokio::task::spawn_blocking(move || dashboard::run_interactive(model, context))
+            // A feed that cannot start leaves the daemon views saying why.
+            let feed = match paths.map(|paths| {
+                paths
+                    .map_err(|error| error.code().to_string())
+                    .and_then(|paths| {
+                        DaemonFeed::start_for_paths(paths).map_err(|error| error.to_string())
+                    })
+            }) {
+                Some(Ok(feed)) => Some(feed),
+                Some(Err(code)) => {
+                    context.daemon = Some(Arc::new(DaemonView::not_running(&code)));
+                    None
+                }
+                None => None,
+            };
+            tokio::task::spawn_blocking(move || dashboard::run_interactive(model, context, feed))
                 .await
                 .map_err(|source| Failure::with_source("ui_worker_failed", source))?
                 .map_err(|source| Failure::with_source("ui_terminal_failed", source))?;

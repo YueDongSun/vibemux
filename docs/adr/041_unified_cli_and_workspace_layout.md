@@ -3,7 +3,10 @@
 Status: Accepted for pre-alpha implementation. This record was ADR 024 on the
 source branch `codex/harness_request_dispatch` and is renumbered here because
 `main`'s ADR 024 is the stateful A2A supervisor. Integrated into `main` on
-2026-10-17; see "Integration with main".
+2026-10-17; see "Integration with main". Extended by
+[ADR 042](042_multi_pane_console_and_ui_functions.md): the dashboard is now a
+multi-pane console whose keys also request content-free daemon reads, and it
+uses the shared terminal themes.
 
 ## Context
 

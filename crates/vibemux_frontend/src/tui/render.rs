@@ -11,7 +11,7 @@ use ratatui::{
     style::{Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::tui::theme::{
@@ -25,7 +25,13 @@ use vibemux_probe::ProbeState;
 /// telemetry lines between its (collapsed) top border and bottom border.
 const DIAGNOSTICS_MIN_HEIGHT: u16 = 5;
 
-pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: Theme) {
+/// `selected` marks one agent row; the golden fixtures render without it.
+pub fn render_debug_dashboard(
+    frame: &mut Frame<'_>,
+    model: &ViewModel,
+    theme: Theme,
+    selected: Option<usize>,
+) {
     // Stacked, the agent table holds its top border, the header, and one row
     // per probed agent; its bottom edge is the diagnostics block's collapsed
     // top border. Sizing it from the agent count keeps every harness row
@@ -132,7 +138,15 @@ pub fn render_debug_dashboard(frame: &mut Frame<'_>, model: &ViewModel, theme: T
             .title("Agent probes")
             .borders(table_borders),
     );
-    frame.render_widget(table, body[0]);
+    let table = table
+        .row_highlight_style(title_style(theme))
+        .highlight_symbol("> ");
+    let mut selection = TableState::default().with_selected(
+        selected
+            .filter(|_| !model.agents.is_empty())
+            .map(|index| index.min(model.agents.len() - 1)),
+    );
+    frame.render_stateful_widget(table, body[0], &mut selection);
 
     let diagnostics = Paragraph::new(vec![
         Line::from(vec![
@@ -368,7 +382,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         terminal
-            .draw(|frame| render_debug_dashboard(frame, model, theme))
+            .draw(|frame| render_debug_dashboard(frame, model, theme, None))
             .expect("render dashboard");
         terminal
             .backend()
@@ -525,7 +539,7 @@ mod tests {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).expect("test terminal");
             terminal
-                .draw(|frame| render_debug_dashboard(frame, &model, Theme::Classic))
+                .draw(|frame| render_debug_dashboard(frame, &model, Theme::Classic, None))
                 .expect("render dashboard");
             terminal
                 .backend()

@@ -77,10 +77,20 @@ The following example is fully offline and uses a synthetic saved report:
 .\target\debug\vibemuxctl.exe --format text ui --once --report crates/vibemux_probe/tests/fixtures/probe_report_v1.json --width 80 --height 24
 ```
 
-Use Tab or 1/2/3 to select Overview, Harnesses, or Workspace. Use j/k or arrows
-to move selection, Enter for harness details, ? for help, and q/Esc to leave.
-Tiny terminals request resizing; normal 80-column terminals retain the five
-harness slots. Quit restores terminal mode and cursor state.
+Use 1-7 to pick Overview, Harnesses, Workspace, Tasks, Daemon, Sessions, or
+Decisions, and Tab to move to the next view. Use j/k or arrows to move
+selection, Enter for harness details or to open the selected task, / to filter
+the focused list, ? for help, and q/Esc to leave. Tiny terminals request
+resizing; normal 80-column terminals retain the five harness slots. Quit
+restores terminal mode and cursor state.
+
+`L` cycles the single, split, and grid layouts (ADR 042). In split and grid,
+Tab moves the focus between panes, 1-7 set the focused pane's view, and `z`
+zooms it. Grid needs 120 x 32 and split 90 columns; smaller terminals fall back.
+`r` polls the daemon now and `t` cycles the six terminal themes. The four
+daemon views read the running daemon of `--project-root` every 5 seconds and
+show only content-free state; with no daemon they say `daemon_not_running`.
+`--once` renders the probe and workspace views only.
 
 At 80 x 24, Harnesses places the list beside selected details. Workspace keeps
 change counts, filter qualifications, and branch rows visible; the separate
@@ -88,8 +98,9 @@ worktree-path panel appears only when enough height is available. Use
 `workspace status` for the full bounded worktree listing. Narrow Harnesses
 views show selected details alone, with j/k still selecting the agent.
 
-This is a snapshot viewer. Key presses do not attach native agent TUIs, send
-prompts, approve tools, start daemons, or change branches. Missing observations
+This is a read-only viewer. Key presses do not attach native agent TUIs, send
+prompts, approve tools, start daemons, or change branches; the only requests
+they make are daemon reads. Missing observations
 are `not_run`, not successful checks. A reserved native slot is not a running
 agent or verified ConPTY surface.
 

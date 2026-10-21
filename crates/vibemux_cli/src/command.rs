@@ -294,7 +294,7 @@ pub fn help(topic: Topic) -> String {
         Topic::Daemon => "Daemon lifecycle (explicit operations)\n\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n\nNo daemon starts automatically. Recovery remains confirmation-gated.\n".to_string(),
         Topic::Workspace => "Workspace inventory (read-only)\n\n  vibemuxctl workspace status [--project-root <path>]\n  vibemuxctl status [--project-root <path>]\n\nShows local branches, worktrees, and cached-ref ancestry; no fetch, merge, or cleanup.\nGlobal output flags go before the command: --format text|json|auto.\n".to_string(),
         Topic::Probe => "Diagnostic metadata\n\n  vibemuxctl probe [--report <saved_report.json>]\n\nSaved reports are bounded, validated and redacted. Without --report, fixed local\nread-only probes run. Authentication and inference are separate, untested claims.\n".to_string(),
-        Topic::Ui => "Read-only dashboard\n\n  vibemuxctl ui [--report <saved_report.json>] [--project-root <path>]\n  vibemuxctl --format text ui --once [--report <file>] [--width <40..240>] [--height <12..80>]\n\nTab/1/2/3: sections | j/k/arrows: selection | Enter: details | ?: help | q/Esc: quit\nNo native TUI attach, daemon start, or model request is performed.\n".to_string(),
+        Topic::Ui => "Read-only console (ADR 042)\n\n  vibemuxctl ui [--report <saved_report.json>] [--project-root <path>]\n  vibemuxctl --format text ui --once [--report <file>] [--width <40..240>] [--height <12..80>]\n\n1-7: views (Overview, Harnesses, Workspace, Tasks, Daemon, Sessions, Decisions)\nTab: next view, or next pane | L: layouts (single, split, grid) | z: zoom\nj/k/arrows: selection | Enter: open task or details | /: filter | r: refresh\nt: theme | ?: help | q/Esc: quit\nThe live console polls the running daemon's content-free state every 5 s;\n--once renders the probe and workspace views only.\nNo native TUI attach, daemon start, or model request is performed.\n".to_string(),
         Topic::Control => CONTROL_HELP.to_string(),
         Topic::Root => format!("VibeMux {}
 
@@ -336,6 +336,25 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn ui_help_names_the_console_keys_and_its_limits() {
+        let text = help(Topic::Ui);
+        for key in [
+            "1-7: views",
+            "L: layouts",
+            "z: zoom",
+            "/: filter",
+            "r: refresh",
+            "t: theme",
+            "Tab:",
+            "q/Esc: quit",
+        ] {
+            assert!(text.contains(key), "{key}: {text}");
+        }
+        assert!(text.contains("No native TUI attach, daemon start, or model request"));
+    }
+
     #[test]
     fn grouped_commands_preserve_literal_paths_and_format_is_explicit() {
         let invocation = parse(

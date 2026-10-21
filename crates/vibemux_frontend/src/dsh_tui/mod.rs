@@ -12,12 +12,13 @@
 //! diagnostics rather than as completion.
 
 pub mod render;
+pub mod search;
 
 use std::{io, time::Duration};
 
 use crossterm::{
     cursor::Show,
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -90,6 +91,8 @@ pub struct DshTuiState {
     pub scroll: u16,
     pub status: String,
     pub shutting_down: bool,
+    /// Ctrl-F transcript search; never written to disk.
+    pub search: search::TranscriptSearch,
 }
 
 impl DshTuiState {
@@ -114,8 +117,9 @@ impl DshTuiState {
             record_count: 0,
             records_dropped: 0,
             scroll: 0,
-            status: "Enter sends  Esc cancels the turn  Ctrl-C quits".to_string(),
+            status: "Enter sends  Esc cancels the turn  Ctrl-F searches  Ctrl-C quits".to_string(),
             shutting_down: false,
+            search: search::TranscriptSearch::default(),
         }
     }
 
@@ -129,6 +133,11 @@ impl DshTuiState {
             let overflow = self.transcript.len() - MAX_TRANSCRIPT_LINES;
             self.transcript.drain(..overflow);
             self.scroll = self.scroll.saturating_sub(overflow as u16);
+            // The highlighted match moves with its line, or goes with it.
+            self.search.current = self
+                .search
+                .current
+                .and_then(|current| current.checked_sub(overflow));
         }
     }
 
@@ -168,9 +177,11 @@ pub fn run_dsh_tui(
         if event::poll(POLL_INTERVAL)? {
             let event = event::read()?;
             let Event::Key(key) = event else { continue };
-            match handle_key(key, handle, driver, &mut state, theme) {
-                KeyOutcome::Quit => break,
-                KeyOutcome::Continue => {}
+            if route_key(&mut state, key) == KeyRoute::Prompt {
+                match handle_key(key, handle, driver, &mut state, theme) {
+                    KeyOutcome::Quit => break,
+                    KeyOutcome::Continue => {}
+                }
             }
             frames_since_poll = 0;
         } else {
@@ -184,6 +195,29 @@ pub fn run_dsh_tui(
 enum KeyOutcome {
     Continue,
     Quit,
+}
+
+/// Where a key event goes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyRoute {
+    /// A key release. Windows terminals report one for every key; acting on
+    /// it would repeat the key, and an Esc release after closing the search
+    /// would cancel the running turn.
+    Ignored,
+    /// Search or a scroll jump consumed it.
+    Search,
+    /// The prompt editor and session controls handle it.
+    Prompt,
+}
+
+pub(crate) fn route_key(state: &mut DshTuiState, key: KeyEvent) -> KeyRoute {
+    if key.kind == KeyEventKind::Release {
+        return KeyRoute::Ignored;
+    }
+    if search::handle_search_key(state, key) {
+        return KeyRoute::Search;
+    }
+    KeyRoute::Prompt
 }
 
 fn handle_key(
@@ -340,6 +374,75 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, modifiers, kind)
+    }
+
+    #[test]
+    fn an_esc_release_after_closing_search_never_reaches_the_turn_cancel() {
+        // Windows terminals report a release for every key. Only presses act.
+        let mut state = DshTuiState::new("provider".into(), "model".into());
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        for (event, expected) in [
+            (
+                key(KeyCode::Char('f'), ctrl, KeyEventKind::Press),
+                KeyRoute::Search,
+            ),
+            (
+                key(KeyCode::Char('f'), ctrl, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+            (
+                key(KeyCode::Char('a'), none, KeyEventKind::Press),
+                KeyRoute::Search,
+            ),
+            (
+                key(KeyCode::Char('a'), none, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+            (
+                key(KeyCode::Esc, none, KeyEventKind::Press),
+                KeyRoute::Search,
+            ),
+            (
+                key(KeyCode::Esc, none, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+            (
+                key(KeyCode::Char('x'), none, KeyEventKind::Press),
+                KeyRoute::Prompt,
+            ),
+            (
+                key(KeyCode::Char('x'), none, KeyEventKind::Release),
+                KeyRoute::Ignored,
+            ),
+        ] {
+            assert_eq!(route_key(&mut state, event), expected, "{event:?}");
+        }
+        assert!(!state.search.open);
+        assert_eq!(state.search.query, "a", "the query is not doubled");
+    }
+
+    #[test]
+    fn the_search_match_follows_its_line_when_the_cap_drops_old_lines() {
+        let mut state = DshTuiState::new("provider".into(), "model".into());
+        state.transcript.clear();
+        for index in 0..MAX_TRANSCRIPT_LINES {
+            state.note(format!("line {index}"));
+        }
+        state.search.open = true;
+        state.search.query = "line 1500".to_string();
+        state.search.current = Some(1500);
+        state.note("one more");
+        let current = state.search.current.expect("still matched");
+        assert_eq!(state.transcript[current].text(), "line 1500");
+        // A match that falls off the front is no longer highlighted.
+        state.search.current = Some(0);
+        state.note("and another");
+        assert_eq!(state.search.current, None);
+    }
 
     #[test]
     fn the_transcript_is_bounded_and_keeps_the_scroll_stable() {

@@ -1,8 +1,11 @@
 # ADR 030: Claude-style GUI with a light and dark Claude theme pair
 
 Status: Accepted. Phase 1 (palettes, typography, sidebar, welcome state,
-composer, conversation rows, and the docked drawer) is implemented. Phase 2
-(shortcuts, quick switcher, appearance modes, motion, and copy buttons) is not
+composer, conversation rows, and the docked drawer) is implemented. Phase 2 is
+partly implemented under [ADR 042](042_multi_pane_console_and_ui_functions.md):
+the shortcut table and `Ctrl+/` overlay and the `Ctrl+K` quick switcher (with
+Light and Dark as plain theme actions). The Appearance control with Match
+system, Reduce motion, the spark animation, and the copy buttons are not
 implemented yet. PROGRESS.md records the status of each phase.
 
 Amends ADR 028: the default theme for new profiles becomes `claude_light`

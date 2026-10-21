@@ -1,13 +1,18 @@
 use std::ops::Range;
 
 use super::{
-    AgentView, Context, DashboardModel, NativeTuiSlot, NativeTuiSlotState, State, Tab, Workspace,
+    AgentView, Context, DaemonView, DashboardModel, ListCounts, NativeTuiSlot, NativeTuiSlotState,
+    State, Tab, Workspace,
+    daemon_render::{render_daemon_view, visible_decisions, visible_tasks},
+    filter::matches,
     model::{safe_text, slot_state_label},
+    panes::{LayoutMode, effective_layout, pane_count},
 };
+use crate::tui::theme::{Theme, muted_style, title_style};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap},
 };
@@ -27,8 +32,69 @@ const AGENT_TABLE_CHROME_ROWS: u16 = 3;
 /// The stacked overview's smallest agent table: its chrome plus two agents.
 const AGENT_TABLE_MIN_HEIGHT: u16 = AGENT_TABLE_CHROME_ROWS + 2;
 
+/// Narrowest terminal whose tab bar spells out every view's name with
+/// padded ` | ` dividers (100 cells).
+const PADDED_TAB_BAR_WIDTH: u16 = 100;
+/// Narrowest terminal whose tab bar still spells out every view's name, with
+/// bare `|` dividers (74 cells).
+const FULL_TAB_LABELS_WIDTH: u16 = 76;
+/// Narrowest terminal whose footer also names the zoom key.
+const FULL_FOOTER_WIDTH: u16 = 100;
+
 pub fn render_dashboard(frame: &mut Frame<'_>, model: &DashboardModel) {
     render_with_state(frame, model, &State::default(), &Context::default());
+}
+
+/// Rows each selectable list draws under the current filters. The runtime
+/// hands these to `State::handle_key`, so a selection never points past a
+/// filtered list.
+#[must_use]
+pub fn list_counts(model: &DashboardModel, context: &Context, state: &State) -> ListCounts {
+    let daemon = context.daemon.as_deref();
+    ListCounts {
+        agents: model
+            .filtered_agents(state.filter.query(Tab::Overview))
+            .len(),
+        branches: context.workspace.as_ref().map_or(0, |workspace| {
+            filtered_workspace(workspace, state.filter.query(Tab::Workspace))
+                .branches
+                .len()
+        }),
+        tasks: daemon.map_or(0, |daemon| {
+            visible_tasks(daemon, state.filter.query(Tab::Tasks)).len()
+        }),
+        decisions: daemon.map_or(0, |daemon| {
+            visible_decisions(daemon, state.filter.query(Tab::Decisions)).len()
+        }),
+    }
+}
+
+fn filtered_model(model: &DashboardModel, query: &str) -> DashboardModel {
+    DashboardModel {
+        agents: model.filtered_agents(query).into_iter().cloned().collect(),
+        ..model.clone()
+    }
+}
+
+fn filtered_workspace(workspace: &Workspace, query: &str) -> Workspace {
+    Workspace {
+        branches: workspace
+            .branches
+            .iter()
+            .filter(|branch| matches(query, &[&branch.name, &branch.role, &branch.upstream]))
+            .cloned()
+            .collect(),
+        ..workspace.clone()
+    }
+}
+
+/// Everything a view renderer reads, after filtering.
+struct ViewInputs<'a> {
+    model: &'a DashboardModel,
+    workspace: Option<&'a Workspace>,
+    daemon: Option<&'a DaemonView>,
+    state: &'a State,
+    theme: Theme,
 }
 
 pub fn render_with_state(
@@ -37,14 +103,25 @@ pub fn render_with_state(
     state: &State,
     context: &Context,
 ) {
-    if frame.area().width < 30 || frame.area().height < 12 {
+    let area = frame.area();
+    if area.width < 30 || area.height < 12 {
         frame.render_widget(
             Paragraph::new("VibeMux: resize terminal").wrap(Wrap { trim: true }),
-            frame.area(),
+            area,
         );
         return;
     }
-    let slots_height = if frame.area().width < 60 { 7 } else { 4 };
+    let theme = state.theme;
+    let effective = effective_layout(state.panes.mode, area.width, area.height);
+    let single = effective == LayoutMode::Single || state.panes.zoomed;
+    let view = state.view(area.width, area.height);
+    // The native slot panel describes the probe views; daemon views and
+    // panes use the rows instead.
+    let slots_height = match (single && !view.is_daemon(), area.width < 60) {
+        (false, _) => 0,
+        (true, true) => 7,
+        (true, false) => 4,
+    };
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -54,13 +131,11 @@ pub fn render_with_state(
             Constraint::Length(slots_height),
             Constraint::Length(3),
         ])
-        .split(frame.area());
+        .split(area);
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
             safe_text(&model.title),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            title_style(theme).add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
             "  [{}]  READ ONLY / {}",
@@ -70,45 +145,57 @@ pub fn render_with_state(
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, areas[0]);
-    frame.render_widget(
-        Tabs::new(["1 Overview", "2 Harnesses", "3 Workspace"])
-            .select(state.tab.index())
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .divider(" | "),
-        areas[1],
-    );
-
-    match state.tab {
-        Tab::Overview => overview(frame, areas[2], model, state),
-        Tab::Harnesses => harnesses(frame, areas[2], model, state),
-        Tab::Workspace => workspace_view(frame, areas[2], context.workspace.as_ref(), state),
-    }
-    frame.render_widget(
-        Paragraph::new(slot_lines(&model.native_tui_slots))
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::Yellow))
-            .block(
-                Block::default()
-                    .title("Native CLI TUI surfaces")
-                    .borders(Borders::ALL),
-            ),
-        areas[3],
-    );
-    let footer = if frame.area().width >= 80 {
-        "q/Esc quit | Tab/1/2/3 section | j/k select | Enter details | ? help"
+    let tabs = Tabs::new(tab_titles(view, area.width))
+        .select(view.index())
+        .highlight_style(title_style(theme).add_modifier(Modifier::BOLD));
+    let tabs = if area.width >= PADDED_TAB_BAR_WIDTH {
+        tabs.divider(" | ")
     } else {
-        "q quit | Tab page | j/k select | ? help"
+        tabs.padding("", "").divider("|")
     };
-    frame.render_widget(
-        Paragraph::new(footer).block(Block::default().borders(Borders::ALL)),
-        areas[4],
-    );
+    frame.render_widget(tabs, areas[1]);
+
+    let filtered = filtered_model(model, state.filter.query(Tab::Overview));
+    let workspace = context
+        .workspace
+        .as_ref()
+        .map(|workspace| filtered_workspace(workspace, state.filter.query(Tab::Workspace)));
+    let inputs = ViewInputs {
+        model: &filtered,
+        workspace: workspace.as_ref(),
+        daemon: context.daemon.as_deref(),
+        state,
+        theme,
+    };
+    if single {
+        draw_view(frame, areas[2], view, &inputs);
+    } else {
+        let focus = state.panes.focus.min(pane_count(effective) - 1);
+        for (index, rect) in pane_rects(areas[2], effective).into_iter().enumerate() {
+            draw_pane(
+                frame,
+                rect,
+                state.panes.views[index],
+                index == focus,
+                &inputs,
+            );
+        }
+    }
+    if slots_height > 0 {
+        frame.render_widget(
+            Paragraph::new(slot_lines(&model.native_tui_slots))
+                .wrap(Wrap { trim: true })
+                .style(muted_style(theme))
+                .block(
+                    Block::default()
+                        .title("Native CLI TUI surfaces")
+                        .borders(Borders::ALL),
+                ),
+            areas[3],
+        );
+    }
+    render_footer(frame, areas[4], state, view, effective, theme);
     if state.help_visible {
-        let area = frame.area();
         let overlay = Rect {
             x: area.x.saturating_add(2),
             y: area.y.saturating_add(2),
@@ -116,9 +203,136 @@ pub fn render_with_state(
             height: area.height.saturating_sub(4),
         };
         frame.render_widget(Clear, overlay);
-        frame.render_widget(Paragraph::new("READ-ONLY SNAPSHOT\n\nTab or 1/2/3: switch sections\nj/k or arrows: move selection\nEnter: show harness details\n?: close this help\nq/Esc: quit\n\nNative TUI attach and tool execution are disabled.\nLauncher, authentication, inference and task completion are separate evidence.\nWorkspace information uses cached Git refs; no fetch or cleanup occurs.")
-            .wrap(Wrap { trim: true }).block(Block::default().title("Help").borders(Borders::ALL)), overlay);
+        frame.render_widget(
+            Paragraph::new(HELP_TEXT)
+                .wrap(Wrap { trim: true })
+                .block(Block::default().title("Help").borders(Borders::ALL)),
+            overlay,
+        );
     }
+}
+
+const HELP_TEXT: &str = "READ-ONLY CONSOLE\n\n1-7: views (Overview, Harnesses, Workspace, Tasks, Daemon, Sessions, Decisions)\nTab: next view, or next pane in split and grid\nL: cycle layouts (single, split, grid)\nz: zoom the focused pane\nj/k or arrows: move the selection\nEnter: open the selected task or harness details\n/: filter the focused list (Enter keeps, Esc clears)\nr: refresh the daemon views now\nt: theme\n?: close this help\nq/Esc: quit\n\nNative TUI attach and tool execution are disabled. Daemon views read content-free state; no prompt or transcript is shown.\nLauncher, authentication, inference and task completion are separate evidence.\nWorkspace information uses cached Git refs; no fetch or cleanup occurs.";
+
+/// Tab bar labels: every name down to `FULL_TAB_LABELS_WIDTH`, otherwise
+/// digits plus the current view's name.
+fn tab_titles(view: Tab, width: u16) -> Vec<String> {
+    Tab::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, tab)| {
+            if width >= FULL_TAB_LABELS_WIDTH || *tab == view {
+                format!("{} {}", index + 1, tab.label())
+            } else {
+                (index + 1).to_string()
+            }
+        })
+        .collect()
+}
+
+fn pane_rects(body: Rect, effective: LayoutMode) -> Vec<Rect> {
+    let halves = |area: Rect, direction: Direction| {
+        Layout::default()
+            .direction(direction)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area)
+    };
+    match effective {
+        LayoutMode::Single => vec![body],
+        LayoutMode::Split => halves(body, Direction::Horizontal).to_vec(),
+        LayoutMode::Grid => {
+            let rows = halves(body, Direction::Vertical);
+            let top = halves(rows[0], Direction::Horizontal);
+            let bottom = halves(rows[1], Direction::Horizontal);
+            vec![top[0], top[1], bottom[0], bottom[1]]
+        }
+    }
+}
+
+/// One pane: a header line naming the view (marked when focused), then the
+/// view itself.
+fn draw_pane(frame: &mut Frame<'_>, rect: Rect, view: Tab, focused: bool, inputs: &ViewInputs<'_>) {
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(rect);
+    let query = inputs.state.filter.query(view);
+    let header = format!(
+        "{}{} {}{}",
+        if focused { "> " } else { "  " },
+        view.index() + 1,
+        view.label(),
+        if query.is_empty() {
+            String::new()
+        } else {
+            format!(" / filter: {query}")
+        }
+    );
+    let style = if focused {
+        title_style(inputs.theme).add_modifier(Modifier::BOLD)
+    } else {
+        muted_style(inputs.theme)
+    };
+    frame.render_widget(Paragraph::new(Line::styled(header, style)), parts[0]);
+    draw_view(frame, parts[1], view, inputs);
+}
+
+fn draw_view(frame: &mut Frame<'_>, area: Rect, view: Tab, inputs: &ViewInputs<'_>) {
+    let (model, state, theme) = (inputs.model, inputs.state, inputs.theme);
+    match view {
+        Tab::Overview => overview(frame, area, model, state, theme),
+        Tab::Harnesses => harnesses(frame, area, model, state, theme),
+        Tab::Workspace => workspace_view(frame, area, inputs.workspace, state, theme),
+        Tab::Tasks | Tab::Daemon | Tab::Sessions | Tab::Decisions => {
+            render_daemon_view(frame, area, view, inputs.daemon, state, theme);
+        }
+    }
+}
+
+fn render_footer(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &State,
+    view: Tab,
+    effective: LayoutMode,
+    theme: Theme,
+) {
+    let query = state.filter.query(view);
+    let keys = if state.filter.editing.is_some() {
+        format!("filter: {query}_ | Enter keep | Esc clear")
+    } else {
+        let keys = if area.width >= FULL_FOOTER_WIDTH {
+            "q quit | Tab/1-7 view | L layout | z zoom | / filter | r refresh | t theme | ? help"
+        } else if area.width >= 80 {
+            "q quit | Tab/1-7 view | L layout | / filter | r refresh | t theme | ? help"
+        } else {
+            "q quit | Tab view | L layout | ? help"
+        };
+        if query.is_empty() {
+            keys.to_string()
+        } else {
+            format!("filter: {query} | {keys}")
+        }
+    };
+    let mut status = format!("layout {}", effective.label());
+    if state.panes.zoomed && effective != LayoutMode::Single {
+        status.push_str(" zoomed");
+    }
+    if effective != state.panes.mode {
+        status.push_str(&format!(
+            " ({} needs a larger terminal)",
+            state.panes.mode.label()
+        ));
+    }
+    status.push_str(&format!(" | theme {}", theme.name()));
+    frame.render_widget(
+        Paragraph::new(keys).block(
+            Block::default()
+                .title(Line::styled(format!(" {status} "), muted_style(theme)).right_aligned())
+                .borders(Borders::ALL),
+        ),
+        area,
+    );
 }
 
 /// One line per slot state, in first-seen order, naming its harnesses. One
@@ -153,7 +367,13 @@ const fn slot_detail(state: NativeTuiSlotState) -> &'static str {
     }
 }
 
-fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &State) {
+fn overview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    model: &DashboardModel,
+    state: &State,
+    theme: Theme,
+) {
     let diagnostics = [
         format!("Gateway: {}", safe_text(&model.gateway_summary)),
         format!("A2A: {}", safe_text(&model.a2a_summary)),
@@ -189,7 +409,7 @@ fn overview(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &S
             .constraints([Constraint::Length(table_height), Constraint::Min(0)])
             .split(area)
     };
-    agent_table(frame, body[0], model, state.selected_agent);
+    agent_table(frame, body[0], model, state.selected_agent, theme);
     frame.render_widget(
         Paragraph::new(diagnostics.map(Line::from).to_vec())
             .wrap(Wrap { trim: true })
@@ -236,7 +456,13 @@ fn agent_window(total: usize, selected: usize, height: u16) -> Range<usize> {
     first..first + visible
 }
 
-fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, selected: usize) {
+fn agent_table(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    model: &DashboardModel,
+    selected: usize,
+    theme: Theme,
+) {
     let total = model.agents.len();
     let window = agent_window(total, selected, area.height);
     // A short table scrolls with the selection; the title names the rows in
@@ -258,7 +484,7 @@ fn agent_table(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, select
     let (columns, header) = layout.columns();
     let table = Table::new(rows, columns)
         .header(Row::new(header).style(Style::default().add_modifier(Modifier::BOLD)))
-        .row_highlight_style(Style::default().fg(Color::Cyan))
+        .row_highlight_style(title_style(theme))
         .highlight_symbol("> ")
         .block(Block::default().title(title).borders(Borders::ALL));
     let mut selection = TableState::default()
@@ -363,13 +589,19 @@ const fn adapter_column_label(support: AdapterSupport) -> &'static str {
     }
 }
 
-fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &State) {
+fn harnesses(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    model: &DashboardModel,
+    state: &State,
+    theme: Theme,
+) {
     let details_area = if area.width >= HARNESS_COLUMNS_WIDTH {
         let body = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
             .split(area);
-        agent_table(frame, body[0], model, state.selected_agent);
+        agent_table(frame, body[0], model, state.selected_agent, theme);
         body[1]
     } else {
         // Overview lists every agent; this page keeps selected details readable.
@@ -416,7 +648,13 @@ fn harnesses(frame: &mut Frame<'_>, area: Rect, model: &DashboardModel, state: &
     );
 }
 
-fn workspace_view(frame: &mut Frame<'_>, area: Rect, workspace: Option<&Workspace>, state: &State) {
+fn workspace_view(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    workspace: Option<&Workspace>,
+    state: &State,
+    theme: Theme,
+) {
     let Some(workspace) = workspace else {
         frame.render_widget(
             Paragraph::new(
@@ -498,7 +736,7 @@ fn workspace_view(frame: &mut Frame<'_>, area: Rect, workspace: Option<&Workspac
         Row::new(["Branch", "Role", "Commit", "Upstream"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .row_highlight_style(Style::default().fg(Color::Cyan))
+    .row_highlight_style(title_style(theme))
     .highlight_symbol("> ")
     .block(
         Block::default()

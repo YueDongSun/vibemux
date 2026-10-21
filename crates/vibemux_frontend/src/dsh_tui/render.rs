@@ -27,7 +27,10 @@ use vibemux_harness::{
 use crate::tui::Theme;
 use crate::tui::theme::{muted_style, title_style};
 
-use super::{DshTuiState, MAX_LINE_BYTES, TranscriptLine};
+use super::{
+    DshTuiState, MAX_LINE_BYTES, TranscriptLine,
+    search::{line_matches, match_count},
+};
 
 /// Reduces one byte-exact runtime record to a single bounded display line.
 ///
@@ -200,6 +203,25 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, theme: 
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// The hint line while search is open: the query, the match position counted
+/// from the newest match, and the keys.
+fn search_hint(state: &DshTuiState) -> String {
+    let query = &state.search.query;
+    let count = match_count(&state.transcript, query);
+    let position = match state.search.current {
+        Some(current) if count > 0 => {
+            let newer_or_same = state.transcript[current..]
+                .iter()
+                .filter(|line| line_matches(line, query))
+                .count();
+            format!("match {newer_or_same}/{count}")
+        }
+        _ if query.is_empty() => "type to search".to_string(),
+        _ => "no match".to_string(),
+    };
+    format!("search: {query}_   {position}   Enter/Down older  Up newer  Esc closes")
+}
+
 fn render_transcript(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, theme: Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -207,16 +229,26 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, the
     let inner_height = area.height.saturating_sub(2) as usize;
     let total = state.transcript.len();
     let scroll = usize::from(state.scroll).min(total.saturating_sub(1));
-    let end = total.saturating_sub(scroll);
+    // Scrolling past the first page pins it, so Home shows a full page.
+    let end = total
+        .saturating_sub(scroll)
+        .max(inner_height.max(1).min(total));
     let start = end.saturating_sub(inner_height.max(1));
 
+    let current = state.search.current.filter(|_| state.search.open);
     let lines: Vec<Line<'_>> = state.transcript[start..end]
         .iter()
-        .map(|line| {
+        .enumerate()
+        .map(|(offset, line)| {
             let style = line_style(theme, line.kind());
+            let marker = if current == Some(start + offset) {
+                '>'
+            } else {
+                ' '
+            };
             let prefix = match line {
-                TranscriptLine::Runtime { sequence, .. } => format!("{sequence:>5} "),
-                TranscriptLine::Local { .. } => "      ".to_string(),
+                TranscriptLine::Runtime { sequence, .. } => format!("{marker}{sequence:>4} "),
+                TranscriptLine::Local { .. } => format!("{marker}     "),
             };
             Line::from(vec![
                 Span::styled(prefix, muted_style(theme)),
@@ -252,8 +284,11 @@ fn render_input(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, theme: T
 }
 
 fn render_hint(frame: &mut Frame<'_>, area: Rect, state: &DshTuiState, theme: Theme) {
-    let hint = if state.scroll > 0 {
-        format!("{}   [scrolled back {} lines]", state.status, state.scroll)
+    let hint = if state.search.open {
+        search_hint(state)
+    } else if state.scroll > 0 {
+        // The marker goes first so a narrow terminal still shows it.
+        format!("[scrolled back {} lines]   {}", state.scroll, state.status)
     } else {
         state.status.clone()
     };
@@ -294,6 +329,50 @@ mod tests {
         state.phase = DshPhase::Ready;
         state.server_version = Some("0.0.1".to_string());
         state
+    }
+
+    #[test]
+    fn search_status_is_rendered() {
+        let mut state = state();
+        state.transcript.clear();
+        for (sequence, text) in ["alpha one", "beta", "alpha two"].into_iter().enumerate() {
+            state.push(TranscriptLine::Runtime {
+                sequence: sequence as u64,
+                kind: vibemux_harness::dsh::DshRecordKind::Text,
+                text: text.to_string(),
+            });
+        }
+        state.search.open = true;
+        state.search.query = "alpha".to_string();
+        state.search.current = Some(0);
+        let rendered = render_to_string(&state, Theme::Classic, 100, 24);
+        assert!(rendered.contains("search: alpha_"), "{rendered}");
+        assert!(rendered.contains("match 2/2"), "{rendered}");
+        let marked = rendered
+            .lines()
+            .find(|line| line.contains("alpha one"))
+            .expect("the match is in view");
+        assert!(marked.contains('>'), "{marked}");
+        let unmarked = rendered
+            .lines()
+            .find(|line| line.contains("alpha two"))
+            .expect("the other match is in view");
+        assert!(!unmarked.contains('>'), "{unmarked}");
+    }
+
+    #[test]
+    fn home_shows_the_first_page_not_one_line() {
+        let mut state = state();
+        state.transcript.clear();
+        for sequence in 0..60u64 {
+            state.push(TranscriptLine::Local {
+                text: format!("line {sequence} "),
+            });
+        }
+        state.scroll = 59;
+        let rendered = render_to_string(&state, Theme::Classic, 80, 24);
+        assert!(rendered.contains("line 0 "), "{rendered}");
+        assert!(rendered.contains("line 3 "), "{rendered}");
     }
 
     #[test]

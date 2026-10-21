@@ -94,7 +94,7 @@ async fn main() -> ExitCode {
     }
 
     let view_model = ViewModel::from_report(&report);
-    if let Err(error) = tui::run_tui(&view_model, theme) {
+    if let Err(error) = tui::run_tui(view_model, theme, Some(config)) {
         eprintln!("frontend_tui failed: {error}");
         return ExitCode::from(4);
     }

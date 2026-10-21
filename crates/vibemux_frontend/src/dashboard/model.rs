@@ -156,6 +156,25 @@ impl DashboardModel {
         }
     }
 
+    /// The agents whose name, launcher state, or adapter support contains
+    /// `query`, ignoring case, in model order.
+    #[must_use]
+    pub fn filtered_agents(&self, query: &str) -> Vec<&AgentView> {
+        self.agents
+            .iter()
+            .filter(|agent| {
+                super::filter::matches(
+                    query,
+                    &[
+                        &agent.name,
+                        &agent.launcher_state,
+                        agent.adapter.support.as_str(),
+                    ],
+                )
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn plain_snapshot(&self) -> String {
         let mut lines = vec![
