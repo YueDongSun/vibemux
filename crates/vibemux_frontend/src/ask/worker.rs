@@ -16,7 +16,7 @@ use std::{
 
 use uuid::Uuid;
 use vibemux_harness::{
-    AgentKind,
+    AgentKind, HarnessRow,
     dispatch::{
         DispatchRequest, NativeProtocol, request::DISPATCH_REQUEST_SCHEMA_VERSION,
         route_config::ExecutablePolicy,
@@ -328,11 +328,47 @@ fn setup(project_root: &Path) -> SetupOutcome {
             "Routes were written, but starting the daemon failed: {message}"
         ));
     }
+    // Dispatch admits only a harness the daemon has recorded as detected,
+    // and the daemon records detection only on request: record it from the
+    // probe cache saved above, as `vibemuxctl harnesses` does.
+    let rows = match runtime.block_on(record_detection(project_root)) {
+        Ok(rows) => rows,
+        Err(code) => {
+            return SetupOutcome::Failed(format!(
+                "Routes were written and VibeMux restarted, but recording the detected harnesses failed ({code}). Run vibemuxctl harnesses --project-root <this folder>, then try again."
+            ));
+        }
+    };
+    let (enabled, undetected) = routes::detected_routes(&plan.routes, &rows);
+    if enabled.is_empty() {
+        return SetupOutcome::Failed(
+            "Routes were written, but VibeMux detected none of their harnesses.".to_string(),
+        );
+    }
+    let mut skipped = plan.skipped;
+    skipped.extend(
+        undetected
+            .into_iter()
+            .map(|harness| (harness, SkipReason::NotDetected)),
+    );
     SetupOutcome::Done {
         config_path,
-        enabled: plan.routes.iter().map(|route| route.harness).collect(),
-        skipped: plan.skipped,
+        enabled,
+        skipped,
     }
+}
+
+/// Asks the folder's daemon to record harness detection from its probe
+/// cache; returns the recorded rows.
+async fn record_detection(project_root: &Path) -> Result<Vec<HarnessRow>, String> {
+    let paths =
+        DaemonPaths::from_project_root(project_root).map_err(|error| error.code().to_string())?;
+    let mut session = DaemonSession::default();
+    let (client, _) = session.connect(&paths)?;
+    client
+        .harness_refresh()
+        .await
+        .map_err(|error| error.code().to_string())
 }
 
 /// The first daemon-side binary dispatch needs that is missing next to the
