@@ -28,6 +28,7 @@ impl SupervisorSnapshot {
             connection: ConnectionState {
                 status: ConnectionStatus::Unavailable,
                 detail: Some("The supervisor runtime is not connected.".to_string()),
+                code: None,
             },
             tasks: Vec::new(),
             next_cursor: None,
@@ -49,6 +50,10 @@ impl Default for SupervisorSnapshot {
 pub struct ConnectionState {
     pub status: ConnectionStatus,
     pub detail: Option<String>,
+    /// Stable reason code of a failed connection, such as
+    /// `daemon_not_running`. The GUI keys its actions on this, never on the
+    /// human-readable detail.
+    pub code: Option<String>,
 }
 
 /// Stable status tokens used by the GUI and runtime adapter.

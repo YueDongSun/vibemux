@@ -1,8 +1,21 @@
 //! Native application adapter joining presentation with the control reader.
-use std::sync::Arc;
+//!
+//! It owns the observation client for the active project folder, restarts
+//! it when the user switches folders, and runs the daemon starts and stops
+//! the user asks for on a worker thread, so the UI never blocks on them.
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, TryRecvError},
+    },
+};
 
 use crate::{
-    gui::VibeMuxApp, supervisor_client::FrontendClient, supervisor_model::SupervisorSnapshot,
+    daemon_control::{self, DaemonCommand, DaemonControlResult},
+    gui::{DaemonJob, VibeMuxApp},
+    supervisor_client::FrontendClient,
+    supervisor_model::{SupervisorAction, SupervisorSnapshot},
 };
 
 pub struct LiveApp {
@@ -11,22 +24,101 @@ pub struct LiveApp {
     /// Shared handle to the last observation. Publishing moves this instead of
     /// deep-copying the snapshot, so a poll costs one atomic increment.
     snapshot: Arc<SupervisorSnapshot>,
+    context: egui::Context,
+    /// The result of the start or stop in flight, if any.
+    daemon_result: Option<Receiver<DaemonControlResult>>,
 }
 
 impl LiveApp {
     pub fn new(mut app: VibeMuxApp, context: egui::Context) -> Self {
-        let mut snapshot = SupervisorSnapshot::unavailable();
-        let client = std::env::current_dir().and_then(|root| FrontendClient::start(root, context));
-        if client.is_err() {
-            snapshot.connection.detail =
-                Some("Unable to start the workspace observation client.".into());
-        }
-        let snapshot = Arc::new(snapshot);
+        let (client, snapshot) = connect(app.active_project().map(PathBuf::from), &context);
         app.replace_snapshot(Arc::clone(&snapshot));
         Self {
             app,
-            client: client.ok(),
+            client,
             snapshot,
+            context,
+            daemon_result: None,
+        }
+    }
+
+    /// Replaces the observation client with one for `folder`.
+    fn switch_folder(&mut self, folder: PathBuf) {
+        // Dropping the old client cancels its reader before the new one starts.
+        self.client = None;
+        let (client, snapshot) = connect(Some(folder), &self.context);
+        self.client = client;
+        self.snapshot = snapshot;
+        self.app.replace_snapshot(Arc::clone(&self.snapshot));
+    }
+
+    fn start_daemon_job(&mut self, command: DaemonCommand) {
+        let Some(folder) = self.app.active_project().map(PathBuf::from) else {
+            self.app
+                .set_daemon_job(DaemonJob::Failed("Open a folder first.".to_string()));
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        let context = self.context.clone();
+        let spawned = std::thread::Builder::new()
+            .name("gui_daemon_control".into())
+            .spawn(move || {
+                let _ = sender.send(daemon_control::run(command, &folder));
+                context.request_repaint();
+            });
+        match spawned {
+            Ok(_) => self.daemon_result = Some(receiver),
+            Err(_) => self.app.set_daemon_job(DaemonJob::Failed(
+                "Could not start the daemon control worker.".to_string(),
+            )),
+        }
+    }
+
+    fn poll_daemon_job(&mut self) {
+        let Some(receiver) = self.daemon_result.as_ref() else {
+            return;
+        };
+        let outcome = match receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => DaemonControlResult::Failed {
+                code: "daemon_control_worker_stopped".into(),
+                message: "The daemon control worker stopped unexpectedly.".into(),
+            },
+        };
+        self.daemon_result = None;
+        match outcome {
+            DaemonControlResult::Done { .. } => {
+                self.app.set_daemon_job(DaemonJob::Idle);
+                // Ask for a fresh observation instead of waiting for the next poll.
+                if let Some(client) = self.client.as_ref() {
+                    let _ = client.submit(SupervisorAction::Refresh);
+                }
+            }
+            DaemonControlResult::Failed { message, .. } => {
+                self.app.set_daemon_job(DaemonJob::Failed(message));
+            }
+        }
+    }
+}
+
+/// An observation client for `folder`, and the snapshot to show until it
+/// reports.
+fn connect(
+    folder: Option<PathBuf>,
+    context: &egui::Context,
+) -> (Option<FrontendClient>, Arc<SupervisorSnapshot>) {
+    let mut snapshot = SupervisorSnapshot::unavailable();
+    let Some(folder) = folder else {
+        snapshot.connection.detail = Some("Open a folder to observe its tasks.".into());
+        return (None, Arc::new(snapshot));
+    };
+    match FrontendClient::start(folder, context.clone()) {
+        Ok(client) => (Some(client), Arc::new(snapshot)),
+        Err(_) => {
+            snapshot.connection.detail =
+                Some("Unable to start the workspace observation client.".into());
+            (None, Arc::new(snapshot))
         }
     }
 }
@@ -39,7 +131,14 @@ impl eframe::App for LiveApp {
             self.snapshot = snapshot;
             self.app.replace_snapshot(Arc::clone(&self.snapshot));
         }
+        self.poll_daemon_job();
         self.app.ui(ui, frame);
+        if let Some(folder) = self.app.take_project_switch() {
+            self.switch_folder(folder);
+        }
+        if let Some(command) = self.app.take_daemon_request() {
+            self.start_daemon_job(command);
+        }
         for action in self.app.take_supervisor_actions() {
             let result = self
                 .client

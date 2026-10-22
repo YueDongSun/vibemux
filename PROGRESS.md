@@ -6340,3 +6340,42 @@ protocol, CLI, or observer contract changes. ADR 030 records the amendment.
 **Not verified:** the console-less launch and startup log were exercised by
 unit tests and a manual launch, not by an automated end-to-end Windows test;
 other display scales, IME input, and screen readers were not tested.
+
+### 2026-10-23 - GUI: project folders and daemon Start/Stop
+
+**Scope:** `vibemux_frontend` GUI only (PR 2 of the operator's "basic
+functions" plan; read-only Ask-a-harness follows, then the Console page).
+No daemon, store, control protocol, or CLI changes; the GUI drives the
+existing `vibemuxctl daemon start|stop`. ADR 030 records the amendment.
+
+**Implemented:**
+- "Open folder" dialog (typed or pasted path; native picker on Windows via
+  the Windows-only `rfd` dependency with default features off), recent
+  folders in the sidebar, and saved `active_project` / `recent_projects`
+  (at most eight; `schema_version` stays 1). The observation client
+  reconnects when the folder changes.
+- The connection state carries a stable reason `code`; `daemon_not_running`
+  shows a Start card, and Settings → Connection offers Start or Stop. They
+  run `vibemuxctl --json daemon start|stop --project-root <folder>` on a
+  worker thread, with no console window, a 60 s bound, one at a time, and
+  output in private temporary files.
+
+**Validation executed (Rust 1.92.0):**
+- Native Windows 11: `cargo fmt --all -- --check` passed; `cargo clippy -p
+  vibemux_frontend --all-targets --all-features -- -D warnings` passed;
+  `cargo test -p vibemux_frontend --all-features` passed (lib 234, 1
+  ignored; `supervisor_ui` 10, `daemon_feed` 4, `palette_parity` 2,
+  binaries 2 + 4 + 6 + 6).
+- WSL Ubuntu 24.04: the same fmt, clippy, and tests passed (lib 233; the
+  Windows-only path-case test does not build there); `cargo deny --offline
+  check` passed with `rfd` (MIT) added.
+- The adapter's exact commands against a real `vibemuxctl`/`vibemuxd` build
+  and a temporary project: start reported `started`, a repeat
+  `already_running`, stop `stopped`, and a repeat stop exited 4 with
+  `daemon_not_running` on stderr, matching what the GUI parses. No vendor
+  CLI ran.
+- Preview screenshots of the Start card, the Folders list, and Settings →
+  General were captured at 1280×800 and checked by eye (local only).
+
+**Not verified:** clicking Start, Stop, Browse, or a folder switch in a live
+window was not automated; the native picker was not opened in a test.

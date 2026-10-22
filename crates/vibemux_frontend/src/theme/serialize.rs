@@ -127,6 +127,47 @@ pub struct UserConfig {
     pub density: Density,
     #[serde(default)]
     pub text_size: TextSize,
+    /// The project folder the GUI opens and observes. `None` falls back to
+    /// the directory the GUI was started from.
+    #[serde(default)]
+    pub active_project: Option<PathBuf>,
+    /// Recently opened project folders, most recent first, at most
+    /// [`MAX_RECENT_PROJECTS`].
+    #[serde(default)]
+    pub recent_projects: Vec<PathBuf>,
+}
+
+/// How many recent project folders the GUI remembers.
+pub const MAX_RECENT_PROJECTS: usize = 8;
+
+impl UserConfig {
+    /// Makes `folder` the active project and moves it to the front of the
+    /// recent list, without duplicates and within the bound.
+    pub fn remember_project(&mut self, folder: PathBuf) {
+        self.recent_projects
+            .retain(|known| !same_folder(known, &folder));
+        self.recent_projects.insert(0, folder.clone());
+        self.recent_projects.truncate(MAX_RECENT_PROJECTS);
+        self.active_project = Some(folder);
+    }
+
+    /// Drops `folder` from the recent list. The active project is kept.
+    pub fn forget_project(&mut self, folder: &Path) {
+        self.recent_projects
+            .retain(|known| !same_folder(known, folder));
+    }
+}
+
+/// Whether two folder paths name the same folder. Windows paths compare
+/// case-insensitively; others compare exactly.
+#[must_use]
+pub fn same_folder(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
 }
 
 fn default_density() -> Density {
@@ -146,6 +187,8 @@ impl Default for UserConfig {
             start_page: StartPage::default(),
             density: default_density(),
             text_size: TextSize::default(),
+            active_project: None,
+            recent_projects: Vec::new(),
         }
     }
 }
@@ -191,10 +234,15 @@ pub fn load_user_config_at(path: &Path) -> UserConfig {
     let stripped = bytes.strip_prefix('\u{FEFF}').unwrap_or(&bytes);
     let parsed: Result<UserConfig, _> = serde_json::from_str(stripped);
     match parsed {
-        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => UserConfig {
-            window_size: cfg.window_size.clamped(),
-            ..cfg
-        },
+        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => {
+            let mut recent_projects = cfg.recent_projects;
+            recent_projects.truncate(MAX_RECENT_PROJECTS);
+            UserConfig {
+                window_size: cfg.window_size.clamped(),
+                recent_projects,
+                ..cfg
+            }
+        }
         Ok(_) => UserConfig::default(),
         Err(_) => UserConfig::default(),
     }
@@ -318,6 +366,68 @@ mod tests {
         };
         save_user_config_at(&changed, &path).expect("save");
         assert_eq!(load_user_config_at(&path), changed);
+    }
+
+    #[test]
+    fn recent_projects_stay_unique_ordered_and_bounded() {
+        let mut config = UserConfig::default();
+        for index in 0..MAX_RECENT_PROJECTS + 3 {
+            config.remember_project(PathBuf::from(format!("projects/{index}")));
+        }
+        assert_eq!(config.recent_projects.len(), MAX_RECENT_PROJECTS);
+        let newest = PathBuf::from(format!("projects/{}", MAX_RECENT_PROJECTS + 2));
+        assert_eq!(config.recent_projects[0], newest);
+
+        let again = PathBuf::from("projects/5");
+        config.remember_project(again.clone());
+        assert_eq!(config.recent_projects[0], again);
+        assert_eq!(
+            config
+                .recent_projects
+                .iter()
+                .filter(|folder| **folder == again)
+                .count(),
+            1
+        );
+        assert_eq!(config.active_project.as_ref(), Some(&again));
+
+        config.forget_project(&again);
+        assert!(!config.recent_projects.contains(&again));
+        assert_eq!(
+            config.active_project.as_ref(),
+            Some(&again),
+            "forgetting a recent folder keeps the open one"
+        );
+    }
+
+    #[test]
+    fn an_oversized_recent_list_is_cut_on_load() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("frontend.json");
+        let config = UserConfig {
+            recent_projects: (0..MAX_RECENT_PROJECTS + 4)
+                .map(|index| PathBuf::from(format!("projects/{index}")))
+                .collect(),
+            ..UserConfig::default()
+        };
+        save_user_config_at(&config, &path).expect("save");
+        assert_eq!(
+            load_user_config_at(&path).recent_projects.len(),
+            MAX_RECENT_PROJECTS
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_folders_compare_without_case() {
+        assert!(same_folder(
+            Path::new("C:\\Projects\\App"),
+            Path::new("c:\\projects\\app")
+        ));
+        assert!(!same_folder(
+            Path::new("C:\\Projects\\App"),
+            Path::new("C:\\Projects\\Other")
+        ));
     }
 
     #[test]

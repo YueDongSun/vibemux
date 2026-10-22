@@ -31,6 +31,7 @@ fn snapshot(tasks: Vec<TaskView>) -> SupervisorSnapshot {
         connection: ConnectionState {
             status: ConnectionStatus::Connected,
             detail: None,
+            code: None,
         },
         tasks,
         next_cursor: None,
