@@ -357,7 +357,7 @@ Use `--format text`, `--format json`, or `--json` before the command. Auto mode 
 
 The frontend crate builds five binaries:
 
-- `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps Agents/Settings/Diagnostics secondary, and preserves all five appearance palettes. The composer retains a local draft but Send is unavailable until a continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
+- `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps the Console, Settings, and Diagnostics secondary, and preserves all five appearance palettes. Send runs a read-only Ask of Claude or Codex when the folder's daemon has an executing dispatch route for it (see below); the Coordinator target keeps a local draft, because no continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `j`/`k` select a harness (the footer names its launcher, authentication, inference, version, route, code, and adapter support), `r` re-runs the same read-only probe in the background (the footer shows `probing`; it sends no prompt), `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
 - `vibemux_dashboard` — the read-only multi-pane console behind `vibemuxctl ui` (ADR 041, ADR 042): probe, Git inventory, and content-free daemon views in single, split, or grid layouts. It uses the same six terminal themes as `vibemux_frontend_tui`, with its own keys.
@@ -365,23 +365,23 @@ The frontend crate builds five binaries:
 
 The GUI defaults to **Claude light**: a cream canvas, terracotta accent, serif
 display type from the system's Georgia or Cambria, and a Claude Desktop style
-sidebar with **New task**, Conversation, Agents, a Recents list, and a
+sidebar with **New task**, Conversation, Console, a Recents list, and a
 workspace menu. The sidebar collapses to an icon rail. **Settings** (`Ctrl+,`
 or the sidebar) is a full page with General, Appearance, Connection, Keyboard
 shortcuts, and About sections. Seven themes are available in **Settings →
 Appearance** as preview cards: Claude Light (`claude_light`), Claude Dark
 (`claude`), Studio, GitHub, VS Code, Nord, and Gruvbox. Appearance also sets
 Density (Comfortable or Compact) and Text size (Small, Default, or Large);
-General sets the start page (Conversation or Agents) and the startup window
+General sets the start page (Conversation or Console) and the startup window
 size; Connection shows the daemon connection read-only. Every theme shares one
 rounded scale: 10 px buttons, 14 px cards and panels, a 20 px composer, and
-pill-shaped chips. Existing saved appearance preferences are preserved. Sending from the composer is not
-available yet: Enter keeps the draft and says it was not sent, and Shift+Enter
-inserts a newline.
+pill-shaped chips. Existing saved appearance preferences are preserved. Enter
+sends a read-only Ask when the composer targets a ready harness; otherwise it
+keeps the draft and says why it was not sent. Shift+Enter inserts a newline.
 
 Task windows have Overview, Activity, and Artifacts tabs; the Overview's
 Linked terminal section shows the Run's terminal link with Focus, Unlink, and
-Find terminals. Closing a window does not stop its task. `Ctrl+1..0` accesses the ten pre-existing harness diagnostics;
+Find terminals. Closing a window does not stop its task. `Ctrl+1..0` opens the ten pre-existing harnesses' details in the Console;
 Escape closes overlays before returning to Coordinator. `Ctrl+K` opens a quick
 switcher over the loaded tasks, the agents, and a fixed action list (New task,
 Settings, Diagnostics, Keyboard shortcuts, Toggle sidebar, Light, Dark): type
@@ -400,10 +400,51 @@ Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
 `cargo run -p vibemux_frontend --bin vibemux_frontend`. On Windows the GUI
 never opens a console window, in debug and release builds alike (like
 `pythonw`); a startup failure or a panic is written to `frontend_errors.log`
-next to the settings file (`%APPDATA%\vibemux\`). The GUI does not start
-the daemon automatically. A stopped or older daemon produces an explicit
+next to the settings file (`%APPDATA%\vibemux\`).
+
+The GUI observes one project folder at a time. **Open folder…** (in the
+sidebar's Folders list, the workspace menu, the collapsed rail, or Settings →
+General) takes a typed or pasted path, or the native Windows folder picker,
+and the sidebar keeps the eight most recent folders. The active folder is
+saved and reopened at the next launch; without one, the GUI uses the folder
+it was started from. The GUI never starts the daemon by itself: when the
+active folder has no running daemon, a **Start VibeMux** card appears, and
+Settings → Connection offers Start or Stop. These run `vibemuxctl --json
+daemon start|stop --project-root <folder>` with no console window, so
+`vibemuxctl` and `vibemuxd` must sit next to the GUI executable (a workspace
+build places them together). A stopped or older daemon produces an explicit
 unavailable state. The existing structured supervisor recipe is not a continuous
 coding-agent chat service.
+
+**Console.** The sidebar's **Console** page shows the terminal console's views
+(`vibemuxctl ui`) as cards: Overview, Harnesses, Workspace, Tasks, Daemon
+(health, dispatch routes, plugins), Sessions (DSH and workflow slots), and
+Decisions. Harnesses lists the probe results with **Re-probe** (read-only
+`--version` checks) and, for a harness that is Ask-ready in the folder, an
+**Ask** button that opens the conversation with it targeted without sending.
+While the page is open the GUI polls the folder's daemon for content-free
+state every 5 seconds (**Refresh** polls now) and reads the Git inventory
+through `vibemuxctl --json workspace status` (cached refs, no fetch). It
+never starts a daemon or a harness.
+
+**Ask a harness (read-only).** Pick Claude or Codex in the composer's target
+chip, type a prompt (at most 32 KiB), and press Enter or Send. The GUI asks
+the active folder's daemon to run one [harness dispatch](#harness-dispatch-pre-alpha-adr-029)
+turn with the read-only profile and shows the reply in the conversation as
+it arrives; Cancel asks the daemon to stop it. One Ask runs at a time. The
+first Ask in a folder asks you to confirm once, because the turn may use
+your subscription or paid inference. Replies live in the daemon's memory and
+are lost when it restarts; the window keeps its last 20 Asks and clears them
+when you switch folders. The read-only profile is not an OS sandbox. In a
+folder without `.vibemux\harness_dispatch.json`, picking Claude or Codex shows
+an **Enable Claude and Codex (read-only)** card: it runs the read-only probe,
+writes default read-only routes for a native `claude.exe` or `codex.exe`
+found outside the folder (a script shim such as an npm `codex.cmd` is skipped
+with the reason), and restarts the folder's daemon so it loads them. It never
+replaces an existing config; edit that file and restart the daemon instead.
+Setup needs `vibemuxd` and `vibemux_launch_trampoline` next to the GUI
+(`cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline -p vibemux_cli --bin vibemuxctl`).
+The Coordinator target stays draft-only.
 
 The screenshot-only `vibemux_frontend_preview` binary is built with
 `--features gui_screenshot`; its scenes are visibly marked **DEMO DATA** and
@@ -411,7 +452,9 @@ never contact a daemon or model. Example:
 `cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
 Scenes are `chat`, `drawer`, `task`, `settings`, `appearance`, `disconnected`,
-`welcome`, and `collapsed`. An unknown scene or theme, a size or scale that is not a number,
+`welcome`, `collapsed`, `ask` (a finished and a running Ask), `ask_setup`
+(the setup card), and `console`, `console_harnesses`, and `console_daemon`
+(the Console's Overview, Harnesses, and Daemon views). An unknown scene or theme, a size or scale that is not a number,
 or an extra argument exits with code 4 instead of drawing a different scene.
 The `task` scenes capture the actual independent native viewport.
 

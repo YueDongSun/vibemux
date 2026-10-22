@@ -350,3 +350,130 @@ Decided with the operator after reviewing preview screenshots:
 Next step agreed with the operator: a Console page that rebuilds the terminal
 console's views (ADR 041 and ADR 042) as Claude-style cards and absorbs the
 Agents page.
+
+## Amendment (2026-10-23): project folders and daemon Start/Stop
+
+Decided with the operator, who found the GUI too limited without a way to
+pick a project or start its daemon:
+
+- **Project folders.** An "Open folder" dialog takes a typed or pasted path
+  and, on Windows, the native folder picker (`rfd`, Windows-only, default
+  features off). The sidebar lists recent folders with the active one
+  highlighted. `UserConfig` gains `active_project` and `recent_projects`
+  (at most eight), defaulting when absent, so `schema_version` stays 1. The
+  GUI connects to the saved folder at start, falling back to its start-up
+  directory, and restarts its observation client when the folder changes.
+- **Daemon Start/Stop on an explicit click.** This revises "the GUI does not
+  start the daemon": it still never does so by itself. The connection state
+  gains a stable reason `code`; `daemon_not_running` shows a "Start VibeMux"
+  card, and Settings → Connection offers Start or Stop. The GUI runs
+  `vibemuxctl --json daemon start|stop --project-root <folder>`, so the CLI
+  stays the only owner of daemon lifecycle, on a worker thread with no
+  console window and a 60 s bound, one command at a time. Output goes to
+  private temporary files, because the started daemon may inherit handles and
+  a pipe it held would never reach end-of-file.
+
+Next steps agreed with the operator: a read-only "Ask a harness" Send through
+ADR 029 dispatch (one-time default route setup, confirmation once per folder,
+replies in daemon memory only), then the Console page.
+
+## Amendment (2026-10-23): read-only Ask a harness
+
+Decided with the operator, who wanted the GUI to do basic harness work in a
+folder while the main harness work stays in the CLI:
+
+- **Send runs a read-only Ask.** When the composer targets Claude or Codex
+  and the active folder's daemon lists an enabled route that may execute for
+  it, Send submits one ADR 029 dispatch turn with the prompt (at most
+  32 KiB). The GUI follows the attempt through `harness_dispatch_status` and
+  `harness_dispatch_output`, rebuilds the reply from the documented
+  assistant-text records only (Claude `result`, streamed `text_delta`, and
+  `assistant` text blocks; Codex app-server agent-message deltas and
+  completed items; Codex exec `agent_message` items), bounds it at 256 KiB,
+  and shows it in the conversation below the task activity. One Ask runs at
+  a time, matching the daemon's one dispatch per project. Cancel asks the
+  daemon to cancel. An Ask ends only when the daemon reports the attempt
+  settled and every output record was read; the GUI also gives up after
+  15 minutes and then cancels. Until an attempt launches the daemon has no
+  transcript for it, so missing output is waited for, not treated as a
+  failure. When the GUI stops following an attempt early (a lost
+  connection, the time bound) it asks the daemon to cancel it, so the
+  folder's dispatch slot is not left busy.
+- **The Coordinator target stays draft-only.** There is still no continuous
+  coordinator chat, and nothing fabricates a reply.
+- **Read-only, not sandboxed.** Asks use the dispatch read-only profiles,
+  which ADR 029 states are not an OS sandbox. The composer caption says the
+  turn is read-only and may use paid inference.
+- **Consent once per folder.** The first Ask in a folder opens a dialog that
+  names the harness and the folder and says the turn may use a subscription
+  or paid inference. Send records the folder in
+  `UserConfig.ask_confirmed_projects` (at most 64, empty by default, so
+  `schema_version` stays 1); Cancel puts the prompt back in the composer.
+- **One-click default routes.** In a folder whose daemon reports
+  `harness_dispatch_unconfigured`, choosing Claude or Codex in the composer
+  shows a setup card. Its button runs the read-only probe, saves the probe
+  cache, and plans read-only routes (`claude_stream_json` and
+  `codex_app_server`, `allow_execution: true`, environment names
+  `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`) only for a harness whose
+  verified executable is a native `.exe` outside the folder; a script shim
+  or an executable inside the folder is skipped with its reason. The routes
+  are checked with the daemon's own parser, written to
+  `.vibemux\harness_dispatch.json` with create-new semantics (an existing
+  file is never replaced), and loaded by restarting the folder's daemon
+  through `vibemuxctl`. Setup needs `vibemuxd` and
+  `vibemux_launch_trampoline` next to the GUI executable.
+- **Replies live in daemon memory.** The window keeps its last 20 Asks; a
+  folder switch clears them and cancels a running one; a daemon restart
+  loses their output. The daemon records each Ask like any dispatch, as a
+  canonical Task/Run with a content-free outcome. The GUI writes no
+  canonical state and reads output only for Asks it submitted.
+
+Verification: unit tests cover the reply text, the route plan and its
+validation, the session driver (including missing output before launch and
+the cancel of an abandoned attempt), the window's Ask state, and the shell's
+consent, gating, and rendering. A manual run against a real `vibemuxd` used
+the synthetic native fixture installed as `claude.exe` and `codex.exe`
+(completed Claude and Codex Asks, a cancel, an unconfigured folder), and the
+one-click setup in a temporary folder. No prompt was sent to a real vendor
+CLI; a live Ask still needs the operator's go-ahead.
+
+Next step agreed with the operator: the Console page.
+
+## Amendment (2026-10-23): the Console page replaces Agents
+
+Decided with the operator:
+
+- **A Console page replaces the Agents page.** It rebuilds the terminal
+  console's views (ADR 041, ADR 042) as cards behind a Settings-style
+  section list: Overview, Harnesses, Workspace, Tasks, Daemon (health,
+  dispatch routes, plugins), Sessions (DSH and workflow slots), and
+  Decisions. The sidebar entry, the top bar button, and the start page say
+  Console; a start page saved as `agents` loads as Console, and the value
+  is written back as `console`. `Ctrl+1` to `Ctrl+0` and the quick
+  switcher's harness entries open a harness's detail in the Console.
+- **Harnesses absorbs Agents** and adds two actions. **Re-probe** reruns the
+  read-only probe the GUI runs at startup (`--version` checks only) and
+  replaces the view model. **Ask** on a harness that is Ask-ready in this
+  folder goes to the conversation with that harness targeted; it never
+  sends.
+- **Reads only.** While the Console is on screen, the GUI runs the
+  content-free daemon feed of ADR 042 §2 for the active folder (a poll
+  every 5 seconds, Refresh for an immediate one, a task's detail on
+  request), and stops it when the page closes or the folder changes. The
+  Workspace view runs `vibemuxctl --json workspace status`, so the CLI stays
+  the owner of the Git inventory (cached refs, no fetch). Nothing on the
+  page starts a daemon, a harness, a dispatch, a DSH session, a workflow,
+  or a decision.
+- **Shared section page.** Settings and the Console share one section
+  list, card, and row kit. The content column is clamped to the viewport,
+  and rows count the gap between their columns, which fixes clipped or
+  creeping right-aligned values in narrow windows (960 px), in Settings
+  too.
+
+Verification: unit tests cover the Console state, each view's text, the
+Workspace JSON parser against the CLI's report shape, the CLI runner, the
+start page alias, and the shell's rendering of every section at 1280×800
+and 900×600. A bridge test shows the feed and the inventory read run only
+while the page is open. Screenshots of the `console`, `console_harnesses`,
+and `console_daemon` preview scenes and of Settings at 960×600 were checked
+by eye.

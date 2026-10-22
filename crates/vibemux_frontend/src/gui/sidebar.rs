@@ -7,8 +7,9 @@ use super::{
     supervisor_state::MainPage,
     task_labels, typography,
 };
-use crate::supervisor_model::SupervisorSnapshot;
+use crate::{project_folder, supervisor_model::SupervisorSnapshot, theme::serialize::same_folder};
 use egui::{self, RichText, Sense, Ui, vec2};
+use std::path::{Path, PathBuf};
 
 pub const SIDEBAR_WIDTH: f32 = 260.0;
 pub const SIDEBAR_RAIL_WIDTH: f32 = 56.0;
@@ -18,6 +19,8 @@ pub const TOGGLE_BUTTON_ID: &str = "sidebar_toggle";
 pub const WORKSPACE_BUTTON_ID: &str = "sidebar_workspace";
 const ROW_HEIGHT: f32 = 34.0;
 const RECENT_ROW_HEIGHT: f32 = 30.0;
+/// Folders listed in the sidebar; the dialog lists every recent folder.
+const MAX_SIDEBAR_FOLDERS: usize = 4;
 
 pub struct SidebarView<'a> {
     pub snapshot: &'a SupervisorSnapshot,
@@ -27,6 +30,10 @@ pub struct SidebarView<'a> {
     pub selected_task_id: Option<&'a str>,
     /// The full-page settings are open, so no page is highlighted.
     pub settings_open: bool,
+    /// The folder the GUI observes, if any.
+    pub active_folder: Option<&'a Path>,
+    /// Recently opened folders, most recent first.
+    pub recent_folders: &'a [PathBuf],
 }
 
 #[derive(Default)]
@@ -37,6 +44,8 @@ pub struct SidebarActions {
     pub task_id: Option<String>,
     pub new_task: bool,
     pub toggle_collapsed: bool,
+    pub open_folder_dialog: bool,
+    pub switch_folder: Option<PathBuf>,
 }
 
 #[must_use]
@@ -102,10 +111,12 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
             if design::nav_row(ui, c, "Conversation", Icon::Chat, conversation) {
                 actions.page = Some(MainPage::CoordinatorChat);
             }
-            let agents = !view.settings_open && view.page == MainPage::Agents;
-            if design::nav_row(ui, c, "Agents", Icon::Grid, agents) {
-                actions.page = Some(MainPage::Agents);
+            let console = !view.settings_open && view.page == MainPage::Console;
+            if design::nav_row(ui, c, "Console", Icon::Grid, console) {
+                actions.page = Some(MainPage::Console);
             }
+            ui.add_space(18.0);
+            folders_section(ui, c, view, actions);
             ui.add_space(18.0);
             ui.label(RichText::new("Recents").size(12.0).color(c.muted));
             ui.add_space(4.0);
@@ -140,7 +151,8 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                     (Icon::SidebarToggle, "Expand sidebar", TOGGLE_BUTTON_ID),
                     (Icon::Plus, "New task", NEW_TASK_BUTTON_ID),
                     (Icon::Chat, "Conversation", "sidebar_rail_conversation"),
-                    (Icon::Grid, "Agents", "sidebar_rail_agents"),
+                    (Icon::Grid, "Console", "sidebar_rail_console"),
+                    (Icon::Folder, "Open folder…", "sidebar_rail_folder"),
                     (Icon::Settings, "Settings", "sidebar_rail_settings"),
                 ];
                 for (kind, tooltip, id) in buttons {
@@ -149,7 +161,8 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                             Icon::SidebarToggle => actions.toggle_collapsed = true,
                             Icon::Plus => actions.new_task = true,
                             Icon::Chat => actions.page = Some(MainPage::CoordinatorChat),
-                            Icon::Grid => actions.page = Some(MainPage::Agents),
+                            Icon::Grid => actions.page = Some(MainPage::Console),
+                            Icon::Folder => actions.open_folder_dialog = true,
                             _ => actions.open_settings = true,
                         }
                     }
@@ -157,6 +170,97 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                 }
             });
         });
+}
+
+/// The folders to list: the active folder first when it is not a recent
+/// one (such as the start-up directory), then the recent folders.
+fn listed_folders(view: &SidebarView<'_>) -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+    if let Some(active) = view.active_folder
+        && !view
+            .recent_folders
+            .iter()
+            .any(|recent| same_folder(recent, active))
+    {
+        folders.push(active.to_path_buf());
+    }
+    folders.extend(view.recent_folders.iter().cloned());
+    folders.truncate(MAX_SIDEBAR_FOLDERS);
+    folders
+}
+
+fn folders_section(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut SidebarActions) {
+    ui.label(RichText::new("Folders").size(12.0).color(c.muted));
+    ui.add_space(4.0);
+    for folder in listed_folders(view) {
+        let active = view
+            .active_folder
+            .is_some_and(|active| same_folder(active, &folder));
+        if folder_row(ui, c, &folder, active).clicked() && !active {
+            actions.switch_folder = Some(folder);
+        }
+    }
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), RECENT_ROW_HEIGHT),
+        Sense::click(),
+    );
+    if response.hovered() || response.has_focus() {
+        ui.painter()
+            .rect_filled(rect, design::BUTTON_RADIUS, c.raised);
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "+  Open folder…",
+        egui::FontId::proportional(13.0),
+        c.muted,
+    );
+    design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open folder"));
+    if response.clicked() {
+        actions.open_folder_dialog = true;
+    }
+}
+
+fn folder_row(ui: &mut Ui, c: &C, folder: &Path, active: bool) -> egui::Response {
+    let name = project_folder::display_name(folder);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), RECENT_ROW_HEIGHT),
+        Sense::click(),
+    );
+    if active || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            design::BUTTON_RADIUS,
+            if active { c.accent_bg } else { c.raised },
+        );
+    }
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(8.0, 6.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    design::icon(
+        &mut child,
+        Icon::Folder,
+        if active { c.accent } else { c.muted },
+        16.0,
+    );
+    child.add_space(6.0);
+    child.add(
+        egui::Label::new(RichText::new(&name).size(13.0).color(if active {
+            c.txt
+        } else {
+            c.muted
+        }))
+        .truncate(),
+    );
+    design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, &name)
+    });
+    response.on_hover_text(folder.display().to_string())
 }
 
 fn new_task_row(ui: &mut Ui, c: &C) -> bool {
@@ -282,6 +386,9 @@ fn workspace_button(
     });
     egui::Popup::menu(&response).show(|ui| {
         ui.set_min_width(200.0);
+        if ui.button("Open folder…").clicked() {
+            actions.open_folder_dialog = true;
+        }
         if ui.button("Settings").clicked() {
             actions.open_settings = true;
         }

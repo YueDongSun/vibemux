@@ -59,17 +59,19 @@ impl WindowSize {
 pub enum StartPage {
     #[default]
     Conversation,
-    Agents,
+    /// Saved as `agents` before the Console replaced the Agents page.
+    #[serde(alias = "agents")]
+    Console,
 }
 
 impl StartPage {
-    pub const ALL: [Self; 2] = [Self::Conversation, Self::Agents];
+    pub const ALL: [Self; 2] = [Self::Conversation, Self::Console];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Conversation => "Conversation",
-            Self::Agents => "Agents",
+            Self::Console => "Console",
         }
     }
 }
@@ -127,6 +129,71 @@ pub struct UserConfig {
     pub density: Density,
     #[serde(default)]
     pub text_size: TextSize,
+    /// The project folder the GUI opens and observes. `None` falls back to
+    /// the directory the GUI was started from.
+    #[serde(default)]
+    pub active_project: Option<PathBuf>,
+    /// Recently opened project folders, most recent first, at most
+    /// [`MAX_RECENT_PROJECTS`].
+    #[serde(default)]
+    pub recent_projects: Vec<PathBuf>,
+    /// Folders where the user confirmed that Ask may run harness turns,
+    /// which may use paid inference. Asked once per folder.
+    #[serde(default)]
+    pub ask_confirmed_projects: Vec<PathBuf>,
+}
+
+/// How many confirmed Ask folders are remembered.
+pub const MAX_ASK_CONFIRMED_PROJECTS: usize = 64;
+
+/// How many recent project folders the GUI remembers.
+pub const MAX_RECENT_PROJECTS: usize = 8;
+
+impl UserConfig {
+    /// Makes `folder` the active project and moves it to the front of the
+    /// recent list, without duplicates and within the bound.
+    pub fn remember_project(&mut self, folder: PathBuf) {
+        self.recent_projects
+            .retain(|known| !same_folder(known, &folder));
+        self.recent_projects.insert(0, folder.clone());
+        self.recent_projects.truncate(MAX_RECENT_PROJECTS);
+        self.active_project = Some(folder);
+    }
+
+    /// Drops `folder` from the recent list. The active project is kept.
+    pub fn forget_project(&mut self, folder: &Path) {
+        self.recent_projects
+            .retain(|known| !same_folder(known, folder));
+    }
+
+    /// Whether the user already confirmed Ask for `folder`.
+    #[must_use]
+    pub fn ask_confirmed(&self, folder: &Path) -> bool {
+        self.ask_confirmed_projects
+            .iter()
+            .any(|known| same_folder(known, folder))
+    }
+
+    /// Remembers the user's Ask confirmation for `folder`, newest first.
+    pub fn confirm_ask(&mut self, folder: PathBuf) {
+        self.ask_confirmed_projects
+            .retain(|known| !same_folder(known, &folder));
+        self.ask_confirmed_projects.insert(0, folder);
+        self.ask_confirmed_projects
+            .truncate(MAX_ASK_CONFIRMED_PROJECTS);
+    }
+}
+
+/// Whether two folder paths name the same folder. Windows paths compare
+/// case-insensitively; others compare exactly.
+#[must_use]
+pub fn same_folder(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
 }
 
 fn default_density() -> Density {
@@ -146,6 +213,9 @@ impl Default for UserConfig {
             start_page: StartPage::default(),
             density: default_density(),
             text_size: TextSize::default(),
+            active_project: None,
+            recent_projects: Vec::new(),
+            ask_confirmed_projects: Vec::new(),
         }
     }
 }
@@ -191,10 +261,18 @@ pub fn load_user_config_at(path: &Path) -> UserConfig {
     let stripped = bytes.strip_prefix('\u{FEFF}').unwrap_or(&bytes);
     let parsed: Result<UserConfig, _> = serde_json::from_str(stripped);
     match parsed {
-        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => UserConfig {
-            window_size: cfg.window_size.clamped(),
-            ..cfg
-        },
+        Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => {
+            let mut recent_projects = cfg.recent_projects;
+            recent_projects.truncate(MAX_RECENT_PROJECTS);
+            let mut ask_confirmed_projects = cfg.ask_confirmed_projects;
+            ask_confirmed_projects.truncate(MAX_ASK_CONFIRMED_PROJECTS);
+            UserConfig {
+                window_size: cfg.window_size.clamped(),
+                recent_projects,
+                ask_confirmed_projects,
+                ..cfg
+            }
+        }
         Ok(_) => UserConfig::default(),
         Err(_) => UserConfig::default(),
     }
@@ -311,13 +389,108 @@ mod tests {
         assert_eq!(loaded.text_size, TextSize::Default);
 
         let changed = UserConfig {
-            start_page: StartPage::Agents,
+            start_page: StartPage::Console,
             density: Density::Compact,
             text_size: TextSize::Large,
             ..loaded
         };
         save_user_config_at(&changed, &path).expect("save");
         assert_eq!(load_user_config_at(&path), changed);
+    }
+
+    #[test]
+    fn a_saved_agents_start_page_opens_the_console() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("frontend.json");
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"theme":"nord","window_size":{"width":1280,"height":800},"start_page":"agents"}"#,
+        )
+        .expect("a settings file from before the Console");
+        assert_eq!(load_user_config_at(&path).start_page, StartPage::Console);
+        let saved = serde_json::to_value(StartPage::Console).expect("encode");
+        assert_eq!(saved, "console");
+    }
+
+    #[test]
+    fn recent_projects_stay_unique_ordered_and_bounded() {
+        let mut config = UserConfig::default();
+        for index in 0..MAX_RECENT_PROJECTS + 3 {
+            config.remember_project(PathBuf::from(format!("projects/{index}")));
+        }
+        assert_eq!(config.recent_projects.len(), MAX_RECENT_PROJECTS);
+        let newest = PathBuf::from(format!("projects/{}", MAX_RECENT_PROJECTS + 2));
+        assert_eq!(config.recent_projects[0], newest);
+
+        let again = PathBuf::from("projects/5");
+        config.remember_project(again.clone());
+        assert_eq!(config.recent_projects[0], again);
+        assert_eq!(
+            config
+                .recent_projects
+                .iter()
+                .filter(|folder| **folder == again)
+                .count(),
+            1
+        );
+        assert_eq!(config.active_project.as_ref(), Some(&again));
+
+        config.forget_project(&again);
+        assert!(!config.recent_projects.contains(&again));
+        assert_eq!(
+            config.active_project.as_ref(),
+            Some(&again),
+            "forgetting a recent folder keeps the open one"
+        );
+    }
+
+    #[test]
+    fn an_oversized_recent_list_is_cut_on_load() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("frontend.json");
+        let config = UserConfig {
+            recent_projects: (0..MAX_RECENT_PROJECTS + 4)
+                .map(|index| PathBuf::from(format!("projects/{index}")))
+                .collect(),
+            ..UserConfig::default()
+        };
+        save_user_config_at(&config, &path).expect("save");
+        assert_eq!(
+            load_user_config_at(&path).recent_projects.len(),
+            MAX_RECENT_PROJECTS
+        );
+    }
+
+    #[test]
+    fn ask_confirmation_is_remembered_per_folder() {
+        let mut config = UserConfig::default();
+        let first = PathBuf::from("projects/first");
+        assert!(!config.ask_confirmed(&first));
+        config.confirm_ask(first.clone());
+        config.confirm_ask(first.clone());
+        assert!(config.ask_confirmed(&first));
+        assert_eq!(config.ask_confirmed_projects.len(), 1, "no duplicates");
+        assert!(!config.ask_confirmed(Path::new("projects/second")));
+        for index in 0..MAX_ASK_CONFIRMED_PROJECTS + 2 {
+            config.confirm_ask(PathBuf::from(format!("projects/{index}")));
+        }
+        assert_eq!(
+            config.ask_confirmed_projects.len(),
+            MAX_ASK_CONFIRMED_PROJECTS
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_folders_compare_without_case() {
+        assert!(same_folder(
+            Path::new("C:\\Projects\\App"),
+            Path::new("c:\\projects\\app")
+        ));
+        assert!(!same_folder(
+            Path::new("C:\\Projects\\App"),
+            Path::new("C:\\Projects\\Other")
+        ));
     }
 
     #[test]

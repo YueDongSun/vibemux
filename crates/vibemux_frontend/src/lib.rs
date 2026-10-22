@@ -14,14 +14,20 @@
 //! session driver instead, because it owns a runtime process rather than a
 //! read-only probe report.
 
+pub mod ask;
+mod cli_runner;
+pub mod daemon_control;
 mod daemon_session;
 pub mod dashboard;
 pub mod dsh_tui;
 pub mod gui;
 mod live_app;
+mod live_ask;
+mod live_console;
 #[cfg(feature = "gui_screenshot")]
 pub mod preview;
 pub mod probe_env;
+pub mod project_folder;
 pub mod quick_search;
 pub mod startup_log;
 pub mod supervisor_client;
@@ -30,6 +36,7 @@ pub mod supervisor_model;
 pub mod theme;
 pub mod tui;
 pub mod view_model;
+mod workspace_inventory;
 
 pub use supervisor_model::*;
 pub use view_model::ViewModel;

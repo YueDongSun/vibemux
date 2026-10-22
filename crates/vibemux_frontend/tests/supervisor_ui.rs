@@ -2,7 +2,7 @@
 
 use vibemux_frontend::{
     ConnectionState, ConnectionStatus, RunView, SupervisorSnapshot, TaskView,
-    gui::{MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailTab},
+    gui::{ConsoleSection, MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailTab},
 };
 
 fn task(task_id: &str, title: &str) -> TaskView {
@@ -31,6 +31,7 @@ fn snapshot(tasks: Vec<TaskView>) -> SupervisorSnapshot {
         connection: ConnectionState {
             status: ConnectionStatus::Connected,
             detail: None,
+            code: None,
         },
         tasks,
         next_cursor: None,
@@ -102,15 +103,20 @@ fn disabled_send_preserves_multiline_cjk_draft() {
 }
 
 #[test]
-fn coordinator_chat_is_the_default_page_and_agent_shortcuts_are_secondary() {
+fn coordinator_chat_is_the_default_page_and_harness_shortcuts_open_the_console() {
     let mut state = SupervisorUiState::default();
     assert_eq!(state.page(), MainPage::CoordinatorChat);
-    assert!(state.select_agent(9, 10));
-    assert_eq!(state.page(), MainPage::Agents);
-    assert_eq!(state.selected_agent(), Some(9));
+    assert!(!state.select_harness(10, 10), "out of range");
+    assert!(state.select_harness(9, 10));
+    assert_eq!(state.page(), MainPage::Console);
+    assert_eq!(state.console_section(), ConsoleSection::Harnesses);
+    assert_eq!(state.selected_harness(), Some(9));
     state.show_coordinator_chat();
     assert_eq!(state.page(), MainPage::CoordinatorChat);
-    assert_eq!(state.selected_agent(), None);
+    assert_eq!(state.selected_harness(), None);
+    state.show_console_section(ConsoleSection::Daemon);
+    assert_eq!(state.page(), MainPage::Console);
+    assert_eq!(state.console_section(), ConsoleSection::Daemon);
 }
 
 #[test]
@@ -200,7 +206,7 @@ fn navigation_leaves_the_welcome_state() {
     let snapshot = snapshot(vec![task("task_1", "First")]);
     let mut state = SupervisorUiState::default();
     let _ = state.request_new_task();
-    state.show_agents();
+    state.show_console();
     assert!(!state.welcome_active());
     let _ = state.request_new_task();
     state.show_coordinator_chat();

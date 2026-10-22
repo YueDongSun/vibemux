@@ -685,3 +685,13 @@ A2A exposure, durable transcript artifacts, streaming subscriptions over
 Control IPC, replay-only direct JSON protocols (`opencode_json`,
 `copilot_json`, `grok_stream_json`), the CLI/workspace/frontend refactors in
 `a955484`, and any change to the codex branches or their worktrees.
+
+## Amendment (2026-10-23): the GUI as a dispatch client
+
+The GUI's read-only Ask (ADR 030, amendment of 2026-10-23) is a client of
+the Control v5 operations above: it submits one turn per Send and reads that
+request's status and output. This revises "the frontend Send action stays
+unavailable" for Claude and Codex targets only. Every gate stays in the
+daemon (configured route, detection, `allow_execution`, one dispatch per
+project, read-only profiles), and a one-shot dispatch is still not a
+continuous coordinator-chat adapter. The daemon contract is unchanged.

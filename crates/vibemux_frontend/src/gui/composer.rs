@@ -22,7 +22,6 @@ const SEND_BUTTON_SIZE: f32 = 32.0;
 const COMPOSER_TEXT_MAX_SHARE: f32 = 0.35;
 const COMPOSER_TEXT_MIN_HEIGHT: f32 = 48.0;
 const COMPOSER_TEXT_MAX_HEIGHT: f32 = 240.0;
-const NOT_SENT_TEXT: &str = "Not sent: coordinator chat is not connected";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetOption {
@@ -65,13 +64,18 @@ fn target_unavailable_reason(agent: &AgentView) -> Option<&'static str> {
     }
 }
 
+/// The line under the composer: what Send will do for this target.
 #[must_use]
-pub fn caption_text(target: &ComposerTarget) -> String {
-    let prefix = match target {
-        ComposerTarget::Coordinator => "Draft only".to_string(),
-        ComposerTarget::Harness(name) => format!("Draft for {name}"),
-    };
-    format!("{prefix} · coordinator chat is not connected")
+pub fn caption_text(target: &ComposerTarget, ask_ready: bool) -> String {
+    match target {
+        ComposerTarget::Coordinator => "Draft only · coordinator chat is not connected".to_string(),
+        ComposerTarget::Harness(name) if ask_ready => {
+            format!("Ask {name} · read-only, it cannot change files · may use paid inference")
+        }
+        ComposerTarget::Harness(name) => {
+            format!("Draft for {name} · set up Ask in this folder to send")
+        }
+    }
 }
 
 pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[TargetOption]) {
@@ -129,8 +133,12 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
             |ui| {
                 target_chip(ui, c, state, options);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let response = send_button(ui, c, state.send_enabled())
-                        .on_hover_text(state.send_disabled_reason());
+                    let enabled = state.send_enabled();
+                    let response = send_button(ui, c, enabled).on_hover_text(if enabled {
+                        "Send as a read-only Ask"
+                    } else {
+                        state.send_disabled_reason()
+                    });
                     if response.clicked() {
                         attempt_send(state, now);
                     }
@@ -140,11 +148,15 @@ pub fn render(ui: &mut Ui, c: &C, state: &mut SupervisorUiState, options: &[Targ
     });
     ui.add_space(6.0);
     let hint = state.not_sent_hint_visible(now);
+    let ask_ready = match state.composer_target() {
+        ComposerTarget::Harness(name) => state.ask_ready_for(name),
+        ComposerTarget::Coordinator => false,
+    };
     ui.label(
         RichText::new(if hint {
-            NOT_SENT_TEXT.to_string()
+            format!("Not sent: {}", state.send_disabled_reason())
         } else {
-            caption_text(state.composer_target())
+            caption_text(state.composer_target(), ask_ready)
         })
         .size(11.5)
         .color(if hint { c.warn } else { c.muted }),
@@ -287,14 +299,18 @@ mod tests {
     }
 
     #[test]
-    fn caption_always_says_the_draft_is_not_sent() {
+    fn captions_say_what_send_will_do() {
         assert_eq!(
-            caption_text(&ComposerTarget::Coordinator),
+            caption_text(&ComposerTarget::Coordinator, false),
             "Draft only · coordinator chat is not connected"
         );
         assert_eq!(
-            caption_text(&ComposerTarget::Harness("Codex".to_string())),
-            "Draft for Codex · coordinator chat is not connected"
+            caption_text(&ComposerTarget::Harness("Codex".to_string()), false),
+            "Draft for Codex · set up Ask in this folder to send"
         );
+        let ready = caption_text(&ComposerTarget::Harness("Codex".to_string()), true);
+        assert!(ready.starts_with("Ask Codex"));
+        assert!(ready.contains("read-only"));
+        assert!(ready.contains("paid inference"));
     }
 }

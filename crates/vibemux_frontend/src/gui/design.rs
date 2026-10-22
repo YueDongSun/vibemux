@@ -14,6 +14,7 @@ pub enum Icon {
     Send,
     Close,
     Pulse,
+    Folder,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -44,6 +45,14 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
                     );
                 }
             }
+        }
+        Icon::Folder => {
+            // A folder: a tab on the top left over a rounded body.
+            let body = egui::Rect::from_min_max(position(0.08, 0.32), position(0.92, 0.86));
+            painter.rect_stroke(body, 2, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([position(0.08, 0.32), position(0.08, 0.18)], stroke);
+            painter.line_segment([position(0.08, 0.18), position(0.4, 0.18)], stroke);
+            painter.line_segment([position(0.4, 0.18), position(0.5, 0.32)], stroke);
         }
         Icon::Arrow => {
             painter.line_segment([position(0.15, 0.85), position(0.85, 0.15)], stroke);
@@ -126,6 +135,7 @@ const ICON_BUTTON_SIZE: f32 = 30.0;
 /// Height of a bordered action button, matched to `ICON_BUTTON_SIZE` so the
 /// action row in the terminal tab lines up with the rest of the chrome.
 const ACTION_BUTTON_HEIGHT: f32 = 28.0;
+const ACCENT_BUTTON_HEIGHT: f32 = 32.0;
 const SPARK_SHORT_RAY: f32 = 0.62;
 const SPARK_INNER_GAP: f32 = 0.16;
 const SPARK_STROKE: f32 = 0.2;
@@ -273,6 +283,19 @@ pub fn action_button(ui: &mut Ui, c: &C, label: &str, enabled: bool) -> Response
     } else {
         ui.add_enabled(false, button)
     };
+    paint_focus_ring(ui, &response, BUTTON_RADIUS, c);
+    response
+}
+
+/// The one accent-filled action on a card, such as "Start VibeMux".
+pub fn accent_button(ui: &mut Ui, c: &C, label: &str) -> Response {
+    let text_color = if c.light { Color32::WHITE } else { c.bg };
+    let response = ui.add(
+        egui::Button::new(RichText::new(label).size(13.5).color(text_color))
+            .fill(c.accent)
+            .corner_radius(BUTTON_RADIUS)
+            .min_size(vec2(0.0, ACCENT_BUTTON_HEIGHT)),
+    );
     paint_focus_ring(ui, &response, BUTTON_RADIUS, c);
     response
 }
