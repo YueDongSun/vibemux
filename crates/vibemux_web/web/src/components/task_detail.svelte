@@ -1,11 +1,13 @@
 <script lang="ts">
-  import type { freshness, task_status } from '../api_client';
+  import type { freshness, task_activity, task_status } from '../api_client';
+  import { format_bytes, short_id } from '../console_policy';
   import { display_task_title } from '../presentation_policy';
 
   let {
     task,
+    activity,
     freshness: data_freshness,
-  }: { task: task_status | null; freshness: freshness | null } = $props();
+  }: { task: task_status | null; activity: task_activity | null; freshness: freshness | null } = $props();
 
 </script>
 
@@ -59,6 +61,44 @@
           </li>
         {/each}
       </ul>
+    {/if}
+
+    <div class="activity_grid">
+      <div>
+        <h3 class="subheading">Events</h3>
+        {#if !activity || activity.events.length === 0}
+          <p class="empty_state compact">No events are attached to this task.</p>
+        {:else}
+          <ol class="activity_list">
+            {#each activity.events as event (event.sequence)}
+              <li>
+                <span class="mono">#{event.sequence}</span>
+                <span class="activity_type mono">{event.event_type}</span>
+                <span class="activity_meta">{event.run_id ? `run ${short_id(event.run_id)} · ` : ''}{event.at}</span>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      </div>
+      <div>
+        <h3 class="subheading">Artifacts</h3>
+        {#if !activity || activity.artifacts.length === 0}
+          <p class="empty_state compact">No artifacts are attached to this task.</p>
+        {:else}
+          <ol class="activity_list">
+            {#each activity.artifacts as artifact (artifact.artifact_id)}
+              <li>
+                <span class="mono">{short_id(artifact.artifact_id)}</span>
+                <span class="activity_type mono">{artifact.media_type}</span>
+                <span class="activity_meta">{format_bytes(artifact.size_bytes)} · run {short_id(artifact.run_id)}</span>
+              </li>
+            {/each}
+          </ol>
+        {/if}
+      </div>
+    </div>
+    {#if activity?.truncated}
+      <p class="list_note">The daemon returned only the latest runs, events, or artifacts of this task.</p>
     {/if}
   {/if}
 </section>

@@ -28,6 +28,7 @@ uuid.workspace = true
 web-push.workspace = true
 openssl.workspace = true
 vibemuxd = { path = "../vibemuxd" }
+vibemux_harness = { path = "../vibemux_harness" }
 vibemux_types = { path = "../vibemux_types" }
 vibemux_platform = { path = "../vibemux_platform" }
 

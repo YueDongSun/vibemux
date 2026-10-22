@@ -33,22 +33,107 @@ export type tasks_response = freshness & {
   truncated: boolean;
 };
 
-export type task_response = freshness & { task: task_status };
+export type task_event = {
+  sequence: number;
+  event_type: string;
+  at: string;
+  run_id: string | null;
+};
+
+export type task_artifact = {
+  artifact_id: string;
+  run_id: string;
+  media_type: string;
+  size_bytes: number;
+};
+
+export type task_activity = {
+  events: task_event[];
+  artifacts: task_artifact[];
+  truncated: boolean;
+};
+
+export type task_response = freshness & { task: task_status; activity: task_activity };
+
+export type dsh_status = {
+  phase: string;
+  provider: string | null;
+  model: string | null;
+  turns_started: number;
+  completed_turns: number;
+  failed_turns: number;
+  cancelled_turns: number;
+  unverified_turns: number;
+  records: number;
+  transport_open: boolean;
+};
 
 export type health_response = freshness & {
   daemon: { healthy: boolean; store_schema_version: number | null } | null;
-  dsh_status: {
-    phase: string;
-    provider: string | null;
-    model: string | null;
-    turns_started: number;
-    completed_turns: number;
-    failed_turns: number;
-    cancelled_turns: number;
-    unverified_turns: number;
-    records: number;
-    transport_open: boolean;
-  } | null;
+  dsh_status: dsh_status | null;
+};
+
+export type console_section<T> =
+  | { state: 'waiting' }
+  | { state: 'loaded'; data: T }
+  | { state: 'unavailable'; code: string; hint: string };
+
+export type console_list<T> = { rows: T[]; truncated: boolean };
+
+export type console_health = {
+  healthy: boolean;
+  store_schema_version: number;
+  queue_depth: number;
+  queue_capacity: number;
+  queue_high_watermark: number;
+  queue_saturated: boolean;
+};
+
+export type console_plugin = {
+  plugin_id: string;
+  state: string;
+  restarts: number;
+  max_restarts: number;
+  last_error_code: string | null;
+};
+
+export type console_route = {
+  harness: string;
+  protocol: string;
+  mode: 'executes' | 'probe_only' | 'disabled';
+};
+
+export type console_slots = {
+  evidence_class: string;
+  routes: console_list<{ slot_id: string; route_label: string; executes: boolean }>;
+};
+
+export type console_decision = {
+  decision_id: string;
+  status: string;
+  chosen_harness: string | null;
+  source: string;
+  created_at: string;
+  consumed: boolean;
+  created_sequence: number;
+};
+
+export type console_connection =
+  | { state: 'waiting' }
+  | { state: 'connected' }
+  | { state: 'unavailable'; code: string; hint: string };
+
+export type console_response = {
+  observed_at: string | null;
+  connection: console_connection;
+  health: console_section<console_health>;
+  plugins: console_section<console_list<console_plugin>>;
+  routes: console_section<console_list<console_route>>;
+  dsh: console_section<dsh_status>;
+  slots: console_section<console_slots>;
+  decisions: console_section<console_list<console_decision>>;
+  /** Set by the client when the service worker answered from its cache. */
+  stale?: boolean;
 };
 
 export type enrollment_response = {
@@ -107,6 +192,10 @@ export function load_tasks(token: string, after_task_id: string | null = null): 
 
 export function load_task(token: string, task_id: string): Promise<task_response> {
   return request_json(`/api/v1/tasks/${encodeURIComponent(task_id)}`, token);
+}
+
+export function load_console(token: string): Promise<console_response> {
+  return request_json('/api/v1/console', token);
 }
 
 export function load_public_key(token: string): Promise<{ public_key: string }> {
