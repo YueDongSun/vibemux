@@ -350,3 +350,29 @@ Decided with the operator after reviewing preview screenshots:
 Next step agreed with the operator: a Console page that rebuilds the terminal
 console's views (ADR 041 and ADR 042) as Claude-style cards and absorbs the
 Agents page.
+
+## Amendment (2026-10-23): project folders and daemon Start/Stop
+
+Decided with the operator, who found the GUI too limited without a way to
+pick a project or start its daemon:
+
+- **Project folders.** An "Open folder" dialog takes a typed or pasted path
+  and, on Windows, the native folder picker (`rfd`, Windows-only, default
+  features off). The sidebar lists recent folders with the active one
+  highlighted. `UserConfig` gains `active_project` and `recent_projects`
+  (at most eight), defaulting when absent, so `schema_version` stays 1. The
+  GUI connects to the saved folder at start, falling back to its start-up
+  directory, and restarts its observation client when the folder changes.
+- **Daemon Start/Stop on an explicit click.** This revises "the GUI does not
+  start the daemon": it still never does so by itself. The connection state
+  gains a stable reason `code`; `daemon_not_running` shows a "Start VibeMux"
+  card, and Settings → Connection offers Start or Stop. The GUI runs
+  `vibemuxctl --json daemon start|stop --project-root <folder>`, so the CLI
+  stays the only owner of daemon lifecycle, on a worker thread with no
+  console window and a 60 s bound, one command at a time. Output goes to
+  private temporary files, because the started daemon may inherit handles and
+  a pipe it held would never reach end-of-file.
+
+Next steps agreed with the operator: a read-only "Ask a harness" Send through
+ADR 029 dispatch (one-time default route setup, confirmation once per folder,
+replies in daemon memory only), then the Console page.

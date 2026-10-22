@@ -391,8 +391,19 @@ Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
 `cargo run -p vibemux_frontend --bin vibemux_frontend`. On Windows the GUI
 never opens a console window, in debug and release builds alike (like
 `pythonw`); a startup failure or a panic is written to `frontend_errors.log`
-next to the settings file (`%APPDATA%\vibemux\`). The GUI does not start
-the daemon automatically. A stopped or older daemon produces an explicit
+next to the settings file (`%APPDATA%\vibemux\`).
+
+The GUI observes one project folder at a time. **Open folder…** (in the
+sidebar's Folders list, the workspace menu, the collapsed rail, or Settings →
+General) takes a typed or pasted path, or the native Windows folder picker,
+and the sidebar keeps the eight most recent folders. The active folder is
+saved and reopened at the next launch; without one, the GUI uses the folder
+it was started from. The GUI never starts the daemon by itself: when the
+active folder has no running daemon, a **Start VibeMux** card appears, and
+Settings → Connection offers Start or Stop. These run `vibemuxctl --json
+daemon start|stop --project-root <folder>` with no console window, so
+`vibemuxctl` and `vibemuxd` must sit next to the GUI executable (a workspace
+build places them together). A stopped or older daemon produces an explicit
 unavailable state. The existing structured supervisor recipe is not a continuous
 coding-agent chat service.
 
