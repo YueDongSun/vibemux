@@ -6264,8 +6264,8 @@ that rewrites `Host` to the loopback address would publish the page itself.
     Library 32, `console_poller` 2, `control_bridge` 3, `http_contract` 9.
   - The new absolute-form test failed (200) with the earlier Host-only rule
     put back temporarily, and passes with the fix.
-- WSL Ubuntu 24.04 (Git 2.43.0, Node 22.22.2), a fresh clone at `eeece17`:
-  `npm ci`, typecheck, `npm test` (14), `npm run audit` (0 vulnerabilities),
+- WSL Ubuntu 24.04 (Git 2.43.0, Node 22.22.2), a fresh clone at `b844f78`:
+  `npm ci`, typecheck, `npm test` (15), `npm run audit` (0 vulnerabilities),
   build, `cargo fmt --all -- --check`, the same clippy command, and the same
   test command passed: library 31 (one Windows-only test), `console_poller` 2,
   `control_bridge` 3, `http_contract` 9.
