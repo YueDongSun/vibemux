@@ -9,7 +9,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use vibemux_types::TaskId;
 
-use crate::control_bridge::{BridgeDshStatus, BridgeTask, SnapshotState};
+use crate::{
+    console_model::ConsoleSnapshot,
+    console_poller::ConsoleState,
+    control_bridge::{BridgeDshStatus, BridgeTask, BridgeTaskActivity, SnapshotState},
+};
 
 const DEFAULT_PAGE_SIZE: usize = 32;
 const MAX_PAGE_SIZE: usize = 32;
@@ -20,6 +24,13 @@ pub fn api_router(snapshot_state: SnapshotState) -> Router {
         .route("/api/v1/tasks", get(tasks))
         .route("/api/v1/tasks/{task_id}", get(task))
         .with_state(snapshot_state)
+}
+
+/// The ADR 042 console sections: daemon, sessions, and decisions.
+pub fn console_router(console_state: ConsoleState) -> Router {
+    Router::new()
+        .route("/api/v1/console", get(console))
+        .with_state(console_state)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -54,11 +65,16 @@ pub struct TaskDetailResponse {
     pub observed_at: Option<String>,
     pub stale: bool,
     pub task: BridgeTask,
+    pub activity: BridgeTaskActivity,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ApiError {
     pub error_code: &'static str,
+}
+
+async fn console(State(console_state): State<ConsoleState>) -> Json<ConsoleSnapshot> {
+    Json(console_state.read().await.clone())
 }
 
 async fn health(State(snapshot_state): State<SnapshotState>) -> Json<HealthResponse> {
@@ -142,11 +158,17 @@ async fn task(
     if snapshot.stale {
         task.title = None;
     }
+    let activity = snapshot
+        .activity
+        .get(&task.task_id)
+        .cloned()
+        .unwrap_or_default();
     Ok(Json(TaskDetailResponse {
         generation: snapshot.generation.clone(),
         observed_at: snapshot.observed_at.clone(),
         stale: snapshot.stale,
         task,
+        activity,
     }))
 }
 
@@ -191,6 +213,7 @@ mod tests {
             dsh_status: None,
             tasks,
             truncated: false,
+            activity: Default::default(),
         }))
     }
 

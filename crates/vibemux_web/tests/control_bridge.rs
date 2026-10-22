@@ -85,9 +85,22 @@ async fn refresh_uses_real_control_pipe_and_projects_only_allowlisted_fields() {
             .is_some_and(|value| !value.is_empty())
     );
     assert_eq!(snapshot.tasks[0].runs.len(), 1);
+    assert_eq!(snapshot.activity.len(), 2);
+    let first = &snapshot.tasks[0];
+    let activity = &snapshot.activity[&first.task_id];
+    assert!(!activity.events.is_empty());
+    assert!(activity.events.iter().all(|event| {
+        event.run_id.is_none() || event.run_id.as_deref() == Some(first.runs[0].run_id.as_str())
+    }));
     let encoded = serde_json::to_string(&snapshot).expect("serialize snapshot");
     let project_path = temp.path().to_string_lossy().into_owned();
-    for forbidden in ["/vibemux_test/", "owner_", project_path.as_str()] {
+    let escaped_path = serde_json::to_string(&project_path).expect("escape path");
+    for forbidden in [
+        "/vibemux_test/",
+        "owner_",
+        project_path.as_str(),
+        escaped_path.trim_matches('"'),
+    ] {
         assert!(!encoded.contains(forbidden));
     }
     assert!(encoded.contains("Task 0"));
