@@ -26,14 +26,17 @@ use crate::{
 };
 
 use super::{
-    C, agents, chat, composer,
+    C, agents,
+    ask_state::AskState,
+    ask_view::{self, AskViewActions, ConfirmChoice, ConfirmState},
+    chat, composer,
     daemon_card::{self, DaemonJob},
     design, diagnostics, folders,
     quick_switcher::{self, QuickSwitcherState},
     settings, shortcuts,
     shortcuts::ShortcutAction,
     sidebar,
-    supervisor_state::{MainPage, SupervisorUiState, UiActionQueue},
+    supervisor_state::{ComposerTarget, MainPage, SupervisorUiState, UiActionQueue},
     task_detail, task_labels,
 };
 
@@ -75,6 +78,9 @@ pub struct SupervisorApp {
     /// A start or stop for the live adapter to run.
     daemon_request: Option<DaemonCommand>,
     daemon_job: DaemonJob,
+    /// Ask: what the folder's daemon can run, this window's Asks, consent,
+    /// and the one-click setup.
+    ask: AskState,
     diagnostics_open: bool,
     /// The `Ctrl+/` shortcut overlay.
     shortcuts_open: bool,
@@ -123,6 +129,7 @@ impl SupervisorApp {
             folder_dialog: folders::FolderDialogState::default(),
             daemon_request: None,
             daemon_job: DaemonJob::Idle,
+            ask: AskState::default(),
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -154,6 +161,11 @@ impl SupervisorApp {
         self.daemon_job = job;
     }
 
+    /// The window's Ask state, which the live adapter drives.
+    pub fn ask_state(&mut self) -> &mut AskState {
+        &mut self.ask
+    }
+
     /// Opens `folder` when it is an existing directory: it becomes the
     /// active project, moves to the front of the recent folders, and the
     /// live adapter reconnects. Otherwise the dialog shows the error.
@@ -171,6 +183,8 @@ impl SupervisorApp {
                     self.project_folder = Some(folder.clone());
                     self.project_switch = Some(folder);
                     self.daemon_job = DaemonJob::Idle;
+                    // Asks belong to the old folder's daemon.
+                    self.ask = AskState::default();
                     self.settings_open = false;
                     if let Ok(mut state) = self.ui_state.lock() {
                         *state =
@@ -217,6 +231,93 @@ impl SupervisorApp {
         }
         if actions.close {
             self.folder_dialog.close();
+        }
+    }
+
+    /// Mirrors the facts the composer gates Send on.
+    fn sync_ask_gate(&self) {
+        let ready = self.ask.availability.ready_names();
+        let busy = self.ask.busy();
+        if let Ok(mut state) = self.ui_state.lock() {
+            state.set_ask_ready(ready);
+            state.set_ask_busy(busy);
+        }
+    }
+
+    /// Runs the prompt the composer queued: at once in a folder whose Ask
+    /// is confirmed, otherwise after the confirmation dialog.
+    fn route_pending_ask(&mut self) {
+        let Some(pending) = self
+            .ui_state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.take_pending_ask())
+        else {
+            return;
+        };
+        let Some(folder) = self.project_folder.clone() else {
+            self.restore_draft(pending.prompt);
+            return;
+        };
+        if self.user_config.ask_confirmed(&folder) {
+            self.launch_ask(pending.harness, pending.prompt);
+        } else {
+            self.ask.confirm = ConfirmState {
+                open: true,
+                harness: pending.harness,
+                prompt: pending.prompt,
+                folder: folder.display().to_string(),
+            };
+        }
+    }
+
+    fn launch_ask(&mut self, harness: String, prompt: String) {
+        match self.ask.launch(harness, prompt) {
+            Ok(()) => {
+                if let Ok(mut state) = self.ui_state.lock() {
+                    state.show_coordinator_chat();
+                }
+            }
+            Err(prompt) => self.restore_draft(prompt),
+        }
+    }
+
+    fn restore_draft(&self, prompt: String) {
+        if let Ok(mut state) = self.ui_state.lock() {
+            state.restore_draft(prompt);
+        }
+    }
+
+    /// Send records consent for this folder and starts the Ask; Cancel puts
+    /// the prompt back into the composer.
+    fn apply_ask_confirm(&mut self, choice: ConfirmChoice) {
+        if choice == ConfirmChoice::None {
+            return;
+        }
+        let confirm = std::mem::take(&mut self.ask.confirm);
+        if choice == ConfirmChoice::Cancel {
+            self.restore_draft(confirm.prompt);
+            return;
+        }
+        if let Some(folder) = self.project_folder.clone() {
+            self.user_config.confirm_ask(folder);
+            self.pending_write = Some(Instant::now());
+        }
+        self.launch_ask(confirm.harness, confirm.prompt);
+    }
+
+    fn apply_ask_actions(&mut self, actions: AskViewActions) {
+        if actions.cancel {
+            self.ask.request_cancel();
+        }
+        if actions.enable {
+            self.ask.request_setup();
+        }
+        if actions.dismiss_setup {
+            self.ask.dismiss_setup();
+        }
+        if actions.recheck {
+            self.ask.request_recheck();
         }
     }
 
@@ -300,6 +401,13 @@ impl SupervisorApp {
         if self.user_config.sidebar_collapsed != collapsed {
             self.user_config.sidebar_collapsed = collapsed;
             self.pending_write = Some(Instant::now());
+        }
+    }
+
+    /// Points the composer at `target` (preview scenes).
+    pub fn set_composer_target(&mut self, target: super::ComposerTarget) {
+        if let Ok(mut state) = self.ui_state.lock() {
+            state.set_composer_target(target);
         }
     }
 
@@ -806,6 +914,7 @@ impl SupervisorApp {
         let target_options = composer::target_options(&self.view_model);
         self.persist_if_due();
         self.handle_keyboard(ctx);
+        self.sync_ask_gate();
 
         let viewport_width = ctx
             .input(|input| input.viewport().inner_rect.map(|rect| rect.width()))
@@ -922,7 +1031,7 @@ impl SupervisorApp {
                     .ui_state
                     .lock()
                     .is_ok_and(|state| state.welcome_active())
-                    || snapshot.tasks.is_empty());
+                    || (snapshot.tasks.is_empty() && self.ask.asks.is_empty()));
 
             if page == MainPage::CoordinatorChat && !welcome && !self.settings_open {
                 let composer_panel = egui::Panel::bottom("coordinator_composer")
@@ -950,6 +1059,22 @@ impl SupervisorApp {
 
             let mut settings_changes = None;
             let mut daemon_click = None;
+            let mut ask_actions = AskViewActions::default();
+            let harness_target =
+                self.ui_state
+                    .lock()
+                    .ok()
+                    .and_then(|state| match state.composer_target() {
+                        ComposerTarget::Harness(name) => Some(name.clone()),
+                        ComposerTarget::Coordinator => None,
+                    });
+            let show_setup = ask_view::setup_card_visible(
+                &self.ask.availability,
+                &self.ask.setup,
+                harness_target.is_some(),
+            );
+            let ask_note =
+                ask_view::availability_note(&self.ask.availability, harness_target.as_deref());
             let daemon_missing = daemon_card::daemon_missing(&snapshot.connection);
             let folder_name = self.project_folder.as_deref().map_or_else(
                 || snapshot.project_name.clone(),
@@ -992,6 +1117,18 @@ impl SupervisorApp {
                             });
                             ui.add_space(18.0);
                         }
+                        if show_setup || ask_note.is_some() {
+                            chat::content_column(ui, |ui| {
+                                ask_actions.merge(ask_view::render_notices(
+                                    ui,
+                                    &colors,
+                                    &self.ask.setup,
+                                    show_setup,
+                                    ask_note.as_deref(),
+                                ));
+                            });
+                            ui.add_space(6.0);
+                        }
                         let hint = super::welcome::workspace_hint(snapshot.tasks.len());
                         chat::content_column(ui, |ui| {
                             super::welcome::render_heading(
@@ -1021,7 +1158,24 @@ impl SupervisorApp {
                             });
                             ui.add_space(12.0);
                         }
+                        if show_setup || ask_note.is_some() {
+                            chat::content_column(ui, |ui| {
+                                ask_actions.merge(ask_view::render_notices(
+                                    ui,
+                                    &colors,
+                                    &self.ask.setup,
+                                    show_setup,
+                                    ask_note.as_deref(),
+                                ));
+                            });
+                        }
                         if let Ok(mut state) = self.ui_state.lock() {
+                            let asks = &self.ask.asks;
+                            let mut ask_tail = |ui: &mut egui::Ui| {
+                                ask_actions.merge(ask_view::render_asks(ui, &colors, asks));
+                            };
+                            let tail = (!asks.is_empty())
+                                .then_some(&mut ask_tail as &mut dyn FnMut(&mut egui::Ui));
                             chat::render_conversation(
                                 ui,
                                 ctx,
@@ -1029,6 +1183,7 @@ impl SupervisorApp {
                                 snapshot,
                                 &mut state,
                                 &self.actions,
+                                tail,
                             );
                         }
                     }
@@ -1050,6 +1205,12 @@ impl SupervisorApp {
             }
             if let Some(command) = daemon_click {
                 self.request_daemon(command);
+            }
+            self.apply_ask_actions(ask_actions);
+            self.route_pending_ask();
+            if self.ask.confirm.open {
+                let choice = ask_view::render_confirm(ctx, &colors, &self.ask.confirm);
+                self.apply_ask_confirm(choice);
             }
             if self.folder_dialog.open {
                 let actions = folders::render(
@@ -1315,8 +1476,10 @@ fn test_view_model() -> ViewModel {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ask_view::AskAvailability;
     use super::*;
     use crate::{
+        ask::{AskEnd, AskPhase, AskUpdate},
         supervisor_model::{RunView, TaskEventView},
         theme::serialize::{SCHEMA_VERSION, WindowSize},
     };
@@ -1469,6 +1632,7 @@ mod tests {
             folder_dialog: folders::FolderDialogState::default(),
             daemon_request: None,
             daemon_job: DaemonJob::Idle,
+            ask: AskState::default(),
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -1750,6 +1914,193 @@ mod tests {
         );
         assert!(!app.folder_dialog.open, "Esc closes the dialog first");
         assert!(app.settings_open);
+    }
+
+    /// An app with `folder` open whose daemon can run Codex Asks.
+    fn ask_ready_app(folder: &Path) -> SupervisorApp {
+        let mut app = test_app();
+        app.open_project(folder.to_path_buf());
+        let _ = app.take_project_switch();
+        // Nothing in these tests may reach the real config file.
+        app.pending_write = None;
+        app.ask
+            .set_availability(AskAvailability::Ready(vec![AgentKind::Codex]));
+        app
+    }
+
+    /// Types `prompt` for Codex and presses Send, as the composer does.
+    fn send_to_codex(app: &SupervisorApp, prompt: &str) -> bool {
+        app.sync_ask_gate();
+        let mut state = app.ui_state.lock().expect("ui state");
+        state.set_composer_target(ComposerTarget::Harness("Codex".into()));
+        state.set_composer_draft(prompt.into());
+        state.try_send()
+    }
+
+    fn finished(reply: &str) -> AskUpdate {
+        AskUpdate {
+            request_id: uuid::Uuid::nil(),
+            phase: AskPhase::Finished,
+            reply: reply.into(),
+            truncated: false,
+            end: Some(AskEnd::Completed),
+        }
+    }
+
+    fn shape_texts(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn send_stays_off_until_the_folder_can_run_the_harness() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = ask_ready_app(directory.path());
+        app.ask.set_availability(AskAvailability::NotConfigured);
+        assert!(!send_to_codex(&app, "Explain"));
+        app.ask
+            .set_availability(AskAvailability::Ready(vec![AgentKind::Claude]));
+        assert!(!send_to_codex(&app, "Explain"), "only Claude has a route");
+        app.ask
+            .set_availability(AskAvailability::Ready(vec![AgentKind::Codex]));
+        {
+            let mut state = app.ui_state.lock().expect("ui state");
+            state.set_composer_target(ComposerTarget::Coordinator);
+            assert!(!state.try_send(), "the coordinator chat is not connected");
+            assert_eq!(
+                state.composer_draft(),
+                "Explain",
+                "a refused send keeps the draft"
+            );
+        }
+        assert!(send_to_codex(&app, "Explain"));
+        app.route_pending_ask();
+        app.apply_ask_confirm(ConfirmChoice::Send);
+        app.pending_write = None;
+        assert!(!send_to_codex(&app, "Again"), "one Ask at a time");
+    }
+
+    #[test]
+    fn a_harness_ask_needs_consent_once_per_folder() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = ask_ready_app(directory.path());
+        assert!(send_to_codex(&app, "Explain the build"));
+        app.route_pending_ask();
+        assert!(app.ask.confirm.open, "the first Ask in a folder asks first");
+        assert_eq!(app.ask.take_launch(), None);
+        let (_, output) = render_at(&mut app, 1280.0, 800.0);
+        assert!(
+            app.ask.confirm.open,
+            "rendering alone keeps the dialog open"
+        );
+        assert!(shape_texts(&output).iter().any(|text| text == "Ask Codex?"));
+        app.apply_ask_confirm(ConfirmChoice::Send);
+        assert!(app.user_config.ask_confirmed(directory.path()));
+        assert!(app.pending_write.take().is_some(), "consent is saved");
+        assert_eq!(
+            app.ask.take_launch(),
+            Some((AgentKind::Codex, "Explain the build".to_string()))
+        );
+        app.ask.apply_update(finished("It builds with cargo."));
+        assert!(send_to_codex(&app, "And the tests?"));
+        app.route_pending_ask();
+        assert!(
+            !app.ask.confirm.open,
+            "consent is remembered for the folder"
+        );
+        assert!(app.ask.take_launch().is_some());
+    }
+
+    #[test]
+    fn cancelling_the_consent_puts_the_prompt_back() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = ask_ready_app(directory.path());
+        assert!(send_to_codex(&app, "Explain"));
+        app.route_pending_ask();
+        app.apply_ask_confirm(ConfirmChoice::Cancel);
+        assert!(!app.ask.confirm.open);
+        assert!(!app.user_config.ask_confirmed(directory.path()));
+        assert_eq!(app.ask.take_launch(), None);
+        assert!(app.ask.asks.is_empty());
+        assert_eq!(
+            app.ui_state.lock().expect("ui state").composer_draft(),
+            "Explain"
+        );
+    }
+
+    #[test]
+    fn asks_and_the_setup_card_render_and_reset_with_the_folder() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = ask_ready_app(directory.path());
+        app.ask.set_availability(AskAvailability::NotConfigured);
+        app.ui_state
+            .lock()
+            .expect("ui state")
+            .set_composer_target(ComposerTarget::Harness("Codex".into()));
+        let (_, output) = render_at(&mut app, 1280.0, 800.0);
+        assert!(
+            shape_texts(&output)
+                .iter()
+                .any(|text| text == "Enable Claude and Codex (read-only)")
+        );
+
+        app.ask
+            .set_availability(AskAvailability::Ready(vec![AgentKind::Codex]));
+        app.user_config.confirm_ask(directory.path().to_path_buf());
+        assert!(send_to_codex(&app, "Summarize the README"));
+        app.route_pending_ask();
+        let _ = app.ask.take_launch();
+        app.ask.apply_update(finished("A local-first harness hub."));
+        // Below the workspace's tasks, the conversation follows the newest
+        // Ask once its scroll area has settled at the bottom.
+        let context = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = None;
+        for _ in 0..4 {
+            output = Some(context.run_ui(raw.clone(), |context| app.render_frame(context)));
+        }
+        let texts = shape_texts(&output.expect("rendered"));
+        assert!(texts.iter().any(|text| text == "Summarize the README"));
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "A local-first harness hub.")
+        );
+        // An empty workspace shows the Asks alone.
+        edit_snapshot(&mut app, |snapshot| snapshot.tasks.clear());
+        let (_, output) = render_at(&mut app, 900.0, 600.0);
+        let texts = shape_texts(&output);
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "A local-first harness hub.")
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text.ends_with("tasks in this workspace"))
+        );
+
+        let other = tempfile::tempdir().expect("other folder");
+        app.open_project(other.path().to_path_buf());
+        app.pending_write = None;
+        assert!(
+            app.ask.asks.is_empty(),
+            "Asks belong to the old folder's daemon"
+        );
+        assert_eq!(app.ask.availability, AskAvailability::Unknown);
     }
 
     #[test]

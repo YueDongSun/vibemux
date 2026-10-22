@@ -51,6 +51,9 @@ fn filter_chips(ui: &mut Ui, c: &C, snapshot: &SupervisorSnapshot, state: &mut S
     });
 }
 
+/// The conversation: the workspace's task activity, then `tail` (this
+/// window's Asks) when there is one. With a tail the view follows new text at
+/// the bottom, and an empty workspace shows the tail alone.
 pub fn render_conversation(
     ui: &mut Ui,
     ctx: &egui::Context,
@@ -58,79 +61,25 @@ pub fn render_conversation(
     snapshot: &SupervisorSnapshot,
     state: &mut SupervisorUiState,
     actions: &UiActionQueue,
+    tail: Option<&mut dyn FnMut(&mut Ui)>,
 ) {
+    let following = tail.is_some();
     let output = egui::ScrollArea::vertical()
         .id_salt("coordinator_conversation")
         .auto_shrink([false, false])
+        .stick_to_bottom(following)
         .show(ui, |ui| {
             content_column(ui, |ui| {
                 ui.add_space(28.0);
-                ui.horizontal(|ui| {
-                    design::spark(ui, c.accent, 26.0, 0.0);
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Workspace updates")
-                                .size(15.0)
-                                .strong()
-                                .color(c.txt),
-                        );
-                        ui.label(
-                            RichText::new("Task activity · reported by the daemon")
-                                .size(12.0)
-                                .color(c.muted),
-                        );
-                    });
-                    if snapshot.mode == SnapshotMode::Demo {
-                        demo_badge(ui, c);
+                let tasks_shown = !following || !snapshot.tasks.is_empty();
+                if tasks_shown {
+                    task_section(ui, ctx, c, snapshot, state, actions);
+                }
+                if let Some(tail) = tail {
+                    if tasks_shown {
+                        ui.add_space(28.0);
                     }
-                });
-                ui.add_space(22.0);
-                ui.label(
-                    RichText::new(format!("{} tasks in this workspace", snapshot.tasks.len()))
-                        .font(typography::display_font(ui.ctx(), typography::TITLE_SIZE))
-                        .color(c.txt),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "Open a task to follow its execution. The conversation stays here.",
-                    )
-                    .size(13.0)
-                    .color(c.muted),
-                );
-                ui.add_space(14.0);
-                if !snapshot.tasks.is_empty() {
-                    filter_chips(ui, c, snapshot, state);
-                    ui.add_space(12.0);
-                }
-                let filter = state.task_filter();
-                let visible: Vec<&TaskView> = snapshot
-                    .tasks
-                    .iter()
-                    .filter(|task| filter.matches(&task.state))
-                    .collect();
-                if visible.is_empty() {
-                    ui.label(
-                        RichText::new(format!(
-                            "No tasks match “{}”. Choose another filter to see the rest.",
-                            filter.label()
-                        ))
-                        .size(13.0)
-                        .color(c.muted),
-                    );
-                }
-                for task in visible {
-                    task_row(ui, ctx, c, snapshot, task, state, actions);
-                    ui.add_space(4.0);
-                }
-                if let Some(cursor) = snapshot.next_cursor.as_ref() {
-                    ui.add_space(12.0);
-                    if design::quiet_button(ui, c, "Load more tasks").clicked() {
-                        actions.enqueue(SupervisorAction::LoadMoreTasks {
-                            cursor: cursor.clone(),
-                        });
-                    }
+                    tail(ui);
                 }
                 ui.add_space(BOTTOM_PADDING);
             });
@@ -143,6 +92,81 @@ pub fn render_conversation(
             viewport.max,
         );
         design::paint_bottom_fade(ui.painter(), fade, c.bg);
+    }
+}
+
+fn task_section(
+    ui: &mut Ui,
+    ctx: &egui::Context,
+    c: &C,
+    snapshot: &SupervisorSnapshot,
+    state: &mut SupervisorUiState,
+    actions: &UiActionQueue,
+) {
+    ui.horizontal(|ui| {
+        design::spark(ui, c.accent, 26.0, 0.0);
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
+            ui.label(
+                RichText::new("Workspace updates")
+                    .size(15.0)
+                    .strong()
+                    .color(c.txt),
+            );
+            ui.label(
+                RichText::new("Task activity · reported by the daemon")
+                    .size(12.0)
+                    .color(c.muted),
+            );
+        });
+        if snapshot.mode == SnapshotMode::Demo {
+            demo_badge(ui, c);
+        }
+    });
+    ui.add_space(22.0);
+    ui.label(
+        RichText::new(format!("{} tasks in this workspace", snapshot.tasks.len()))
+            .font(typography::display_font(ui.ctx(), typography::TITLE_SIZE))
+            .color(c.txt),
+    );
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new("Open a task to follow its execution. The conversation stays here.")
+            .size(13.0)
+            .color(c.muted),
+    );
+    ui.add_space(14.0);
+    if !snapshot.tasks.is_empty() {
+        filter_chips(ui, c, snapshot, state);
+        ui.add_space(12.0);
+    }
+    let filter = state.task_filter();
+    let visible: Vec<&TaskView> = snapshot
+        .tasks
+        .iter()
+        .filter(|task| filter.matches(&task.state))
+        .collect();
+    if visible.is_empty() {
+        ui.label(
+            RichText::new(format!(
+                "No tasks match “{}”. Choose another filter to see the rest.",
+                filter.label()
+            ))
+            .size(13.0)
+            .color(c.muted),
+        );
+    }
+    for task in visible {
+        task_row(ui, ctx, c, snapshot, task, state, actions);
+        ui.add_space(4.0);
+    }
+    if let Some(cursor) = snapshot.next_cursor.as_ref() {
+        ui.add_space(12.0);
+        if design::quiet_button(ui, c, "Load more tasks").clicked() {
+            actions.enqueue(SupervisorAction::LoadMoreTasks {
+                cursor: cursor.clone(),
+            });
+        }
     }
 }
 

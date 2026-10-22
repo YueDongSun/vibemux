@@ -14,12 +14,14 @@
 //! session driver instead, because it owns a runtime process rather than a
 //! read-only probe report.
 
+pub mod ask;
 pub mod daemon_control;
 mod daemon_session;
 pub mod dashboard;
 pub mod dsh_tui;
 pub mod gui;
 mod live_app;
+mod live_ask;
 #[cfg(feature = "gui_screenshot")]
 pub mod preview;
 pub mod probe_env;

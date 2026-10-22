@@ -5836,6 +5836,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "uuid",
  "vibemux_dsh",
  "vibemux_harness",
  "vibemux_probe",

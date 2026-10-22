@@ -376,3 +376,65 @@ pick a project or start its daemon:
 Next steps agreed with the operator: a read-only "Ask a harness" Send through
 ADR 029 dispatch (one-time default route setup, confirmation once per folder,
 replies in daemon memory only), then the Console page.
+
+## Amendment (2026-10-23): read-only Ask a harness
+
+Decided with the operator, who wanted the GUI to do basic harness work in a
+folder while the main harness work stays in the CLI:
+
+- **Send runs a read-only Ask.** When the composer targets Claude or Codex
+  and the active folder's daemon lists an enabled route that may execute for
+  it, Send submits one ADR 029 dispatch turn with the prompt (at most
+  32 KiB). The GUI follows the attempt through `harness_dispatch_status` and
+  `harness_dispatch_output`, rebuilds the reply from the documented
+  assistant-text records only (Claude `result`, streamed `text_delta`, and
+  `assistant` text blocks; Codex app-server agent-message deltas and
+  completed items; Codex exec `agent_message` items), bounds it at 256 KiB,
+  and shows it in the conversation below the task activity. One Ask runs at
+  a time, matching the daemon's one dispatch per project. Cancel asks the
+  daemon to cancel. An Ask ends only when the daemon reports the attempt
+  settled and every output record was read; the GUI also gives up after
+  15 minutes and then cancels. Until an attempt launches the daemon has no
+  transcript for it, so missing output is waited for, not treated as a
+  failure. When the GUI stops following an attempt early (a lost
+  connection, the time bound) it asks the daemon to cancel it, so the
+  folder's dispatch slot is not left busy.
+- **The Coordinator target stays draft-only.** There is still no continuous
+  coordinator chat, and nothing fabricates a reply.
+- **Read-only, not sandboxed.** Asks use the dispatch read-only profiles,
+  which ADR 029 states are not an OS sandbox. The composer caption says the
+  turn is read-only and may use paid inference.
+- **Consent once per folder.** The first Ask in a folder opens a dialog that
+  names the harness and the folder and says the turn may use a subscription
+  or paid inference. Send records the folder in
+  `UserConfig.ask_confirmed_projects` (at most 64, empty by default, so
+  `schema_version` stays 1); Cancel puts the prompt back in the composer.
+- **One-click default routes.** In a folder whose daemon reports
+  `harness_dispatch_unconfigured`, choosing Claude or Codex in the composer
+  shows a setup card. Its button runs the read-only probe, saves the probe
+  cache, and plans read-only routes (`claude_stream_json` and
+  `codex_app_server`, `allow_execution: true`, environment names
+  `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`) only for a harness whose
+  verified executable is a native `.exe` outside the folder; a script shim
+  or an executable inside the folder is skipped with its reason. The routes
+  are checked with the daemon's own parser, written to
+  `.vibemux\harness_dispatch.json` with create-new semantics (an existing
+  file is never replaced), and loaded by restarting the folder's daemon
+  through `vibemuxctl`. Setup needs `vibemuxd` and
+  `vibemux_launch_trampoline` next to the GUI executable.
+- **Replies live in daemon memory.** The window keeps its last 20 Asks; a
+  folder switch clears them and cancels a running one; a daemon restart
+  loses their output. The daemon records each Ask like any dispatch, as a
+  canonical Task/Run with a content-free outcome. The GUI writes no
+  canonical state and reads output only for Asks it submitted.
+
+Verification: unit tests cover the reply text, the route plan and its
+validation, the session driver (including missing output before launch and
+the cancel of an abandoned attempt), the window's Ask state, and the shell's
+consent, gating, and rendering. A manual run against a real `vibemuxd` used
+the synthetic native fixture installed as `claude.exe` and `codex.exe`
+(completed Claude and Codex Asks, a cancel, an unconfigured folder), and the
+one-click setup in a temporary folder. No prompt was sent to a real vendor
+CLI; a live Ask still needs the operator's go-ahead.
+
+Next step agreed with the operator: the Console page.
