@@ -6,7 +6,6 @@ use egui::{self, Color32, Painter, Pos2, Rect, Response, RichText, Sense, Stroke
 pub enum Icon {
     Chat,
     Grid,
-    Terminal,
     Arrow,
     Settings,
     Refresh,
@@ -45,11 +44,6 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
                     );
                 }
             }
-        }
-        Icon::Terminal => {
-            painter.line_segment([position(0.1, 0.25), position(0.4, 0.5)], stroke);
-            painter.line_segment([position(0.4, 0.5), position(0.1, 0.75)], stroke);
-            painter.line_segment([position(0.52, 0.75), position(0.9, 0.75)], stroke);
         }
         Icon::Arrow => {
             painter.line_segment([position(0.15, 0.85), position(0.85, 0.15)], stroke);
@@ -106,9 +100,16 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
     }
 }
 
+// The shared Claude-style radius scale, applied to every theme.
+/// The message composer.
 pub const COMPOSER_RADIUS: u8 = 20;
-pub const BUTTON_RADIUS: u8 = 8;
-pub const CARD_RADIUS: u8 = 12;
+/// Buttons, navigation rows, and inputs.
+pub const BUTTON_RADIUS: u8 = 10;
+/// Cards, panels, windows, and menus.
+pub const CARD_RADIUS: u8 = 14;
+/// Filter chips, badges, and segmented choices: fully round ends. epaint
+/// clamps a radius to half the shape's shorter side, so this is a pill.
+pub const PILL_RADIUS: u8 = u8::MAX;
 
 /// Fade `rect` from transparent at the top to `color` at the bottom.
 pub fn paint_bottom_fade(painter: &Painter, rect: Rect, color: Color32) {
@@ -219,8 +220,11 @@ pub fn composer_frame(c: &C) -> egui::Frame {
 pub fn nav_row(ui: &mut Ui, c: &C, label: &str, kind: Icon, selected: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
     if selected || response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 7, if selected { c.accent_bg } else { c.raised });
+        ui.painter().rect_filled(
+            rect,
+            BUTTON_RADIUS,
+            if selected { c.accent_bg } else { c.raised },
+        );
     }
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -250,7 +254,7 @@ pub fn quiet_button(ui: &mut Ui, c: &C, label: &str) -> Response {
     ui.add(
         egui::Button::new(RichText::new(label).size(13.0).color(c.muted))
             .frame(false)
-            .corner_radius(6),
+            .corner_radius(BUTTON_RADIUS),
     )
 }
 

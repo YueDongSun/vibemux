@@ -21,7 +21,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{ThemeId, palette_for};
+use super::{Density, ThemeId, palette_for};
 
 /// On-disk schema version. Bump when the JSON layout changes.
 pub const SCHEMA_VERSION: u16 = 1;
@@ -53,9 +53,65 @@ impl WindowSize {
     }
 }
 
-/// Persisted across launches. Only `theme` and `window_size` are
-/// honored on write today; backend choice and telemetry opt-in are
-/// deliberately not persisted in this slice.
+/// The page the GUI opens on.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartPage {
+    #[default]
+    Conversation,
+    Agents,
+}
+
+impl StartPage {
+    pub const ALL: [Self; 2] = [Self::Conversation, Self::Agents];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Conversation => "Conversation",
+            Self::Agents => "Agents",
+        }
+    }
+}
+
+/// How large text and controls are drawn. Applied as the egui zoom
+/// factor, so text, spacing, and controls scale together.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextSize {
+    Small,
+    #[default]
+    Default,
+    Large,
+}
+
+impl TextSize {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Default, Self::Large];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Default => "Default",
+            Self::Large => "Large",
+        }
+    }
+
+    #[must_use]
+    pub const fn zoom_factor(self) -> f32 {
+        match self {
+            Self::Small => 0.9,
+            Self::Default => 1.0,
+            Self::Large => 1.15,
+        }
+    }
+}
+
+/// Persisted across launches: theme, startup window size, sidebar state,
+/// start page, density, and text size. Backend choice and telemetry
+/// opt-in are deliberately not persisted. Fields added after the first
+/// release default when absent, so older files keep loading under the
+/// same schema version.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UserConfig {
     pub schema_version: u16,
@@ -64,6 +120,17 @@ pub struct UserConfig {
     /// Sidebar collapsed to its icon rail (ADR 030 §7).
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    #[serde(default)]
+    pub start_page: StartPage,
+    /// Spacing between controls; independent of the theme.
+    #[serde(default = "default_density")]
+    pub density: Density,
+    #[serde(default)]
+    pub text_size: TextSize,
+}
+
+fn default_density() -> Density {
+    super::DENSITY_DEFAULT
 }
 
 impl Default for UserConfig {
@@ -76,6 +143,9 @@ impl Default for UserConfig {
                 height: 800,
             },
             sidebar_collapsed: false,
+            start_page: StartPage::default(),
+            density: default_density(),
+            text_size: TextSize::default(),
         }
     }
 }
@@ -224,6 +294,38 @@ pub fn palette_for_config(cfg: &UserConfig) -> super::ThemePalette {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn preferences_added_later_default_when_absent_and_round_trip() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("frontend.json");
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"theme":"nord","window_size":{"width":1280,"height":800}}"#,
+        )
+        .expect("an older settings file");
+        let loaded = load_user_config_at(&path);
+        assert_eq!(loaded.theme, ThemeId::Nord);
+        assert_eq!(loaded.start_page, StartPage::Conversation);
+        assert_eq!(loaded.density, Density::Comfortable);
+        assert_eq!(loaded.text_size, TextSize::Default);
+
+        let changed = UserConfig {
+            start_page: StartPage::Agents,
+            density: Density::Compact,
+            text_size: TextSize::Large,
+            ..loaded
+        };
+        save_user_config_at(&changed, &path).expect("save");
+        assert_eq!(load_user_config_at(&path), changed);
+    }
+
+    #[test]
+    fn text_sizes_scale_around_the_default() {
+        assert!(TextSize::Small.zoom_factor() < TextSize::Default.zoom_factor());
+        assert_eq!(TextSize::Default.zoom_factor(), 1.0);
+        assert!(TextSize::Large.zoom_factor() > TextSize::Default.zoom_factor());
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         let mut dir = env::temp_dir();

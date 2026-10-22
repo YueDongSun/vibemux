@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Color32, Context, Style, Visuals};
 
-use crate::theme::ThemePalette;
+use crate::theme::{Density, ThemePalette};
 
 /// Apply the active palette to the egui context. Idempotent: safe to
 /// call on every frame.
@@ -14,8 +14,9 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
         visuals,
         ..Default::default()
     };
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 6.0);
+    let (item_spacing, button_padding) = density_spacing(Density::Comfortable);
+    style.spacing.item_spacing = item_spacing;
+    style.spacing.button_padding = button_padding;
     style
         .text_styles
         .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
@@ -37,6 +38,28 @@ pub fn apply_theme(ctx: &Context, palette: &ThemePalette) {
     // too small.
 }
 
+/// Item spacing and button padding for a density.
+#[must_use]
+pub fn density_spacing(density: Density) -> (egui::Vec2, egui::Vec2) {
+    match density {
+        Density::Comfortable => (egui::vec2(8.0, 8.0), egui::vec2(12.0, 6.0)),
+        Density::Compact => (egui::vec2(6.0, 4.0), egui::vec2(8.0, 3.0)),
+    }
+}
+
+/// Applies the saved density. Call after `apply_theme`, which resets the
+/// style to comfortable spacing every frame.
+pub fn apply_density(ctx: &Context, density: Density) {
+    if density == Density::Comfortable {
+        return;
+    }
+    let (item_spacing, button_padding) = density_spacing(density);
+    ctx.global_style_mut(|style| {
+        style.spacing.item_spacing = item_spacing;
+        style.spacing.button_padding = button_padding;
+    });
+}
+
 fn build_visuals(p: &ThemePalette) -> Visuals {
     let light = p.is_light();
     let mut visuals = if light {
@@ -53,10 +76,11 @@ fn build_visuals(p: &ThemePalette) -> Visuals {
         crate::theme::contrast::TEXT_CONTRAST_MINIMUM,
     );
     visuals.hyperlink_color = Color32::from_rgb(link.0, link.1, link.2);
-    // Primer window chrome: 1px border-colored stroke, palette radius.
+    // Window chrome: 1px border-colored stroke. Windows and menus take the
+    // shared card radius; widgets take the palette radius (the button scale).
     visuals.window_stroke = egui::Stroke::new(p.border_width, color(&p.border));
-    visuals.window_corner_radius = egui::CornerRadius::same(p.corner_radius as u8);
-    visuals.menu_corner_radius = egui::CornerRadius::same(p.corner_radius as u8);
+    visuals.window_corner_radius = egui::CornerRadius::same(super::design::CARD_RADIUS);
+    visuals.menu_corner_radius = egui::CornerRadius::same(super::design::CARD_RADIUS);
     visuals.text_cursor.stroke = egui::Stroke::new(1.0, color(&p.accent));
 
     visuals.widgets.noninteractive.bg_fill = color(&p.surface);
@@ -104,5 +128,20 @@ fn color(hex: &str) -> Color32 {
     match crate::theme::parse_hex_rgb(hex) {
         Some((r, g, b)) => Color32::from_rgb(r, g, b),
         None => Color32::BLACK,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_density_is_tighter_than_comfortable() {
+        let (comfortable_items, comfortable_buttons) = density_spacing(Density::Comfortable);
+        let (compact_items, compact_buttons) = density_spacing(Density::Compact);
+        assert!(compact_items.x < comfortable_items.x && compact_items.y < comfortable_items.y);
+        assert!(
+            compact_buttons.x < comfortable_buttons.x && compact_buttons.y < comfortable_buttons.y
+        );
     }
 }
