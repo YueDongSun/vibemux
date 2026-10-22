@@ -100,7 +100,7 @@ The design must respect, and is shaped by:
 | Rule | Source | Consequence for mobile access |
 |---|---|---|
 | Single writer; clients only send validated requests | `AGENTS.md` §2.9, ADR 015 | A mobile/bot client is a control-IPC client; it never opens SQLite and never writes canonical state. |
-| No unauthenticated TCP listener anywhere | `docs/architecture.md` | Every HTTP surface added here authenticates with a bearer token and binds loopback only. |
+| No unauthenticated TCP listener anywhere | `docs/architecture.md` | Every HTTP surface added here authenticates with a bearer token and binds loopback only. (Track A's opt-in `local_page_without_token`, 2026-10-22, serves only its static page without the token, to requests that name the loopback listener; every data route still requires it.) |
 | Non-loopback bind is fail-closed and unadvertised | ADR 024, `PROGRESS.md` M7.0 | Remote reachability comes from operator-side tailnet publishing, not from a VibeMux listener; documentation states the operator trust boundary explicitly. |
 | No secrets, tokens, full prompts, or environments in messages or logs | `AGENTS.md` §2.14, §13 | Web and IM payloads carry bounded, content-free projections only. |
 | User messages are data, never interpolated into command strings | `AGENTS.md` §2.11, §12.1 | Chat and web input is parsed as data; nothing from a phone reaches a shell or a `.cmd` shim. |
@@ -306,8 +306,10 @@ D last** — D reuses A's frontend so nothing is thrown away.
   authenticates to the daemon with the runtime descriptor's bearer token,
   never opens SQLite, never writes canonical state, and owns nothing.
 - HTTP listener binds `127.0.0.1` on a configurable port with a random
-  per-instance bearer token; every route requires it. No route proxies
-  terminal text; no PTY/ConPTY attach is implied.
+  per-instance bearer token; every route requires it, except that the opt-in
+  `local_page_without_token` setting (2026-10-22) serves the static page and
+  its assets without it to requests that name the loopback listener. No route
+  proxies terminal text; no PTY/ConPTY attach is implied.
 - The daemon is untouched: no new control operations, no schema change. The
   web client polls the same read-only operations the GUI uses (5 s default,
   configurable) and re-serves bounded JSON to the browser.

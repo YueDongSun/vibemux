@@ -152,10 +152,19 @@
         selected_activity = null;
       }
     } catch (error) {
+      mark_views_stale();
       show_error(error);
     } finally {
       busy = false;
     }
+  }
+
+  /** A failed refresh leaves the last data on screen, but never as current. */
+  function mark_views_stale(): void {
+    if (console_data) console_data = { ...console_data, stale: true };
+    if (data_freshness) data_freshness = { ...data_freshness, stale: true };
+    if (detail_freshness) detail_freshness = { ...detail_freshness, stale: true };
+    if (health) health = { ...health, stale: true };
   }
 
   async function load_task_pages(): Promise<{ tasks: task_status[]; truncated: boolean } & freshness> {
@@ -190,11 +199,15 @@
 
   async function select_task(task_id: string): Promise<void> {
     selected_id = task_id;
-    selected_task = null;
-    selected_activity = null;
-    detail_freshness = null;
+    if (selected_task?.task_id !== task_id) {
+      selected_task = null;
+      selected_activity = null;
+      detail_freshness = null;
+    }
     try {
       const response = await load_task(token, task_id);
+      // Another task was selected while this read was in flight.
+      if (selected_id !== task_id) return;
       if (data_freshness && !snapshots_match(data_freshness, response)) response.stale = true;
       selected_task = response.task;
       selected_activity = response.activity ?? null;
@@ -336,7 +349,7 @@
 
       {#if active_view !== 'tasks' && active_view !== 'device' && console_data && !console_is_current(console_data)}
         <div class="stale_banner" role="status">
-          <strong>{console_data.stale ? 'These views came from the browser cache and are not current.' : connection_summary(console_data.connection)}</strong>
+          <strong>{console_data.stale ? 'These views are not current: the last refresh failed or came from the browser cache.' : connection_summary(console_data.connection)}</strong>
         </div>
       {/if}
       {#if active_view === 'tasks' && (data_freshness?.stale || detail_freshness?.stale || health?.stale)}

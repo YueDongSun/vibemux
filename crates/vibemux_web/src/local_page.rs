@@ -59,19 +59,25 @@ impl LocalPageAccess {
             && self.names_listener(uri, headers)
     }
 
+    /// Every name the request gives for its target must be the listener: a
+    /// single `Host` header and, for an absolute-form or HTTP/2 request, the
+    /// URI authority (which wins over `Host` in HTTP). At least one must be
+    /// present.
     fn names_listener(&self, uri: &Uri, headers: &HeaderMap) -> bool {
+        let names_listener = |name: &str| self.allowed_hosts.contains(&name.to_ascii_lowercase());
         let mut hosts = headers.get_all(header::HOST).iter();
-        let host = match (hosts.next(), hosts.next()) {
-            (Some(value), None) => value.to_str().ok().map(str::to_owned),
-            (None, _) => uri
-                .authority()
-                .map(|authority| authority.as_str().to_owned()),
-            (Some(_), Some(_)) => None,
+        let host_ok = match (hosts.next(), hosts.next()) {
+            (None, _) => None,
+            (Some(value), None) => Some(value.to_str().is_ok_and(names_listener)),
+            (Some(_), Some(_)) => Some(false),
         };
-        host.is_some_and(|host| {
-            let host = host.to_ascii_lowercase();
-            self.allowed_hosts.contains(&host)
-        })
+        let authority_ok = uri
+            .authority()
+            .map(|authority| names_listener(authority.as_str()));
+        match (host_ok, authority_ok) {
+            (None, None) => false,
+            (host_ok, authority_ok) => host_ok.unwrap_or(true) && authority_ok.unwrap_or(true),
+        }
     }
 }
 
@@ -148,6 +154,15 @@ mod tests {
         assert!(access.permits(&Method::GET, &authority, &headers(None)));
         let foreign: Uri = "http://evil.example:8420/".parse().unwrap();
         assert!(!access.permits(&Method::GET, &foreign, &headers(None)));
+        // Absolute form: the request-line authority wins over Host, so both
+        // must name the listener.
+        assert!(!access.permits(&Method::GET, &foreign, &headers(Some("127.0.0.1:8420"))));
+        assert!(!access.permits(
+            &Method::GET,
+            &authority,
+            &headers(Some("evil.example:8420"))
+        ));
+        assert!(access.permits(&Method::GET, &authority, &headers(Some("localhost:8420"))));
     }
 
     #[test]

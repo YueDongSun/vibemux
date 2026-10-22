@@ -82,7 +82,9 @@ async fn console_reads_a_real_daemon_and_reports_unconfigured_features() {
     );
     let encoded = serde_json::to_string(&snapshot).expect("encode snapshot");
     let project_path = temp.path().to_string_lossy().into_owned();
+    let escaped_path = serde_json::to_string(&project_path).expect("escape path");
     assert!(!encoded.contains(project_path.as_str()));
+    assert!(!encoded.contains(escaped_path.trim_matches('"')));
     assert!(!encoded.contains("process_id"));
     server.shutdown().await.expect("stop control server");
 }

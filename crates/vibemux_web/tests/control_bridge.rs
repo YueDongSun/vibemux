@@ -94,7 +94,13 @@ async fn refresh_uses_real_control_pipe_and_projects_only_allowlisted_fields() {
     }));
     let encoded = serde_json::to_string(&snapshot).expect("serialize snapshot");
     let project_path = temp.path().to_string_lossy().into_owned();
-    for forbidden in ["/vibemux_test/", "owner_", project_path.as_str()] {
+    let escaped_path = serde_json::to_string(&project_path).expect("escape path");
+    for forbidden in [
+        "/vibemux_test/",
+        "owner_",
+        project_path.as_str(),
+        escaped_path.trim_matches('"'),
+    ] {
         assert!(!encoded.contains(forbidden));
     }
     assert!(encoded.contains("Task 0"));

@@ -55,7 +55,7 @@
                 <tr>
                   <td class="mono">{slot.slot_id}</td>
                   <td class="mono">{slot.route_label}</td>
-                  <td><span class="state_pill" data-state={slot.executes ? 'executes' : 'probe_only'}>{slot.executes ? 'Executes' : 'Probe only'}</span></td>
+                  <td><span class="state_pill" data-state={slot.executes ? 'executes' : 'probe_only'}>{slot.executes ? 'Executes' : 'No executing route'}</span></td>
                 </tr>
               {/each}
             </tbody>

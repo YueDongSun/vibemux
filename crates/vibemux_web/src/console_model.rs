@@ -1,7 +1,10 @@
 //! Content-free projection of the daemon reads behind the ADR 042 console
 //! views (daemon, sessions, decisions) for the web API. Pure: the
-//! `console_poller` does the I/O and hands the results here. Every string
-//! that leaves this module passed through `content_label::web_label`.
+//! `console_poller` does the I/O and hands the results here. Every
+//! daemon-supplied string that leaves this module passed through
+//! `content_label::web_label`, except the DSH fields, which the bridge's
+//! `project_dsh_status` sanitizes; harness, protocol, and mode names are
+//! static strings.
 
 use serde::Serialize;
 use vibemux_harness::dispatch::route_config::DispatchCatalogEntry;

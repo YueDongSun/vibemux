@@ -163,6 +163,83 @@ async fn local_page_mode_serves_only_the_page_and_assets_without_a_token() {
     task.await.unwrap().unwrap();
 }
 
+/// One raw HTTP/1.1 exchange, for request shapes reqwest normalizes or will
+/// not send. Returns the status and the whole response text.
+async fn raw_exchange(url: &str, request: String) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let address = url.trim_start_matches("http://");
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8_lossy(&response).into_owned();
+    let status = response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .unwrap_or(0);
+    (status, response)
+}
+
+#[tokio::test]
+async fn local_page_mode_resists_path_host_and_authority_tricks() {
+    let console = ConsoleSnapshot::not_running("daemon_not_running", None);
+    let (_temp, _lease, url, stop, task) =
+        fixture_with(BridgeSnapshot::default(), console, true).await;
+    let host = url.trim_start_matches("http://").to_owned();
+    // Path spellings that are not the API route still get no API data: the
+    // router matches the raw path, so they fall through to the static page.
+    for path in [
+        "//api/v1/console",
+        "/./api/v1/console",
+        "/%61pi/v1/console",
+        "/API/v1/console",
+        "/x/../api/v1/console",
+        "/api%2fv1%2fconsole",
+    ] {
+        let (status, body) = raw_exchange(
+            &url,
+            format!(
+                "GET {path} HTTP/1.1
+Host: {host}
+Accept: text/html
+Connection: close
+
+"
+            ),
+        )
+        .await;
+        assert!(
+            !body.contains("daemon_not_running") && !body.contains("\"connection\""),
+            "{path}: {status} served console data"
+        );
+    }
+    // Absolute form: the request-line authority wins over Host.
+    let (foreign_authority, _) = raw_exchange(
+        &url,
+        format!("GET http://evil.example/ HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert!(
+        matches!(foreign_authority, 400 | 401),
+        "{foreign_authority}"
+    );
+    let (own_authority, _) = raw_exchange(
+        &url,
+        format!("GET http://{host}/ HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert_eq!(own_authority, 200);
+    let (duplicate_host, _) = raw_exchange(
+        &url,
+        format!("GET / HTTP/1.1\r\nHost: {host}\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert!(matches!(duplicate_host, 400 | 401), "{duplicate_host}");
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn console_route_serves_the_section_snapshot_behind_the_bearer() {
     let console = ConsoleSnapshot::not_running("daemon_not_running", None);
@@ -459,11 +536,13 @@ async fn http_reads_real_daemon_over_control_ipc_and_never_exposes_prompt_or_pat
     assert!(body.contains("Fresh board title"));
     assert!(body.contains("\"stale\":false"));
     let project_path = project.path().to_string_lossy().into_owned();
+    let escaped_path = serde_json::to_string(&project_path).unwrap();
     for forbidden in [
         "DO_NOT_LEAK_BRANCH",
         "DO_NOT_LEAK_SECRET",
         "fixture_external",
         project_path.as_str(),
+        escaped_path.trim_matches('"'),
     ] {
         assert!(!body.contains(forbidden), "{forbidden}");
     }
