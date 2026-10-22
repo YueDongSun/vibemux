@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn listener_names_follow_the_bound_address() {
         assert!(LocalPageAccess::for_listener("0.0.0.0:8420".parse().unwrap()).is_err());
-        assert!(LocalPageAccess::for_listener("192.168.1.2:8420".parse().unwrap()).is_err());
+        assert!(LocalPageAccess::for_listener("198.51.100.2:8420".parse().unwrap()).is_err());
         let other = LocalPageAccess::for_listener("127.0.0.2:8420".parse().unwrap()).unwrap();
         assert_eq!(other.allowed_hosts, ["127.0.0.2:8420"]);
         let v6 = LocalPageAccess::for_listener("[::1]:8420".parse().unwrap()).unwrap();

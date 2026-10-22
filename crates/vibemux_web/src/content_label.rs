@@ -64,8 +64,8 @@ mod tests {
     fn labels_drop_path_separators_and_free_text() {
         assert_eq!(web_label("aag:worker:gpt-5.1"), "aag:worker:gpt-5.1");
         assert_eq!(
-            web_label(r"C:\Users\operator\secret file"),
-            "C:Usersoperatorsecretfile"
+            web_label(r"D:\work\operator\secret file"),
+            "D:workoperatorsecretfile"
         );
         assert_eq!(web_label("a/b c\nd\u{1b}[31m"), "abcd31m");
         assert_eq!(web_label(&"x".repeat(200)).len(), MAX_LABEL_CHARS);
