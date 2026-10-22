@@ -85,15 +85,7 @@ pub fn render(ui: &mut Ui, c: &C, folder_name: &str, job: &DaemonJob) -> Option<
 
 /// The accent "Start VibeMux" button.
 pub fn start_button(ui: &mut Ui, c: &C) -> egui::Response {
-    let text_color = if c.light { egui::Color32::WHITE } else { c.bg };
-    let response = ui.add(
-        egui::Button::new(RichText::new("Start VibeMux").size(13.5).color(text_color))
-            .fill(c.accent)
-            .corner_radius(design::BUTTON_RADIUS)
-            .min_size(egui::vec2(0.0, 32.0)),
-    );
-    design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
-    response
+    design::accent_button(ui, c, "Start VibeMux")
 }
 
 #[cfg(test)]

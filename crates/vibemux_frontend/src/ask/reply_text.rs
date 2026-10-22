@@ -241,9 +241,7 @@ mod tests {
 
     #[test]
     fn codex_app_server_deltas_join_and_completed_items_replace_them() {
-        let delta = |item: &str, text: &str| {
-            json!({"method":"item/agentMessage/delta","params":{"itemId":item,"delta":text}})
-        };
+        let delta = |item: &str, text: &str| json!({"method":"item/agentMessage/delta","params":{"itemId":item,"delta":text}});
         let text = reply(
             NativeProtocol::CodexAppServer,
             &[
@@ -261,9 +259,7 @@ mod tests {
 
     #[test]
     fn codex_exec_items_carry_their_whole_text() {
-        let item = |kind: &str, text: &str| {
-            json!({"type":"item.updated","item":{"id":"m1","type":kind,"text":text}})
-        };
+        let item = |kind: &str, text: &str| json!({"type":"item.updated","item":{"id":"m1","type":kind,"text":text}});
         let text = reply(
             NativeProtocol::CodexExec,
             &[

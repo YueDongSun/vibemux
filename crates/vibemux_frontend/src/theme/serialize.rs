@@ -135,7 +135,14 @@ pub struct UserConfig {
     /// [`MAX_RECENT_PROJECTS`].
     #[serde(default)]
     pub recent_projects: Vec<PathBuf>,
+    /// Folders where the user confirmed that Ask may run harness turns,
+    /// which may use paid inference. Asked once per folder.
+    #[serde(default)]
+    pub ask_confirmed_projects: Vec<PathBuf>,
 }
+
+/// How many confirmed Ask folders are remembered.
+pub const MAX_ASK_CONFIRMED_PROJECTS: usize = 64;
 
 /// How many recent project folders the GUI remembers.
 pub const MAX_RECENT_PROJECTS: usize = 8;
@@ -155,6 +162,23 @@ impl UserConfig {
     pub fn forget_project(&mut self, folder: &Path) {
         self.recent_projects
             .retain(|known| !same_folder(known, folder));
+    }
+
+    /// Whether the user already confirmed Ask for `folder`.
+    #[must_use]
+    pub fn ask_confirmed(&self, folder: &Path) -> bool {
+        self.ask_confirmed_projects
+            .iter()
+            .any(|known| same_folder(known, folder))
+    }
+
+    /// Remembers the user's Ask confirmation for `folder`, newest first.
+    pub fn confirm_ask(&mut self, folder: PathBuf) {
+        self.ask_confirmed_projects
+            .retain(|known| !same_folder(known, &folder));
+        self.ask_confirmed_projects.insert(0, folder);
+        self.ask_confirmed_projects
+            .truncate(MAX_ASK_CONFIRMED_PROJECTS);
     }
 }
 
@@ -189,6 +213,7 @@ impl Default for UserConfig {
             text_size: TextSize::default(),
             active_project: None,
             recent_projects: Vec::new(),
+            ask_confirmed_projects: Vec::new(),
         }
     }
 }
@@ -237,9 +262,12 @@ pub fn load_user_config_at(path: &Path) -> UserConfig {
         Ok(cfg) if cfg.schema_version == SCHEMA_VERSION => {
             let mut recent_projects = cfg.recent_projects;
             recent_projects.truncate(MAX_RECENT_PROJECTS);
+            let mut ask_confirmed_projects = cfg.ask_confirmed_projects;
+            ask_confirmed_projects.truncate(MAX_ASK_CONFIRMED_PROJECTS);
             UserConfig {
                 window_size: cfg.window_size.clamped(),
                 recent_projects,
+                ask_confirmed_projects,
                 ..cfg
             }
         }
@@ -414,6 +442,25 @@ mod tests {
         assert_eq!(
             load_user_config_at(&path).recent_projects.len(),
             MAX_RECENT_PROJECTS
+        );
+    }
+
+    #[test]
+    fn ask_confirmation_is_remembered_per_folder() {
+        let mut config = UserConfig::default();
+        let first = PathBuf::from("projects/first");
+        assert!(!config.ask_confirmed(&first));
+        config.confirm_ask(first.clone());
+        config.confirm_ask(first.clone());
+        assert!(config.ask_confirmed(&first));
+        assert_eq!(config.ask_confirmed_projects.len(), 1, "no duplicates");
+        assert!(!config.ask_confirmed(Path::new("projects/second")));
+        for index in 0..MAX_ASK_CONFIRMED_PROJECTS + 2 {
+            config.confirm_ask(PathBuf::from(format!("projects/{index}")));
+        }
+        assert_eq!(
+            config.ask_confirmed_projects.len(),
+            MAX_ASK_CONFIRMED_PROJECTS
         );
     }
 

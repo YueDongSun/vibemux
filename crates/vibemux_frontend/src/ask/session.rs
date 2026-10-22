@@ -10,7 +10,7 @@ use std::{
 };
 
 use uuid::Uuid;
-use vibemux_harness::dispatch::{DispatchPhase, DispatchRequest, NativeProtocol};
+use vibemux_harness::dispatch::{DispatchError, DispatchPhase, DispatchRequest, NativeProtocol};
 use vibemuxd::{
     control::HarnessDispatchOutputQuery,
     harness_dispatch::{DispatchOutputPage, OutputReassembler},
@@ -134,56 +134,48 @@ pub(crate) async fn drive<P: DispatchPort>(
                 return;
             }
         }
-        let mut delivered = false;
-        for _ in 0..MAX_PAGES_PER_TICK {
-            let query = HarnessDispatchOutputQuery {
-                request_id,
-                cursor: reassembler.cursor(),
-            };
-            let page = match port.output(query).await {
-                Ok(page) => page,
+        let output =
+            match read_output(port, request_id, protocol, &mut reassembler, &mut reply).await {
+                Ok(output) => output,
                 Err(code) => {
+                    abandon(port, request_id, cancel_sent).await;
                     report(AskPhase::Finished, &reply, Some(AskEnd::Failed(code)));
                     return;
                 }
             };
-            let more = !page.fragments.is_empty();
-            delivered = page.complete;
-            match reassembler.accept(page) {
-                Ok(records) => {
-                    for record in records {
-                        if let Ok(value) = serde_json::from_str(&record.raw_json) {
-                            reply.absorb(protocol, &value);
-                        }
-                    }
-                }
-                Err(_) => {
-                    let end = AskEnd::Failed("dispatch_output_inconsistent".to_string());
-                    report(AskPhase::Finished, &reply, Some(end));
-                    return;
-                }
-            }
-            if !more || delivered {
-                break;
-            }
-        }
         let status = match port.status(request_id).await {
             Ok(status) => status,
             Err(code) => {
+                abandon(port, request_id, cancel_sent).await;
                 report(AskPhase::Finished, &reply, Some(AskEnd::Failed(code)));
                 return;
             }
         };
-        if let Some(end) = attempt_end(&status)
-            && delivered
-        {
-            report(AskPhase::Finished, &reply, Some(end));
-            return;
+        if let Some(end) = attempt_end(&status) {
+            match output {
+                OutputState::Delivered => {
+                    report(AskPhase::Finished, &reply, Some(end));
+                    return;
+                }
+                // A settled attempt without a transcript either never
+                // launched, and its own end says why, or its reply was
+                // evicted from daemon memory.
+                OutputState::Missing => {
+                    let end = match end {
+                        AskEnd::Completed | AskEnd::Unverified => {
+                            AskEnd::Failed(DispatchError::OutputUnavailable.code().to_string())
+                        }
+                        other => other,
+                    };
+                    report(AskPhase::Finished, &reply, Some(end));
+                    return;
+                }
+                // Read the rest on the next pass.
+                OutputState::Partial => {}
+            }
         }
         if started.elapsed() >= deadline {
-            if !cancel_sent {
-                let _ = port.cancel(request_id).await;
-            }
+            abandon(port, request_id, cancel_sent).await;
             let end = AskEnd::Failed("ask_timeout".to_string());
             report(AskPhase::Finished, &reply, Some(end));
             return;
@@ -195,6 +187,66 @@ pub(crate) async fn drive<P: DispatchPort>(
         };
         report(phase, &reply, None);
         tokio::time::sleep(poll_interval).await;
+    }
+}
+
+/// How much of an attempt's output this pass read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputState {
+    /// More records may follow.
+    Partial,
+    /// The attempt finished and every record was read.
+    Delivered,
+    /// No transcript: the attempt has not launched yet, never launched, or
+    /// its output was evicted.
+    Missing,
+}
+
+/// Reads up to [`MAX_PAGES_PER_TICK`] output pages into `reply`.
+async fn read_output<P: DispatchPort>(
+    port: &mut P,
+    request_id: Uuid,
+    protocol: NativeProtocol,
+    reassembler: &mut OutputReassembler,
+    reply: &mut ReplyText,
+) -> Result<OutputState, String> {
+    for _ in 0..MAX_PAGES_PER_TICK {
+        let query = HarnessDispatchOutputQuery {
+            request_id,
+            cursor: reassembler.cursor(),
+        };
+        let page = match port.output(query).await {
+            Ok(page) => page,
+            Err(code) if code == DispatchError::OutputUnavailable.code() => {
+                return Ok(OutputState::Missing);
+            }
+            Err(code) => return Err(code),
+        };
+        let more = !page.fragments.is_empty();
+        let complete = page.complete;
+        let records = reassembler
+            .accept(page)
+            .map_err(|_| "dispatch_output_inconsistent".to_string())?;
+        for record in records {
+            if let Ok(value) = serde_json::from_str(&record.raw_json) {
+                reply.absorb(protocol, &value);
+            }
+        }
+        if complete {
+            return Ok(OutputState::Delivered);
+        }
+        if !more {
+            break;
+        }
+    }
+    Ok(OutputState::Partial)
+}
+
+/// Best effort: asks the daemon to cancel an attempt this Ask stops
+/// following, so it does not hold the folder's one dispatch slot.
+async fn abandon<P: DispatchPort>(port: &mut P, request_id: Uuid, cancel_sent: bool) {
+    if !cancel_sent {
+        let _ = port.cancel(request_id).await;
     }
 }
 
@@ -212,6 +264,8 @@ mod tests {
     /// call the next phase (the last one repeats).
     struct FakePort {
         submit: Result<NativeProtocol, String>,
+        /// Errors the first output calls return, in order.
+        output_errors: VecDeque<String>,
         pages: VecDeque<DispatchOutputPage>,
         phases: VecDeque<DispatchPhase>,
         cancels: usize,
@@ -229,13 +283,17 @@ mod tests {
             };
             Ok(AttemptStatus {
                 phase,
-                error_code: (phase == DispatchPhase::Failed).then(|| "dispatch_vendor_failed".into()),
+                error_code: (phase == DispatchPhase::Failed)
+                    .then(|| "dispatch_vendor_failed".into()),
             })
         }
         async fn output(
             &mut self,
             query: HarnessDispatchOutputQuery,
         ) -> Result<DispatchOutputPage, String> {
+            if let Some(code) = self.output_errors.pop_front() {
+                return Err(code);
+            }
             Ok(self.pages.pop_front().unwrap_or(DispatchOutputPage {
                 fragments: vec![],
                 next: query.cursor,
@@ -309,6 +367,7 @@ mod tests {
     async fn a_completed_attempt_reports_its_reply_and_ends() {
         let mut port = FakePort {
             submit: Ok(NativeProtocol::ClaudeStreamJson),
+            output_errors: VecDeque::new(),
             pages: VecDeque::from([
                 page(
                     &[(
@@ -323,7 +382,10 @@ mod tests {
             cancels: 0,
         };
         let updates = run(&mut port, false).await;
-        assert_eq!(updates.first().map(|update| update.phase), Some(AskPhase::Submitting));
+        assert_eq!(
+            updates.first().map(|update| update.phase),
+            Some(AskPhase::Submitting)
+        );
         let last = updates.last().expect("final update");
         assert_eq!(last.end, Some(AskEnd::Completed));
         assert_eq!(last.reply, "Hello there");
@@ -336,15 +398,22 @@ mod tests {
         // later page; the Ask must not end before reading it.
         let mut port = FakePort {
             submit: Ok(NativeProtocol::CodexAppServer),
+            output_errors: VecDeque::new(),
             pages: VecDeque::from([
                 page(
-                    &[(1, r#"{"method":"item/agentMessage/delta","params":{"itemId":"a","delta":"Part "}}"#)],
+                    &[(
+                        1,
+                        r#"{"method":"item/agentMessage/delta","params":{"itemId":"a","delta":"Part "}}"#,
+                    )],
                     false,
                 ),
                 // Nothing new yet: the cursor stays after record 1.
                 empty_page(1),
                 page(
-                    &[(2, r#"{"method":"item/agentMessage/delta","params":{"itemId":"a","delta":"two"}}"#)],
+                    &[(
+                        2,
+                        r#"{"method":"item/agentMessage/delta","params":{"itemId":"a","delta":"two"}}"#,
+                    )],
                     true,
                 ),
             ]),
@@ -360,6 +429,7 @@ mod tests {
     async fn a_cancel_is_sent_once_and_the_daemon_decides_the_end() {
         let mut port = FakePort {
             submit: Ok(NativeProtocol::ClaudeStreamJson),
+            output_errors: VecDeque::new(),
             pages: VecDeque::new(),
             phases: VecDeque::from([
                 DispatchPhase::CancelRequested,
@@ -370,14 +440,22 @@ mod tests {
         };
         let updates = run(&mut port, true).await;
         assert_eq!(port.cancels, 1);
-        assert!(updates.iter().any(|update| update.phase == AskPhase::Cancelling));
-        assert_eq!(updates.last().and_then(|update| update.end.clone()), Some(AskEnd::Cancelled));
+        assert!(
+            updates
+                .iter()
+                .any(|update| update.phase == AskPhase::Cancelling)
+        );
+        assert_eq!(
+            updates.last().and_then(|update| update.end.clone()),
+            Some(AskEnd::Cancelled)
+        );
     }
 
     #[tokio::test]
     async fn submission_and_vendor_failures_end_with_their_code() {
         let mut refused = FakePort {
             submit: Err("dispatch_route_unavailable".into()),
+            output_errors: VecDeque::new(),
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Running]),
             cancels: 0,
@@ -389,12 +467,103 @@ mod tests {
         );
         let mut failed = FakePort {
             submit: Ok(NativeProtocol::CodexExec),
+            output_errors: VecDeque::new(),
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Failed]),
             cancels: 0,
         };
         let last = run(&mut failed, false).await.pop().expect("final");
-        assert_eq!(last.end, Some(AskEnd::Failed("dispatch_vendor_failed".into())));
+        assert_eq!(
+            last.end,
+            Some(AskEnd::Failed("dispatch_vendor_failed".into()))
+        );
+    }
+
+    const UNAVAILABLE: &str = "harness_dispatch_output_unavailable";
+
+    #[tokio::test]
+    async fn output_that_is_not_there_yet_is_waited_for() {
+        // The daemon starts a transcript only when the attempt launches.
+        let mut port = FakePort {
+            submit: Ok(NativeProtocol::ClaudeStreamJson),
+            output_errors: VecDeque::from([UNAVAILABLE.to_string(), UNAVAILABLE.to_string()]),
+            pages: VecDeque::from([page(&[(1, r#"{"type":"result","result":"Ready"}"#)], true)]),
+            phases: VecDeque::from([
+                DispatchPhase::Admitted,
+                DispatchPhase::Running,
+                DispatchPhase::Completed,
+            ]),
+            cancels: 0,
+        };
+        let last = run(&mut port, false).await.pop().expect("final");
+        assert_eq!(last.end, Some(AskEnd::Completed));
+        assert_eq!(last.reply, "Ready");
+        assert_eq!(port.cancels, 0);
+    }
+
+    #[tokio::test]
+    async fn a_settled_attempt_without_output_ends_with_its_own_reason() {
+        let mut never_launched = FakePort {
+            submit: Ok(NativeProtocol::CodexAppServer),
+            output_errors: VecDeque::from([UNAVAILABLE.to_string()]),
+            pages: VecDeque::new(),
+            phases: VecDeque::from([DispatchPhase::Failed]),
+            cancels: 0,
+        };
+        let last = run(&mut never_launched, false).await.pop().expect("final");
+        assert_eq!(
+            last.end,
+            Some(AskEnd::Failed("dispatch_vendor_failed".into()))
+        );
+        let mut evicted = FakePort {
+            submit: Ok(NativeProtocol::CodexAppServer),
+            output_errors: VecDeque::from([UNAVAILABLE.to_string()]),
+            pages: VecDeque::new(),
+            phases: VecDeque::from([DispatchPhase::Completed]),
+            cancels: 0,
+        };
+        let last = run(&mut evicted, false).await.pop().expect("final");
+        assert_eq!(last.end, Some(AskEnd::Failed(UNAVAILABLE.into())));
+    }
+
+    #[tokio::test]
+    async fn giving_up_cancels_the_attempt_left_behind() {
+        let mut lost = FakePort {
+            submit: Ok(NativeProtocol::ClaudeStreamJson),
+            output_errors: VecDeque::from(["control_connection_failed".to_string()]),
+            pages: VecDeque::new(),
+            phases: VecDeque::from([DispatchPhase::Running]),
+            cancels: 0,
+        };
+        let last = run(&mut lost, false).await.pop().expect("final");
+        assert_eq!(
+            last.end,
+            Some(AskEnd::Failed("control_connection_failed".into()))
+        );
+        assert_eq!(lost.cancels, 1, "the daemon is asked to stop the attempt");
+
+        let mut slow = FakePort {
+            submit: Ok(NativeProtocol::ClaudeStreamJson),
+            output_errors: VecDeque::new(),
+            pages: VecDeque::new(),
+            phases: VecDeque::from([DispatchPhase::Running]),
+            cancels: 0,
+        };
+        let mut last = None;
+        drive(
+            &mut slow,
+            request(),
+            &AtomicBool::new(false),
+            Duration::from_millis(1),
+            Duration::ZERO,
+            |update| last = Some(update),
+        )
+        .await;
+        assert_eq!(
+            last.and_then(|update| update.end),
+            Some(AskEnd::Failed("ask_timeout".into()))
+        );
+        assert_eq!(slow.cancels, 1);
     }
 
     #[test]

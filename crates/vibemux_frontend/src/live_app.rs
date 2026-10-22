@@ -1,8 +1,9 @@
 //! Native application adapter joining presentation with the control reader.
 //!
 //! It owns the observation client for the active project folder, restarts
-//! it when the user switches folders, and runs the daemon starts and stops
-//! the user asks for on a worker thread, so the UI never blocks on them.
+//! it when the user switches folders, runs the daemon starts and stops the
+//! user asks for on a worker thread, and drives read-only Asks through the
+//! Ask bridge, so the UI never blocks on them.
 use std::{
     path::PathBuf,
     sync::{
@@ -14,8 +15,9 @@ use std::{
 use crate::{
     daemon_control::{self, DaemonCommand, DaemonControlResult},
     gui::{DaemonJob, VibeMuxApp},
+    live_ask::AskBridge,
     supervisor_client::FrontendClient,
-    supervisor_model::{SupervisorAction, SupervisorSnapshot},
+    supervisor_model::{ConnectionStatus, SupervisorAction, SupervisorSnapshot},
 };
 
 pub struct LiveApp {
@@ -27,6 +29,7 @@ pub struct LiveApp {
     context: egui::Context,
     /// The result of the start or stop in flight, if any.
     daemon_result: Option<Receiver<DaemonControlResult>>,
+    ask: AskBridge,
 }
 
 impl LiveApp {
@@ -39,6 +42,7 @@ impl LiveApp {
             snapshot,
             context,
             daemon_result: None,
+            ask: AskBridge::default(),
         }
     }
 
@@ -46,6 +50,7 @@ impl LiveApp {
     fn switch_folder(&mut self, folder: PathBuf) {
         // Dropping the old client cancels its reader before the new one starts.
         self.client = None;
+        self.ask.reset();
         let (client, snapshot) = connect(Some(folder), &self.context);
         self.client = client;
         self.snapshot = snapshot;
@@ -139,6 +144,14 @@ impl eframe::App for LiveApp {
         if let Some(command) = self.app.take_daemon_request() {
             self.start_daemon_job(command);
         }
+        let connected = self.snapshot.connection.status == ConnectionStatus::Connected;
+        let folder = self.app.active_project().map(PathBuf::from);
+        self.ask.tick(
+            self.app.ask_state(),
+            folder.as_deref(),
+            connected,
+            &self.context,
+        );
         for action in self.app.take_supervisor_actions() {
             let result = self
                 .client
@@ -158,5 +171,8 @@ impl eframe::App for LiveApp {
         // Cancels the reader's select branch before joining; no task/process
         // cancellation or shutdown request is sent to the daemon.
         self.client.take();
+        // A running Ask is daemon-owned and ends on its own deadlines; the
+        // window only stops following it.
+        self.ask.reset();
     }
 }

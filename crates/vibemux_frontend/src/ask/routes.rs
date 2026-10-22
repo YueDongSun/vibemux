@@ -76,7 +76,11 @@ pub struct RoutePlan {
 
 /// Plans the default routes from a probe report.
 #[must_use]
-pub fn plan_routes(report: &ProbeReport, project_root: &Path, policy: ExecutablePolicy) -> RoutePlan {
+pub fn plan_routes(
+    report: &ProbeReport,
+    project_root: &Path,
+    policy: ExecutablePolicy,
+) -> RoutePlan {
     let mut plan = RoutePlan::default();
     for (harness, protocol) in ASK_HARNESSES {
         let probe = report.agents.iter().find(|probe| probe.agent == harness);
@@ -140,7 +144,9 @@ pub fn validate_config(bytes: &[u8], policy: ExecutablePolicy) -> Result<(), Dis
 /// Where the daemon reads the config for `project_root`.
 #[must_use]
 pub fn config_path(project_root: &Path) -> PathBuf {
-    project_root.join(".vibemux").join(DISPATCH_CONFIG_FILE_NAME)
+    project_root
+        .join(".vibemux")
+        .join(DISPATCH_CONFIG_FILE_NAME)
 }
 
 /// Writes `bytes` as the project's dispatch config. Refuses with

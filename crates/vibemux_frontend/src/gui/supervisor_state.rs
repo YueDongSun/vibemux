@@ -15,6 +15,19 @@ pub const ACTION_QUEUE_CAPACITY: usize = 64;
 pub const MAX_OPEN_TASK_WINDOWS: usize = 24;
 pub const CHAT_UNAVAILABLE_REASON: &str =
     "Sending is unavailable because no continuous chat service is connected.";
+pub const ASK_NOT_READY_REASON: &str = "Set up Ask in this folder before sending to this harness.";
+pub const ASK_BUSY_REASON: &str = "An Ask is already running in this folder.";
+pub const ASK_EMPTY_REASON: &str = "Write a prompt first.";
+pub const ASK_TOO_LONG_REASON: &str = "The prompt is longer than 32 KiB.";
+/// The longest prompt dispatch accepts.
+pub const MAX_ASK_PROMPT_BYTES: usize = 32 * 1024;
+
+/// A prompt the user sent to a harness, waiting for the app to run it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingAsk {
+    pub harness: String,
+    pub prompt: String,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MainPage {
@@ -154,6 +167,10 @@ pub struct SupervisorUiState {
     composer_target: ComposerTarget,
     not_sent_hint_started: Option<f64>,
     task_filter: TaskFilter,
+    /// Harness display names whose read-only route this folder can execute.
+    ask_ready: Vec<String>,
+    ask_busy: bool,
+    pending_ask: Option<PendingAsk>,
 }
 
 impl SupervisorUiState {
@@ -370,14 +387,59 @@ impl SupervisorUiState {
         &self.composer_draft
     }
 
+    /// Send works only for a harness target whose read-only Ask route is
+    /// ready, while no other Ask runs, with a prompt dispatch accepts.
     #[must_use]
-    pub const fn send_enabled(&self) -> bool {
-        false
+    pub fn send_enabled(&self) -> bool {
+        self.send_blocker().is_none()
     }
 
     #[must_use]
-    pub const fn send_disabled_reason(&self) -> &'static str {
-        CHAT_UNAVAILABLE_REASON
+    pub fn send_disabled_reason(&self) -> &'static str {
+        self.send_blocker().unwrap_or("")
+    }
+
+    fn send_blocker(&self) -> Option<&'static str> {
+        let ComposerTarget::Harness(name) = &self.composer_target else {
+            return Some(CHAT_UNAVAILABLE_REASON);
+        };
+        if !self.ask_ready_for(name) {
+            Some(ASK_NOT_READY_REASON)
+        } else if self.ask_busy {
+            Some(ASK_BUSY_REASON)
+        } else if self.composer_draft.trim().is_empty() {
+            Some(ASK_EMPTY_REASON)
+        } else if self.composer_draft.trim().len() > MAX_ASK_PROMPT_BYTES {
+            Some(ASK_TOO_LONG_REASON)
+        } else {
+            None
+        }
+    }
+
+    /// Whether `harness` (a display name) has a ready Ask route.
+    #[must_use]
+    pub fn ask_ready_for(&self, harness: &str) -> bool {
+        self.ask_ready.iter().any(|ready| ready == harness)
+    }
+
+    pub fn set_ask_ready(&mut self, harnesses: Vec<String>) {
+        self.ask_ready = harnesses;
+    }
+
+    pub fn set_ask_busy(&mut self, busy: bool) {
+        self.ask_busy = busy;
+    }
+
+    /// The prompt the user just sent, if any.
+    pub fn take_pending_ask(&mut self) -> Option<PendingAsk> {
+        self.pending_ask.take()
+    }
+
+    /// Puts an unsent prompt back into the composer.
+    pub fn restore_draft(&mut self, prompt: String) {
+        if self.composer_draft.trim().is_empty() {
+            self.composer_draft = prompt;
+        }
     }
 
     /// The active workspace-list filter. Defaults to showing every task.
@@ -390,9 +452,21 @@ impl SupervisorUiState {
         self.task_filter = filter;
     }
 
-    /// A disabled send never mutates the draft or emits a fake message.
+    /// Queues the draft as an Ask when sending is allowed. A disabled send
+    /// never mutates the draft or emits a fake message.
     pub fn try_send(&mut self) -> bool {
-        false
+        if !self.send_enabled() {
+            return false;
+        }
+        let ComposerTarget::Harness(harness) = &self.composer_target else {
+            return false;
+        };
+        self.pending_ask = Some(PendingAsk {
+            harness: harness.clone(),
+            prompt: self.composer_draft.trim().to_string(),
+        });
+        self.composer_draft.clear();
+        true
     }
 
     pub fn reconcile_snapshot(&mut self, snapshot: &SupervisorSnapshot) {

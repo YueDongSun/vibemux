@@ -1,5 +1,10 @@
 //! Explicit synthetic preview fixtures, available only to screenshot builds.
-use crate::{ViewModel, supervisor_model::*};
+use crate::{
+    ViewModel,
+    ask::{AskEnd, AskPhase, AskUpdate},
+    gui::{AskAvailability, AskState},
+    supervisor_model::*,
+};
 use vibemux_probe::{
     A2aSelfTestProbe, AgentKind, AgentProbe, GatewayProbe, LauncherKind, ProbeReport, ProbeState,
     RouteKind,
@@ -45,6 +50,50 @@ pub fn probe_view() -> ViewModel {
     let mut view = ViewModel::from_report(&report);
     view.env_allowlist.clear();
     view
+}
+
+/// Synthetic Ask state: the setup card of a folder without routes, or a
+/// finished Codex reply followed by a Claude Ask still streaming.
+pub fn ask_state(state: &mut AskState, setup: bool) {
+    if setup {
+        state.set_availability(AskAvailability::NotConfigured);
+        return;
+    }
+    state.set_availability(AskAvailability::Ready(vec![
+        AgentKind::Claude,
+        AgentKind::Codex,
+    ]));
+    let asks = [
+        (
+            "Codex",
+            "Where does the daemon decide that a run succeeded?",
+            "RunStatus::Succeeded is set only by the writer worker, after a structured adapter, a verifier, or an explicit user decision reports success. PTY text never completes a run.",
+            Some(AskEnd::Completed),
+        ),
+        (
+            "Claude",
+            "Summarize what changed in the last three commits.",
+            "The last commits add the read-only Ask core: reply text per protocol,",
+            None,
+        ),
+    ];
+    for (harness, prompt, reply, end) in asks {
+        if state.launch(harness.into(), prompt.into()).is_err() {
+            return;
+        }
+        let _ = state.take_launch();
+        state.apply_update(AskUpdate {
+            request_id: uuid::Uuid::nil(),
+            phase: if end.is_some() {
+                AskPhase::Finished
+            } else {
+                AskPhase::Running
+            },
+            reply: reply.into(),
+            truncated: false,
+            end,
+        });
+    }
 }
 
 pub fn supervisor_snapshot(disconnected: bool) -> SupervisorSnapshot {

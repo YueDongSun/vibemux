@@ -21,6 +21,7 @@ pub mod dashboard;
 pub mod dsh_tui;
 pub mod gui;
 mod live_app;
+mod live_ask;
 #[cfg(feature = "gui_screenshot")]
 pub mod preview;
 pub mod probe_env;
