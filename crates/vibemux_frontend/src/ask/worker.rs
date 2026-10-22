@@ -43,6 +43,8 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const UPDATE_CAPACITY: usize = 64;
 /// The code the daemon reports when the folder has no dispatch config.
 pub const UNCONFIGURED: &str = "harness_dispatch_unconfigured";
+/// Setup never replaces an operator's routes.
+const EXISTING_CONFIG: &str = "This folder already has .vibemux\\harness_dispatch.json; VibeMux leaves it as it is. Restart the daemon after editing it.";
 
 struct ControlPort {
     paths: DaemonPaths,
@@ -293,7 +295,35 @@ fn setup(project_root: &Path) -> SetupOutcome {
             .join("; ");
         return SetupOutcome::Failed(format!("No harness can be enabled ({reasons})."));
     }
-    let bytes = match routes::render_config(&plan.routes) {
+    if routes::config_path(project_root).exists() {
+        return SetupOutcome::Failed(EXISTING_CONFIG.to_string());
+    }
+    // Dispatch admits only a harness the daemon has recorded as detected,
+    // and the daemon records detection only on request. Record it from the
+    // cache saved above first, as `vibemuxctl harnesses` does, so the config
+    // names only routes the daemon will admit.
+    if let DaemonControlResult::Failed { message, .. } =
+        daemon_control::run(DaemonCommand::Start, project_root)
+    {
+        return SetupOutcome::Failed(format!(
+            "Starting VibeMux to record the detected harnesses failed: {message}"
+        ));
+    }
+    let rows = match runtime.block_on(record_detection(project_root)) {
+        Ok(rows) => rows,
+        Err(code) => {
+            return SetupOutcome::Failed(format!(
+                "Recording the detected harnesses failed ({code}); nothing was written."
+            ));
+        }
+    };
+    let (detected, undetected) = routes::detected_routes(&plan.routes, &rows);
+    if detected.is_empty() {
+        return SetupOutcome::Failed(
+            "VibeMux detected none of the harnesses to enable; nothing was written.".to_string(),
+        );
+    }
+    let bytes = match routes::render_config(&detected) {
         Ok(bytes) => bytes,
         Err(_) => return SetupOutcome::Failed("Could not build the route config.".to_string()),
     };
@@ -306,13 +336,12 @@ fn setup(project_root: &Path) -> SetupOutcome {
     let config_path = match routes::write_config(project_root, &bytes) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return SetupOutcome::Failed(
-                "This folder already has .vibemux\\harness_dispatch.json; VibeMux leaves it as it is. Restart the daemon after editing it.".to_string(),
-            );
+            return SetupOutcome::Failed(EXISTING_CONFIG.to_string());
         }
         Err(_) => return SetupOutcome::Failed("Could not write the route config.".to_string()),
     };
-    // The daemon reads routes only at startup.
+    // The daemon reads routes only at startup. Detection is already recorded
+    // and survives the restart.
     if let DaemonControlResult::Failed { code, message } =
         daemon_control::run(DaemonCommand::Stop, project_root)
         && code != "daemon_not_running"
@@ -328,23 +357,6 @@ fn setup(project_root: &Path) -> SetupOutcome {
             "Routes were written, but starting the daemon failed: {message}"
         ));
     }
-    // Dispatch admits only a harness the daemon has recorded as detected,
-    // and the daemon records detection only on request: record it from the
-    // probe cache saved above, as `vibemuxctl harnesses` does.
-    let rows = match runtime.block_on(record_detection(project_root)) {
-        Ok(rows) => rows,
-        Err(code) => {
-            return SetupOutcome::Failed(format!(
-                "Routes were written and VibeMux restarted, but recording the detected harnesses failed ({code}). Run vibemuxctl harnesses --project-root <this folder>, then try again."
-            ));
-        }
-    };
-    let (enabled, undetected) = routes::detected_routes(&plan.routes, &rows);
-    if enabled.is_empty() {
-        return SetupOutcome::Failed(
-            "Routes were written, but VibeMux detected none of their harnesses.".to_string(),
-        );
-    }
     let mut skipped = plan.skipped;
     skipped.extend(
         undetected
@@ -353,7 +365,7 @@ fn setup(project_root: &Path) -> SetupOutcome {
     );
     SetupOutcome::Done {
         config_path,
-        enabled,
+        enabled: detected.iter().map(|route| route.harness).collect(),
         skipped,
     }
 }

@@ -6499,12 +6499,16 @@ against a running daemon, and Re-probe was not run from the window.
 daemon, store, control protocol, or CLI changes.
 
 **Fixed:**
-- One-click setup now asks the restarted daemon to record harness detection
+- One-click setup now asks the folder's daemon to record harness detection
   from the probe cache it saved (`harness_refresh`, as `vibemuxctl
-  harnesses` does). Before this, a fresh folder's daemon listed every
-  harness as undetected, so dispatch refused every Ask. A route whose
-  harness the daemon does not detect is reported as skipped, and setup
-  fails if none is detected.
+  harnesses` does) before it writes any route. Before this, a fresh
+  folder's daemon listed every harness as undetected, so dispatch refused
+  every Ask. Setup then writes only the routes whose harness the daemon
+  detected, reports the rest as skipped, fails without writing when none
+  is detected, and restarts the daemon to load the routes. Detection
+  survives the restart. A setup-only run in a fresh temporary folder (no
+  prompt) wrote only `claude`, and the daemon kept Claude available after
+  the restart.
 - The consent dialog and the setup card no longer say that a turn can read
   the folder. Claude's route has no tools; Codex reads under a read-only
   sandbox.

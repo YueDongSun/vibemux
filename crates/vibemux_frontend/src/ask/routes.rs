@@ -36,21 +36,23 @@ pub const ASK_HARNESSES: [(AgentKind, NativeProtocol); 2] = [
     (AgentKind::Codex, NativeProtocol::CodexAppServer),
 ];
 
-/// The planned routes' harnesses split by whether the daemon has recorded
-/// them as detected. Dispatch admits only a detected harness, so a route
-/// for an undetected one cannot run.
+/// The planned routes the daemon will admit, and the harnesses of the rest.
+/// Dispatch admits only a harness the daemon has recorded as detected, so a
+/// route for an undetected one could never run and is not written.
 #[must_use]
 pub fn detected_routes(
     routes: &[PlannedRoute],
     rows: &[HarnessRow],
-) -> (Vec<AgentKind>, Vec<AgentKind>) {
-    routes
-        .iter()
-        .map(|route| route.harness)
-        .partition(|harness| {
+) -> (Vec<PlannedRoute>, Vec<AgentKind>) {
+    let (detected, undetected): (Vec<PlannedRoute>, Vec<PlannedRoute>) =
+        routes.iter().cloned().partition(|route| {
             rows.iter()
-                .any(|row| row.name == harness.command_name() && row.available)
-        })
+                .any(|row| row.name == route.harness.command_name() && row.available)
+        });
+    (
+        detected,
+        undetected.into_iter().map(|route| route.harness).collect(),
+    )
 }
 
 /// One route the setup will write.
@@ -387,7 +389,7 @@ mod tests {
         let planned = [route(AgentKind::Claude), route(AgentKind::Codex)];
         let (detected, undetected) =
             detected_routes(&planned, &[row("claude", true), row("codex", false)]);
-        assert_eq!(detected, [AgentKind::Claude]);
+        assert_eq!(detected, [route(AgentKind::Claude)]);
         assert_eq!(undetected, [AgentKind::Codex]);
         // A daemon that never recorded detection admits nothing.
         let (detected, undetected) = detected_routes(&planned, &[]);
