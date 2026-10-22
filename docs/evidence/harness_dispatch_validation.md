@@ -171,3 +171,41 @@ servers, restricted mode, no tools) needs a submit and was not exercised.
   design (ADR 029 Decision 4).
 - Live vendors on Linux or WSL. Only native Windows was exercised.
 - Vendor versions other than those listed above.
+
+## Addendum (2026-10-23): one live Claude submit through the GUI's Ask
+
+The operator authorized exactly one live turn. It ran on native Windows 11
+through the GUI's own Ask workers (`vibemux_frontend::ask::worker`), driven
+by a throwaway example program that was removed afterwards. The daemon and
+dispatch code were unchanged since `main` at `5659805`.
+
+- **Setup.** A temporary Git folder held only a README. The GUI's one-click
+  setup ran the read-only probe, wrote one route (`claude`,
+  `claude_stream_json`, `allow_execution: true`, environment names
+  `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`), skipped Codex because it is
+  installed as a script shim, and restarted the folder's daemon.
+- **Bug found.** Before the fix on `fix/gui_ask_setup_detection`, the
+  restarted daemon listed Claude as `available: false`. Setup wrote the probe
+  cache but never asked the daemon to record it (`harness_refresh`), so any
+  Ask would have been refused as not detected. With the fix, setup records
+  detection, and the daemon listed Claude Code 2.1.304 as available.
+- **Submit.** One `harness_dispatch_submit` with a one-sentence question
+  about the README. The daemon admitted it and launched Claude Code 2.1.304
+  through the trampoline. The attempt ended `failed` with
+  `harness_process_failed` after about 1.5 s. The GUI's reply parser showed
+  Claude's message: "Not logged in · Please run /login". No model inference
+  ran.
+- **Cause.** The route's `--bare` flag. The installed CLI's help says that in
+  bare mode "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper";
+  OAuth and keychain logins are never read. The daemon clears the
+  environment and forwards only the route's named variables, and the
+  default names carry no API key. So the Claude route cannot use a
+  subscription login, and an API key works only if its variable is both
+  set for the daemon and named by the route. Which way to go is an open
+  decision for the operator.
+- **Also seen.** `--tools=` leaves Claude no tools, so even an
+  authenticated turn cannot open files in the folder. The GUI's consent
+  text now says so.
+
+Still not verified: an authenticated Claude turn, any Codex turn, and a
+cancel against a live vendor.
