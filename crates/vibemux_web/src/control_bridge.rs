@@ -1,6 +1,6 @@
 //! Read-only projection from the daemon control pipe for the local web API.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,6 +12,8 @@ use vibemuxd::{
     control::{ControlClient, DaemonHealth},
     process::DaemonPaths,
 };
+
+use crate::content_label::{media_type_label, web_label};
 
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub const MAX_BRIDGE_TASKS: usize = 256;
@@ -31,6 +33,10 @@ pub struct BridgeSnapshot {
     pub dsh_status: Option<BridgeDshStatus>,
     pub tasks: Vec<BridgeTask>,
     pub truncated: bool,
+    /// Events and artifacts of each task in `tasks`, keyed by task id. Only
+    /// the task detail route serves them.
+    #[serde(default)]
+    pub activity: BTreeMap<String, BridgeTaskActivity>,
 }
 
 impl Default for BridgeSnapshot {
@@ -44,6 +50,7 @@ impl Default for BridgeSnapshot {
             dsh_status: None,
             tasks: Vec::new(),
             truncated: false,
+            activity: BTreeMap::new(),
         }
     }
 }
@@ -54,7 +61,7 @@ pub struct BridgeHealth {
     pub store_schema_version: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BridgeDshStatus {
     pub phase: String,
     pub provider: String,
@@ -79,6 +86,31 @@ pub struct BridgeTask {
     pub runs: Vec<BridgeRun>,
     pub dispatch: Option<BridgeLinkedStatus>,
     pub workflow: Option<BridgeLinkedStatus>,
+}
+
+/// A task's latest events and artifacts, without digests or worktree data.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BridgeTaskActivity {
+    pub events: Vec<BridgeEvent>,
+    pub artifacts: Vec<BridgeArtifact>,
+    /// Whether the daemon cut the runs, events, or artifacts of the task.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BridgeEvent {
+    pub sequence: u64,
+    pub event_type: String,
+    pub at: String,
+    pub run_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BridgeArtifact {
+    pub artifact_id: String,
+    pub run_id: String,
+    pub media_type: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -265,6 +297,7 @@ impl BridgePoller {
             Err(_) => return Err(BridgeError::ControlUnavailable),
         };
         let mut tasks = Vec::new();
+        let mut activity = BTreeMap::new();
         let mut after = None;
         let mut truncated = false;
         let mut project_id = None;
@@ -294,6 +327,7 @@ impl BridgePoller {
                     .await
                     .map_err(|_| BridgeError::ControlUnavailable)?
                 {
+                    let task_activity = project_activity(&detail);
                     let mut projected = project_task(detail);
                     if let Some(link) = self
                         .task_links
@@ -340,6 +374,7 @@ impl BridgePoller {
                             });
                         }
                     }
+                    activity.insert(projected.task_id.clone(), task_activity);
                     tasks.push(projected);
                     if tasks.len() >= MAX_BRIDGE_TASKS {
                         break;
@@ -381,11 +416,14 @@ impl BridgePoller {
             dsh_status,
             tasks,
             truncated: truncated && !generation_changed,
+            activity,
         })
     }
 }
 
-fn load_validated_client(paths: &DaemonPaths) -> Result<(ControlClient, String), BridgeError> {
+pub(crate) fn load_validated_client(
+    paths: &DaemonPaths,
+) -> Result<(ControlClient, String), BridgeError> {
     if !paths.descriptor_path().exists() {
         return Err(BridgeError::DaemonUnavailable);
     }
@@ -405,7 +443,7 @@ fn load_validated_client(paths: &DaemonPaths) -> Result<(ControlClient, String),
     Ok((client, descriptor_generation))
 }
 
-fn descriptor_fingerprint(path: &std::path::Path) -> Result<String, BridgeError> {
+pub(crate) fn descriptor_fingerprint(path: &std::path::Path) -> Result<String, BridgeError> {
     let contents = crate::private_state::read_bounded(path, 64 * 1024)
         .map_err(|_| BridgeError::DaemonUnavailable)?;
     Ok(hex(&Sha256::digest(contents)))
@@ -431,7 +469,7 @@ fn hex(bytes: &[u8]) -> String {
     encoded
 }
 
-fn project_dsh_status(status: vibemuxd::control::DshSessionStatus) -> BridgeDshStatus {
+pub(crate) fn project_dsh_status(status: vibemuxd::control::DshSessionStatus) -> BridgeDshStatus {
     BridgeDshStatus {
         phase: format!("{:?}", status.phase).to_ascii_lowercase(),
         provider: sanitize_label(&status.provider),
@@ -481,6 +519,32 @@ fn project_task(detail: vibemux_types::frontend::FrontendTaskDetail) -> BridgeTa
     }
 }
 
+fn project_activity(detail: &vibemux_types::frontend::FrontendTaskDetail) -> BridgeTaskActivity {
+    BridgeTaskActivity {
+        events: detail
+            .events
+            .iter()
+            .map(|event| BridgeEvent {
+                sequence: event.sequence,
+                event_type: web_label(&event.event_type),
+                at: web_label(&event.at),
+                run_id: event.run_id.as_ref().map(ToString::to_string),
+            })
+            .collect(),
+        artifacts: detail
+            .artifacts
+            .iter()
+            .map(|artifact| BridgeArtifact {
+                artifact_id: artifact.artifact_id.to_string(),
+                run_id: artifact.run_id.to_string(),
+                media_type: media_type_label(&artifact.media_type),
+                size_bytes: artifact.size_bytes,
+            })
+            .collect(),
+        truncated: detail.has_more_runs || detail.has_more_events || detail.has_more_artifacts,
+    }
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let mut output: String = chars.by_ref().take(max_chars).collect();
@@ -498,7 +562,7 @@ fn sanitize_label(value: &str) -> String {
         .collect()
 }
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".into())

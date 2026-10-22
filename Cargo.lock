@@ -6014,6 +6014,7 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "vibemux_harness",
  "vibemux_platform",
  "vibemux_store",
  "vibemux_types",

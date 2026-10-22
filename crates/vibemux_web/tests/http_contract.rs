@@ -2,15 +2,31 @@
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{RwLock, oneshot};
 use vibemux_web::{
+    console_model::ConsoleSnapshot,
     control_bridge::{BridgePoller, BridgeSnapshot},
+    local_page::LocalPageAccess,
     private_state::InstanceLease,
     push::PushService,
-    server::{API_ROUTES, CSP, OPENAPI, build_router, mime_type},
+    server::{API_ROUTES, CSP, OPENAPI, RouterSettings, build_router, mime_type},
 };
 const TEST_TOKEN: &str = "test_token_abcdefghijklmnopqrstuvwxyz_0123456789";
 
 async fn fixture(
     snapshot: BridgeSnapshot,
+) -> (
+    tempfile::TempDir,
+    InstanceLease,
+    String,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<std::io::Result<()>>,
+) {
+    fixture_with(snapshot, ConsoleSnapshot::waiting(), false).await
+}
+
+async fn fixture_with(
+    snapshot: BridgeSnapshot,
+    console: ConsoleSnapshot,
+    local_page: bool,
 ) -> (
     tempfile::TempDir,
     InstanceLease,
@@ -29,14 +45,19 @@ async fn fixture(
         )
         .unwrap(),
     );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
     let router = build_router(
         Arc::new(RwLock::new(snapshot)),
+        Arc::new(RwLock::new(console)),
         push,
-        TEST_TOKEN.to_owned(),
-        "https://operator.example/".into(),
+        RouterSettings {
+            instance_token: TEST_TOKEN.to_owned(),
+            enrollment_url: "https://operator.example/".into(),
+            local_page: local_page.then(|| LocalPageAccess::for_listener(address).unwrap()),
+        },
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+    let url = format!("http://{address}");
     let (stop, receive) = oneshot::channel();
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -81,6 +102,87 @@ async fn every_route_and_fallback_rejects_anonymous_requests_with_security_heade
         assert_eq!(response.headers()["x-content-type-options"], "nosniff");
         assert_eq!(response.headers()["cache-control"], "no-store");
     }
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn local_page_mode_serves_only_the_page_and_assets_without_a_token() {
+    let (_temp, _lease, url, stop, task) =
+        fixture_with(BridgeSnapshot::default(), ConsoleSnapshot::waiting(), true).await;
+    let client = reqwest::Client::new();
+    let port = url.rsplit(':').next().unwrap().to_owned();
+    // More anonymous page loads than the failed-attempt limit allows.
+    for _ in 0..3 {
+        for (path, expected_mime) in [
+            ("/", "text/html; charset=utf-8"),
+            ("/sw.js", "text/javascript; charset=utf-8"),
+            ("/manifest.webmanifest", "application/manifest+json"),
+        ] {
+            let response = client.get(format!("{url}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), 200, "{path}");
+            assert_eq!(response.headers()["content-type"], expected_mime);
+            assert_eq!(response.headers()["content-security-policy"], CSP);
+        }
+    }
+    let by_name = client
+        .get(format!("{url}/"))
+        .header("host", format!("localhost:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_name.status(), 200);
+    // Anything else still needs the token. Each refusal counts toward the
+    // failed-attempt limit, so stay below it.
+    for (method, path, host) in [
+        ("get", "/api/v1/console", None),
+        ("get", "/openapi.json", None),
+        ("post", "/", None),
+        ("get", "/", Some("operator.tailnet.example".to_owned())),
+    ] {
+        let mut request = client.request(
+            reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+            format!("{url}{path}"),
+        );
+        if let Some(host) = host {
+            request = request.header("host", host);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), 401, "{method} {path}");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+    // The page loads did not use up the failed-attempt budget.
+    let health = client
+        .get(format!("{url}/api/v1/health"))
+        .bearer_auth(TEST_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn console_route_serves_the_section_snapshot_behind_the_bearer() {
+    let console = ConsoleSnapshot::not_running("daemon_not_running", None);
+    let (_temp, _lease, url, stop, task) =
+        fixture_with(BridgeSnapshot::default(), console, false).await;
+    let response = reqwest::Client::new()
+        .get(format!("{url}/api/v1/console"))
+        .bearer_auth(TEST_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["connection"]["state"], "unavailable");
+    assert_eq!(body["decisions"]["code"], "daemon_not_running");
+    assert_eq!(
+        body["routes"]["hint"],
+        "start it with vibemuxctl daemon start"
+    );
     stop.send(()).unwrap();
     task.await.unwrap().unwrap();
 }
@@ -356,9 +458,19 @@ async fn http_reads_real_daemon_over_control_ipc_and_never_exposes_prompt_or_pat
     let body = response.text().await.unwrap();
     assert!(body.contains("Fresh board title"));
     assert!(body.contains("\"stale\":false"));
-    for forbidden in ["DO_NOT_LEAK_BRANCH", "DO_NOT_LEAK_SECRET"] {
-        assert!(!body.contains(forbidden));
+    let project_path = project.path().to_string_lossy().into_owned();
+    for forbidden in [
+        "DO_NOT_LEAK_BRANCH",
+        "DO_NOT_LEAK_SECRET",
+        "fixture_external",
+        project_path.as_str(),
+    ] {
+        assert!(!body.contains(forbidden), "{forbidden}");
     }
+    let detail: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let events = detail["activity"]["events"].as_array().unwrap();
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|event| event["event_type"].is_string()));
     stop.send(()).unwrap();
     http_task.await.unwrap().unwrap();
     daemon.shutdown().await.unwrap();

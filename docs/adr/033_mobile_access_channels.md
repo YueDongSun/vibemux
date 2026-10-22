@@ -13,6 +13,16 @@ mechanism that attaches Authorization to all navigation and subresource requests
 shell or anonymous redemption exception is introduced. Enrollment still requires a short-lived
 single-use token in the POST body in addition to the bearer.
 
+Operator decision (2026-10-22): an opt-in `local_page_without_token` setting may serve the page
+and its static assets without the bearer, for testing in an ordinary local browser. It applies
+only to GET/HEAD requests whose Host names the loopback listener literally (`127.0.0.1:<port>`,
+`localhost:<port>`, or `[::1]:<port>`); every JSON route, including enrollment and OpenAPI,
+still requires the bearer, and the page carries no daemon data. This narrows the 2026-10-08
+"no public shell" rule for that opt-in case only; it is off by default, and a proxy that rewrites
+Host to the loopback address would publish the page, so the mode is not for a tailnet-published
+port. The same change adds the ADR 042 console sections (`GET /api/v1/console`) as further
+content-free reads.
+
 Dispatch and workflow status queries require explicit IDs in web-local `task_links` configuration,
 because the existing control protocol has no enumeration/by-task operation for those resources.
 Absent links render as untracked; no IDs or completion states are inferred.

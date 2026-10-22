@@ -3,26 +3,37 @@
   import {
     api_error,
     create_enrollment,
+    load_console,
     load_health,
     load_task,
     load_tasks,
     load_public_key,
     redeem_enrollment,
     save_push_subscription,
+    type console_response,
     type freshness,
     type health_response,
+    type task_activity,
     type task_status,
   } from './api_client';
   import { clear_authenticated_state, read_instance_token, save_instance_token } from './auth_state';
+  import { connection_summary, console_is_current, type console_view_id, view_for_key } from './console_policy';
   import { snapshots_match } from './presentation_policy';
+  import Daemon_view from './components/daemon_view.svelte';
+  import Decisions_view from './components/decisions_view.svelte';
+  import Sessions_view from './components/sessions_view.svelte';
   import Task_board from './components/task_board.svelte';
   import Task_detail from './components/task_detail.svelte';
+  import View_tabs from './components/view_tabs.svelte';
 
   let token = $state('');
   let token_input = $state('');
   let tasks = $state<task_status[]>([]);
   let selected_id = $state<string | null>(null);
   let selected_task = $state<task_status | null>(null);
+  let selected_activity = $state<task_activity | null>(null);
+  let console_data = $state<console_response | null>(null);
+  let active_view = $state<console_view_id>('tasks');
   let data_freshness = $state<freshness | null>(null);
   let detail_freshness = $state<freshness | null>(null);
   let health = $state<health_response | null>(null);
@@ -40,8 +51,10 @@
     token_input = token;
     const on_update = () => (update_available = true);
     window.addEventListener('vibemux:update_available', on_update);
+    window.addEventListener('keydown', on_key);
     return () => {
       window.removeEventListener('vibemux:update_available', on_update);
+      window.removeEventListener('keydown', on_key);
       if (polling_timer) window.clearInterval(polling_timer);
     };
   });
@@ -53,20 +66,40 @@
     polling_timer = window.setInterval(() => void refresh_board(), 5000);
   });
 
+  function on_key(event: KeyboardEvent): void {
+    if (!token || event.altKey || event.ctrlKey || event.metaKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+    const view = view_for_key(event.key);
+    if (view) {
+      active_view = view;
+      event.preventDefault();
+    } else if (event.key === 'r' || event.key === 'R') {
+      void refresh_board();
+      event.preventDefault();
+    }
+  }
+
+  function clear_daemon_views(): void {
+    tasks = [];
+    selected_id = null;
+    selected_task = null;
+    selected_activity = null;
+    console_data = null;
+    data_freshness = null;
+    detail_freshness = null;
+  }
+
   async function use_token(): Promise<void> {
     const next_token = token_input.trim();
     if (!next_token) {
-      error_message = 'Enter the instance token supplied by your authenticated operator bootstrap.';
+      error_message = 'Enter the instance token of this vibemux_web process.';
       return;
     }
     await clear_authenticated_state();
     save_instance_token(next_token);
     token = next_token;
-    selected_id = null;
-    selected_task = null;
-    tasks = [];
-    data_freshness = null;
-    detail_freshness = null;
+    clear_daemon_views();
     error_message = '';
   }
 
@@ -74,11 +107,7 @@
     await clear_authenticated_state();
     token = '';
     token_input = '';
-    tasks = [];
-    selected_id = null;
-    selected_task = null;
-    data_freshness = null;
-    detail_freshness = null;
+    clear_daemon_views();
     health = null;
     enrollment_image = '';
     error_message = '';
@@ -88,11 +117,7 @@
     await clear_authenticated_state();
     token = '';
     token_input = '';
-    tasks = [];
-    selected_id = null;
-    selected_task = null;
-    data_freshness = null;
-    detail_freshness = null;
+    clear_daemon_views();
     health = null;
     enrollment_image = '';
     error_message = 'The instance token was rejected or rotated. Every device must reconnect with the current authenticated bootstrap.';
@@ -103,7 +128,11 @@
     busy = true;
     error_message = '';
     try {
-      const [task_pages, health_page] = await Promise.all([load_task_pages(), load_health(token)]);
+      const [task_pages, health_page, console_page] = await Promise.all([
+        load_task_pages(),
+        load_health(token),
+        load_console(token),
+      ]);
       if (!snapshots_match(task_pages, health_page)) {
         task_pages.stale = true;
         health_page.stale = true;
@@ -111,12 +140,16 @@
       tasks = task_pages.tasks;
       tasks_page_truncated = task_pages.truncated;
       health = health_page;
+      console_data = console_page;
       data_freshness = task_pages;
       if (!selected_id || !tasks.some((task) => task.task_id === selected_id)) {
         selected_id = tasks[0]?.task_id ?? null;
       }
       if (selected_id) await select_task(selected_id);
-      else selected_task = null;
+      else {
+        selected_task = null;
+        selected_activity = null;
+      }
     } catch (error) {
       show_error(error);
     } finally {
@@ -157,11 +190,13 @@
   async function select_task(task_id: string): Promise<void> {
     selected_id = task_id;
     selected_task = null;
+    selected_activity = null;
     detail_freshness = null;
     try {
       const response = await load_task(token, task_id);
       if (data_freshness && !snapshots_match(data_freshness, response)) response.stale = true;
       selected_task = response.task;
+      selected_activity = response.activity ?? null;
       detail_freshness = response;
     } catch (error) {
       show_error(error);
@@ -271,7 +306,7 @@
       <section class="welcome_panel panel">
         <p class="eyebrow">Private instance</p>
         <h1>Monitor your VibeMux runs.</h1>
-        <p class="lead">Enter the instance token supplied by your operator’s authenticated browser bootstrap.</p>
+        <p class="lead">Enter the instance token of this <span class="mono">vibemux_web</span> process. The page keeps it for this browser tab only.</p>
         <form class="token_form" onsubmit={(event) => { event.preventDefault(); void use_token(); }}>
           <label for="instance_token">Instance bearer token</label>
           <div class="token_controls">
@@ -280,15 +315,15 @@
           </div>
         </form>
         <p class="bootstrap_note">
-          Every request, including the app shell and enrollment routes, requires bearer authentication. A QR code cannot bootstrap an ordinary phone browser; the operator must provide an authenticated browser/bootstrap mechanism first.
+          Every data request sends this token. By default the page, its scripts, and enrollment also require it, so the page loads only through an authenticated browser bootstrap. With <span class="mono">local_page_without_token</span> on, a browser on this computer can load the page itself at the loopback address; the data still needs the token. A QR code cannot bootstrap an ordinary phone browser.
         </p>
       </section>
     {:else}
       <section class="dashboard_intro">
         <div>
           <p class="eyebrow">Project activity</p>
-          <h1>Your task board</h1>
-          <p class="lead">Read-only status from the local VibeMux daemon. Refreshes every five seconds.</p>
+          <h1>Your VibeMux monitor</h1>
+          <p class="lead">Read-only status from the local VibeMux daemon. Refreshes every five seconds. Keys 1–5 switch views and R refreshes.</p>
         </div>
         <div class="intro_badges">
           <span class="metric_badge"><strong>{tasks.length}</strong> tasks</span>
@@ -296,12 +331,19 @@
         </div>
       </section>
 
-      {#if data_freshness?.stale || detail_freshness?.stale || health?.stale}
+      <View_tabs active={active_view} on_select={(view) => (active_view = view)} />
+
+      {#if active_view !== 'tasks' && active_view !== 'device' && console_data && !console_is_current(console_data)}
+        <div class="stale_banner" role="status">
+          <strong>{console_data.stale ? 'These views came from the browser cache and are not current.' : connection_summary(console_data.connection)}</strong>
+        </div>
+      {/if}
+      {#if active_view === 'tasks' && (data_freshness?.stale || detail_freshness?.stale || health?.stale)}
         <div class="stale_banner" role="status">
           <strong>Status is stale or unavailable.</strong> Task titles stay hidden until a fresh daemon response arrives.
         </div>
       {/if}
-      {#if !data_freshness?.stale && tasks_page_truncated}
+      {#if active_view === 'tasks' && !data_freshness?.stale && tasks_page_truncated}
         <div class="stale_banner" role="status">
           <strong>Task list is bounded.</strong> The board shows the available snapshot page.
         </div>
@@ -314,20 +356,19 @@
         </div>
       {/if}
 
-      <div class="board_grid">
-        <Task_board tasks={tasks} selected_id={selected_id} freshness={data_freshness} on_select={(task_id) => void select_task(task_id)} />
-        <Task_detail task={selected_task} freshness={detail_freshness} />
-      </div>
-
+      {#if active_view === 'tasks'}
+        <div class="board_grid">
+          <Task_board tasks={tasks} selected_id={selected_id} freshness={data_freshness} on_select={(task_id) => void select_task(task_id)} />
+          <Task_detail task={selected_task} activity={selected_activity} freshness={detail_freshness} />
+        </div>
+      {:else if active_view === 'daemon'}
+        <Daemon_view console_data={console_data} />
+      {:else if active_view === 'sessions'}
+        <Sessions_view console_data={console_data} />
+      {:else if active_view === 'decisions'}
+        <Decisions_view console_data={console_data} />
+      {:else}
       <section class="tools_grid" aria-label="Device options">
-        <article class="panel utility_panel health_panel">
-          <div>
-            <p class="eyebrow">DeepSeek Harness</p>
-            <h2>{health?.dsh_status?.phase ?? 'Status unavailable'}</h2>
-            <p>{health?.dsh_status ? `${health.dsh_status.provider ?? 'Provider unknown'} · ${health.dsh_status.turns_started} turns started · ${health.dsh_status.records} records` : 'No DSH session status is available from the daemon.'}</p>
-          </div>
-          {#if health?.dsh_status}<span class="state_pill" data-state={health.dsh_status.transport_open ? 'active' : 'idle'}>{health.dsh_status.transport_open ? 'Transport open' : 'Transport closed'}</span>{/if}
-        </article>
         <article class="panel utility_panel">
           <div>
             <p class="eyebrow">Notifications</p>
@@ -354,6 +395,7 @@
           {#if enrollment_notice}<p class="notice_text" role="status">{enrollment_notice}</p>{/if}
         </article>
       </section>
+      {/if}
       <p class="updated_at">{data_freshness?.observed_at ? `Last observed ${new Date(data_freshness.observed_at).toLocaleString()}` : 'Waiting for the first daemon response'}</p>
     {/if}
   </main>

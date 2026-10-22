@@ -23,6 +23,11 @@ pub struct WebConfig {
     pub vapid_subject: String,
     #[serde(default)]
     pub task_links: Vec<crate::control_bridge::TrackedTaskLinks>,
+    /// Serve the page and its static assets without the token to requests
+    /// that name the loopback listener literally; the API keeps requiring
+    /// it. Off unless set; see `local_page`.
+    #[serde(default)]
+    pub local_page_without_token: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -160,7 +165,17 @@ mod tests {
         let config_path = temp.path().join(".vibemux/web_config.json");
         let valid = serde_json::json!({"schema_version":1,"instance_token":{"env_var":"WEB_TOKEN"},"enrollment_url":"https://operator.example/","push_allowed_hosts":["fcm.googleapis.com"],"vapid_subject":"mailto:operator@example.com"});
         std::fs::write(&config_path, serde_json::to_vec(&valid).unwrap()).unwrap();
-        assert!(WebConfig::load(temp.path()).unwrap().is_some());
+        let loaded = WebConfig::load(temp.path()).unwrap().unwrap();
+        assert!(!loaded.local_page_without_token);
+        let mut local_page = valid.clone();
+        local_page["local_page_without_token"] = serde_json::json!(true);
+        std::fs::write(&config_path, serde_json::to_vec(&local_page).unwrap()).unwrap();
+        assert!(
+            WebConfig::load(temp.path())
+                .unwrap()
+                .unwrap()
+                .local_page_without_token
+        );
         for (key, value) in [
             ("schema_version", serde_json::json!(2)),
             ("bind_address", serde_json::json!("0.0.0.0:8420")),
@@ -170,6 +185,7 @@ mod tests {
                 serde_json::json!("https://operator.example/?token=bad"),
             ),
             ("push_allowed_hosts", serde_json::json!(["*.example.com"])),
+            ("local_page_without_token", serde_json::json!("yes")),
             ("unknown", serde_json::json!(true)),
         ] {
             let mut invalid = valid.clone();
