@@ -14,6 +14,7 @@
 //! session driver instead, because it owns a runtime process rather than a
 //! read-only probe report.
 
+pub mod ask;
 pub mod daemon_control;
 mod daemon_session;
 pub mod dashboard;

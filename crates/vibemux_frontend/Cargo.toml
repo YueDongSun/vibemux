@@ -56,6 +56,7 @@ vibemux_harness = { path = "../vibemux_harness" }
 vibemuxd = { path = "../vibemuxd" }
 vibemux_types = { path = "../vibemux_types" }
 time = { workspace = true, features = ["local-offset"] }
+uuid.workspace = true
 image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
