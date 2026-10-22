@@ -59,17 +59,19 @@ impl WindowSize {
 pub enum StartPage {
     #[default]
     Conversation,
-    Agents,
+    /// Saved as `agents` before the Console replaced the Agents page.
+    #[serde(alias = "agents")]
+    Console,
 }
 
 impl StartPage {
-    pub const ALL: [Self; 2] = [Self::Conversation, Self::Agents];
+    pub const ALL: [Self; 2] = [Self::Conversation, Self::Console];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Conversation => "Conversation",
-            Self::Agents => "Agents",
+            Self::Console => "Console",
         }
     }
 }
@@ -387,13 +389,27 @@ mod tests {
         assert_eq!(loaded.text_size, TextSize::Default);
 
         let changed = UserConfig {
-            start_page: StartPage::Agents,
+            start_page: StartPage::Console,
             density: Density::Compact,
             text_size: TextSize::Large,
             ..loaded
         };
         save_user_config_at(&changed, &path).expect("save");
         assert_eq!(load_user_config_at(&path), changed);
+    }
+
+    #[test]
+    fn a_saved_agents_start_page_opens_the_console() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("frontend.json");
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"theme":"nord","window_size":{"width":1280,"height":800},"start_page":"agents"}"#,
+        )
+        .expect("a settings file from before the Console");
+        assert_eq!(load_user_config_at(&path).start_page, StartPage::Console);
+        let saved = serde_json::to_value(StartPage::Console).expect("encode");
+        assert_eq!(saved, "console");
     }
 
     #[test]

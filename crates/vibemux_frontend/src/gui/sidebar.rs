@@ -111,9 +111,9 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
             if design::nav_row(ui, c, "Conversation", Icon::Chat, conversation) {
                 actions.page = Some(MainPage::CoordinatorChat);
             }
-            let agents = !view.settings_open && view.page == MainPage::Agents;
-            if design::nav_row(ui, c, "Agents", Icon::Grid, agents) {
-                actions.page = Some(MainPage::Agents);
+            let console = !view.settings_open && view.page == MainPage::Console;
+            if design::nav_row(ui, c, "Console", Icon::Grid, console) {
+                actions.page = Some(MainPage::Console);
             }
             ui.add_space(18.0);
             folders_section(ui, c, view, actions);
@@ -151,7 +151,7 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                     (Icon::SidebarToggle, "Expand sidebar", TOGGLE_BUTTON_ID),
                     (Icon::Plus, "New task", NEW_TASK_BUTTON_ID),
                     (Icon::Chat, "Conversation", "sidebar_rail_conversation"),
-                    (Icon::Grid, "Agents", "sidebar_rail_agents"),
+                    (Icon::Grid, "Console", "sidebar_rail_console"),
                     (Icon::Folder, "Open folder…", "sidebar_rail_folder"),
                     (Icon::Settings, "Settings", "sidebar_rail_settings"),
                 ];
@@ -161,7 +161,7 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                             Icon::SidebarToggle => actions.toggle_collapsed = true,
                             Icon::Plus => actions.new_task = true,
                             Icon::Chat => actions.page = Some(MainPage::CoordinatorChat),
-                            Icon::Grid => actions.page = Some(MainPage::Agents),
+                            Icon::Grid => actions.page = Some(MainPage::Console),
                             Icon::Folder => actions.open_folder_dialog = true,
                             _ => actions.open_settings = true,
                         }

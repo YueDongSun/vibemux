@@ -3,16 +3,17 @@
 //! default view; probe-backed agent details and task detail windows remain
 //! separate, read-only surfaces.
 
-mod agents;
 mod ask_state;
 mod ask_view;
 mod chat;
 mod composer;
+mod console;
 mod daemon_card;
 mod design;
 mod diagnostics;
 mod folders;
 mod quick_switcher;
+mod section_page;
 mod settings;
 mod shortcuts;
 mod sidebar;
@@ -27,6 +28,7 @@ mod welcome;
 pub use ask_state::AskState;
 pub use ask_view::{AskAvailability, AskEntry, SetupJob};
 pub use chat::wrapped_label as render_wrapped_label;
+pub use console::{ConsoleData, ConsoleSection, WorkspaceLoad};
 pub use daemon_card::DaemonJob;
 pub use settings::SettingsSection;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;

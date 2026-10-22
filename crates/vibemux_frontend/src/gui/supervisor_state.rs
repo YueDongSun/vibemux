@@ -11,6 +11,8 @@ use std::{
 
 use crate::supervisor_model::{RunView, SupervisorAction, SupervisorSnapshot, TaskView};
 
+use super::console::ConsoleSection;
+
 pub const ACTION_QUEUE_CAPACITY: usize = 64;
 pub const MAX_OPEN_TASK_WINDOWS: usize = 24;
 pub const CHAT_UNAVAILABLE_REASON: &str =
@@ -33,7 +35,7 @@ pub struct PendingAsk {
 pub enum MainPage {
     #[default]
     CoordinatorChat,
-    Agents,
+    Console,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -154,7 +156,9 @@ impl TaskFilter {
 #[derive(Clone, Debug, Default)]
 pub struct SupervisorUiState {
     page: MainPage,
-    selected_agent: Option<usize>,
+    console_section: ConsoleSection,
+    /// The harness the Console's Harnesses section shows in detail.
+    selected_harness: Option<usize>,
     selected_task_id: Option<String>,
     details_open: bool,
     details: TaskDetailSelection,
@@ -182,33 +186,45 @@ impl SupervisorUiState {
     pub fn show_coordinator_chat(&mut self) {
         self.welcome_active = false;
         self.page = MainPage::CoordinatorChat;
-        self.selected_agent = None;
+        self.selected_harness = None;
     }
 
-    pub fn show_agents(&mut self) {
+    /// Opens the Console on the section it last showed.
+    pub fn show_console(&mut self) {
         self.welcome_active = false;
-        self.page = MainPage::Agents;
+        self.page = MainPage::Console;
     }
 
     #[must_use]
-    pub fn selected_agent(&self) -> Option<usize> {
-        self.selected_agent
+    pub const fn console_section(&self) -> ConsoleSection {
+        self.console_section
     }
 
-    pub fn select_agent(&mut self, agent_index: usize, agent_count: usize) -> bool {
-        if agent_index >= agent_count {
+    /// Opens the Console on `section`, leaving any harness detail.
+    pub fn show_console_section(&mut self, section: ConsoleSection) {
+        self.show_console();
+        self.console_section = section;
+        self.selected_harness = None;
+    }
+
+    #[must_use]
+    pub fn selected_harness(&self) -> Option<usize> {
+        self.selected_harness
+    }
+
+    /// Opens the Console's detail of harness `harness_index`.
+    pub fn select_harness(&mut self, harness_index: usize, harness_count: usize) -> bool {
+        if harness_index >= harness_count {
             return false;
         }
-        self.welcome_active = false;
-        self.page = MainPage::Agents;
-        self.selected_agent = Some(agent_index);
+        self.show_console();
+        self.console_section = ConsoleSection::Harnesses;
+        self.selected_harness = Some(harness_index);
         true
     }
 
-    pub fn return_to_agents_list(&mut self) {
-        self.welcome_active = false;
-        self.page = MainPage::Agents;
-        self.selected_agent = None;
+    pub fn return_to_harness_list(&mut self) {
+        self.show_console_section(ConsoleSection::Harnesses);
     }
 
     pub fn select_task(&mut self, snapshot: &SupervisorSnapshot, task_id: &str) -> bool {
@@ -342,6 +358,11 @@ impl SupervisorUiState {
         self.discard_prompt_open = false;
     }
 
+    /// Gives the composer focus on its next frame.
+    pub fn request_composer_focus(&mut self) {
+        self.composer_focus_requested = true;
+    }
+
     /// True once after a new task starts, so the composer takes focus once.
     pub fn take_composer_focus_request(&mut self) -> bool {
         std::mem::take(&mut self.composer_focus_requested)
@@ -350,7 +371,7 @@ impl SupervisorUiState {
     fn start_new_task(&mut self) {
         self.composer_draft.clear();
         self.page = MainPage::CoordinatorChat;
-        self.selected_agent = None;
+        self.selected_harness = None;
         self.close_details();
         self.welcome_active = true;
         self.composer_focus_requested = true;

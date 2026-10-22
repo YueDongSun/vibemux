@@ -16,7 +16,7 @@ use vibemux_frontend::{
 };
 
 /// The scenes this runner can draw.
-const SCENARIOS: [&str; 10] = [
+const SCENARIOS: [&str; 13] = [
     "chat",
     "drawer",
     "task",
@@ -27,6 +27,9 @@ const SCENARIOS: [&str; 10] = [
     "collapsed",
     "ask",
     "ask_setup",
+    "console",
+    "console_harnesses",
+    "console_daemon",
 ];
 
 /// Exit code for a usage error, matching the other frontend binaries.
@@ -163,6 +166,14 @@ fn main() -> eframe::Result<()> {
                 "collapsed" => app.set_sidebar_collapsed(true),
                 "settings" => app.open_settings(gui::SettingsSection::General),
                 "appearance" => app.open_settings(gui::SettingsSection::Appearance),
+                "console" | "console_harnesses" | "console_daemon" => {
+                    preview::console_data(app.console_data());
+                    app.open_console(match scenario {
+                        "console_harnesses" => gui::ConsoleSection::Harnesses,
+                        "console_daemon" => gui::ConsoleSection::Daemon,
+                        _ => gui::ConsoleSection::Overview,
+                    });
+                }
                 "ask" | "ask_setup" => {
                     app.set_composer_target(gui::ComposerTarget::Harness("Codex".into()));
                     preview::ask_state(app.ask_state(), scenario == "ask_setup");
