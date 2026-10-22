@@ -6206,3 +6206,92 @@ exits early leaves the last view on screen; kept decision rows survive a
 database reset; held `r` keys queue several polls; the diagnostic TUI cuts
 long versions without an ellipsis at 80 columns; operator-typed filter text is
 not sanitized; GUI chords repeat while held.
+
+### 2026-10-22 - Web console views and opt-in local page mode in vibemux_web
+
+**Status:** Track A (`vibemux_web`, ADR 033) stays `PARTIAL`. No control
+operation, protocol version, store schema, or plugin payload changed. The web
+API moves to 0.2.0 (pre-alpha, no compatibility promise). See the ADR 033
+note of 2026-10-22 and [docs/vibemux_web.md](docs/vibemux_web.md).
+
+**Implemented (`crates/vibemux_web`):**
+
+- The board has five views: Tasks, Daemon, Sessions, Decisions, Device
+  (tabs, or keys `1` to `5`; `R` refreshes). Daemon, Sessions, and Decisions
+  are the ADR 042 console's daemon views with the same content-free fields.
+  The Tasks detail adds the task's latest events (type, time, sequence) and
+  artifacts (id, validated media type, size; no digest).
+- `console_poller` reads health, plugin status, the dispatch catalog, DSH
+  status, workflow slots, and the decision list on the configured interval;
+  `console_model` projects them; `GET /api/v1/console` serves the result.
+  Each section is `waiting`, `loaded`, or `unavailable` with a code and an
+  operator hint, and fails on its own. An unreachable daemon makes every
+  section unavailable instead of showing an earlier observation. Kept
+  decisions (newest 64) are cleared when the daemon generation changes.
+- `content_label` holds the label sanitizers (identifiers, timestamps, media
+  types), so no path separator or free text passes whole.
+- `local_page_without_token` (default `false`, operator decision 2026-10-22):
+  GET/HEAD requests for the page and its static assets skip the bearer only
+  when the request names the bound loopback listener literally, in `Host`
+  and, for an absolute-form or HTTP/2 request, in the URI authority too.
+  Every JSON route, including enrollment and OpenAPI, still needs the token,
+  and token-free page loads do not use the failed-attempt budget.
+- A failed refresh marks the views stale instead of leaving the last
+  observation on screen as current, and a task detail read that finishes
+  after another task was selected is dropped.
+- Fixed in passing: the board's polling effect re-ran after every refresh, so
+  it polled about 110 times a second instead of every 5 seconds (present on
+  `main` before this change); event times lost their spaces; the enrollment
+  panel overflowed at tablet width.
+
+**Not implemented:** dispatch or workflow list views (no enumeration
+operation exists), any write or execution control, prompt or transcript
+views. The local page mode is not checked behind `tailscale serve`; a proxy
+that rewrites `Host` to the loopback address would publish the page itself.
+
+**Validation executed (Rust 1.92.0, Node 22.22.2; the package pins 22.22.0):**
+
+- Native Windows 11, with `CARGO_TARGET_DIR` under `%TEMP%`:
+  - `npm ci`, `npm run typecheck` (0 errors, 0 warnings), `npm test` (14
+    passed: 10 existing, 4 new), `npm audit --audit-level=moderate` (0
+    vulnerabilities), `npm run build`: passed.
+  - `cargo +1.92.0 fmt --all -- --check`: passed.
+  - `cargo +1.92.0 clippy -p vibemux_web --all-targets --all-features -j 6 --locked -- -D warnings`: passed.
+  - `cargo +1.92.0 test -p vibemux_web --all-features -j 6 --locked`: passed.
+    Library 32, `console_poller` 2, `control_bridge` 3, `http_contract` 9.
+  - The new absolute-form test failed (200) with the earlier Host-only rule
+    put back temporarily, and passes with the fix.
+- WSL Ubuntu 24.04 (Git 2.43.0, Node 22.22.2), a fresh clone at `eeece17`:
+  `npm ci`, typecheck, `npm test` (14), `npm run audit` (0 vulnerabilities),
+  build, `cargo fmt --all -- --check`, the same clippy command, and the same
+  test command passed: library 31 (one Windows-only test), `console_poller` 2,
+  `control_bridge` 3, `http_contract` 9.
+- Browser check, native Windows, the app's built-in browser: a scratch
+  project with two fixture tasks seeded through the store writer (the same
+  seeding as the integration tests), a daemon started with `vibemuxctl
+  daemon start`, and `vibemux_web` with `local_page_without_token: true`.
+  The page loaded without a token, the API answered 401 without one, and
+  all five views rendered the daemon's data after the fixture token was
+  entered. With the daemon stopped, every console section read "Start it with
+  vibemuxctl daemon start (daemon_not_running)" and task titles were hidden.
+  No horizontal overflow at 375, 768, or 1280 pixels after the panel fix; no
+  CSP errors. After the review fixes: one refresh per 5 seconds, the task
+  detail no longer blanks between refreshes, and with the web process
+  stopped the views read "These views are not current". Service-worker
+  registration failed in that browser pane ("unknown error when fetching the
+  script") although the server returned `/sw.js` with 200, so offline caching
+  and push in this mode are unverified.
+- No vendor CLI, Jev, or paid API ran. The daemon had no dispatch, DSH,
+  workflow, or decision configuration.
+
+**Review:** one fresh read-only review of the branch. No blocker or major
+finding; it confirmed that no `/api/`, OpenAPI, or enrollment handler is
+reachable on the token-free path (raw paths are matched without
+normalization, so `//api`, `/./api`, `/%61pi` and similar fall through to the
+static page). Fixed: absolute-form authority versus `Host`, stale marking on
+a failed refresh, out-of-order task detail, path-leak checks that could not
+fail on Windows (JSON escapes backslashes), and docs that still said every
+route needs the bearer. Not covered: a poller test with recorded decisions
+(catch-up and generation change are covered by the `merge_decisions` unit
+test only); on a long decision history the view shows an older window for a
+few polls, which its truncation note discloses.
