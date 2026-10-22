@@ -13,9 +13,10 @@ browser/bootstrap mechanism that attaches the bearer to every route. With the
 opt-in `local_page_without_token` server setting, the page and its static
 assets also load without the bearer for requests that name the loopback
 listener, and the operator pastes the token into the page; every JSON route
-still requires it. There is no public enrollment exception, and an ordinary
-QR scan cannot bootstrap a phone. Enrolled devices share the instance token,
-so rotating it logs out all devices.
+and the service worker script still require it, so a page opened that way runs
+without the worker (no offline cache, no push). There is no public enrollment
+exception, and an ordinary QR scan cannot bootstrap a phone. Enrolled devices
+share the instance token, so rotating it logs out all devices.
 
 The service worker caches only same-origin authenticated JSON GET responses,
 partitions entries by a one-way digest of the authorization value, expires them

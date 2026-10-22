@@ -101,14 +101,22 @@ qualify an operator's actual bootstrap mechanism.
 
 `"local_page_without_token": true` lets an ordinary browser on the same
 computer open the board, for local testing. The process then serves the page
-and its static assets (HTML, JS, CSS, manifest, icons, service worker) without
-the bearer, but only to `GET` and `HEAD` requests whose `Host` header (or
-HTTP/2 authority) names the bound listener literally: `127.0.0.1:<port>` or
-`localhost:<port>` for a `127.0.0.1` bind, `[::1]:<port>` or
-`localhost:<port>` for `::1`. Everything under `/api/`, and `/openapi.json`,
-still requires the bearer. The page holds no daemon data until the operator
-pastes the token into it; it keeps the token in tab-scoped `sessionStorage`.
-Token-free page loads do not count toward the failed-attempt limit.
+and its static assets (HTML, JS, CSS, manifest, icons) without the bearer, but
+only to `GET` and `HEAD` requests whose `Host` header (or HTTP/2 authority)
+names the bound listener literally: `127.0.0.1:<port>` or `localhost:<port>`
+for a `127.0.0.1` bind, `[::1]:<port>` or `localhost:<port>` for `::1`.
+Everything under `/api/`, `/openapi.json`, and the service worker script
+`/sw.js` still require the bearer. The page holds no daemon data until the
+operator pastes the token into it; it keeps the token in tab-scoped
+`sessionStorage`. Token-free page loads do not count toward the
+failed-attempt limit.
+
+Because the browser fetches `/sw.js` without the bearer, a page opened this
+way does not install the service worker: there is no offline cache and no
+push in this mode. That is deliberate. An installed worker serves its
+precached page without asking the server, so a worker installed through the
+token-free page would keep showing the page after the mode is turned off.
+Without it, turning the mode off takes effect on the next page load.
 
 The `Host` check also turns away DNS-rebinding pages and requests forwarded
 under another name. A reverse proxy that rewrites `Host` to the loopback

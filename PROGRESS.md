@@ -6235,7 +6235,10 @@ note of 2026-10-22 and [docs/vibemux_web.md](docs/vibemux_web.md).
   when the request names the bound loopback listener literally, in `Host`
   and, for an absolute-form or HTTP/2 request, in the URI authority too.
   Every JSON route, including enrollment and OpenAPI, still needs the token,
-  and token-free page loads do not use the failed-attempt budget.
+  and token-free page loads do not use the failed-attempt budget. The
+  service worker script needs it too, so a token-free page never installs a
+  worker whose precached page would outlive turning the mode off (no offline
+  cache or push in this mode).
 - A failed refresh marks the views stale instead of leaving the last
   observation on screen as current, and a task detail read that finishes
   after another task was selected is dropped.
@@ -6252,8 +6255,8 @@ that rewrites `Host` to the loopback address would publish the page itself.
 **Validation executed (Rust 1.92.0, Node 22.22.2; the package pins 22.22.0):**
 
 - Native Windows 11, with `CARGO_TARGET_DIR` under `%TEMP%`:
-  - `npm ci`, `npm run typecheck` (0 errors, 0 warnings), `npm test` (14
-    passed: 10 existing, 4 new), `npm audit --audit-level=moderate` (0
+  - `npm ci`, `npm run typecheck` (0 errors, 0 warnings), `npm test` (15
+    passed: 10 existing, 5 new), `npm audit --audit-level=moderate` (0
     vulnerabilities), `npm run build`: passed.
   - `cargo +1.92.0 fmt --all -- --check`: passed.
   - `cargo +1.92.0 clippy -p vibemux_web --all-targets --all-features -j 6 --locked -- -D warnings`: passed.
@@ -6277,10 +6280,10 @@ that rewrites `Host` to the loopback address would publish the page itself.
   No horizontal overflow at 375, 768, or 1280 pixels after the panel fix; no
   CSP errors. After the review fixes: one refresh per 5 seconds, the task
   detail no longer blanks between refreshes, and with the web process
-  stopped the views read "These views are not current". Service-worker
-  registration failed in that browser pane ("unknown error when fetching the
-  script") although the server returned `/sw.js` with 200, so offline caching
-  and push in this mode are unverified.
+  stopped the views read "These views are not current". (Before `/sw.js`
+  was made token-only, service-worker registration also failed in that pane,
+  "unknown error when fetching the script", although the server returned
+  `/sw.js` with 200.)
 - No vendor CLI, Jev, or paid API ran. The daemon had no dispatch, DSH,
   workflow, or decision configuration.
 
@@ -6294,4 +6297,8 @@ fail on Windows (JSON escapes backslashes), and docs that still said every
 route needs the bearer. Not covered: a poller test with recorded decisions
 (catch-up and generation change are covered by the `merge_decisions` unit
 test only); on a long decision history the view shows an older window for a
-few polls, which its truncation note discloses.
+few polls, which its truncation note discloses. The hosted Codex review then
+found two more: a service worker installed through the token-free page
+would keep serving its precached page after the mode was turned off (fixed:
+`/sw.js` keeps requiring the token), and the footer of the console views
+showed the task poller's observation time (fixed: they show the console's).

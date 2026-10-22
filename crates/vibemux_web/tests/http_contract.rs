@@ -116,7 +116,7 @@ async fn local_page_mode_serves_only_the_page_and_assets_without_a_token() {
     for _ in 0..3 {
         for (path, expected_mime) in [
             ("/", "text/html; charset=utf-8"),
-            ("/sw.js", "text/javascript; charset=utf-8"),
+            ("/vibemux_icon.svg", "image/svg+xml"),
             ("/manifest.webmanifest", "application/manifest+json"),
         ] {
             let response = client.get(format!("{url}{path}")).send().await.unwrap();
@@ -134,9 +134,12 @@ async fn local_page_mode_serves_only_the_page_and_assets_without_a_token() {
     assert_eq!(by_name.status(), 200);
     // Anything else still needs the token. Each refusal counts toward the
     // failed-attempt limit, so stay below it.
+    // The service worker script too: an installed worker would keep serving
+    // its cached page after the mode is turned off.
     for (method, path, host) in [
         ("get", "/api/v1/console", None),
         ("get", "/openapi.json", None),
+        ("get", "/sw.js", None),
         ("post", "/", None),
         ("get", "/", Some("operator.tailnet.example".to_owned())),
     ] {

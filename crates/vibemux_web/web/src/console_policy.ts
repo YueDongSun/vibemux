@@ -18,6 +18,20 @@ export const console_views = [
 
 export type console_view_id = (typeof console_views)[number]['id'];
 
+/** Whether a view shows the console poller's data rather than the task board's. */
+export function is_console_view(view: console_view_id): boolean {
+  return view === 'daemon' || view === 'sessions' || view === 'decisions';
+}
+
+/** The observation time of the data a view shows. */
+export function observed_at_for_view(
+  view: console_view_id,
+  console_observed_at: string | null | undefined,
+  board_observed_at: string | null | undefined,
+): string | null {
+  return (is_console_view(view) ? console_observed_at : board_observed_at) ?? null;
+}
+
 /** The view a number key selects, or null for any other key. */
 export function view_for_key(key: string): console_view_id | null {
   const index = Number.parseInt(key, 10);

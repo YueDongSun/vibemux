@@ -17,7 +17,14 @@
     type task_status,
   } from './api_client';
   import { clear_authenticated_state, read_instance_token, save_instance_token } from './auth_state';
-  import { connection_summary, console_is_current, type console_view_id, view_for_key } from './console_policy';
+  import {
+    connection_summary,
+    console_is_current,
+    type console_view_id,
+    is_console_view,
+    observed_at_for_view,
+    view_for_key,
+  } from './console_policy';
   import { snapshots_match } from './presentation_policy';
   import Daemon_view from './components/daemon_view.svelte';
   import Decisions_view from './components/decisions_view.svelte';
@@ -44,6 +51,9 @@
   let enrollment_input = $state('');
   let update_available = $state(false);
   let tasks_page_truncated = $state(false);
+  const shown_observed_at = $derived(
+    observed_at_for_view(active_view, console_data?.observed_at, data_freshness?.observed_at),
+  );
 
   onMount(() => {
     token = read_instance_token();
@@ -347,7 +357,7 @@
 
       <View_tabs active={active_view} on_select={(view) => (active_view = view)} />
 
-      {#if active_view !== 'tasks' && active_view !== 'device' && console_data && !console_is_current(console_data)}
+      {#if is_console_view(active_view) && console_data && !console_is_current(console_data)}
         <div class="stale_banner" role="status">
           <strong>{console_data.stale ? 'These views are not current: the last refresh failed or came from the browser cache.' : connection_summary(console_data.connection)}</strong>
         </div>
@@ -410,7 +420,7 @@
         </article>
       </section>
       {/if}
-      <p class="updated_at">{data_freshness?.observed_at ? `Last observed ${new Date(data_freshness.observed_at).toLocaleString()}` : 'Waiting for the first daemon response'}</p>
+      <p class="updated_at">{shown_observed_at ? `Last observed ${new Date(shown_observed_at).toLocaleString()}` : 'Waiting for the first daemon response'}</p>
     {/if}
   </main>
 </div>

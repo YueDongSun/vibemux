@@ -4,8 +4,11 @@
 //! When enabled, only GET and HEAD requests for the embedded page and its
 //! static assets skip the bearer check, and only when the request names the
 //! bound loopback address literally in its `Host` (or HTTP/2 authority).
-//! Every `/api/` route and `/openapi.json` still require the instance token,
-//! and the page holds no daemon data until the operator enters that token.
+//! Every `/api/` route, `/openapi.json`, and the service worker script still
+//! require the instance token, and the page holds no daemon data until the
+//! operator enters that token. An installed service worker serves its
+//! precached page without asking the server, so a worker installed through
+//! the token-free page would keep serving it after the mode is turned off.
 //! Requests forwarded under another host name, such as a tailnet name, keep
 //! requiring the token on every route.
 
@@ -81,10 +84,16 @@ impl LocalPageAccess {
     }
 }
 
-/// The page and its assets: everything except the JSON API and its
-/// description.
+/// The service worker script, which the token-free page must not install.
+const SERVICE_WORKER_PATH: &str = "/sw.js";
+
+/// The page and its assets: everything except the JSON API, its
+/// description, and the service worker script.
 fn is_page_path(path: &str) -> bool {
-    path != "/api" && !path.starts_with("/api/") && path != "/openapi.json"
+    path != "/api"
+        && !path.starts_with("/api/")
+        && path != "/openapi.json"
+        && path != SERVICE_WORKER_PATH
 }
 
 #[cfg(test)]
@@ -110,8 +119,8 @@ mod tests {
         let get = Method::GET;
         for (path, host) in [
             ("/", "127.0.0.1:8420"),
-            ("/index.html", "localhost:8420"),
-            ("/sw.js", "LOCALHOST:8420"),
+            ("/index.html", "LOCALHOST:8420"),
+            ("/manifest.webmanifest", "localhost:8420"),
             ("/assets/index.js?__WB_REVISION__=1", "127.0.0.1:8420"),
         ] {
             assert!(
@@ -129,6 +138,12 @@ mod tests {
             (Method::GET, "/api/v1/console", Some("127.0.0.1:8420")),
             (Method::GET, "/api", Some("127.0.0.1:8420")),
             (Method::GET, "/openapi.json", Some("127.0.0.1:8420")),
+            (Method::GET, "/sw.js", Some("127.0.0.1:8420")),
+            (
+                Method::GET,
+                "/sw.js?__WB_REVISION__=1",
+                Some("localhost:8420"),
+            ),
             (Method::POST, "/", Some("127.0.0.1:8420")),
             (Method::GET, "/", Some("127.0.0.1:9999")),
             (Method::GET, "/", Some("127.0.0.1")),

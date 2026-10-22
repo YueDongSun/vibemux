@@ -3,7 +3,7 @@
   "info": {
     "title": "VibeMux Read Only Mobile API",
     "version": "0.2.0",
-    "description": "Pre-alpha Track A. Canonical state is read-only; POST endpoints change web-local enrollment/subscription state only. Every JSON route, including enrollment, requires the instance bearer. By default the page and its static assets require it too; the opt-in local_page_without_token setting serves only the page and its assets without it, to GET/HEAD requests whose Host names the loopback listener. Normal QR/browser bootstrap is otherwise unavailable without an operator-provided authenticated browser mechanism."
+    "description": "Pre-alpha Track A. Canonical state is read-only; POST endpoints change web-local enrollment/subscription state only. Every JSON route, including enrollment, requires the instance bearer. By default the page and its static assets require it too; the opt-in local_page_without_token setting serves only the page and its assets, not the service worker script, without it, to GET/HEAD requests whose Host names the loopback listener. Normal QR/browser bootstrap is otherwise unavailable without an operator-provided authenticated browser mechanism."
   },
   "servers": [
     {

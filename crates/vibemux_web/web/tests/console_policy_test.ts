@@ -6,6 +6,8 @@ import {
   console_is_current,
   console_views,
   format_bytes,
+  is_console_view,
+  observed_at_for_view,
   queue_summary,
   route_mode_label,
   section_data,
@@ -35,6 +37,18 @@ test('number keys select the views in tab order and nothing else', () => {
   assert.equal(view_for_key('4'), 'decisions');
   assert.equal(view_for_key('5'), 'device');
   for (const key of ['0', '6', '9', '12', 'r', ' ', '']) assert.equal(view_for_key(key), null, key);
+});
+
+test('console views report the console poller observation time', () => {
+  assert.deepEqual(console_views.filter((view) => is_console_view(view.id)).map((view) => view.id), ['daemon', 'sessions', 'decisions']);
+  const console_time = '2026-10-22T08:00:00Z';
+  const board_time = '2026-10-22T08:00:05Z';
+  assert.equal(observed_at_for_view('daemon', console_time, board_time), console_time);
+  assert.equal(observed_at_for_view('decisions', console_time, board_time), console_time);
+  assert.equal(observed_at_for_view('tasks', console_time, board_time), board_time);
+  assert.equal(observed_at_for_view('device', console_time, board_time), board_time);
+  assert.equal(observed_at_for_view('sessions', null, board_time), null);
+  assert.equal(observed_at_for_view('tasks', console_time, undefined), null);
 });
 
 test('sections show their data only when loaded, otherwise the operator hint', () => {
