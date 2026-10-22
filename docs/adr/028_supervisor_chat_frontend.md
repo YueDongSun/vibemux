@@ -78,3 +78,11 @@ output are bounded separately from Protobuf frame limits.
 Automated fixture tests prove contracts and failure behavior, not a live
 WezTerm installation, IME behavior, or embedded native rendering. Platform and
 live evidence are recorded separately in PROGRESS.md.
+
+## Amendment (2026-10-23): read-only harness Asks
+
+Send is no longer always unavailable. For a Claude or Codex target whose
+folder has an executing ADR 029 dispatch route, Send runs one read-only Ask
+and shows the harness's reply in the conversation (ADR 030, amendment of
+2026-10-23). The Coordinator target keeps its local draft: there is still no
+continuous coordinator-chat transport, and no reply is ever fabricated.

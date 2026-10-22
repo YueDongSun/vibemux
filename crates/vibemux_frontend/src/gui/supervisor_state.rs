@@ -20,7 +20,7 @@ pub const ASK_BUSY_REASON: &str = "An Ask is already running in this folder.";
 pub const ASK_EMPTY_REASON: &str = "Write a prompt first.";
 pub const ASK_TOO_LONG_REASON: &str = "The prompt is longer than 32 KiB.";
 /// The longest prompt dispatch accepts.
-pub const MAX_ASK_PROMPT_BYTES: usize = 32 * 1024;
+pub const MAX_ASK_PROMPT_BYTES: usize = vibemux_harness::dispatch::request::MAX_PROMPT_BYTES;
 
 /// A prompt the user sent to a harness, waiting for the app to run it.
 #[derive(Clone, Debug, Eq, PartialEq)]

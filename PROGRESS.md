@@ -125,7 +125,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
 | A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
-| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard (with re-probe and harness selection), the read-only multi-pane console with content-free daemon views (ADR 042), DSH transcript search, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) with the ADR 030 shortcut table and quick switcher exist; continuous coordinator chat, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
+| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard (with re-probe and harness selection), the read-only multi-pane console with content-free daemon views (ADR 042), DSH transcript search, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) with the ADR 030 shortcut table, quick switcher, project folders with daemon Start/Stop, and a fixture-verified read-only harness Ask through ADR 029 dispatch exist; continuous coordinator chat, a live vendor Ask, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
@@ -6379,3 +6379,70 @@ existing `vibemuxctl daemon start|stop`. ADR 030 records the amendment.
 
 **Not verified:** clicking Start, Stop, Browse, or a folder switch in a live
 window was not automated; the native picker was not opened in a test.
+
+### 2026-10-23 - GUI: read-only Ask a harness
+
+**Scope:** `vibemux_frontend` GUI only (PR 3 of the operator's "basic
+functions" plan; the Console page follows). No daemon, store, control
+protocol, or CLI changes: the GUI is a client of the existing ADR 029
+dispatch operations (Control v5) and of `vibemuxctl daemon start|stop`.
+ADR 030 records the amendment; ADR 028 and ADR 029 note that Send is no
+longer always unavailable.
+
+**Implemented:**
+- `ask::reply_text` rebuilds the reply from the documented assistant-text
+  records of Claude stream-json, Codex app-server, and Codex exec, bounded
+  at 256 KiB.
+- `ask::routes` plans default read-only Claude and Codex routes from the
+  probe report (native `.exe` outside the folder only), validates them with
+  the daemon's parser, and writes them create-new.
+- `ask::session::drive` submits once and follows status and output until
+  the attempt settles and every record is read. It waits while the daemon
+  has no transcript yet, cancels an attempt it stops following, and gives
+  up after 15 minutes.
+- `ask::worker` and `live_ask` run the catalog, Ask, and setup on worker
+  threads for the active folder.
+- The composer's Send is enabled only for a Claude or Codex target with an
+  executing route, with no other Ask in flight and a prompt of at most
+  32 KiB. The first Ask in a folder asks for consent once
+  (`ask_confirmed_projects`, at most 64; `schema_version` stays 1). The last
+  20 Asks show below the task activity, which then follows the newest one.
+  A setup card and an availability note with "Check again" explain a
+  folder without routes. A folder switch clears the Asks and cancels a
+  running one. The Coordinator target stays draft-only.
+- Preview scenes `ask` and `ask_setup`.
+
+**Validation executed (Rust 1.92.0):**
+- Native Windows 11: `cargo fmt --all -- --check` passed; `cargo clippy -p
+  vibemux_frontend --all-targets --all-features -- -D warnings` passed;
+  `cargo test -p vibemux_frontend --all-features` passed (lib 264, 1
+  ignored; `supervisor_ui` 10, `daemon_feed` 4, `cli` 6, `palette_parity` 2;
+  binaries `vibemux_dashboard` 2, `vibemux_dsh_tui` 4,
+  `vibemux_frontend_preview` 6, `vibemux_frontend_tui` 2).
+- WSL Ubuntu 24.04: the same fmt, clippy, and tests passed (lib 263; the
+  Windows-only path-case test does not build there).
+- Manual end to end against a real `vibemuxd` from this branch and a
+  temporary Git project, driving the GUI's own `ask::worker` functions from
+  a throwaway example (removed afterwards). The synthetic
+  `vibemux_native_fixture` was installed outside the project as
+  `claude.exe` and `codex.exe`. The catalog listed Claude and Codex; a
+  Claude Ask completed with the fixture's result text and a Codex
+  app-server Ask with its streamed deltas (about 0.4 s each); an Ask
+  against the fixture's `hang` mode ended `Cancelled` after its cancel; a
+  folder without a config reported `harness_dispatch_unconfigured`. The
+  first run exposed the transcript race fixed above: an Ask failed with
+  `harness_dispatch_output_unavailable`, and the next got
+  `harness_dispatch_busy`.
+- The one-click setup in a second temporary folder ran the read-only probe,
+  enabled Claude (a native `claude.exe`), skipped Codex as a script shim on
+  this machine, and restarted the folder's daemon; the catalog then listed
+  Claude, and a second setup refused to replace the file. No prompt reached
+  a real vendor CLI; the probe ran only `--version`.
+- Preview screenshots of `ask` and `ask_setup` were captured at 1280×800
+  and checked by eye (local only).
+
+**Not verified:** clicking Send, Cancel, the consent dialog, or the setup
+button in a live window was not automated. No live Ask has run against a
+real Claude or Codex turn; that needs the operator's go-ahead and may use
+paid inference. Reply parsing of real vendor output is covered only by unit
+tests on the documented record shapes.

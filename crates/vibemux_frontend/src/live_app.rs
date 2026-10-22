@@ -171,8 +171,9 @@ impl eframe::App for LiveApp {
         // Cancels the reader's select branch before joining; no task/process
         // cancellation or shutdown request is sent to the daemon.
         self.client.take();
-        // A running Ask is daemon-owned and ends on its own deadlines; the
-        // window only stops following it.
+        // Best effort: raises a running Ask's cancel flag. If the process
+        // exits before the worker reaches the daemon, the route's deadline
+        // still bounds the daemon-owned attempt.
         self.ask.reset();
     }
 }
