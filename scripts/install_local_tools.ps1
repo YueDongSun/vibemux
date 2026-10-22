@@ -14,7 +14,8 @@ param(
     # Where the tools are copied. Created when missing.
     [string] $install_directory = "",
     # Where the built binaries are read from. Defaults to the release output of
-    # this repository (or of CARGO_TARGET_DIR when it is set).
+    # this repository (or of CARGO_TARGET_DIR when it is set; a relative
+    # CARGO_TARGET_DIR is taken from the repository root, as cargo sees it).
     [string] $source_directory = "",
     # Run the release build of the listed binaries first.
     [switch] $build,
@@ -44,8 +45,11 @@ $build_arguments = @(
     "-p", "vibemux_terminal_observer", "--bin", "vibemux_terminal_observer"
 )
 
+# A relative path means relative to the caller's PowerShell location, which is
+# not always the .NET process directory that GetFullPath alone would use.
 function get_normalized_directory([string] $path) {
-    return [IO.Path]::GetFullPath($path).TrimEnd("\")
+    $absolute_path = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path)
+    return [IO.Path]::GetFullPath($absolute_path).TrimEnd("\")
 }
 
 $repository_root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
@@ -56,7 +60,12 @@ if (-not $install_directory) {
     $install_directory = Join-Path $env:LOCALAPPDATA "VibeMux\bin"
 }
 if (-not $source_directory) {
-    $target_directory = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repository_root "target" }
+    $target_directory = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { "target" }
+    # The build below runs with the repository root as its working directory,
+    # and cargo resolves a relative target directory against that directory.
+    if (-not [IO.Path]::IsPathRooted($target_directory)) {
+        $target_directory = Join-Path $repository_root $target_directory
+    }
     $source_directory = Join-Path $target_directory "release"
 }
 $normalized_install = get_normalized_directory $install_directory

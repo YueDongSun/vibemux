@@ -193,6 +193,8 @@ mod tests {
             &["list", "--limit", "-1"][..],
             &["list", "--limit", "x"][..],
             &["list", "--limit", "1", "--limit", "2"][..],
+            &["list", "--project-root", "--limit"][..],
+            &["list", "--limit", "--project-root", "C:\\project"][..],
             &["list", "--after", "not_a_uuid"][..],
             &["list", "--after", &nil][..],
             &["list", "--prompt-file", "-"][..],

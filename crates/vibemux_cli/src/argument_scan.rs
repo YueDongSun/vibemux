@@ -1,11 +1,11 @@
 //! Shared tail scanner for the read-oriented control verbs (`tasks`, `plugins`,
-//! `terminal`): every flag takes exactly one value and appears at most once, and
-//! every other token is a positional. A verb checks its own flag and positional
+//! `terminal`): every flag takes exactly one value (never another `--` option)
+//! and appears at most once, and every other token is a positional. A verb checks its own flag and positional
 //! grammar against the scan, so no verb re-implements the loop.
 
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
-use crate::{DaemonCliError, dispatch_commands::text_value};
+use crate::DaemonCliError;
 
 const PROJECT_ROOT_FLAG: &str = "--project-root";
 
@@ -26,8 +26,20 @@ pub(crate) fn split_action(arguments: &[OsString]) -> Result<(&str, &[OsString])
     Ok((action, rest))
 }
 
+/// The value after the flag at `flag_index`: present, non-empty, and not
+/// itself an option, so `--project-root --limit` is a missing value rather than
+/// a project named `--limit`.
+fn value_after(tail: &[OsString], flag_index: usize) -> Result<&OsString, DaemonCliError> {
+    tail.get(flag_index + 1)
+        .filter(|value| {
+            !value.is_empty() && !value.to_str().is_some_and(|text| text.starts_with("--"))
+        })
+        .ok_or(DaemonCliError::InvalidArguments)
+}
+
 /// Scans `tail` accepting `--project-root` plus the verb's `allowed_flags`.
-/// A flag that is repeated, unknown, or missing its value is refused.
+/// A flag that is repeated, unknown, or missing its value is refused, and a
+/// value never starts with `--`.
 pub(crate) fn scan_tail<'a>(
     tail: &'a [OsString],
     allowed_flags: &[&str],
@@ -46,16 +58,15 @@ pub(crate) fn scan_tail<'a>(
             if scanned.project_root.is_some() {
                 return Err(DaemonCliError::InvalidArguments);
             }
-            let value = tail.get(index + 1).filter(|value| !value.is_empty());
-            scanned.project_root = Some(PathBuf::from(
-                value.ok_or(DaemonCliError::InvalidArguments)?,
-            ));
+            scanned.project_root = Some(PathBuf::from(value_after(tail, index)?));
             index += 2;
         } else if token.starts_with("--") {
             if !allowed_flags.contains(&token) {
                 return Err(DaemonCliError::InvalidArguments);
             }
-            let value = text_value(tail.get(index + 1))?;
+            let value = value_after(tail, index)?
+                .to_str()
+                .ok_or(DaemonCliError::InvalidArguments)?;
             if scanned.flags.insert(token, value).is_some() {
                 return Err(DaemonCliError::InvalidArguments);
             }
@@ -116,6 +127,29 @@ mod tests {
         assert!(scanned.project_root.is_none());
         assert!(scanned.without_positionals().is_ok());
         assert_eq!(scanned.positionals::<0>().unwrap(), [] as [&str; 0]);
+    }
+
+    #[test]
+    fn an_option_is_never_taken_as_a_flags_value() {
+        for tail in [
+            &["--project-root", "--unknown"][..],
+            &["--project-root", "--limit", "5"][..],
+            &["--limit", "--project-root", "C:\\a"][..],
+            &["--limit", "--limit"][..],
+            &["--limit", "--"][..],
+        ] {
+            assert_eq!(
+                scan_tail(&arguments(tail), &["--limit"]).map(|_| ()),
+                Err(DaemonCliError::InvalidArguments),
+                "{tail:?}"
+            );
+        }
+        // A single dash is an ordinary value, and a path may carry the dashes
+        // after a directory part.
+        let tail = arguments(&["--limit", "-5", "--project-root", ".\\--odd"]);
+        let scanned = scan_tail(&tail, &["--limit"]).expect("ordinary values");
+        assert_eq!(scanned.flag("--limit"), Some("-5"));
+        assert_eq!(scanned.project_root, Some(PathBuf::from(".\\--odd")));
     }
 
     #[test]

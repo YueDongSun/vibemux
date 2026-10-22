@@ -6334,7 +6334,7 @@ daemon's existing read-model types.
 - `cargo +1.92.0 fmt --all -- --check`: passed.
 - `cargo +1.92.0 clippy -p vibemux_cli --all-targets --all-features --locked --offline -- -D warnings`: passed.
 - `cargo +1.92.0 test -p vibemux_cli --all-features --locked --offline`: passed.
-  `vibemux_cli` lib 71 (59 before), `bootstrap_process` 4, `unified_commands` 8
+  `vibemux_cli` lib 72 (59 before), `bootstrap_process` 4, `unified_commands` 8
   (7 before). The documented-command parse test covers the new CLAUDE.md,
   README, and guide lines.
 - A real local daemon in a scratch Git project (debug binaries, no vendor CLI or
@@ -6353,3 +6353,9 @@ daemon's existing read-model types.
 - Observed, not changed here: piping `vibemuxctl daemon start` into `cut` from
   Git Bash did not return until the daemon stopped, as if the daemon inherited
   the pipe handle.
+- Two hosted Codex review findings were fixed after the first push, the first
+  with a test that failed before the fix: the shared scanner took an option as
+  a flag's value (`plugins status --project-root --unknown` named a project
+  `--unknown`), and the install script resolved a relative `CARGO_TARGET_DIR`
+  against the caller's directory instead of the repository root where it
+  builds (reproduced from another directory before the fix).

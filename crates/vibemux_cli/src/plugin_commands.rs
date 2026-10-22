@@ -67,6 +67,7 @@ mod tests {
             &["status", "extra"][..],
             &["status", "--limit", "1"][..],
             &["status", "--project-root"][..],
+            &["status", "--project-root", "--unknown"][..],
         ] {
             assert_eq!(
                 parse(arguments),
