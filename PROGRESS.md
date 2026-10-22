@@ -125,7 +125,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
 | A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
-| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard (with re-probe and harness selection), the read-only multi-pane console with content-free daemon views (ADR 042), DSH transcript search, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) with the ADR 030 shortcut table, quick switcher, project folders with daemon Start/Stop, and a fixture-verified read-only harness Ask through ADR 029 dispatch exist; continuous coordinator chat, a live vendor Ask, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
+| Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard (with re-probe and harness selection), the read-only multi-pane console with content-free daemon views (ADR 042), DSH transcript search, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) with the ADR 030 shortcut table, quick switcher, project folders with daemon Start/Stop, a fixture-verified read-only harness Ask through ADR 029 dispatch, and a Console page over the probe, the Git inventory, and the content-free daemon feed exist; continuous coordinator chat, a live vendor Ask, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
@@ -6446,3 +6446,49 @@ button in a live window was not automated. No live Ask has run against a
 real Claude or Codex turn; that needs the operator's go-ahead and may use
 paid inference. Reply parsing of real vendor output is covered only by unit
 tests on the documented record shapes.
+
+### 2026-10-23 - GUI: Console page replaces Agents
+
+**Scope:** `vibemux_frontend` GUI only (PR 4 of the operator's "basic
+functions" plan). No daemon, store, control protocol, or CLI changes: the
+Console reuses the ADR 042 daemon feed and the existing `vibemuxctl
+workspace status` JSON. ADR 030 records the amendment.
+
+**Implemented:**
+- `gui/console`: a Settings-style page with Overview, Harnesses, Workspace,
+  Tasks, Daemon, Sessions, and Decisions. Harnesses absorbs the Agents page
+  (`gui/agents.rs` is removed) and adds Re-probe and an Ask jump that never
+  sends.
+- `live_console` runs the daemon feed only while the Console is on screen,
+  reads the Git inventory through `vibemuxctl`, and runs the read-only probe
+  on request. `cli_runner` is the `vibemuxctl` runner that `daemon_control`
+  and `workspace_inventory` share.
+- `MainPage::Agents` and `StartPage::Agents` become `Console`; a saved
+  `agents` start page loads as Console.
+- `gui/section_page` is the section list, card, and row kit shared with
+  Settings. It clamps the content column to the viewport and counts the
+  column gap: at 960 px, Settings previously clipped every right-aligned
+  control, and each row widened its card by one item spacing.
+- Preview scenes `console`, `console_harnesses`, and `console_daemon`.
+
+**Validation executed (Rust 1.92.0):**
+- Native Windows 11: `cargo fmt --all -- --check` passed; `cargo clippy -p
+  vibemux_frontend --all-targets --all-features -- -D warnings` passed;
+  `cargo test -p vibemux_frontend --all-features` passed (lib 281, 1
+  ignored; `supervisor_ui` 10, `daemon_feed` 4, `cli` 6, `palette_parity` 2;
+  binaries `vibemux_dashboard` 2, `vibemux_dsh_tui` 4,
+  `vibemux_frontend_preview` 6, `vibemux_frontend_tui` 2); `cargo check -p
+  vibemux_cli --all-targets` passed.
+- The new Settings width check failed with the old content column and
+  passes with the clamp.
+- WSL Ubuntu 24.04 on `839d58e`: the same fmt, clippy (for
+  `vibemux_frontend` and `vibemux_cli`), and frontend tests passed (lib 280;
+  the Windows-only path-case test does not build there).
+- The Workspace parser read this repository's real `vibemuxctl --json
+  workspace status` report (26 branches, 3 worktrees) in a throwaway test,
+  removed afterwards.
+- Screenshots of the three Console scenes at 1280×800 and of Settings at
+  960×600 were checked by eye (local only).
+
+**Not verified:** the Console was not clicked through in a live window
+against a running daemon, and Re-probe was not run from the window.

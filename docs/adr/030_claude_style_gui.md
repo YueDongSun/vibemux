@@ -438,3 +438,42 @@ one-click setup in a temporary folder. No prompt was sent to a real vendor
 CLI; a live Ask still needs the operator's go-ahead.
 
 Next step agreed with the operator: the Console page.
+
+## Amendment (2026-10-23): the Console page replaces Agents
+
+Decided with the operator:
+
+- **A Console page replaces the Agents page.** It rebuilds the terminal
+  console's views (ADR 041, ADR 042) as cards behind a Settings-style
+  section list: Overview, Harnesses, Workspace, Tasks, Daemon (health,
+  dispatch routes, plugins), Sessions (DSH and workflow slots), and
+  Decisions. The sidebar entry, the top bar button, and the start page say
+  Console; a start page saved as `agents` loads as Console, and the value
+  is written back as `console`. `Ctrl+1` to `Ctrl+0` and the quick
+  switcher's harness entries open a harness's detail in the Console.
+- **Harnesses absorbs Agents** and adds two actions. **Re-probe** reruns the
+  read-only probe the GUI runs at startup (`--version` checks only) and
+  replaces the view model. **Ask** on a harness that is Ask-ready in this
+  folder goes to the conversation with that harness targeted; it never
+  sends.
+- **Reads only.** While the Console is on screen, the GUI runs the
+  content-free daemon feed of ADR 042 §2 for the active folder (a poll
+  every 5 seconds, Refresh for an immediate one, a task's detail on
+  request), and stops it when the page closes or the folder changes. The
+  Workspace view runs `vibemuxctl --json workspace status`, so the CLI stays
+  the owner of the Git inventory (cached refs, no fetch). Nothing on the
+  page starts a daemon, a harness, a dispatch, a DSH session, a workflow,
+  or a decision.
+- **Shared section page.** Settings and the Console share one section
+  list, card, and row kit. The content column is clamped to the viewport,
+  and rows count the gap between their columns, which fixes clipped or
+  creeping right-aligned values in narrow windows (960 px), in Settings
+  too.
+
+Verification: unit tests cover the Console state, each view's text, the
+Workspace JSON parser against the CLI's report shape, the CLI runner, the
+start page alias, and the shell's rendering of every section at 1280×800
+and 900×600. A bridge test shows the feed and the inventory read run only
+while the page is open. Screenshots of the `console`, `console_harnesses`,
+and `console_daemon` preview scenes and of Settings at 960×600 were checked
+by eye.

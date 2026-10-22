@@ -348,7 +348,7 @@ Use `--format text`, `--format json`, or `--json` before the command. Auto mode 
 
 The frontend crate builds five binaries:
 
-- `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps Agents/Settings/Diagnostics secondary, and preserves all five appearance palettes. Send runs a read-only Ask of Claude or Codex when the folder's daemon has an executing dispatch route for it (see below); the Coordinator target keeps a local draft, because no continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
+- `vibemux_frontend` — a native Supervisor Chat workspace (ADR 028): one Coordinator home, task cards, responsive task details, and independent task windows. Run it from the project root. It reads real task/run/event/artifact summaries through Control v4, keeps the Console, Settings, and Diagnostics secondary, and preserves all five appearance palettes. Send runs a read-only Ask of Claude or Codex when the folder's daemon has an executing dispatch route for it (see below); the Coordinator target keeps a local draft, because no continuous coordinator-chat adapter exists. It never fabricates a transcript or response.
 - `vibemux_frontend_tui` — the interactive Ratatui debug dashboard over the probe report. Flags: `--json`, `--theme <name>`. Keys: `j`/`k` select a harness (the footer names its launcher, authentication, inference, version, route, code, and adapter support), `r` re-runs the same read-only probe in the background (the footer shows `probing`; it sends no prompt), `t` cycles themes, `c` captures a snapshot, `q` / `Esc` exit.
 - `vibemux_frontend_dump` — one-shot plain-ASCII snapshot of the same dashboard (supersedes the removed `--once` flag).
 - `vibemux_dashboard` — the read-only multi-pane console behind `vibemuxctl ui` (ADR 041, ADR 042): probe, Git inventory, and content-free daemon views in single, split, or grid layouts. It uses the same six terminal themes as `vibemux_frontend_tui`, with its own keys.
@@ -356,14 +356,14 @@ The frontend crate builds five binaries:
 
 The GUI defaults to **Claude light**: a cream canvas, terracotta accent, serif
 display type from the system's Georgia or Cambria, and a Claude Desktop style
-sidebar with **New task**, Conversation, Agents, a Recents list, and a
+sidebar with **New task**, Conversation, Console, a Recents list, and a
 workspace menu. The sidebar collapses to an icon rail. **Settings** (`Ctrl+,`
 or the sidebar) is a full page with General, Appearance, Connection, Keyboard
 shortcuts, and About sections. Seven themes are available in **Settings →
 Appearance** as preview cards: Claude Light (`claude_light`), Claude Dark
 (`claude`), Studio, GitHub, VS Code, Nord, and Gruvbox. Appearance also sets
 Density (Comfortable or Compact) and Text size (Small, Default, or Large);
-General sets the start page (Conversation or Agents) and the startup window
+General sets the start page (Conversation or Console) and the startup window
 size; Connection shows the daemon connection read-only. Every theme shares one
 rounded scale: 10 px buttons, 14 px cards and panels, a 20 px composer, and
 pill-shaped chips. Existing saved appearance preferences are preserved. Enter
@@ -372,7 +372,7 @@ keeps the draft and says why it was not sent. Shift+Enter inserts a newline.
 
 Task windows have Overview, Activity, and Artifacts tabs; the Overview's
 Linked terminal section shows the Run's terminal link with Focus, Unlink, and
-Find terminals. Closing a window does not stop its task. `Ctrl+1..0` accesses the ten pre-existing harness diagnostics;
+Find terminals. Closing a window does not stop its task. `Ctrl+1..0` opens the ten pre-existing harnesses' details in the Console;
 Escape closes overlays before returning to Coordinator. `Ctrl+K` opens a quick
 switcher over the loaded tasks, the agents, and a fixed action list (New task,
 Settings, Diagnostics, Keyboard shortcuts, Toggle sidebar, Light, Dark): type
@@ -407,6 +407,17 @@ build places them together). A stopped or older daemon produces an explicit
 unavailable state. The existing structured supervisor recipe is not a continuous
 coding-agent chat service.
 
+**Console.** The sidebar's **Console** page shows the terminal console's views
+(`vibemuxctl ui`) as cards: Overview, Harnesses, Workspace, Tasks, Daemon
+(health, dispatch routes, plugins), Sessions (DSH and workflow slots), and
+Decisions. Harnesses lists the probe results with **Re-probe** (read-only
+`--version` checks) and, for a harness that is Ask-ready in the folder, an
+**Ask** button that opens the conversation with it targeted without sending.
+While the page is open the GUI polls the folder's daemon for content-free
+state every 5 seconds (**Refresh** polls now) and reads the Git inventory
+through `vibemuxctl --json workspace status` (cached refs, no fetch). It
+never starts a daemon or a harness.
+
 **Ask a harness (read-only).** Pick Claude or Codex in the composer's target
 chip, type a prompt (at most 32 KiB), and press Enter or Send. The GUI asks
 the active folder's daemon to run one [harness dispatch](#harness-dispatch-pre-alpha-adr-029)
@@ -432,8 +443,9 @@ never contact a daemon or model. Example:
 `cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
 Scenes are `chat`, `drawer`, `task`, `settings`, `appearance`, `disconnected`,
-`welcome`, `collapsed`, `ask` (a finished and a running Ask), and `ask_setup`
-(the setup card). An unknown scene or theme, a size or scale that is not a number,
+`welcome`, `collapsed`, `ask` (a finished and a running Ask), `ask_setup`
+(the setup card), and `console`, `console_harnesses`, and `console_daemon`
+(the Console's Overview, Harnesses, and Daemon views). An unknown scene or theme, a size or scale that is not a number,
 or an extra argument exits with code 4 instead of drawing a different scene.
 The `task` scenes capture the actual independent native viewport.
 
