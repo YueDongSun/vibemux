@@ -151,9 +151,9 @@ DSH session status, workflow slots (evidence class, slot id, route label,
 executes), and the newest 64 decisions (id, status, chosen harness, source,
 creation time, consumed). Each section is `waiting`, `loaded`, or
 `unavailable` with a code and an operator hint, and each fails on its own: an
-unconfigured feature reads "not configured". When the daemon cannot be
-reached, every section is unavailable rather than showing an earlier
-observation. Kept decisions are dropped when the daemon generation changes.
+unconfigured dispatch, DSH, or workflow feature reads "not configured". When
+the daemon cannot be reached, every section is unavailable rather than showing
+an earlier observation. Kept decisions are dropped when the daemon generation changes.
 The poller calls only read operations; it never reads a prompt, transcript,
 output page, or path. Task events carry the event type, time, and sequence;
 artifacts carry the id, a validated media type, and the size, never the
@@ -201,8 +201,9 @@ the same shell, so it inherits the token variable:
 It prints `web_listening address=127.0.0.1:8420 local_page_without_token=true`.
 Open `http://127.0.0.1:8420/`, paste the value of `$env:VIBEMUX_WEB_TOKEN`
 into the page, and choose Connect. With no tasks or configured features, the
-Tasks view is empty and the dispatch, DSH, workflow, and decision sections read
-"not configured". Stop the server with `Ctrl+C`, then
+Tasks view is empty, the dispatch, DSH, and workflow sections read "not
+configured", and the decision list is empty (recorded decisions are listed
+whether or not decision routing is configured). Stop the server with `Ctrl+C`, then
 `.\target\debug\vibemuxctl.exe daemon stop --project-root C:\vibemux_web_trial`,
 and delete the trial folder.
 

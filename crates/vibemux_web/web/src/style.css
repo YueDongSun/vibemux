@@ -105,7 +105,7 @@ dd { overflow: hidden; margin: 0; color: #394a61; font-size: 11px; text-overflow
 .empty_state { margin: 30px 0 0; color: #8a97a9; font-size: 12px; line-height: 1.6; }
 .empty_state.compact { margin-top: 12px; }
 .tools_grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
-.utility_panel { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 19px 21px; }
+.utility_panel { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px; padding: 19px 21px; }
 .utility_panel h2 { margin-bottom: 7px; font-size: 15px; }
 .utility_panel p:not(.eyebrow):not(.notice_text) { max-width: 380px; margin-bottom: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .secondary_button { flex: 0 0 auto; color: #315fc7; }

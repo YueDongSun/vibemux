@@ -20,6 +20,21 @@ pub fn web_label(value: &str) -> String {
         .collect()
 }
 
+/// Keeps the characters of a date and time only: digits, `- : . +`, the
+/// RFC 3339 `T` and `Z`, and the spaces of the store's display form
+/// (`2026-10-22 8:02:50.7330309 +00:00:00`), at most `MAX_LABEL_CHARS`.
+#[must_use]
+pub fn timestamp_label(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| {
+            character.is_ascii_digit()
+                || matches!(character, '-' | ':' | '.' | '+' | 'T' | 'Z' | ' ')
+        })
+        .take(MAX_LABEL_CHARS)
+        .collect()
+}
+
 /// A `type/subtype` media type, or `unknown` for anything else.
 #[must_use]
 pub fn media_type_label(value: &str) -> String {
@@ -58,5 +73,21 @@ mod tests {
         assert_eq!(media_type_label("text/plain; charset=utf-8"), "unknown");
         assert_eq!(media_type_label("../../etc/passwd"), "unknown");
         assert_eq!(media_type_label("Text/Plain"), "unknown");
+    }
+
+    #[test]
+    fn timestamps_keep_their_spaces_and_nothing_else() {
+        // The store's `OffsetDateTime` display form.
+        let display = time::OffsetDateTime::from_unix_timestamp(1_792_656_170)
+            .and_then(|time| time.replace_nanosecond(733_030_900))
+            .unwrap()
+            .to_string();
+        assert!(display.contains(' '), "{display}");
+        assert_eq!(timestamp_label(&display), display);
+        assert_eq!(
+            timestamp_label("2026-10-22T08:02:50Z"),
+            "2026-10-22T08:02:50Z"
+        );
+        assert_eq!(timestamp_label(r"2026-10-22 /secret\path"), "2026-10-22 ");
     }
 }

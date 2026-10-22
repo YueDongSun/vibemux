@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import {
     api_error,
     create_enrollment,
@@ -44,7 +44,6 @@
   let enrollment_input = $state('');
   let update_available = $state(false);
   let tasks_page_truncated = $state(false);
-  let polling_timer: number | undefined;
 
   onMount(() => {
     token = read_instance_token();
@@ -55,15 +54,17 @@
     return () => {
       window.removeEventListener('vibemux:update_available', on_update);
       window.removeEventListener('keydown', on_key);
-      if (polling_timer) window.clearInterval(polling_timer);
     };
   });
 
+  // Depends on the token only. refresh_board reads and writes `busy`, so
+  // calling it tracked would re-run this effect after every refresh and
+  // turn the five-second poll into a tight loop.
   $effect(() => {
-    if (polling_timer) window.clearInterval(polling_timer);
     if (!token) return;
-    void refresh_board();
-    polling_timer = window.setInterval(() => void refresh_board(), 5000);
+    untrack(() => void refresh_board());
+    const polling_timer = window.setInterval(() => void refresh_board(), 5000);
+    return () => window.clearInterval(polling_timer);
   });
 
   function on_key(event: KeyboardEvent): void {

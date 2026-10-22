@@ -13,7 +13,7 @@ use vibemuxd::{
     process::DaemonPaths,
 };
 
-use crate::content_label::{media_type_label, web_label};
+use crate::content_label::{media_type_label, timestamp_label, web_label};
 
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub const MAX_BRIDGE_TASKS: usize = 256;
@@ -527,7 +527,7 @@ fn project_activity(detail: &vibemux_types::frontend::FrontendTaskDetail) -> Bri
             .map(|event| BridgeEvent {
                 sequence: event.sequence,
                 event_type: web_label(&event.event_type),
-                at: web_label(&event.at),
+                at: timestamp_label(&event.at),
                 run_id: event.run_id.as_ref().map(ToString::to_string),
             })
             .collect(),
