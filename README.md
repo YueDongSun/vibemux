@@ -357,15 +357,22 @@ The frontend crate builds five binaries:
 The GUI defaults to **Claude light**: a cream canvas, terracotta accent, serif
 display type from the system's Georgia or Cambria, and a Claude Desktop style
 sidebar with **New task**, Conversation, Agents, a Recents list, and a
-workspace menu. The sidebar collapses to an icon rail. Seven themes are
-available in **Settings → Appearance**: `claude_light`, `claude` (warm
-charcoal), `studio`, `github`, `vscode`, `nord`, and `gruvbox`. Existing saved
-appearance preferences are preserved. Sending from the composer is not
+workspace menu. The sidebar collapses to an icon rail. **Settings** (`Ctrl+,`
+or the sidebar) is a full page with General, Appearance, Connection, Keyboard
+shortcuts, and About sections. Seven themes are available in **Settings →
+Appearance** as preview cards: Claude Light (`claude_light`), Claude Dark
+(`claude`), Studio, GitHub, VS Code, Nord, and Gruvbox. Appearance also sets
+Density (Comfortable or Compact) and Text size (Small, Default, or Large);
+General sets the start page (Conversation or Agents) and the startup window
+size; Connection shows the daemon connection read-only. Every theme shares one
+rounded scale: 10 px buttons, 14 px cards and panels, a 20 px composer, and
+pill-shaped chips. Existing saved appearance preferences are preserved. Sending from the composer is not
 available yet: Enter keeps the draft and says it was not sent, and Shift+Enter
 inserts a newline.
 
-Task windows have Overview, Activity, Artifacts and Terminal tabs. Closing a
-window does not stop its task. `Ctrl+1..0` accesses the ten pre-existing harness diagnostics;
+Task windows have Overview, Activity, and Artifacts tabs; the Overview's
+Linked terminal section shows the Run's terminal link with Focus, Unlink, and
+Find terminals. Closing a window does not stop its task. `Ctrl+1..0` accesses the ten pre-existing harness diagnostics;
 Escape closes overlays before returning to Coordinator. `Ctrl+K` opens a quick
 switcher over the loaded tasks, the agents, and a fixed action list (New task,
 Settings, Diagnostics, Keyboard shortcuts, Toggle sidebar, Light, Dark): type
@@ -381,7 +388,10 @@ rendering and harness launch/input remain future work. See
 [terminal observation setup and protocol](docs/terminal_observer_protocol.md).
 
 Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
-`cargo run -p vibemux_frontend --bin vibemux_frontend`. The GUI does not start
+`cargo run -p vibemux_frontend --bin vibemux_frontend`. On Windows the GUI
+never opens a console window, in debug and release builds alike (like
+`pythonw`); a startup failure or a panic is written to `frontend_errors.log`
+next to the settings file (`%APPDATA%\vibemux\`). The GUI does not start
 the daemon automatically. A stopped or older daemon produces an explicit
 unavailable state. The existing structured supervisor recipe is not a continuous
 coding-agent chat service.
@@ -391,8 +401,8 @@ The screenshot-only `vibemux_frontend_preview` binary is built with
 never contact a daemon or model. Example:
 `cargo run -p vibemux_frontend --features gui_screenshot --bin vibemux_frontend_preview -- chat claude_light 1440 900 1`.
 Add an absolute PNG path as the last argument to capture a settled native frame.
-Scenes are `chat`, `drawer`, `task`, `task_terminal`, `disconnected`, `welcome`,
-and `collapsed`. An unknown scene or theme, a size or scale that is not a number,
+Scenes are `chat`, `drawer`, `task`, `settings`, `appearance`, `disconnected`,
+`welcome`, and `collapsed`. An unknown scene or theme, a size or scale that is not a number,
 or an extra argument exits with code 4 instead of drawing a different scene.
 The `task` scenes capture the actual independent native viewport.
 

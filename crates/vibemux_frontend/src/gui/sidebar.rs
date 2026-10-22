@@ -25,6 +25,8 @@ pub struct SidebarView<'a> {
     pub welcome_active: bool,
     pub collapsed: bool,
     pub selected_task_id: Option<&'a str>,
+    /// The full-page settings are open, so no page is highlighted.
+    pub settings_open: bool,
 }
 
 #[derive(Default)]
@@ -94,11 +96,14 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
                 actions.new_task = true;
             }
             ui.add_space(4.0);
-            let conversation = view.page == MainPage::CoordinatorChat && !view.welcome_active;
+            let conversation = !view.settings_open
+                && view.page == MainPage::CoordinatorChat
+                && !view.welcome_active;
             if design::nav_row(ui, c, "Conversation", Icon::Chat, conversation) {
                 actions.page = Some(MainPage::CoordinatorChat);
             }
-            if design::nav_row(ui, c, "Agents", Icon::Grid, view.page == MainPage::Agents) {
+            let agents = !view.settings_open && view.page == MainPage::Agents;
+            if design::nav_row(ui, c, "Agents", Icon::Grid, agents) {
                 actions.page = Some(MainPage::Agents);
             }
             ui.add_space(18.0);

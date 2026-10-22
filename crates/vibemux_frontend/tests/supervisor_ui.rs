@@ -70,11 +70,11 @@ fn selecting_another_task_rebinds_the_drawer_and_run_selection() {
             .map(|run| run.run_id.as_str()),
         Some("run_task_1")
     );
-    state.details_selection_mut().tab = TaskDetailTab::Terminal;
+    state.details_selection_mut().tab = TaskDetailTab::Artifacts;
 
     assert!(state.select_task(&snapshot, "task_2"));
     assert_eq!(state.selected_task_id(), Some("task_2"));
-    assert_eq!(state.details_selection().tab, TaskDetailTab::Terminal);
+    assert_eq!(state.details_selection().tab, TaskDetailTab::Artifacts);
     assert_eq!(
         state
             .details_selection()

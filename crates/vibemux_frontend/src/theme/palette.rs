@@ -156,7 +156,7 @@ fn claude_palette() -> ThemePalette {
         terminal_cursor: "#D97757".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
-        corner_radius: 8.0,
+        corner_radius: 10.0,
         border_width: 1.0,
         density: Density::Comfortable,
     }
@@ -183,7 +183,7 @@ fn claude_light_palette() -> ThemePalette {
         terminal_cursor: "#D97757".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
-        corner_radius: 8.0,
+        corner_radius: 10.0,
         border_width: 1.0,
         density: Density::Comfortable,
     }
@@ -211,7 +211,7 @@ fn github_palette() -> ThemePalette {
         terminal_cursor: "#2f81f7".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
-        corner_radius: 6.0,
+        corner_radius: 10.0,
         border_width: 1.0,
         density: Density::Compact,
     }
@@ -236,7 +236,7 @@ fn vscode_palette() -> ThemePalette {
         terminal_cursor: "#007ACC".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.5,
-        corner_radius: 4.0,
+        corner_radius: 10.0,
         border_width: 1.0,
         density: Density::Comfortable,
     }
@@ -261,7 +261,7 @@ fn nord_palette() -> ThemePalette {
         terminal_cursor: "#88C0D0".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
-        corner_radius: 6.0,
+        corner_radius: 10.0,
         border_width: 1.0,
         density: Density::Comfortable,
     }
@@ -286,7 +286,7 @@ fn gruvbox_palette() -> ThemePalette {
         terminal_cursor: "#FE8019".to_string(),
         font_family: "Cascadia Code".to_string(),
         font_size: 13.0,
-        corner_radius: 4.0,
+        corner_radius: 10.0,
         border_width: 1.0,
         density: Density::Comfortable,
     }

@@ -23,6 +23,7 @@ mod live_app;
 pub mod preview;
 pub mod probe_env;
 pub mod quick_search;
+pub mod startup_log;
 pub mod supervisor_client;
 mod supervisor_mapping;
 pub mod supervisor_model;

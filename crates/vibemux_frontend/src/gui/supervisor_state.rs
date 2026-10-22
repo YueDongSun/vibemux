@@ -29,7 +29,6 @@ pub enum TaskDetailTab {
     Overview,
     Activity,
     Artifacts,
-    Terminal,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -16,7 +16,7 @@ use crate::{
         ConnectionStatus, SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView,
     },
     theme::{
-        ThemeId, palette_for,
+        Density, StartPage, TextSize, ThemeId, palette_for,
         serialize::{UserConfig, WindowSize, save_user_config},
     },
     view_model::ViewModel,
@@ -55,7 +55,12 @@ pub struct SupervisorApp {
     user_config: UserConfig,
     ui_state: Arc<Mutex<SupervisorUiState>>,
     actions: UiActionQueue,
+    /// The full-page settings replace the main area while this is set.
     settings_open: bool,
+    settings_section: settings::SettingsSection,
+    /// The text size last applied as the egui zoom factor. Applied only
+    /// when it changes, so the built-in `Ctrl` `+`/`-` zoom keeps working.
+    applied_text_size: Option<TextSize>,
     diagnostics_open: bool,
     /// The `Ctrl+/` shortcut overlay.
     shortcuts_open: bool,
@@ -67,6 +72,15 @@ pub struct SupervisorApp {
     composer_panel_height: f32,
 }
 
+/// The UI state a new window opens with: the saved start page.
+fn start_state(mut state: SupervisorUiState, start_page: StartPage) -> SupervisorUiState {
+    match start_page {
+        StartPage::Conversation => state.show_coordinator_chat(),
+        StartPage::Agents => state.show_agents(),
+    }
+    state
+}
+
 impl SupervisorApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -76,13 +90,16 @@ impl SupervisorApp {
         super::typography::install_fonts(&cc.egui_ctx);
         let actions = UiActionQueue::default();
         actions.enqueue(SupervisorAction::Refresh);
+        let ui_state = SupervisorUiState::default();
         Self {
             view_model,
             snapshot: Arc::new(RwLock::new(Arc::new(SupervisorSnapshot::unavailable()))),
+            ui_state: Arc::new(Mutex::new(start_state(ui_state, user_config.start_page))),
             user_config,
-            ui_state: Arc::new(Mutex::new(SupervisorUiState::default())),
             actions,
             settings_open: false,
+            settings_section: settings::SettingsSection::default(),
+            applied_text_size: None,
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -212,6 +229,66 @@ impl SupervisorApp {
         if self.user_config.window_size != size {
             self.user_config.window_size = size;
             self.pending_resize = Some(Instant::now());
+        }
+    }
+
+    fn set_start_page(&mut self, start_page: StartPage) {
+        if self.user_config.start_page != start_page {
+            self.user_config.start_page = start_page;
+            self.pending_write = Some(Instant::now());
+        }
+    }
+
+    fn set_density(&mut self, density: Density) {
+        if self.user_config.density != density {
+            self.user_config.density = density;
+            self.pending_write = Some(Instant::now());
+        }
+    }
+
+    fn set_text_size(&mut self, text_size: TextSize) {
+        if self.user_config.text_size != text_size {
+            self.user_config.text_size = text_size;
+            self.pending_write = Some(Instant::now());
+        }
+    }
+
+    /// Opens the full-page settings at `section`.
+    pub fn open_settings(&mut self, section: settings::SettingsSection) {
+        self.settings_section = section;
+        self.settings_open = true;
+    }
+
+    fn apply_settings_changes(&mut self, changes: settings::SettingsChanges) {
+        if let Some(section) = changes.section {
+            self.settings_section = section;
+        }
+        if changes.close {
+            self.settings_open = false;
+        }
+        if let Some(theme) = changes.theme {
+            self.set_theme(theme);
+        }
+        if let Some(size) = changes.window_size {
+            self.set_window_size(size);
+        }
+        if let Some(start_page) = changes.start_page {
+            self.set_start_page(start_page);
+        }
+        if let Some(density) = changes.density {
+            self.set_density(density);
+        }
+        if let Some(text_size) = changes.text_size {
+            self.set_text_size(text_size);
+        }
+    }
+
+    /// Applies the saved density and text size to this frame's style.
+    fn apply_display_preferences(&mut self, ctx: &egui::Context) {
+        super::theme::apply_density(ctx, self.user_config.density);
+        if self.applied_text_size != Some(self.user_config.text_size) {
+            ctx.set_zoom_factor(self.user_config.text_size.zoom_factor());
+            self.applied_text_size = Some(self.user_config.text_size);
         }
     }
 
@@ -603,6 +680,7 @@ impl SupervisorApp {
                 .text_styles
                 .insert(egui::TextStyle::Body, egui::FontId::proportional(15.0));
         });
+        self.apply_display_preferences(ctx);
         root_ui.set_style(ctx.global_style());
         let colors = super::pal(&palette);
         let target_options = composer::target_options(&self.view_model);
@@ -649,6 +727,7 @@ impl SupervisorApp {
                         welcome_active,
                         collapsed,
                         selected_task_id: selected_task_id.as_deref(),
+                        settings_open: self.settings_open,
                     };
                     sidebar_actions = Some(sidebar::render(ui, &colors, &view));
                 });
@@ -656,6 +735,10 @@ impl SupervisorApp {
             // Applied here, before the panels that read `page`, so a sidebar
             // navigation lands in the frame it was clicked rather than the next.
             if let Some(actions) = sidebar_actions.take() {
+                if actions.page.is_some() {
+                    // Choosing a page leaves the full-page settings.
+                    self.settings_open = false;
+                }
                 if let Some(page) = actions.page
                     && let Ok(mut state) = self.ui_state.lock()
                 {
@@ -693,7 +776,9 @@ impl SupervisorApp {
                     }
                 }
             }
-            self.render_drawer(root_ui, &colors, viewport_width);
+            if !self.settings_open {
+                self.render_drawer(root_ui, &colors, viewport_width);
+            }
 
             let page = self
                 .ui_state
@@ -711,7 +796,7 @@ impl SupervisorApp {
                     .is_ok_and(|state| state.welcome_active())
                     || snapshot.tasks.is_empty());
 
-            if page == MainPage::CoordinatorChat && !welcome {
+            if page == MainPage::CoordinatorChat && !welcome && !self.settings_open {
                 let composer_panel = egui::Panel::bottom("coordinator_composer")
                     .show_separator_line(false)
                     .frame(
@@ -735,6 +820,7 @@ impl SupervisorApp {
                 }
             }
 
+            let mut settings_changes = None;
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
@@ -742,6 +828,15 @@ impl SupervisorApp {
                         .inner_margin(egui::Margin::symmetric(18, 12)),
                 )
                 .show_inside(root_ui, |ui| match page {
+                    _ if self.settings_open => {
+                        let view = settings::SettingsView {
+                            section: self.settings_section,
+                            config: &self.user_config,
+                            snapshot,
+                        };
+                        ui.add_space(8.0);
+                        settings_changes = Some(settings::render_page(ui, &colors, &view));
+                    }
                     MainPage::CoordinatorChat if welcome => {
                         // Centre the greeting/composer block against the
                         // composer height measured on the previous pass, so the
@@ -792,21 +887,8 @@ impl SupervisorApp {
                     }
                 });
 
-            if self.settings_open {
-                let changes = settings::render(
-                    ctx,
-                    &colors,
-                    &mut self.settings_open,
-                    self.user_config.theme,
-                    self.user_config.window_size,
-                    snapshot.mode == SnapshotMode::Demo,
-                );
-                if let Some(theme) = changes.theme {
-                    self.set_theme(theme);
-                }
-                if let Some(size) = changes.window_size {
-                    self.set_window_size(size);
-                }
+            if let Some(changes) = settings_changes {
+                self.apply_settings_changes(changes);
             }
             if self.diagnostics_open {
                 diagnostics::render(
@@ -1208,6 +1290,8 @@ mod tests {
             ui_state: Arc::new(Mutex::new(SupervisorUiState::default())),
             actions: UiActionQueue::default(),
             settings_open: false,
+            settings_section: settings::SettingsSection::default(),
+            applied_text_size: None,
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -1401,6 +1485,55 @@ mod tests {
         let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
         let output = context.run_ui(raw, |context| app.render_frame(context));
         (context, output)
+    }
+
+    #[test]
+    fn settings_changes_apply_and_back_closes_the_page() {
+        let mut app = test_app();
+        app.open_settings(settings::SettingsSection::Appearance);
+        assert!(app.settings_open);
+        assert_eq!(app.settings_section, settings::SettingsSection::Appearance);
+        app.apply_settings_changes(settings::SettingsChanges {
+            section: Some(settings::SettingsSection::About),
+            theme: Some(ThemeId::Nord),
+            start_page: Some(StartPage::Agents),
+            density: Some(Density::Compact),
+            text_size: Some(TextSize::Large),
+            ..Default::default()
+        });
+        assert_eq!(app.settings_section, settings::SettingsSection::About);
+        assert_eq!(app.user_config.theme, ThemeId::Nord);
+        assert_eq!(app.user_config.start_page, StartPage::Agents);
+        assert_eq!(app.user_config.density, Density::Compact);
+        assert_eq!(app.user_config.text_size, TextSize::Large);
+        assert!(app.pending_write.is_some(), "changed preferences are saved");
+        assert!(app.settings_open);
+        app.apply_settings_changes(settings::SettingsChanges {
+            close: true,
+            ..Default::default()
+        });
+        assert!(!app.settings_open);
+    }
+
+    #[test]
+    fn the_saved_start_page_opens_first() {
+        let agents = start_state(SupervisorUiState::default(), StartPage::Agents);
+        assert_eq!(agents.page(), MainPage::Agents);
+        let conversation = start_state(SupervisorUiState::default(), StartPage::Conversation);
+        assert_eq!(conversation.page(), MainPage::CoordinatorChat);
+    }
+
+    #[test]
+    fn every_settings_section_renders_at_the_supported_sizes() {
+        for section in settings::SettingsSection::ALL {
+            for (width, height) in [(1280.0, 800.0), (960.0, 600.0)] {
+                let mut app = test_app();
+                app.open_settings(section);
+                let _ = render_at(&mut app, width, height);
+                assert!(app.settings_open, "rendering alone keeps the page open");
+                assert_eq!(app.settings_section, section);
+            }
+        }
     }
 
     #[test]
