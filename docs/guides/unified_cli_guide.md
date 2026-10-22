@@ -14,6 +14,27 @@ Python `vibemux`, `vibemux_harness_native`, `vibemux_probe`, and `vibemux_dashbo
 remain available for compatibility. `vibemux_frontend` is the separate egui
 Supervisor Chat GUI and is unrelated to `vibemuxctl ui`.
 
+## Install for Daily Use
+
+To run `vibemuxctl` by name instead of through `.\target\debug\`, install the
+release build into one directory and put that directory on your user PATH. The
+daemon, launch trampoline, probe, decision peer, and terminal observer stay
+beside `vibemuxctl` because the CLI and daemon find each other by location.
+
+```powershell
+.\scripts\install_local_tools.ps1 -build -dry_run
+.\scripts\install_local_tools.ps1 -build -add_to_user_path
+```
+
+The default directory is `%LOCALAPPDATA%\VibeMux\bin`; `-install_directory` and
+`-source_directory` override the two ends (`CARGO_TARGET_DIR` is honored). The
+script never starts a daemon, writes operator configuration, or edits the
+machine PATH, and it does not touch the Python `vibemux` command. Without
+`-add_to_user_path` it only copies the files and prints the directory to add.
+Open a new terminal afterwards, then run `vibemuxctl --version`. To update,
+run the script again; stop a running daemon first (`vibemuxctl daemon stop`)
+because Windows will not replace a running executable.
+
 ## Choose Text or JSON
 
 Global output options go **before** the command:
@@ -132,7 +153,7 @@ changed by the UI.
 
 The same tree carries the daemon-backed verbs: `daemon`, `harnesses`, `switch`,
 `dispatch`, `decide`, `decisions`, `dsh`, `workflow`, `slots`, `context`,
-`session`, and `prompt`. Most need a running `vibemuxd`; `daemon start`,
+`session`, `prompt`, `tasks`, `plugins`, and `terminal`. Most need a running `vibemuxd`; `daemon start`,
 `daemon inspect`, and `daemon recover` do not. They keep their JSON payloads
 and actionable `error` messages in every `--format`, with one exception for
 readability: `daemon` prints text on a terminal. Run `vibemuxctl help dispatch`
@@ -144,6 +165,70 @@ Three similarly named commands are different things:
   (ADR 040): no daemon, no store record.
 - `harnesses` lists, and `switch` sets, the daemon's harness registry.
 - `dispatch` is the daemon-owned dispatch of ADR 029, recorded as a Task/Run.
+
+## Read Tasks, Plugins, and Terminal Panes
+
+These verbs need a running daemon (Control v4 for `tasks` and `terminal`). They
+print the daemon's own bounded, sanitized read models, the same ones the
+console, GUI, web, and MCP frontends use, and they never print a prompt or
+vendor output.
+
+```powershell
+.\target\debug\vibemuxctl.exe tasks list --project-root .
+.\target\debug\vibemuxctl.exe tasks list --limit 5 --after <task_id> --project-root .
+.\target\debug\vibemuxctl.exe tasks show <task_id> --project-root .
+.\target\debug\vibemuxctl.exe plugins status --project-root .
+.\target\debug\vibemuxctl.exe terminal inspect <task_id> <run_id> --project-root .
+.\target\debug\vibemuxctl.exe terminal link <task_id> <run_id> --instance-id <id> --pane-id <pane_id> --project-root .
+.\target\debug\vibemuxctl.exe terminal focus <binding_id> --project-root .
+.\target\debug\vibemuxctl.exe terminal unlink <binding_id> --project-root .
+```
+
+- `tasks list` returns one page. `--limit` is 1 to 32 (default 20); pass the
+  returned `next_cursor` to `--after` for the next page. `tasks show` returns
+  the task, its runs (harness, role, status, worktree path and branch), recent
+  event summaries, and artifact digests. An unknown id fails with
+  `frontend_task_not_found`. Neither verb creates a task: a task comes from
+  `dispatch submit` or `workflow start`.
+- `plugins status` lists each registered plugin's state, restart count, and last
+  error code. It cannot start, restart, or cancel a plugin. The registry is
+  empty unless the operator started the daemon with `--plugin-config`, which
+  `vibemuxctl daemon start` does not pass; see the
+  [terminal observation protocol](../terminal_observer_protocol.md).
+- `terminal` observes existing WezTerm panes through the configured
+  `wezterm_observer` plugin (`--plugin-id` selects another). `inspect` lists the
+  panes whose working directory matches the run's worktree and any current
+  lease. `link` takes the `instance_id` and `pane_id` from that listing and
+  records an in-memory observation lease; `focus` raises the linked pane; and
+  `unlink` drops the lease. The lease lives in the daemon for at most 30 minutes
+  and is lost on restart. Nothing attaches to a pane, sends input, launches a
+  harness, or reads terminal output, and a pane is never evidence that a run
+  succeeded.
+
+## From the Python `vibemux` CLI
+
+The Python prototype is a single-process task and run runner. The Rust daemon
+owns canonical state instead, so several Python commands map onto a different
+verb and two have no equivalent yet:
+
+| Python `vibemux` | Rust `vibemuxctl` |
+|---|---|
+| `init` | None. The daemon creates its state on `daemon start`; operator JSON files configure dispatch, decisions, workflows, and DSH. |
+| `doctor` | `status`, `probe`, and `daemon health` |
+| `status` (run table) | `tasks list`, then `tasks show <task_id>` for the runs |
+| `task` (create) | None on its own. A task is recorded by `dispatch submit` or `workflow start`. |
+| `tasks` | `tasks list` |
+| `spawn <task_id>` | `dispatch submit <harness> --prompt-file <path>`: one daemon-owned structured turn, no terminal pane. A run in its own worktree exists only inside `workflow start`. |
+| `harnesses`, `switch` | The same verbs |
+| `send <run_id> <text>` | None. There is no input forwarding into a pane or a continuous chat adapter. |
+| `diff <run_id>` | None. `tasks show` gives the run's worktree path and branch; run `git diff` there. |
+| `trace` | `tasks show <task_id>` for event summaries; `dispatch output <request_id>` for vendor records |
+| `stop <run_id>` | `dispatch cancel <request_id>` or `workflow cancel <workflow_id>` |
+| `theme` | None. `vibemuxctl ui` cycles themes with `t`. |
+
+The two missing verbs, `task` creation and `send`, are deliberate gaps, not
+oversights: pane input and harness launch into native terminals stay premature
+until their own decision record exists.
 
 ## Privacy and Evidence
 

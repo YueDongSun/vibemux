@@ -61,7 +61,7 @@ crates/vibemux_web/                # ADR 033 operator-started read-only mobile w
 crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump + read-only multi-pane console with content-free daemon views (ADR 041/042)
 crates/vibemux_workspace/          # Git worktree lifecycle, owner receipts, and cleanup
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v10: health/plugin/harness/frontend/terminal/dispatch/workflow/dsh/decision ops, model-supervisor and contract-edit ops + harness dispatch, workflow, DSH, and decision services)
-crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch/harness/workflow/dsh/decide/status/workspace/probe/ui client
+crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch/harness/workflow/dsh/decide/tasks/plugins/terminal/status/workspace/probe/ui client
 tests/                              # Python pytest suite
 scripts/                            # smoke + benchmark scripts + dual-track acceptance runner (verify_dual_track.py)
 docs/adr/                           # architecture decision records
@@ -160,6 +160,20 @@ DSH sessions (ADR 032, pre-alpha, needs control protocol v7) are off until the o
 ```
 
 At most one DSH session is live per project, and it lives in daemon memory: there is no canonical Task/Run record and a daemon restart loses it. Never treat `session.status: idle` as completion. Live validation against a real DSH runtime now covers an initialize-only session that reaches `ready` (see [docs/evidence/dsh_runtime_validation.md](docs/evidence/dsh_runtime_validation.md)); no turn has been sent, so prompt execution remains fixture-verified only.
+
+Task, plugin, and terminal observation (pre-alpha, needs control protocol v4 for `tasks` and `terminal`; the daemon must be running) prints the daemon's own content-free read models and creates no task, so a task still comes from `dispatch submit` or `workflow start`. `terminal` needs a daemon that the operator started with `vibemuxd --plugin-config` for the WezTerm observer ([docs/terminal_observer_protocol.md](docs/terminal_observer_protocol.md)); it only lists, links, focuses, and unlinks a pane and never attaches, sends input, or launches a harness:
+
+```powershell
+.\target\debug\vibemuxctl.exe tasks list [--after <task_id>] [--limit <limit>] --project-root .
+.\target\debug\vibemuxctl.exe tasks show <task_id> --project-root .
+.\target\debug\vibemuxctl.exe plugins status --project-root .
+.\target\debug\vibemuxctl.exe terminal inspect <task_id> <run_id> --project-root .
+.\target\debug\vibemuxctl.exe terminal link <task_id> <run_id> --instance-id <id> --pane-id <pane_id> --project-root .
+.\target\debug\vibemuxctl.exe terminal focus <binding_id> --project-root .
+.\target\debug\vibemuxctl.exe terminal unlink <binding_id> --project-root .
+```
+
+To run `vibemuxctl` by name, `.\scripts\install_local_tools.ps1 -build -add_to_user_path` installs the release binaries together into `%LOCALAPPDATA%\VibeMux\bin` and appends that directory to the **user** PATH only (see the [unified CLI guide](docs/guides/unified_cli_guide.md)). The guide also maps each Python `vibemux` command to its Rust verb; `send` and standalone task creation deliberately have no Rust equivalent yet.
 
 Dual-track workflows (ADR 031, pre-alpha, needs control protocol v6) are off until the operator creates `.vibemux\workflow_config.json` (schema 1; fields in README "Dual-track workflows") plus dispatch routes for the slots' harnesses, and restarts the daemon:
 
