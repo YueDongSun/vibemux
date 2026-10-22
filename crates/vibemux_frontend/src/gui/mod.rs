@@ -6,8 +6,10 @@
 mod agents;
 mod chat;
 mod composer;
+mod daemon_card;
 mod design;
 mod diagnostics;
+mod folders;
 mod quick_switcher;
 mod settings;
 mod shortcuts;
@@ -21,6 +23,7 @@ mod typography;
 mod welcome;
 
 pub use chat::wrapped_label as render_wrapped_label;
+pub use daemon_card::DaemonJob;
 pub use settings::SettingsSection;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;
 pub use supervisor_state::{

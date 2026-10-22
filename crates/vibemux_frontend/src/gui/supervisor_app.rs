@@ -2,6 +2,7 @@
 //! Native Supervisor Chat application shell and immutable snapshot bridge.
 
 use std::{
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
@@ -11,6 +12,8 @@ use eframe::egui::{self, Key, Modifiers, RichText, ViewportBuilder};
 use vibemux_probe::AgentKind;
 
 use crate::{
+    daemon_control::DaemonCommand,
+    project_folder,
     quick_search::{self, QuickAction, SearchTarget},
     supervisor_model::{
         ConnectionStatus, SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView,
@@ -23,7 +26,9 @@ use crate::{
 };
 
 use super::{
-    C, agents, chat, composer, design, diagnostics,
+    C, agents, chat, composer,
+    daemon_card::{self, DaemonJob},
+    design, diagnostics, folders,
     quick_switcher::{self, QuickSwitcherState},
     settings, shortcuts,
     shortcuts::ShortcutAction,
@@ -61,6 +66,15 @@ pub struct SupervisorApp {
     /// The text size last applied as the egui zoom factor. Applied only
     /// when it changes, so the built-in `Ctrl` `+`/`-` zoom keeps working.
     applied_text_size: Option<TextSize>,
+    /// The folder this window observes. The live adapter connects to its
+    /// daemon; `None` until a folder is open.
+    project_folder: Option<PathBuf>,
+    /// A folder switch for the live adapter to pick up.
+    project_switch: Option<PathBuf>,
+    folder_dialog: folders::FolderDialogState,
+    /// A start or stop for the live adapter to run.
+    daemon_request: Option<DaemonCommand>,
+    daemon_job: DaemonJob,
     diagnostics_open: bool,
     /// The `Ctrl+/` shortcut overlay.
     shortcuts_open: bool,
@@ -91,6 +105,10 @@ impl SupervisorApp {
         let actions = UiActionQueue::default();
         actions.enqueue(SupervisorAction::Refresh);
         let ui_state = SupervisorUiState::default();
+        let project_folder = project_folder::startup_folder(
+            user_config.active_project.as_deref(),
+            std::env::current_dir().ok(),
+        );
         Self {
             view_model,
             snapshot: Arc::new(RwLock::new(Arc::new(SupervisorSnapshot::unavailable()))),
@@ -100,6 +118,11 @@ impl SupervisorApp {
             settings_open: false,
             settings_section: settings::SettingsSection::default(),
             applied_text_size: None,
+            project_folder,
+            project_switch: None,
+            folder_dialog: folders::FolderDialogState::default(),
+            daemon_request: None,
+            daemon_job: DaemonJob::Idle,
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -107,6 +130,93 @@ impl SupervisorApp {
             pending_write: None,
             pending_resize: None,
             composer_panel_height: 0.0,
+        }
+    }
+
+    /// The folder this window observes.
+    #[must_use]
+    pub fn active_project(&self) -> Option<&Path> {
+        self.project_folder.as_deref()
+    }
+
+    /// A folder switch the user made since the last call.
+    pub fn take_project_switch(&mut self) -> Option<PathBuf> {
+        self.project_switch.take()
+    }
+
+    /// A start or stop the user asked for since the last call.
+    pub fn take_daemon_request(&mut self) -> Option<DaemonCommand> {
+        self.daemon_request.take()
+    }
+
+    /// Records how the live adapter's start or stop is going.
+    pub fn set_daemon_job(&mut self, job: DaemonJob) {
+        self.daemon_job = job;
+    }
+
+    /// Opens `folder` when it is an existing directory: it becomes the
+    /// active project, moves to the front of the recent folders, and the
+    /// live adapter reconnects. Otherwise the dialog shows the error.
+    pub fn open_project(&mut self, folder: PathBuf) {
+        match project_folder::existing_folder(&folder) {
+            Ok(folder) => {
+                let changed = !self
+                    .project_folder
+                    .as_deref()
+                    .is_some_and(|current| crate::theme::serialize::same_folder(current, &folder));
+                self.user_config.remember_project(folder.clone());
+                self.pending_write = Some(Instant::now());
+                self.folder_dialog.close();
+                if changed {
+                    self.project_folder = Some(folder.clone());
+                    self.project_switch = Some(folder);
+                    self.daemon_job = DaemonJob::Idle;
+                    self.settings_open = false;
+                    if let Ok(mut state) = self.ui_state.lock() {
+                        *state =
+                            start_state(SupervisorUiState::default(), self.user_config.start_page);
+                    }
+                }
+            }
+            Err(error) => {
+                self.folder_dialog.show();
+                self.folder_dialog.input = folder.display().to_string();
+                self.folder_dialog.error = Some(error);
+            }
+        }
+    }
+
+    /// Asks the live adapter to start or stop the active folder's daemon,
+    /// unless one is already in flight or no folder is open.
+    pub fn request_daemon(&mut self, command: DaemonCommand) {
+        if self.daemon_job.is_running() {
+            return;
+        }
+        if self.project_folder.is_none() {
+            self.daemon_job = DaemonJob::Failed("Open a folder first.".to_string());
+            return;
+        }
+        self.daemon_request = Some(command);
+        self.daemon_job = DaemonJob::Running(command);
+    }
+
+    fn apply_folder_dialog(&mut self, actions: folders::FolderDialogActions) {
+        if let Some(folder) = actions.forget {
+            self.user_config.forget_project(&folder);
+            self.pending_write = Some(Instant::now());
+        }
+        if actions.browse
+            && let Some(folder) = project_folder::pick_folder_native(self.project_folder.as_deref())
+        {
+            self.open_project(folder);
+            return;
+        }
+        if let Some(folder) = actions.open {
+            self.open_project(folder);
+            return;
+        }
+        if actions.close {
+            self.folder_dialog.close();
         }
     }
 
@@ -281,6 +391,12 @@ impl SupervisorApp {
         if let Some(text_size) = changes.text_size {
             self.set_text_size(text_size);
         }
+        if changes.open_folder_dialog {
+            self.folder_dialog.show();
+        }
+        if let Some(command) = changes.daemon {
+            self.request_daemon(command);
+        }
     }
 
     /// Applies the saved density and text size to this frame's style.
@@ -345,6 +461,10 @@ impl SupervisorApp {
             return;
         }
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            if self.folder_dialog.open {
+                self.folder_dialog.close();
+                return;
+            }
             if self.quick_switcher.open {
                 self.quick_switcher.close();
                 return;
@@ -728,6 +848,8 @@ impl SupervisorApp {
                         collapsed,
                         selected_task_id: selected_task_id.as_deref(),
                         settings_open: self.settings_open,
+                        active_folder: self.project_folder.as_deref(),
+                        recent_folders: &self.user_config.recent_projects,
                     };
                     sidebar_actions = Some(sidebar::render(ui, &colors, &view));
                 });
@@ -761,6 +883,12 @@ impl SupervisorApp {
                 }
                 if actions.open_diagnostics {
                     self.diagnostics_open = true;
+                }
+                if actions.open_folder_dialog {
+                    self.folder_dialog.show();
+                }
+                if let Some(folder) = actions.switch_folder {
+                    self.open_project(folder);
                 }
             }
 
@@ -821,6 +949,12 @@ impl SupervisorApp {
             }
 
             let mut settings_changes = None;
+            let mut daemon_click = None;
+            let daemon_missing = daemon_card::daemon_missing(&snapshot.connection);
+            let folder_name = self.project_folder.as_deref().map_or_else(
+                || snapshot.project_name.clone(),
+                project_folder::display_name,
+            );
             egui::CentralPanel::default()
                 .frame(
                     egui::Frame::new()
@@ -833,6 +967,8 @@ impl SupervisorApp {
                             section: self.settings_section,
                             config: &self.user_config,
                             snapshot,
+                            project_folder: self.project_folder.as_deref(),
+                            daemon_job: &self.daemon_job,
                         };
                         ui.add_space(8.0);
                         settings_changes = Some(settings::render_page(ui, &colors, &view));
@@ -845,6 +981,17 @@ impl SupervisorApp {
                         let top_space =
                             welcome_top_space(ui.available_height(), self.composer_panel_height);
                         ui.add_space(top_space);
+                        if daemon_missing {
+                            chat::content_column(ui, |ui| {
+                                daemon_click = daemon_card::render(
+                                    ui,
+                                    &colors,
+                                    &folder_name,
+                                    &self.daemon_job,
+                                );
+                            });
+                            ui.add_space(18.0);
+                        }
                         let hint = super::welcome::workspace_hint(snapshot.tasks.len());
                         chat::content_column(ui, |ui| {
                             super::welcome::render_heading(
@@ -863,6 +1010,17 @@ impl SupervisorApp {
                         }
                     }
                     MainPage::CoordinatorChat => {
+                        if daemon_missing {
+                            chat::content_column(ui, |ui| {
+                                daemon_click = daemon_card::render(
+                                    ui,
+                                    &colors,
+                                    &folder_name,
+                                    &self.daemon_job,
+                                );
+                            });
+                            ui.add_space(12.0);
+                        }
                         if let Ok(mut state) = self.ui_state.lock() {
                             chat::render_conversation(
                                 ui,
@@ -889,6 +1047,19 @@ impl SupervisorApp {
 
             if let Some(changes) = settings_changes {
                 self.apply_settings_changes(changes);
+            }
+            if let Some(command) = daemon_click {
+                self.request_daemon(command);
+            }
+            if self.folder_dialog.open {
+                let actions = folders::render(
+                    ctx,
+                    &colors,
+                    &mut self.folder_dialog,
+                    &self.user_config.recent_projects,
+                    self.project_folder.as_deref(),
+                );
+                self.apply_folder_dialog(actions);
             }
             if self.diagnostics_open {
                 diagnostics::render(
@@ -1158,6 +1329,7 @@ mod tests {
             connection: crate::supervisor_model::ConnectionState {
                 status: ConnectionStatus::Connected,
                 detail: None,
+                code: None,
             },
             tasks: vec![
                 TaskView {
@@ -1292,6 +1464,11 @@ mod tests {
             settings_open: false,
             settings_section: settings::SettingsSection::default(),
             applied_text_size: None,
+            project_folder: None,
+            project_switch: None,
+            folder_dialog: folders::FolderDialogState::default(),
+            daemon_request: None,
+            daemon_job: DaemonJob::Idle,
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -1485,6 +1662,94 @@ mod tests {
         let _ = context.run_ui(raw.clone(), |context| app.render_frame(context));
         let output = context.run_ui(raw, |context| app.render_frame(context));
         (context, output)
+    }
+
+    #[test]
+    fn opening_a_folder_remembers_it_and_asks_the_live_adapter_to_switch() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = test_app();
+        app.open_project(directory.path().to_path_buf());
+        assert_eq!(app.active_project(), Some(directory.path()));
+        assert_eq!(app.take_project_switch().as_deref(), Some(directory.path()));
+        assert_eq!(app.take_project_switch(), None, "one switch per choice");
+        assert_eq!(
+            app.user_config.active_project.as_deref(),
+            Some(directory.path())
+        );
+        assert_eq!(
+            app.user_config
+                .recent_projects
+                .first()
+                .map(PathBuf::as_path),
+            Some(directory.path())
+        );
+        assert!(app.pending_write.is_some(), "the choice is saved");
+        // Reopening the active folder reconnects nothing.
+        app.open_project(directory.path().to_path_buf());
+        assert_eq!(app.take_project_switch(), None);
+    }
+
+    #[test]
+    fn a_missing_folder_reopens_the_dialog_with_its_error() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = test_app();
+        app.open_project(directory.path().join("missing"));
+        assert!(app.folder_dialog.open);
+        assert_eq!(
+            app.folder_dialog.error,
+            Some(crate::project_folder::ProjectFolderError::NotADirectory)
+        );
+        assert_eq!(app.active_project(), None);
+        assert_eq!(app.take_project_switch(), None);
+    }
+
+    #[test]
+    fn daemon_requests_need_a_folder_and_never_overlap() {
+        let mut app = test_app();
+        app.request_daemon(DaemonCommand::Start);
+        assert_eq!(app.take_daemon_request(), None);
+        assert!(matches!(app.daemon_job, DaemonJob::Failed(_)));
+
+        let directory = tempfile::tempdir().expect("folder");
+        app.open_project(directory.path().to_path_buf());
+        app.request_daemon(DaemonCommand::Start);
+        assert_eq!(app.daemon_job, DaemonJob::Running(DaemonCommand::Start));
+        app.request_daemon(DaemonCommand::Stop);
+        assert_eq!(app.take_daemon_request(), Some(DaemonCommand::Start));
+        assert_eq!(app.take_daemon_request(), None, "the second click waited");
+        app.set_daemon_job(DaemonJob::Idle);
+        app.request_daemon(DaemonCommand::Stop);
+        assert_eq!(app.take_daemon_request(), Some(DaemonCommand::Stop));
+    }
+
+    #[test]
+    fn the_daemon_card_and_folder_dialog_render_and_escape_closes_the_dialog() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = test_app();
+        app.open_project(directory.path().to_path_buf());
+        let _ = app.take_project_switch();
+        edit_snapshot(&mut app, |snapshot| {
+            snapshot.connection.status = ConnectionStatus::Disconnected;
+            snapshot.connection.code = Some(daemon_card::DAEMON_NOT_RUNNING.into());
+        });
+        app.folder_dialog.show();
+        for (width, height) in [(1280.0, 800.0), (960.0, 600.0)] {
+            let _ = render_at(&mut app, width, height);
+            assert!(
+                app.folder_dialog.open,
+                "rendering alone keeps the dialog open"
+            );
+        }
+        app.settings_open = true;
+        key_event(
+            &egui::Context::default(),
+            &mut app,
+            Key::Escape,
+            false,
+            false,
+        );
+        assert!(!app.folder_dialog.open, "Esc closes the dialog first");
+        assert!(app.settings_open);
     }
 
     #[test]

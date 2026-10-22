@@ -285,7 +285,7 @@ async fn apply_action(
                     clear_terminal_associations(snapshot, &status);
                 }
             }
-            snapshot.connection = ConnectionState {status:ConnectionStatus::Connected,detail:Some("Task status connected. Continuous coordinator chat is not available in this build.".into())};
+            snapshot.connection = ConnectionState {status:ConnectionStatus::Connected,detail:Some("Task status connected. Continuous coordinator chat is not available in this build.".into()),code:None};
             for (task_id, run_id) in observed.iter() {
                 inspect_terminal(&client, snapshot, task_id, run_id).await;
             }
@@ -598,6 +598,7 @@ fn connection_failure(code: &str) -> ConnectionState {
     ConnectionState {
         status: ConnectionStatus::Disconnected,
         detail: Some(detail),
+        code: Some(code.to_string()),
     }
 }
 

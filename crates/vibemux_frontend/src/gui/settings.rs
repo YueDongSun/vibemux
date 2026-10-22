@@ -7,14 +7,21 @@
 //! The Connection section reads the supervisor snapshot and never starts,
 //! stops, or changes the daemon.
 
+use std::path::Path;
+
 use eframe::egui::{self, RichText, Sense, Stroke, Ui, vec2};
 
 use crate::{
-    supervisor_model::{SnapshotMode, SupervisorSnapshot},
+    daemon_control::DaemonCommand,
+    supervisor_model::{ConnectionStatus, SnapshotMode, SupervisorSnapshot},
     theme::{ALL_DENSITIES, Density, StartPage, TextSize, ThemeId, UserConfig, WindowSize},
 };
 
-use super::{C, design, shortcuts, typography};
+use super::{
+    C,
+    daemon_card::{self, DaemonJob},
+    design, shortcuts, typography,
+};
 
 /// Width of the section list.
 const NAV_WIDTH: f32 = 196.0;
@@ -61,6 +68,9 @@ pub struct SettingsView<'a> {
     pub section: SettingsSection,
     pub config: &'a UserConfig,
     pub snapshot: &'a SupervisorSnapshot,
+    /// The folder the GUI observes, if any.
+    pub project_folder: Option<&'a Path>,
+    pub daemon_job: &'a DaemonJob,
 }
 
 /// What the user asked for this frame. The caller applies and persists it.
@@ -73,6 +83,8 @@ pub struct SettingsChanges {
     pub start_page: Option<StartPage>,
     pub density: Option<Density>,
     pub text_size: Option<TextSize>,
+    pub open_folder_dialog: bool,
+    pub daemon: Option<DaemonCommand>,
 }
 
 pub fn render_page(ui: &mut Ui, c: &C, view: &SettingsView<'_>) -> SettingsChanges {
@@ -112,11 +124,11 @@ pub fn render_page(ui: &mut Ui, c: &C, view: &SettingsView<'_>) -> SettingsChang
                     );
                     ui.add_space(18.0);
                     match view.section {
-                        SettingsSection::General => general(ui, c, view.config, &mut changes),
+                        SettingsSection::General => general(ui, c, view, &mut changes),
                         SettingsSection::Appearance => {
                             appearance(ui, c, view.config, &mut changes);
                         }
-                        SettingsSection::Connection => connection(ui, c, view.snapshot),
+                        SettingsSection::Connection => connection(ui, c, view, &mut changes),
                         SettingsSection::Shortcuts => keyboard_shortcuts(ui, c),
                         SettingsSection::About => about(ui, c),
                     }
@@ -127,8 +139,16 @@ pub fn render_page(ui: &mut Ui, c: &C, view: &SettingsView<'_>) -> SettingsChang
     changes
 }
 
-fn general(ui: &mut Ui, c: &C, config: &UserConfig, changes: &mut SettingsChanges) {
+fn general(ui: &mut Ui, c: &C, view: &SettingsView<'_>, changes: &mut SettingsChanges) {
+    let config = view.config;
+    let folder = folder_text(view.project_folder);
     card(ui, c, |ui| {
+        row(ui, c, "Project folder", &folder, |ui| {
+            if design::action_button(ui, c, "Change…", true).clicked() {
+                changes.open_folder_dialog = true;
+            }
+        });
+        separator(ui, c);
         row(ui, c, "Start page", "The page VibeMux opens on.", |ui| {
             changes.start_page =
                 segmented(ui, c, &StartPage::ALL, config.start_page, StartPage::label);
@@ -192,7 +212,35 @@ fn appearance(ui: &mut Ui, c: &C, config: &UserConfig, changes: &mut SettingsCha
     });
 }
 
-fn connection(ui: &mut Ui, c: &C, snapshot: &SupervisorSnapshot) {
+fn connection(ui: &mut Ui, c: &C, view: &SettingsView<'_>, changes: &mut SettingsChanges) {
+    let snapshot = view.snapshot;
+    card(ui, c, |ui| {
+        value_row(ui, c, "Folder", &folder_text(view.project_folder));
+        separator(ui, c);
+        let (description, control) = daemon_control_state(snapshot, view.daemon_job);
+        row(ui, c, "VibeMux", description, |ui| match control {
+            DaemonControl::Busy(label) => {
+                ui.label(RichText::new(label).size(13.0).color(c.muted));
+                ui.spinner();
+            }
+            DaemonControl::Start => {
+                if daemon_card::start_button(ui, c).clicked() {
+                    changes.daemon = Some(DaemonCommand::Start);
+                }
+            }
+            DaemonControl::Stop => {
+                if design::action_button(ui, c, "Stop VibeMux", true).clicked() {
+                    changes.daemon = Some(DaemonCommand::Stop);
+                }
+            }
+            DaemonControl::None => {}
+        });
+        if let DaemonJob::Failed(message) = view.daemon_job {
+            ui.add(egui::Label::new(RichText::new(message).size(12.5).color(c.danger)).wrap());
+            ui.add_space(10.0);
+        }
+    });
+    ui.add_space(14.0);
     let status = format!("{:?}", snapshot.connection.status);
     let data = match snapshot.mode {
         SnapshotMode::Live => "Live daemon data",
@@ -227,7 +275,7 @@ fn connection(ui: &mut Ui, c: &C, snapshot: &SupervisorSnapshot) {
     footnote(
         ui,
         c,
-        "Read-only. Settings never start, stop, or change the daemon.",
+        "These rows only report what the daemon says. VibeMux starts or stops only when you click.",
     );
 }
 
@@ -270,6 +318,40 @@ fn about(ui: &mut Ui, c: &C) {
         separator(ui, c);
         value_row(ui, c, "Startup error log", &error_log.display().to_string());
     });
+}
+
+/// What the VibeMux row offers for this connection and job.
+enum DaemonControl {
+    Busy(&'static str),
+    Start,
+    Stop,
+    None,
+}
+
+fn daemon_control_state(
+    snapshot: &SupervisorSnapshot,
+    job: &DaemonJob,
+) -> (&'static str, DaemonControl) {
+    if let DaemonJob::Running(command) = job {
+        return (
+            "Working on it.",
+            DaemonControl::Busy(command.progress_label()),
+        );
+    }
+    if daemon_card::daemon_missing(&snapshot.connection) {
+        return ("Not running for this folder.", DaemonControl::Start);
+    }
+    match snapshot.connection.status {
+        ConnectionStatus::Connected => ("Running for this folder.", DaemonControl::Stop),
+        _ => ("Connecting or unavailable.", DaemonControl::None),
+    }
+}
+
+fn folder_text(folder: Option<&Path>) -> String {
+    folder.map_or_else(
+        || "No folder open".to_string(),
+        |folder| folder.display().to_string(),
+    )
 }
 
 const fn density_label(density: Density) -> &'static str {

@@ -140,10 +140,11 @@ pub fn supervisor_snapshot(disconnected: bool) -> SupervisorSnapshot {
                 ConnectionStatus::Connected
             },
             detail: Some(if disconnected {
-                "Preview: daemon disconnected. Last observations may be stale.".into()
+                "Preview: the daemon is not running for this project.".into()
             } else {
                 "Preview: task status connected; continuous coordinator chat is unavailable.".into()
             }),
+            code: disconnected.then(|| "daemon_not_running".into()),
         },
         tasks,
         next_cursor: None,

@@ -14,6 +14,7 @@ pub enum Icon {
     Send,
     Close,
     Pulse,
+    Folder,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -44,6 +45,14 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
                     );
                 }
             }
+        }
+        Icon::Folder => {
+            // A folder: a tab on the top left over a rounded body.
+            let body = egui::Rect::from_min_max(position(0.08, 0.32), position(0.92, 0.86));
+            painter.rect_stroke(body, 2, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([position(0.08, 0.32), position(0.08, 0.18)], stroke);
+            painter.line_segment([position(0.08, 0.18), position(0.4, 0.18)], stroke);
+            painter.line_segment([position(0.4, 0.18), position(0.5, 0.32)], stroke);
         }
         Icon::Arrow => {
             painter.line_segment([position(0.15, 0.85), position(0.85, 0.15)], stroke);
