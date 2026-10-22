@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "VibeMux Read Only Mobile API",
-    "version": "0.1.0",
-    "description": "Pre-alpha Track A. Canonical state is read-only; POST endpoints change web-local enrollment/subscription state only. Every route, including shell and enrollment, requires the instance bearer. Normal QR/browser bootstrap is unavailable without an operator-provided authenticated browser mechanism."
+    "version": "0.2.0",
+    "description": "Pre-alpha Track A. Canonical state is read-only; POST endpoints change web-local enrollment/subscription state only. Every JSON route, including enrollment, requires the instance bearer. By default the page and its static assets require it too; the opt-in local_page_without_token setting serves only the page and its assets, not the service worker script, without it, to GET/HEAD requests whose Host names the loopback listener. Normal QR/browser bootstrap is otherwise unavailable without an operator-provided authenticated browser mechanism."
   },
   "servers": [
     {
@@ -281,6 +281,30 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer missing or invalid"
+          },
+          "429": {
+            "description": "Bounded rate or concurrency limit"
+          }
+        }
+      }
+    },
+    "/api/v1/console": {
+      "get": {
+        "operationId": "console_sections",
+        "description": "Content-free daemon, session, and decision sections of the ADR 042 console. Each section fails independently; a daemon the web process cannot reach makes every section unavailable.",
+        "responses": {
+          "200": {
+            "description": "Successful projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsoleSnapshot"
                 }
               }
             }
@@ -616,13 +640,17 @@
           },
           "task": {
             "$ref": "#/components/schemas/Task"
+          },
+          "activity": {
+            "$ref": "#/components/schemas/TaskActivity"
           }
         },
         "required": [
           "generation",
           "observed_at",
           "stale",
-          "task"
+          "task",
+          "activity"
         ],
         "additionalProperties": false
       },
@@ -727,6 +755,558 @@
           "expires_in_seconds",
           "qr_svg",
           "enrollment_url"
+        ],
+        "additionalProperties": false
+      },
+      "SectionWaiting": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "const": "waiting"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "SectionUnavailable": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "const": "unavailable"
+          },
+          "code": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "code",
+          "hint"
+        ],
+        "additionalProperties": false
+      },
+      "ConsoleConnection": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SectionWaiting"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "const": "connected"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/SectionUnavailable"
+          }
+        ]
+      },
+      "ConsoleHealth": {
+        "type": "object",
+        "properties": {
+          "healthy": {
+            "type": "boolean"
+          },
+          "store_schema_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queue_depth": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queue_capacity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queue_high_watermark": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "queue_saturated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "healthy",
+          "store_schema_version",
+          "queue_depth",
+          "queue_capacity",
+          "queue_high_watermark",
+          "queue_saturated"
+        ],
+        "additionalProperties": false
+      },
+      "ConsolePlugin": {
+        "type": "object",
+        "properties": {
+          "plugin_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "restarts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_restarts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plugin_id",
+          "state",
+          "restarts",
+          "max_restarts",
+          "last_error_code"
+        ],
+        "additionalProperties": false
+      },
+      "ConsoleRoute": {
+        "type": "object",
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "executes",
+              "probe_only",
+              "disabled"
+            ]
+          }
+        },
+        "required": [
+          "harness",
+          "protocol",
+          "mode"
+        ],
+        "additionalProperties": false
+      },
+      "ConsoleSlotRoute": {
+        "type": "object",
+        "properties": {
+          "slot_id": {
+            "type": "string"
+          },
+          "route_label": {
+            "type": "string"
+          },
+          "executes": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slot_id",
+          "route_label",
+          "executes"
+        ],
+        "additionalProperties": false
+      },
+      "ConsoleSlots": {
+        "type": "object",
+        "properties": {
+          "evidence_class": {
+            "type": "string"
+          },
+          "routes": {
+            "type": "object",
+            "properties": {
+              "rows": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ConsoleSlotRoute"
+                }
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "rows",
+              "truncated"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "evidence_class",
+          "routes"
+        ],
+        "additionalProperties": false
+      },
+      "ConsoleDecision": {
+        "type": "object",
+        "properties": {
+          "decision_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string"
+          },
+          "chosen_harness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "consumed": {
+            "type": "boolean"
+          },
+          "created_sequence": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "decision_id",
+          "status",
+          "chosen_harness",
+          "source",
+          "created_at",
+          "consumed",
+          "created_sequence"
+        ],
+        "additionalProperties": false
+      },
+      "ConsoleSnapshot": {
+        "type": "object",
+        "properties": {
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/ConsoleConnection"
+          },
+          "health": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SectionWaiting"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "const": "loaded"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/ConsoleHealth"
+                  }
+                },
+                "required": [
+                  "state",
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$ref": "#/components/schemas/SectionUnavailable"
+              }
+            ]
+          },
+          "plugins": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SectionWaiting"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "const": "loaded"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/ConsolePlugin"
+                        }
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "rows",
+                      "truncated"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "state",
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$ref": "#/components/schemas/SectionUnavailable"
+              }
+            ]
+          },
+          "routes": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SectionWaiting"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "const": "loaded"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/ConsoleRoute"
+                        }
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "rows",
+                      "truncated"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "state",
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$ref": "#/components/schemas/SectionUnavailable"
+              }
+            ]
+          },
+          "dsh": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SectionWaiting"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "const": "loaded"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/DshStatus"
+                  }
+                },
+                "required": [
+                  "state",
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$ref": "#/components/schemas/SectionUnavailable"
+              }
+            ]
+          },
+          "slots": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SectionWaiting"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "const": "loaded"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/ConsoleSlots"
+                  }
+                },
+                "required": [
+                  "state",
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$ref": "#/components/schemas/SectionUnavailable"
+              }
+            ]
+          },
+          "decisions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SectionWaiting"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "const": "loaded"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/ConsoleDecision"
+                        }
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "rows",
+                      "truncated"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "state",
+                  "data"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "$ref": "#/components/schemas/SectionUnavailable"
+              }
+            ]
+          }
+        },
+        "required": [
+          "observed_at",
+          "connection",
+          "health",
+          "plugins",
+          "routes",
+          "dsh",
+          "slots",
+          "decisions"
+        ],
+        "additionalProperties": false
+      },
+      "TaskEvent": {
+        "type": "object",
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sequence",
+          "event_type",
+          "at",
+          "run_id"
+        ],
+        "additionalProperties": false
+      },
+      "TaskArtifact": {
+        "type": "object",
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "artifact_id",
+          "run_id",
+          "media_type",
+          "size_bytes"
+        ],
+        "additionalProperties": false
+      },
+      "TaskActivity": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 24,
+            "items": {
+              "$ref": "#/components/schemas/TaskEvent"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "maxItems": 24,
+            "items": {
+              "$ref": "#/components/schemas/TaskArtifact"
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "events",
+          "artifacts",
+          "truncated"
         ],
         "additionalProperties": false
       }

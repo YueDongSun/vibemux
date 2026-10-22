@@ -57,7 +57,7 @@ crates/vibemux_dsh/                # ADR 032 DSH session driver: config trust, N
 crates/vibemux_harness_native/     # ADR 040 bounded vendor stream adapters and CLI-process request dispatch (Codex/Claude/ACP); never canonical state or execution permission
 crates/vibemux_model_peer/         # optional out-of-process model peer; never receives a core writer handle
 crates/vibemux_mcp/                # ADR 035 first-party read-only MCP frontend over the daemon client (stdio)
-crates/vibemux_web/                # ADR 033 operator-started read-only mobile web surface; build.rs needs crates/vibemux_web/web/dist (npm ci && npm run build)
+crates/vibemux_web/                # ADR 033 operator-started read-only mobile web surface (+ the ADR 042 console's daemon views, opt-in loopback local page mode); build.rs needs crates/vibemux_web/web/dist (npm ci && npm run build)
 crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump + read-only multi-pane console with content-free daemon views (ADR 041/042)
 crates/vibemux_workspace/          # Git worktree lifecycle, owner receipts, and cleanup
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v10: health/plugin/harness/frontend/terminal/dispatch/workflow/dsh/decision ops, model-supervisor and contract-edit ops + harness dispatch, workflow, DSH, and decision services)

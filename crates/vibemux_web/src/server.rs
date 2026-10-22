@@ -1,7 +1,9 @@
 //! Authenticated loopback HTTP surface. Security middleware includes fallback/errors.
 use crate::{
+    console_poller::ConsoleState,
     control_bridge::SnapshotState,
     enrollment::{AttemptLimiter, EnrollmentStore},
+    local_page::LocalPageAccess,
     push::{PushService, PushSubscription},
 };
 use axum::{
@@ -33,6 +35,7 @@ pub const API_ROUTES: &[(&str, &str)] = &[
     ("get", "/api/v1/health"),
     ("get", "/api/v1/tasks"),
     ("get", "/api/v1/tasks/{task_id}"),
+    ("get", "/api/v1/console"),
     ("get", "/api/v1/push/public_key"),
     ("post", "/api/v1/push/subscriptions"),
     ("post", "/api/v1/enrollment"),
@@ -47,14 +50,28 @@ struct HttpState {
     enrollment: Mutex<EnrollmentStore>,
     enrollment_url: String,
     push: Arc<PushService>,
+    local_page: Option<LocalPageAccess>,
+}
+
+/// Credentials and access options of one HTTP surface.
+pub struct RouterSettings {
+    pub instance_token: String,
+    pub enrollment_url: String,
+    /// Present only when the operator enabled `local_page_without_token`.
+    pub local_page: Option<LocalPageAccess>,
 }
 
 pub fn build_router(
     snapshot_state: SnapshotState,
+    console_state: ConsoleState,
     push: Arc<PushService>,
-    instance_token: String,
-    enrollment_url: String,
+    settings: RouterSettings,
 ) -> Router {
+    let RouterSettings {
+        instance_token,
+        enrollment_url,
+        local_page,
+    } = settings;
     let state = Arc::new(HttpState {
         token_digest: Sha256::digest(instance_token.as_bytes()).into(),
         instance_token,
@@ -63,6 +80,7 @@ pub fn build_router(
         enrollment: Mutex::new(EnrollmentStore::default()),
         enrollment_url,
         push,
+        local_page,
     });
     let service_routes = Router::new()
         .route("/api/v1/push/public_key", get(public_key))
@@ -74,6 +92,7 @@ pub fn build_router(
         .with_state(state.clone());
     Router::new()
         .merge(crate::api::api_router(snapshot_state))
+        .merge(crate::api::console_router(console_state))
         .merge(service_routes)
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY))
         .layer(middleware::from_fn_with_state(state, authenticate))
@@ -89,6 +108,23 @@ async fn authenticate(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    let local_page = state
+        .local_page
+        .as_ref()
+        .is_some_and(|access| access.permits(request.method(), request.uri(), request.headers()));
+    if !local_page && let Err((status, code)) = check_bearer(&state, &request) {
+        return error(status, code);
+    }
+    let Ok(_permit) = state.capacity.clone().try_acquire_owned() else {
+        return error(StatusCode::TOO_MANY_REQUESTS, "web_busy");
+    };
+    next.run(request).await
+}
+
+/// The status and error code of a refused request.
+type Refusal = (StatusCode, &'static str);
+
+fn check_bearer(state: &HttpState, request: &Request<Body>) -> Result<(), Refusal> {
     let mut headers = request.headers().get_all(header::AUTHORIZATION).iter();
     let token = headers
         .next()
@@ -98,10 +134,10 @@ async fn authenticate(
     let now = Instant::now();
     {
         let Ok(mut limiter) = state.auth_limiter.lock() else {
-            return error(StatusCode::SERVICE_UNAVAILABLE, "web_auth_unavailable");
+            return Err((StatusCode::SERVICE_UNAVAILABLE, "web_auth_unavailable"));
         };
         if !limiter.permitted(now) {
-            return error(StatusCode::TOO_MANY_REQUESTS, "web_auth_rate_limited");
+            return Err((StatusCode::TOO_MANY_REQUESTS, "web_auth_rate_limited"));
         }
         let valid = !duplicate
             && token.is_some_and(|token| {
@@ -114,16 +150,13 @@ async fn authenticate(
             });
         if !valid {
             limiter.failed(now);
-            return error(StatusCode::UNAUTHORIZED, "web_unauthorized");
+            return Err((StatusCode::UNAUTHORIZED, "web_unauthorized"));
         }
     }
     if request.uri().path() == "/api/v1/enrollment" && request.uri().query().is_some() {
-        return error(StatusCode::BAD_REQUEST, "web_enrollment_body_only");
+        return Err((StatusCode::BAD_REQUEST, "web_enrollment_body_only"));
     }
-    let Ok(_permit) = state.capacity.clone().try_acquire_owned() else {
-        return error(StatusCode::TOO_MANY_REQUESTS, "web_busy");
-    };
-    next.run(request).await
+    Ok(())
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
