@@ -6303,6 +6303,44 @@ would keep serving its precached page after the mode was turned off (fixed:
 `/sw.js` keeps requiring the token), and the footer of the console views
 showed the task poller's observation time (fixed: they show the console's).
 
+### 2026-10-22 - GUI: console-less launch, rounder scale, full-page Settings, terminal link in Overview
+
+**Scope:** `vibemux_frontend` GUI only (PR 1 of 2 agreed with the operator;
+the Console page that absorbs Agents follows). No daemon, store, control
+protocol, CLI, or observer contract changes. ADR 030 records the amendment.
+
+**Implemented:**
+- The GUI binary is a Windows GUI-subsystem binary in debug and release
+  builds, so it never opens a console. Startup failures and panics go to a
+  bounded `frontend_errors.log` next to the settings file (`startup_log`).
+- One rounded scale for every theme (10 px buttons, 14 px cards and windows,
+  20 px composer, pill chips); every palette's `corner_radius` is 10 and
+  `config/theme_palettes.json` matches.
+- Full-page Settings with General, Appearance, Connection (read-only),
+  Keyboard shortcuts, and About; theme preview cards with readable names;
+  new saved preferences `start_page`, `density`, and `text_size`, each
+  defaulting when absent (`schema_version` stays 1).
+- The task Terminal tab and per-task Native terminal action are removed; the
+  Overview's Linked terminal section keeps Focus, Unlink, Find terminals, and
+  Link for reported candidates.
+
+**Validation executed (Rust 1.92.0):**
+- Native Windows 11, `CARGO_TARGET_DIR` under `%TEMP%`: `cargo fmt --all --
+  --check` passed; `cargo clippy -p vibemux_frontend --all-targets
+  --all-features -- -D warnings` passed; `cargo test -p vibemux_frontend
+  --all-features` passed (lib 214, 1 ignored golden-fixture generator;
+  `supervisor_ui` 10, `daemon_feed` 4, `palette_parity` 2, binaries 2 + 4 +
+  6 + 6). Python `tests/test_theme.py`: 23 passed.
+- WSL Ubuntu 24.04 at the same commit: the same fmt, clippy, and test
+  commands passed with the same counts.
+- Preview screenshots (`settings`, `appearance` in Claude Light and Claude
+  Dark, `chat`, `drawer`, `task`) were captured at 1280×800 and checked by
+  eye; they are local review artifacts, not committed.
+
+**Not verified:** the console-less launch and startup log were exercised by
+unit tests and a manual launch, not by an automated end-to-end Windows test;
+other display scales, IME input, and screen readers were not tested.
+
 ### 2026-10-22 - vibemuxctl tasks, plugins, and terminal verbs, and a local install script
 
 Status: Rust CLI stays `PARTIAL`. No new control operation, schema, or ADR: the

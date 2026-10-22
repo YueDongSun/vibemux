@@ -20,7 +20,9 @@ pub mod serialize;
 pub use palette::{
     ALL_DENSITIES, DENSITY_DEFAULT, Density, ThemePalette, all_palettes, palette_for,
 };
-pub use serialize::{UserConfig, WindowSize, load_user_config, save_user_config};
+pub use serialize::{
+    StartPage, TextSize, UserConfig, WindowSize, load_user_config, save_user_config,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +78,21 @@ impl ThemeId {
             Self::Gruvbox => "gruvbox",
             Self::Studio => "studio",
             Self::ClaudeLight => "claude_light",
+        }
+    }
+
+    /// Readable name for settings and menus. Never persisted: `as_str` is
+    /// the stable token.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Dark",
+            Self::Github => "GitHub",
+            Self::Vscode => "VS Code",
+            Self::Nord => "Nord",
+            Self::Gruvbox => "Gruvbox",
+            Self::Studio => "Studio",
+            Self::ClaudeLight => "Claude Light",
         }
     }
 }

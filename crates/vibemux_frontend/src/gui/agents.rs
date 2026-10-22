@@ -6,7 +6,7 @@ use vibemux_probe::ProbeState;
 
 use crate::view_model::{AgentView, ViewModel, route_label};
 
-use super::C;
+use super::{C, design};
 
 #[derive(Default)]
 pub struct AgentsActions {
@@ -53,7 +53,7 @@ fn render_list(ui: &mut Ui, c: &C, view_model: &ViewModel, actions: &mut AgentsA
         egui::Frame::group(ui.style())
             .fill(c.surf)
             .stroke(egui::Stroke::new(1.0, c.border))
-            .corner_radius(egui::CornerRadius::same(7))
+            .corner_radius(design::CARD_RADIUS)
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -100,7 +100,7 @@ fn render_detail(ui: &mut Ui, c: &C, view_model: &ViewModel, index: usize) -> bo
     egui::Frame::group(ui.style())
         .fill(c.surf)
         .stroke(egui::Stroke::new(1.0, c.border))
-        .corner_radius(egui::CornerRadius::same(7))
+        .corner_radius(design::CARD_RADIUS)
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             for (label, value) in agent_details(agent) {

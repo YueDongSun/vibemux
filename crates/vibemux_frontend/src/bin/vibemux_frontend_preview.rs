@@ -16,11 +16,12 @@ use vibemux_frontend::{
 };
 
 /// The scenes this runner can draw.
-const SCENARIOS: [&str; 7] = [
+const SCENARIOS: [&str; 8] = [
     "chat",
     "drawer",
     "task",
-    "task_terminal",
+    "settings",
+    "appearance",
     "disconnected",
     "welcome",
     "collapsed",
@@ -130,8 +131,7 @@ fn main() -> eframe::Result<()> {
         }
     };
     let snapshot = preview::supervisor_snapshot(scenario == "disconnected");
-    let detached = scenario == "task" || scenario == "task_terminal";
-    let terminal_tab = scenario == "task_terminal";
+    let detached = scenario == "task";
     let drawer = scenario == "drawer";
     let config = UserConfig {
         theme,
@@ -159,6 +159,8 @@ fn main() -> eframe::Result<()> {
             match scenario {
                 "welcome" => app.request_new_task(),
                 "collapsed" => app.set_sidebar_collapsed(true),
+                "settings" => app.open_settings(gui::SettingsSection::General),
+                "appearance" => app.open_settings(gui::SettingsSection::Appearance),
                 _ => {}
             }
             if drawer {
@@ -166,9 +168,6 @@ fn main() -> eframe::Result<()> {
             }
             if detached {
                 app.open_task_window("task_ui");
-                if terminal_tab {
-                    app.set_task_window_tab("task_ui", gui::TaskDetailTab::Terminal);
-                }
             }
             if let Some(path) = screenshot_path {
                 let target = if detached {

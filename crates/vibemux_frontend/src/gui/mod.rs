@@ -21,6 +21,7 @@ mod typography;
 mod welcome;
 
 pub use chat::wrapped_label as render_wrapped_label;
+pub use settings::SettingsSection;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;
 pub use supervisor_state::{
     ComposerTarget, MainPage, NewTaskOutcome, SupervisorUiState, TaskDetailSelection,

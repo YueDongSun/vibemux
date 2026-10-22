@@ -70,7 +70,6 @@ pub fn render(
                     (TaskDetailTab::Overview, "Overview"),
                     (TaskDetailTab::Activity, "Activity"),
                     (TaskDetailTab::Artifacts, "Artifacts"),
-                    (TaskDetailTab::Terminal, "Terminal"),
                 ] {
                     let selected = selection.tab == tab;
                     let response = ui.add(
@@ -98,10 +97,9 @@ pub fn render(
 
             let run = selection.selected_run(task);
             match selection.tab {
-                TaskDetailTab::Overview => render_overview(ui, colors, task, run),
+                TaskDetailTab::Overview => render_overview(ui, colors, task, run, actions),
                 TaskDetailTab::Activity => render_activity(ui, colors, task, run),
                 TaskDetailTab::Artifacts => render_artifacts(ui, colors, task, run),
-                TaskDetailTab::Terminal => render_terminal(ui, colors, task, run, actions),
             }
         });
 }
@@ -153,7 +151,13 @@ fn select_run(ui: &mut Ui, colors: &C, task: &TaskView, selection: &mut TaskDeta
     }
 }
 
-fn render_overview(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunView>) {
+fn render_overview(
+    ui: &mut Ui,
+    colors: &C,
+    task: &TaskView,
+    run: Option<&RunView>,
+    actions: &UiActionQueue,
+) {
     section_label(ui, colors, "LATEST UPDATE");
     wrapped_label(
         ui,
@@ -190,11 +194,18 @@ fn render_overview(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
                 .color(colors.muted),
         );
     }
+    if let Some(run) = run {
+        ui.add_space(16.0);
+        render_linked_terminal(ui, colors, task, run, actions);
+    }
     ui.add_space(16.0);
     egui::CollapsingHeader::new("Identity & references").show(ui, |ui| {
         let mut rows = vec![("Task", task.task_id.clone())];
         if let Some(run) = run {
             rows.push(("Run", run.run_id.clone()));
+            if let Some(binding_id) = run.terminal.binding_id.as_deref() {
+                rows.push(("Terminal binding", binding_id.to_string()));
+            }
         }
         detail_grid(ui, colors, "identity_grid", &rows);
     });
@@ -227,7 +238,7 @@ fn render_activity(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVie
         egui::Frame::new()
             .fill(colors.raised)
             .stroke(egui::Stroke::NONE)
-            .corner_radius(egui::CornerRadius::same(6))
+            .corner_radius(design::CARD_RADIUS)
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -289,7 +300,7 @@ fn render_artifacts(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVi
         egui::Frame::group(ui.style())
             .fill(colors.surf)
             .stroke(egui::Stroke::new(1.0, colors.border))
-            .corner_radius(egui::CornerRadius::same(6))
+            .corner_radius(design::CARD_RADIUS)
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 wrapped_label(
@@ -325,75 +336,66 @@ fn render_artifacts(ui: &mut Ui, colors: &C, task: &TaskView, run: Option<&RunVi
     }
 }
 
-fn render_terminal(
+/// The selected Run's link to a native terminal window, folded into the
+/// Overview: its status, Focus and Unlink while linked, a check for
+/// terminals, and a Link card for each reported candidate.
+fn render_linked_terminal(
     ui: &mut Ui,
     colors: &C,
     task: &TaskView,
-    run: Option<&RunView>,
+    run: &RunView,
     actions: &UiActionQueue,
 ) {
-    section_label(ui, colors, "NATIVE TERMINAL BINDING");
-    let Some(run) = run else {
-        ui.label(
-            RichText::new("Select a Run before inspecting a terminal.")
-                .size(12.0)
-                .color(colors.muted),
-        );
-        return;
-    };
+    section_label(ui, colors, "LINKED TERMINAL");
     let terminal = &run.terminal;
-    // Status is a human sentence, not an identifier, so it keeps the reading
-    // face; the rows below it are ids and stay monospace.
+    let linked = terminal.binding_id.as_deref();
     detail_row_prose(
         ui,
         colors,
         "Status",
-        nonempty(&terminal.status, "Not inspected"),
+        nonempty(
+            &terminal.status,
+            if linked.is_some() {
+                "Linked"
+            } else {
+                "Not linked"
+            },
+        ),
     );
-    if let Some(binding_id) = terminal.binding_id.as_deref() {
-        detail_row(ui, colors, "Binding", binding_id);
-        ui.horizontal_wrapped(|ui| {
-            if design::action_button(ui, colors, "Focus terminal", true).clicked() {
+    if let Some(checked_at) = terminal.checked_at.as_deref() {
+        detail_row(ui, colors, "Checked", checked_at);
+    }
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        if let Some(binding_id) = linked {
+            if design::action_button(ui, colors, "Focus", true).clicked() {
                 actions.enqueue(SupervisorAction::FocusTerminal {
                     binding_id: binding_id.to_string(),
                 });
             }
-            if design::action_button(ui, colors, "Unlink terminal", true).clicked() {
+            if design::action_button(ui, colors, "Unlink", true).clicked() {
                 actions.enqueue(SupervisorAction::UnlinkTerminal {
                     binding_id: binding_id.to_string(),
                 });
             }
-        });
-    }
-    if let Some(checked_at) = terminal.checked_at.as_deref() {
-        detail_row(ui, colors, "Checked", checked_at);
-    }
-    ui.add_space(8.0);
-    ui.horizontal_wrapped(|ui| {
-        if design::action_button(ui, colors, "Inspect terminal", true).clicked() {
+        }
+        if design::action_button(ui, colors, "Find terminals", true).clicked() {
             actions.enqueue(SupervisorAction::InspectTerminal {
                 task_id: task.task_id.clone(),
                 run_id: run.run_id.clone(),
             });
         }
     });
-    ui.add_space(12.0);
-    section_label(ui, colors, "AVAILABLE TERMINALS");
-    if terminal.candidates.is_empty() {
-        ui.label(
-            RichText::new("No terminal candidates are reported.")
-                .size(12.0)
-                .color(colors.muted),
-        );
-    } else {
+    if !terminal.candidates.is_empty() {
+        ui.add_space(8.0);
         for candidate in &terminal.candidates {
             terminal_candidate(ui, colors, &task.task_id, &run.run_id, candidate, actions);
         }
     }
-    ui.add_space(8.0);
+    ui.add_space(6.0);
     wrapped_label(
         ui,
-        RichText::new("Terminal contents stay in the native terminal surface; this view shows binding metadata only.")
+        RichText::new("Terminal contents stay in the terminal window; this shows the link only.")
             .size(12.0)
             .color(colors.faint),
     );
@@ -410,7 +412,7 @@ fn terminal_candidate(
     egui::Frame::group(ui.style())
         .fill(colors.surf)
         .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(egui::CornerRadius::same(6))
+        .corner_radius(design::CARD_RADIUS)
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             wrapped_label(

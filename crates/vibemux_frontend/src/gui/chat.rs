@@ -3,7 +3,7 @@
 use super::{
     C,
     design::{self, Icon},
-    supervisor_state::{SupervisorUiState, TaskDetailTab, TaskFilter, UiActionQueue},
+    supervisor_state::{SupervisorUiState, TaskFilter, UiActionQueue},
     task_labels, typography,
 };
 use crate::supervisor_model::{SnapshotMode, SupervisorAction, SupervisorSnapshot, TaskView};
@@ -40,10 +40,10 @@ fn filter_chips(ui: &mut Ui, c: &C, snapshot: &SupervisorSnapshot, state: &mut S
                         1.0,
                         if selected { c.accent } else { c.border },
                     ))
-                    .corner_radius(design::BUTTON_RADIUS)
+                    .corner_radius(design::PILL_RADIUS)
                     .min_size(egui::vec2(0.0, 26.0)),
             );
-            design::paint_focus_ring(ui, &response, design::BUTTON_RADIUS, c);
+            design::paint_focus_ring(ui, &response, design::PILL_RADIUS, c);
             if response.clicked() {
                 state.set_task_filter(filter);
             }
@@ -239,24 +239,6 @@ fn task_row_contents(
             if was_open {
                 ctx.send_viewport_cmd_to(task_viewport_id(&task.task_id), ViewportCommand::Focus);
             }
-        }
-        ui.separator();
-        design::icon(ui, Icon::Terminal, c.muted, 17.0);
-        if ui
-            .add_enabled(
-                !task.runs.is_empty(),
-                egui::Button::new(RichText::new("Native terminal").size(13.0).color(c.muted))
-                    .frame(false),
-            )
-            .clicked()
-            && let Some(run) = task.runs.first()
-        {
-            state.select_task(snapshot, &task.task_id);
-            state.details_selection_mut().tab = TaskDetailTab::Terminal;
-            actions.enqueue(SupervisorAction::InspectTerminal {
-                task_id: task.task_id.clone(),
-                run_id: run.run_id.clone(),
-            });
         }
     });
 }

@@ -142,7 +142,9 @@ redistributed. Off Windows, the serif family falls back to the sans family.
   divider.
 - **Conversation**: a centered column about 720 px wide. The daemon's update
   message uses the spark avatar. Task rows are borderless with a hover tint
-  and keep their Details, Open window, and Native terminal actions.
+  and keep their Details and Open window actions. (The Native terminal
+  action was folded into the task Overview on 2026-10-22; see the
+  amendment at the end.)
 - **Composer**: a rounded box (20 px radius, soft shadow) on `surface_alt` with
   the placeholder "How can I help today?", a target chip on the left, and a
   circular send button on the right. The send button stays disabled with the
@@ -317,3 +319,34 @@ with other system fonts, other display scales, IME input, or screen readers.
 - A full Claude Desktop restructure with a chat history sidebar and an
   artifacts pane: rejected because it reopens ADR 028's layout decisions and
   adds surfaces the daemon cannot feed yet.
+
+## Amendment (2026-10-22): rounder scale, full-page Settings, console-less GUI
+
+Decided with the operator after reviewing preview screenshots:
+
+- **One rounded scale for every theme.** Buttons, navigation rows, and inputs
+  use 10 px; cards, panels, windows, and menus 14 px; the composer keeps
+  20 px; filter chips, badges, and segmented choices are pill-shaped. Every
+  palette's `corner_radius` is 10, and `config/theme_palettes.json` matches.
+- **Settings is a full page**, in the Claude style: a section list (General,
+  Appearance, Connection, Keyboard shortcuts, About) with a Back button, and
+  rounded cards of rows with the label and description on the left and the
+  control on the right. Themes appear as preview cards with readable names.
+  `UserConfig` gains `start_page`, `density`, and `text_size`, each defaulting
+  when absent, so `schema_version` stays 1. Text size is applied as the egui
+  zoom factor only when it changes, so the built-in zoom keys keep working.
+  Connection reads the supervisor snapshot only; it never starts, stops, or
+  changes the daemon.
+- **Terminal linking moves into the task Overview.** The Terminal tab and the
+  per-task Native terminal action are removed. The Overview's Linked terminal
+  section shows the status, Focus and Unlink while linked, Find terminals, and
+  a Link card for each reported candidate. The daemon, CLI, and WezTerm
+  observer contracts are unchanged.
+- **The GUI never opens a console window on Windows**, in debug and release
+  builds alike. A startup failure or a panic is appended to a bounded
+  `frontend_errors.log` next to the settings file. The probe already starts
+  its `--version` checks with `CREATE_NO_WINDOW`, so no console flashes.
+
+Next step agreed with the operator: a Console page that rebuilds the terminal
+console's views (ADR 041 and ADR 042) as Claude-style cards and absorbs the
+Agents page.
