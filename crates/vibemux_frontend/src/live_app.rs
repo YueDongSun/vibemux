@@ -16,6 +16,7 @@ use crate::{
     daemon_control::{self, DaemonCommand, DaemonControlResult},
     gui::{DaemonJob, VibeMuxApp},
     live_ask::AskBridge,
+    live_console::ConsoleBridge,
     supervisor_client::FrontendClient,
     supervisor_model::{ConnectionStatus, SupervisorAction, SupervisorSnapshot},
 };
@@ -30,6 +31,7 @@ pub struct LiveApp {
     /// The result of the start or stop in flight, if any.
     daemon_result: Option<Receiver<DaemonControlResult>>,
     ask: AskBridge,
+    console: ConsoleBridge,
 }
 
 impl LiveApp {
@@ -43,6 +45,7 @@ impl LiveApp {
             context,
             daemon_result: None,
             ask: AskBridge::default(),
+            console: ConsoleBridge::default(),
         }
     }
 
@@ -51,6 +54,7 @@ impl LiveApp {
         // Dropping the old client cancels its reader before the new one starts.
         self.client = None;
         self.ask.reset();
+        self.console.reset();
         let (client, snapshot) = connect(Some(folder), &self.context);
         self.client = client;
         self.snapshot = snapshot;
@@ -152,6 +156,15 @@ impl eframe::App for LiveApp {
             connected,
             &self.context,
         );
+        let console_open = self.app.console_open();
+        if let Some(view_model) = self.console.tick(
+            self.app.console_data(),
+            folder.as_deref(),
+            console_open,
+            &self.context,
+        ) {
+            self.app.set_view_model(view_model);
+        }
         for action in self.app.take_supervisor_actions() {
             let result = self
                 .client
@@ -175,5 +188,7 @@ impl eframe::App for LiveApp {
         // exits before the worker reaches the daemon, the route's deadline
         // still bounds the daemon-owned attempt.
         self.ask.reset();
+        // Stops the Console's daemon feed thread.
+        self.console.reset();
     }
 }

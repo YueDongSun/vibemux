@@ -26,10 +26,11 @@ use crate::{
 };
 
 use super::{
-    C, agents,
+    C,
     ask_state::AskState,
     ask_view::{self, AskViewActions, ConfirmChoice, ConfirmState},
     chat, composer,
+    console::{self, ConsoleActions, ConsoleData, ConsoleSection},
     daemon_card::{self, DaemonJob},
     design, diagnostics, folders,
     quick_switcher::{self, QuickSwitcherState},
@@ -44,7 +45,7 @@ const WRITE_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const REFRESH_BUTTON_ID: &str = "topbar_refresh";
 const SETTINGS_BUTTON_ID: &str = "topbar_settings";
 const DIAGNOSTICS_BUTTON_ID: &str = "topbar_diagnostics";
-const AGENTS_BUTTON_ID: &str = "topbar_agents";
+const CONSOLE_BUTTON_ID: &str = "topbar_console";
 const TOPBAR_MIN_HEIGHT: f32 = 52.0;
 pub(crate) const DRAWER_PANEL_ID: &str = "task_details_drawer";
 const DRAWER_CLOSE_ID: &str = "task_details_close";
@@ -81,6 +82,8 @@ pub struct SupervisorApp {
     /// Ask: what the folder's daemon can run, this window's Asks, consent,
     /// and the one-click setup.
     ask: AskState,
+    /// What the Console shows besides the probe view model.
+    console: ConsoleData,
     diagnostics_open: bool,
     /// The `Ctrl+/` shortcut overlay.
     shortcuts_open: bool,
@@ -96,7 +99,7 @@ pub struct SupervisorApp {
 fn start_state(mut state: SupervisorUiState, start_page: StartPage) -> SupervisorUiState {
     match start_page {
         StartPage::Conversation => state.show_coordinator_chat(),
-        StartPage::Agents => state.show_agents(),
+        StartPage::Console => state.show_console(),
     }
     state
 }
@@ -130,6 +133,7 @@ impl SupervisorApp {
             daemon_request: None,
             daemon_job: DaemonJob::Idle,
             ask: AskState::default(),
+            console: ConsoleData::default(),
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -166,6 +170,34 @@ impl SupervisorApp {
         &mut self.ask
     }
 
+    /// The Console's data, which the live adapter fills.
+    pub fn console_data(&mut self) -> &mut ConsoleData {
+        &mut self.console
+    }
+
+    /// Whether the Console page is on screen, so its reads should run.
+    #[must_use]
+    pub fn console_open(&self) -> bool {
+        !self.settings_open
+            && self
+                .ui_state
+                .lock()
+                .is_ok_and(|state| state.page() == MainPage::Console)
+    }
+
+    /// Opens the Console on `section` (sidebar, preview scenes).
+    pub fn open_console(&mut self, section: ConsoleSection) {
+        self.settings_open = false;
+        if let Ok(mut state) = self.ui_state.lock() {
+            state.show_console_section(section);
+        }
+    }
+
+    /// Replaces the probe view model after a re-probe.
+    pub fn set_view_model(&mut self, view_model: ViewModel) {
+        self.view_model = view_model;
+    }
+
     /// Opens `folder` when it is an existing directory: it becomes the
     /// active project, moves to the front of the recent folders, and the
     /// live adapter reconnects. Otherwise the dialog shows the error.
@@ -183,8 +215,9 @@ impl SupervisorApp {
                     self.project_folder = Some(folder.clone());
                     self.project_switch = Some(folder);
                     self.daemon_job = DaemonJob::Idle;
-                    // Asks belong to the old folder's daemon.
+                    // Asks and Console reads belong to the old folder.
                     self.ask = AskState::default();
+                    self.console = ConsoleData::default();
                     self.settings_open = false;
                     if let Ok(mut state) = self.ui_state.lock() {
                         *state =
@@ -304,6 +337,38 @@ impl SupervisorApp {
             self.pending_write = Some(Instant::now());
         }
         self.launch_ask(confirm.harness, confirm.prompt);
+    }
+
+    fn apply_console_actions(&mut self, actions: ConsoleActions) {
+        if let Ok(mut state) = self.ui_state.lock() {
+            if let Some(section) = actions.section {
+                state.show_console_section(section);
+            }
+            match actions.harness {
+                Some(Some(index)) => {
+                    state.select_harness(index, self.view_model.agents.len());
+                }
+                Some(None) => state.return_to_harness_list(),
+                None => {}
+            }
+            if let Some(harness) = actions.ask {
+                state.set_composer_target(ComposerTarget::Harness(harness));
+                state.show_coordinator_chat();
+                state.request_composer_focus();
+            }
+        }
+        if actions.reprobe {
+            self.console.request_reprobe();
+        }
+        if actions.refresh {
+            self.console.request_refresh();
+        }
+        if let Some(task_id) = actions.open_task {
+            self.console.request_task(task_id);
+        }
+        if let Some(task_id) = actions.task_window {
+            self.open_task_window(&task_id);
+        }
     }
 
     fn apply_ask_actions(&mut self, actions: AskViewActions) {
@@ -538,7 +603,7 @@ impl SupervisorApp {
             }
             SearchTarget::Agent(index) => {
                 if let Ok(mut state) = self.ui_state.lock() {
-                    state.select_agent(index, self.view_model.agents.len());
+                    state.select_harness(index, self.view_model.agents.len());
                 }
             }
             SearchTarget::Action(action) => match action {
@@ -627,7 +692,7 @@ impl SupervisorApp {
         if let Some((_, index)) = DIGITS.into_iter().find(|(key, _)| input.key_pressed(*key))
             && let Ok(mut state) = self.ui_state.lock()
         {
-            state.select_agent(index, self.view_model.agents.len());
+            state.select_harness(index, self.view_model.agents.len());
         }
     }
 
@@ -672,7 +737,7 @@ impl SupervisorApp {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Added right-to-left, so this order reads
-                        // Refresh · Agents · Diagnostics · Settings on screen.
+                        // Refresh · Console · Diagnostics · Settings on screen.
                         if design::icon_button(
                             ui,
                             colors,
@@ -699,9 +764,9 @@ impl SupervisorApp {
                             ),
                             (
                                 design::Icon::Grid,
-                                "Agents",
-                                AGENTS_BUTTON_ID,
-                                HeaderAction::Agents,
+                                "Console",
+                                CONSOLE_BUTTON_ID,
+                                HeaderAction::Console,
                             ),
                         ] {
                             if design::icon_button(ui, colors, kind, tooltip, egui::Id::new(id))
@@ -932,7 +997,7 @@ impl SupervisorApp {
             });
         let collapsed = self.user_config.sidebar_collapsed;
         let mut sidebar_actions = None;
-        let mut selected_agent_change = None;
+        let mut console_actions = None;
         // A poisoned lock means no readable snapshot; drop the frame rather than
         // drawing from a fabricated one.
         let mut switcher_target = None;
@@ -975,7 +1040,7 @@ impl SupervisorApp {
                 {
                     match page {
                         MainPage::CoordinatorChat => state.show_coordinator_chat(),
-                        MainPage::Agents => state.show_agents(),
+                        MainPage::Console => state.show_console(),
                     }
                 }
                 if let Some(task_id) = actions.task_id {
@@ -1006,9 +1071,9 @@ impl SupervisorApp {
                 match action {
                     HeaderAction::Settings => self.settings_open = true,
                     HeaderAction::Diagnostics => self.diagnostics_open = true,
-                    HeaderAction::Agents => {
+                    HeaderAction::Console => {
                         if let Ok(mut state) = self.ui_state.lock() {
-                            state.show_agents();
+                            state.show_console();
                         }
                     }
                 }
@@ -1021,11 +1086,6 @@ impl SupervisorApp {
                 .ui_state
                 .lock()
                 .map_or(MainPage::CoordinatorChat, |state| state.page());
-            let mut selected_agent = self
-                .ui_state
-                .lock()
-                .ok()
-                .and_then(|state| state.selected_agent());
             let welcome = page == MainPage::CoordinatorChat
                 && (self
                     .ui_state
@@ -1187,16 +1247,24 @@ impl SupervisorApp {
                             );
                         }
                     }
-                    MainPage::Agents => {
-                        if let Ok(state) = self.ui_state.lock() {
-                            selected_agent = state.selected_agent();
-                        }
-                        let actions = agents::render(ui, &colors, &self.view_model, selected_agent);
-                        if actions.back_to_list {
-                            selected_agent_change = Some(None);
-                        } else if let Some(agent) = actions.selected_agent {
-                            selected_agent_change = Some(Some(agent));
-                        }
+                    MainPage::Console => {
+                        let (section, selected_harness) = self
+                            .ui_state
+                            .lock()
+                            .map_or((ConsoleSection::default(), None), |state| {
+                                (state.console_section(), state.selected_harness())
+                            });
+                        let ask_ready = self.ask.availability.ready_names();
+                        let view = console::ConsoleView {
+                            section,
+                            selected_harness,
+                            view_model: &self.view_model,
+                            ask_ready: &ask_ready,
+                            folder: self.project_folder.as_deref(),
+                            snapshot,
+                            data: &self.console,
+                        };
+                        console_actions = Some(console::render_page(ui, &colors, &view));
                     }
                 });
 
@@ -1249,14 +1317,8 @@ impl SupervisorApp {
         if let Some(target) = switcher_target {
             self.apply_search_target(target);
         }
-        if let Some(selected) = selected_agent_change
-            && let Ok(mut state) = self.ui_state.lock()
-        {
-            if let Some(index) = selected {
-                state.select_agent(index, self.view_model.agents.len());
-            } else {
-                state.return_to_agents_list();
-            }
+        if let Some(actions) = console_actions {
+            self.apply_console_actions(actions);
         }
 
         if self
@@ -1394,7 +1456,7 @@ fn consume_due_persistence(
 enum HeaderAction {
     Settings,
     Diagnostics,
-    Agents,
+    Console,
 }
 
 /// Human clock time from the snapshot's RFC 3339 observation stamp.
@@ -1477,9 +1539,14 @@ fn test_view_model() -> ViewModel {
 #[cfg(test)]
 mod tests {
     use super::super::ask_view::AskAvailability;
+    use super::super::console::{ProbeJob, WorkspaceLoad};
     use super::*;
     use crate::{
         ask::{AskEnd, AskPhase, AskUpdate},
+        dashboard::{
+            DaemonView, Section, Workspace,
+            daemon_model::{DecisionRow, HealthView, RouteRow, TaskList, TaskRow, unavailable},
+        },
         supervisor_model::{RunView, TaskEventView},
         theme::serialize::{SCHEMA_VERSION, WindowSize},
     };
@@ -1633,6 +1700,7 @@ mod tests {
             daemon_request: None,
             daemon_job: DaemonJob::Idle,
             ask: AskState::default(),
+            console: ConsoleData::default(),
             diagnostics_open: false,
             shortcuts_open: false,
             quick_switcher: QuickSwitcherState::default(),
@@ -1702,12 +1770,12 @@ mod tests {
         .enumerate()
         {
             key_event(&context, &mut app, key, true, false);
-            assert_eq!(app.ui_state.lock().unwrap().selected_agent(), Some(index));
+            assert_eq!(app.ui_state.lock().unwrap().selected_harness(), Some(index));
         }
         app.settings_open = true;
         key_event(&context, &mut app, Key::Escape, false, false);
         assert!(!app.settings_open);
-        assert_eq!(app.ui_state.lock().unwrap().page(), MainPage::Agents);
+        assert_eq!(app.ui_state.lock().unwrap().page(), MainPage::Console);
         key_event(
             &egui::Context::default(),
             &mut app,
@@ -1796,7 +1864,7 @@ mod tests {
         app.apply_search_target(SearchTarget::Action(QuickAction::Dark));
         assert_eq!(app.user_config.theme, ThemeId::Claude);
         app.apply_search_target(SearchTarget::Agent(2));
-        assert_eq!(app.ui_state.lock().unwrap().selected_agent(), Some(2));
+        assert_eq!(app.ui_state.lock().unwrap().selected_harness(), Some(2));
         assert!(!app.ui_state.lock().unwrap().send_enabled());
     }
 
@@ -2103,6 +2171,150 @@ mod tests {
         assert_eq!(app.ask.availability, AskAvailability::Unknown);
     }
 
+    fn console_daemon_view() -> DaemonView {
+        let mut daemon = DaemonView::waiting();
+        daemon.connection = "connected".into();
+        daemon.observed_at = Some("12:00:01".into());
+        daemon.health = Section::Loaded(HealthView {
+            status: "healthy".into(),
+            schema: "9".into(),
+            queue: "0 of 64".into(),
+        });
+        daemon.routes = Section::Loaded(vec![RouteRow {
+            harness: "claude".into(),
+            protocol: "claude_stream_json".into(),
+            mode: "executes".into(),
+        }]);
+        daemon.plugins = Section::Loaded(Vec::new());
+        daemon.tasks = Section::Loaded(TaskList {
+            rows: vec![TaskRow {
+                task_id: "task_1".into(),
+                title: "Console task row".into(),
+                status: "running".into(),
+            }],
+            more: false,
+        });
+        daemon.dsh = Section::Unavailable(unavailable("dsh_session_unconfigured"));
+        daemon.slots = Section::Unavailable(unavailable("workflow_unconfigured"));
+        daemon.decisions = Section::Loaded(vec![DecisionRow::new(
+            "0123456789abcdef",
+            "recorded",
+            Some("claude"),
+            "local_rules",
+            "2026-10-23",
+            false,
+            1,
+        )]);
+        daemon
+    }
+
+    #[test]
+    fn every_console_section_renders_its_data() {
+        let directory = tempfile::tempdir().expect("folder");
+        let mut app = test_app();
+        app.open_project(directory.path().to_path_buf());
+        let _ = app.take_project_switch();
+        app.pending_write = None;
+        app.console.daemon = Some(Arc::new(console_daemon_view()));
+        app.console.set_workspace(Ok(Workspace {
+            current_branch: "feat/console_branch".into(),
+            head: "b68f381f".into(),
+            baseline: "origin/main".into(),
+            ..Workspace::default()
+        }));
+        let expected = [
+            (ConsoleSection::Overview, "Detected"),
+            (ConsoleSection::Harnesses, "Claude"),
+            (ConsoleSection::Workspace, "feat/console_branch"),
+            (ConsoleSection::Tasks, "Console task row"),
+            (ConsoleSection::Daemon, "claude_stream_json · executes"),
+            (
+                ConsoleSection::Sessions,
+                "Unavailable: not configured (dsh_session_unconfigured).",
+            ),
+            (ConsoleSection::Decisions, "01234567 · recorded"),
+        ];
+        for (section, text) in expected {
+            app.ui_state
+                .lock()
+                .expect("ui state")
+                .show_console_section(section);
+            assert!(app.console_open());
+            for (width, height) in [(1280.0, 800.0), (900.0, 600.0)] {
+                let (_, output) = render_at(&mut app, width, height);
+                assert!(
+                    shape_texts(&output).iter().any(|shown| shown == text),
+                    "{section:?} at {width}x{height} shows no {text:?}"
+                );
+            }
+        }
+        let other = tempfile::tempdir().expect("other folder");
+        app.open_project(other.path().to_path_buf());
+        app.pending_write = None;
+        assert!(
+            app.console.daemon.is_none(),
+            "Console reads belong to the folder"
+        );
+        assert!(matches!(app.console.workspace, WorkspaceLoad::NotLoaded));
+    }
+
+    #[test]
+    fn console_actions_navigate_and_ask_only_for_reads() {
+        let mut app = test_app();
+        app.apply_console_actions(ConsoleActions {
+            harness: Some(Some(1)),
+            ..ConsoleActions::default()
+        });
+        {
+            let state = app.ui_state.lock().expect("ui state");
+            assert_eq!(state.page(), MainPage::Console);
+            assert_eq!(state.console_section(), ConsoleSection::Harnesses);
+            assert_eq!(state.selected_harness(), Some(1));
+        }
+        app.apply_console_actions(ConsoleActions {
+            harness: Some(None),
+            ..ConsoleActions::default()
+        });
+        assert_eq!(
+            app.ui_state.lock().expect("ui state").selected_harness(),
+            None
+        );
+        app.apply_console_actions(ConsoleActions {
+            ask: Some("Codex".into()),
+            ..ConsoleActions::default()
+        });
+        {
+            let state = app.ui_state.lock().expect("ui state");
+            assert_eq!(state.page(), MainPage::CoordinatorChat);
+            assert_eq!(
+                state.composer_target(),
+                &ComposerTarget::Harness("Codex".into())
+            );
+            assert!(state.composer_draft().is_empty(), "the jump never sends");
+        }
+        assert!(app.ask.asks.is_empty());
+        app.apply_console_actions(ConsoleActions {
+            refresh: true,
+            reprobe: true,
+            open_task: Some("task_1".into()),
+            ..ConsoleActions::default()
+        });
+        assert!(app.console.take_refresh());
+        assert!(app.console.take_reprobe());
+        assert_eq!(app.console.take_task().as_deref(), Some("task_1"));
+        assert_eq!(app.console.probe, ProbeJob::Running);
+        app.apply_console_actions(ConsoleActions {
+            task_window: Some("task_1".into()),
+            ..ConsoleActions::default()
+        });
+        assert!(
+            app.ui_state
+                .lock()
+                .expect("ui state")
+                .task_window_is_open("task_1")
+        );
+    }
+
     #[test]
     fn settings_changes_apply_and_back_closes_the_page() {
         let mut app = test_app();
@@ -2112,14 +2324,14 @@ mod tests {
         app.apply_settings_changes(settings::SettingsChanges {
             section: Some(settings::SettingsSection::About),
             theme: Some(ThemeId::Nord),
-            start_page: Some(StartPage::Agents),
+            start_page: Some(StartPage::Console),
             density: Some(Density::Compact),
             text_size: Some(TextSize::Large),
             ..Default::default()
         });
         assert_eq!(app.settings_section, settings::SettingsSection::About);
         assert_eq!(app.user_config.theme, ThemeId::Nord);
-        assert_eq!(app.user_config.start_page, StartPage::Agents);
+        assert_eq!(app.user_config.start_page, StartPage::Console);
         assert_eq!(app.user_config.density, Density::Compact);
         assert_eq!(app.user_config.text_size, TextSize::Large);
         assert!(app.pending_write.is_some(), "changed preferences are saved");
@@ -2133,8 +2345,8 @@ mod tests {
 
     #[test]
     fn the_saved_start_page_opens_first() {
-        let agents = start_state(SupervisorUiState::default(), StartPage::Agents);
-        assert_eq!(agents.page(), MainPage::Agents);
+        let agents = start_state(SupervisorUiState::default(), StartPage::Console);
+        assert_eq!(agents.page(), MainPage::Console);
         let conversation = start_state(SupervisorUiState::default(), StartPage::Conversation);
         assert_eq!(conversation.page(), MainPage::CoordinatorChat);
     }
@@ -2145,9 +2357,16 @@ mod tests {
             for (width, height) in [(1280.0, 800.0), (960.0, 600.0)] {
                 let mut app = test_app();
                 app.open_settings(section);
-                let _ = render_at(&mut app, width, height);
+                let (_, output) = render_at(&mut app, width, height);
                 assert!(app.settings_open, "rendering alone keeps the page open");
                 assert_eq!(app.settings_section, section);
+                if section == settings::SettingsSection::General {
+                    // Regression: at 960 px the content column grew past the
+                    // viewport and clipped every right-aligned control.
+                    let texts = shape_texts(&output);
+                    assert!(texts.iter().any(|text| text == "Change…"), "{width}");
+                    assert!(texts.iter().any(|text| text == "Console"), "{width}");
+                }
             }
         }
     }

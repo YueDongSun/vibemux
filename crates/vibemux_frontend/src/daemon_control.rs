@@ -1,27 +1,15 @@
 #![forbid(unsafe_code)]
 //! Starts and stops a project's daemon through `vibemuxctl`, the CLI that
 //! owns daemon lifecycle. The GUI never spawns `vibemuxd` itself and never
-//! acts without an explicit click.
-//!
-//! `vibemuxctl` runs with no console window, and its output goes to two
-//! private temporary files rather than pipes: the daemon it starts may
-//! inherit open handles and outlive it, and a pipe it holds open would
-//! never reach end-of-file. A file is read after `vibemuxctl` exits.
+//! acts without an explicit click. [`crate::cli_runner`] runs the CLI with
+//! no console window and its output in private temporary files.
 
-use std::{
-    ffi::OsString,
-    fs::{self, File, OpenOptions},
-    io::Read,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{ffi::OsString, path::Path, time::Duration};
+
+use crate::cli_runner;
 
 /// How long one start or stop may take, including the daemon's health wait.
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
-/// The most output read from either stream.
-const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DaemonCommand {
@@ -69,15 +57,6 @@ impl DaemonControlResult {
     }
 }
 
-/// `vibemuxctl` next to the running GUI executable, where a workspace
-/// build places both.
-#[must_use]
-pub fn vibemuxctl_path() -> Option<PathBuf> {
-    let gui = std::env::current_exe().ok()?;
-    let candidate = gui.with_file_name(format!("vibemuxctl{}", std::env::consts::EXE_SUFFIX));
-    candidate.is_file().then_some(candidate)
-}
-
 /// The arguments for one command: JSON output, then the daemon verb for
 /// `project_root`.
 #[must_use]
@@ -103,13 +82,9 @@ pub fn parse_outcome(exit_success: bool, stdout: &[u8], stderr: &[u8]) -> Daemon
         let status = value["status"].as_str().unwrap_or("done").to_string();
         return DaemonControlResult::Done { status };
     }
-    for value in [parse(stderr), parse(stdout)].into_iter().flatten() {
-        if let Some(code) = value["error_code"].as_str() {
-            let message = value["error"]
-                .as_str()
-                .unwrap_or("vibemuxctl reported an error.");
-            return DaemonControlResult::failed(code, message);
-        }
+    if let Some((code, message)) = cli_runner::reported_error(stdout, stderr) {
+        let message = message.unwrap_or_else(|| "vibemuxctl reported an error.".to_string());
+        return DaemonControlResult::failed(&code, &message);
     }
     DaemonControlResult::failed(
         "daemon_control_unreadable",
@@ -121,102 +96,16 @@ pub fn parse_outcome(exit_success: bool, stdout: &[u8], stderr: &[u8]) -> Daemon
 /// [`CONTROL_TIMEOUT`]. Blocking: call it off the UI thread.
 #[must_use]
 pub fn run(command: DaemonCommand, project_root: &Path) -> DaemonControlResult {
-    let Some(executable) = vibemuxctl_path() else {
-        return DaemonControlResult::failed(
-            "vibemuxctl_unavailable",
-            "vibemuxctl was not found next to the GUI. Build it with: cargo build -p vibemux_cli --bin vibemuxctl -p vibemuxd --bin vibemuxd",
-        );
-    };
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let base =
-        std::env::temp_dir().join(format!("vibemux_gui_daemon_{}_{stamp}", std::process::id()));
-    let stdout_path = base.with_extension("out");
-    let stderr_path = base.with_extension("err");
-    let result = run_with_files(
-        &executable,
-        command,
-        project_root,
-        &stdout_path,
-        &stderr_path,
-    );
-    let _ = fs::remove_file(&stdout_path);
-    let _ = fs::remove_file(&stderr_path);
-    result
-}
-
-fn run_with_files(
-    executable: &Path,
-    command: DaemonCommand,
-    project_root: &Path,
-    stdout_path: &Path,
-    stderr_path: &Path,
-) -> DaemonControlResult {
-    let create = |path: &Path| OpenOptions::new().write(true).create_new(true).open(path);
-    let (Ok(stdout), Ok(stderr)) = (create(stdout_path), create(stderr_path)) else {
-        return DaemonControlResult::failed(
-            "daemon_control_output_unavailable",
-            "Could not create temporary files for vibemuxctl output.",
-        );
-    };
-    let mut process = Command::new(executable);
-    process
-        .args(command_arguments(command, project_root))
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        process.creation_flags(CREATE_NO_WINDOW);
+    match cli_runner::run(&command_arguments(command, project_root), CONTROL_TIMEOUT) {
+        Ok(output) => parse_outcome(output.success, &output.stdout, &output.stderr),
+        Err(failure) => DaemonControlResult::failed(failure.code(), failure.message()),
     }
-    let Ok(mut child) = process.spawn() else {
-        return DaemonControlResult::failed(
-            "vibemuxctl_spawn_failed",
-            "vibemuxctl could not be started.",
-        );
-    };
-    let deadline = Instant::now() + CONTROL_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return DaemonControlResult::failed(
-                    "daemon_control_timeout",
-                    "vibemuxctl did not finish in time.",
-                );
-            }
-            Err(_) => {
-                return DaemonControlResult::failed(
-                    "daemon_control_wait_failed",
-                    "Waiting for vibemuxctl failed.",
-                );
-            }
-        }
-    };
-    parse_outcome(
-        status.success(),
-        &read_bounded(stdout_path),
-        &read_bounded(stderr_path),
-    )
-}
-
-fn read_bounded(path: &Path) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    if let Ok(file) = File::open(path) {
-        let _ = file.take(MAX_OUTPUT_BYTES).read_to_end(&mut bytes);
-    }
-    bytes
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
