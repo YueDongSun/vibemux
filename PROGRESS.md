@@ -6624,3 +6624,57 @@ stale. The temporary folder, its daemon, and the driver were removed.
 **Not verified:** an authenticated live Claude turn. It needs a valid
 standalone CLI login (`claude auth login`, an operator action) and another
 authorization.
+
+### 2026-10-23 - Prompt-policy evaluation: an unfinished case no longer looks cheaper
+
+**Scope:** `vibemuxd` prompt-policy evaluation (ADR 031 §7) and its
+integration test. No store, protocol, or CLI changes; `optimizer_case_incomplete`
+is a new `optimizer_` Control error code.
+
+**Observed (CI, ubuntu, PR #34 head `ecb4232`, first attempt of run
+39866898555):** `only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back`
+failed its per-candidate rejection assertion. The report shows the
+baseline cases finishing `failed` with 3 requests each, then the harmful
+candidate's train case finishing `failed` after 1 request with no
+hard-gate code, and every later case (dev, no-gain, improving, holdout)
+stopping `blocked` with 0 requests. The re-run attempt of the same commit
+passed. The harmful wording was promoted because
+`compare_to_baseline` counts equal verified successes at a lower request
+count as an improvement, and a workflow that never ran has the lowest count.
+
+**Reproduced deterministically:** a candidate whose case workflows stop
+`blocked` after one request (a worker `blocked` message) was promoted to
+policy version 2 before this change.
+
+**Implemented:** `evaluate::case_complete`. A case counts only when its
+workflow finished (`accepted`, `failed`, `cancelled`) and no lease still
+reserves a slot. Otherwise the cycle ends with `optimizer_case_incomplete`
+before anything is selected or promoted, and a repeated evaluation resumes
+the unfinished workflows. The rejection assertion in the original test is
+unchanged; on a mismatch it now also prints each case workflow's phase,
+`last_run` end code, leases, receipts, and the slot table
+(`cycle_diagnostics`).
+
+**Validation executed (Rust 1.92.0, native Windows 11):** `cargo fmt --all
+-- --check` and `cargo clippy -p vibemuxd --all-targets --features
+test_helpers -- -D warnings` passed. The new regression test failed with the
+guard disabled (the cycle returned a report that promoted version 2) and
+passes with it. `cargo test -p vibemuxd --features test_helpers --test
+workflow_optimizer --test workflow_optimizer_operational` passed (4 tests),
+and `--lib workflow::evaluate` passed (5 tests). Sixteen runs of the
+three-test `workflow_optimizer` binary passed with eight running at once
+(about 180-200 s each against about 100 s alone).
+
+**Not verified:** what made the harmful case's turn fail in CI. No run on
+the unguarded code failed: 25 Windows runs of the original test (up to 12 at
+once, up to 3 times slower) and 9 Linux (WSL) runs (8 at once, plus one
+inside the full `vibemuxd` suite pinned to 4 CPUs) all passed.
+The leading explanation, not reproduced, is a writer response timeout
+(5 s) during the turn's single-use `claim_harness_dispatch`: `call_writer`
+repeats the claim, the first copy commits unheard, the repeat is refused,
+and the attempt stays non-terminal. The turn then never launches, its lease
+cannot settle (`workflow_lease_attempt_unsettled`), and the stranded slot
+blocks every later case. The new diagnostics print the end code and lease
+states that confirm or reject this on the next occurrence. The guard stops a
+stranded slot from producing a promotion; it does not prevent the stall. The
+post-guard binaries were not run on Linux.

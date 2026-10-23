@@ -294,6 +294,7 @@ Optional fields are `gateway` (required for `live`, with a binding for every slo
   - `session attach` is refused with `workflow_native_tui_unavailable`.
   - Only `session inspect --prompts` prints prompt text.
   - `prompt evaluate` reads `.vibemux/prompt_suites/<suite_id>.json` and `.vibemux/prompt_candidates/<candidate_id>.json`.
+  - A case counts only when its workflow finished and holds no lease. A case that stops `blocked`, or leaves a slot reserved for an attempt that never settled, ends the cycle with `optimizer_case_incomplete` before anything is selected or promoted. A repeated `prompt evaluate` resumes the unfinished case workflows.
 - **Acceptance runner.** `python scripts/verify_dual_track.py --mode offline --output <new_dir_outside_the_repo>` runs the Rust suite, pytest, and the TaskBoard Lite calibration. It then re-derives the 37 benchmark scenarios from logs and evidence digests and writes `dual_track_report.json`.
   - An offline run is at best `OFFLINE_PASS`. Live classes are `BLOCKED`.
   - `--validate <report>` re-checks a written report against its artifacts.

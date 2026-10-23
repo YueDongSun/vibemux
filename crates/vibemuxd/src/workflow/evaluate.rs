@@ -19,6 +19,14 @@
 //! a repeated evaluation reuses finished case workflows instead of paying
 //! for them again.
 //!
+//! A case counts only when its workflow reached a verdict: it finished
+//! (`accepted`, `failed`, or `cancelled`) and holds no lease. A workflow
+//! that stopped `blocked`, or that left a slot reserved for an attempt that
+//! never settled, made no model requests worth comparing, so a cheaper cost
+//! would only measure that it did not run. Such a case ends the cycle with
+//! `optimizer_case_incomplete` before anything is selected or promoted; a
+//! repeated evaluation resumes the unfinished case workflows.
+//!
 //! The cycle is recorded before it starts and again before its holdout is
 //! consulted; a cycle whose holdout was consulted never runs again.
 //! Promotion goes through the single writer, needs the base policy to be
@@ -85,6 +93,8 @@ const HARD_GATE_CODES: [&str; 9] = [
 ];
 /// Why promotion was withheld although the cycle selected a candidate.
 pub const PROMOTION_WITHHELD_CODE: &str = "optimizer_policy_mismatch";
+/// A case workflow did not reach a verdict, so the cycle has no evidence.
+pub const CASE_INCOMPLETE_CODE: &str = "optimizer_case_incomplete";
 
 /// A fixed evaluation suite.
 #[derive(Clone, Debug, Deserialize)]
@@ -347,6 +357,19 @@ fn finished(phase: WorkflowPhase) -> bool {
         phase,
         WorkflowPhase::Accepted | WorkflowPhase::Failed | WorkflowPhase::Cancelled
     )
+}
+
+/// Whether a case workflow ended in a verdict that can be compared: it
+/// finished and no lease still reserves a slot for an attempt that never
+/// settled. A blocked workflow, or one stranded behind such a lease, shows
+/// zero or few model requests that say nothing about the policy.
+#[must_use]
+pub fn case_complete(snapshot: &WorkflowSnapshot) -> bool {
+    finished(snapshot.record.phase)
+        && !snapshot
+            .leases
+            .iter()
+            .any(|lease| lease.state.holds_reservation())
 }
 
 /// A candidate must not regress on the fixed train cases before its dev
@@ -620,6 +643,11 @@ impl WorkflowService {
                     spending,
                 )
                 .await?;
+            if !case_complete(&snapshot) {
+                return Err(CaseError::Failed(WorkflowError::Optimizer {
+                    code: CASE_INCOMPLETE_CODE,
+                }));
+            }
             let result = case_result(case_id, &snapshot);
             spending.cases.push(CaseEvidence {
                 split: dataset.split,
@@ -754,6 +782,75 @@ mod tests {
 
     fn dataset(split: &str, cases: &[&str]) -> Value {
         json!({"dataset_id": format!("{split}_set"), "split": split, "case_ids": cases})
+    }
+
+    /// A case workflow with the given phase and one lease per listed state.
+    fn snapshot(phase: &str, lease_states: &[&str]) -> WorkflowSnapshot {
+        let digest = serde_json::to_value(Sha256Digest::of(b"fixture")).expect("digest");
+        let record = serde_json::from_value(json!({
+            "schema_version": 1, "workflow_id": Uuid::from_u128(1), "request_key": "case_key",
+            "workflow_key": "taskboard_lite", "mode": "cooperate", "phase": phase,
+            "version": 1, "evidence_class": "fixture", "base_commit": "a".repeat(40),
+            "policy_digest": digest, "verifier_digest": digest, "integration_suites": [],
+            "tasks": [], "budget": {"decisions_remaining": 1, "malformed_repairs_remaining": 1,
+                "model_requests_remaining": 1, "deadline_unix_ms": 1},
+            "content_store": {"mode": "disabled"}, "blocked_reason": null,
+            "created_at_ms": 1, "updated_at_ms": 1,
+        }))
+        .expect("record");
+        let leases = lease_states
+            .iter()
+            .zip(1_u128..)
+            .map(|(state, number)| {
+                serde_json::from_value(json!({
+                    "schema_version": 1, "lease_id": Uuid::from_u128(number),
+                    "workflow_id": Uuid::from_u128(1), "task_key": "store",
+                    "slot_id": "slot_a", "worktree_key": digest, "generation": number,
+                    "state": state, "heartbeat_deadline_ms": 1, "end_reason": null,
+                    "created_at_ms": 1, "updated_at_ms": 1,
+                }))
+                .expect("lease")
+            })
+            .collect();
+        WorkflowSnapshot {
+            record,
+            sequence: 1,
+            contracts: Vec::new(),
+            leases,
+            attempts: Vec::new(),
+            receipts: Vec::new(),
+            messages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_finished_case_that_holds_no_slot_is_a_verdict() {
+        for phase in ["accepted", "failed", "cancelled"] {
+            assert!(case_complete(&snapshot(phase, &[])), "{phase}");
+            assert!(
+                case_complete(&snapshot(phase, &["released", "revoked"])),
+                "{phase}"
+            );
+        }
+        // A workflow that never ran to a verdict measured nothing.
+        for phase in [
+            "prepared",
+            "running",
+            "paused",
+            "blocked",
+            "integrating",
+            "cancel_requested",
+        ] {
+            assert!(!case_complete(&snapshot(phase, &[])), "{phase}");
+        }
+        // A failed workflow that left its slot reserved for an attempt that
+        // never settled strands every later case behind it.
+        for state in ["active", "quarantined"] {
+            assert!(
+                !case_complete(&snapshot("failed", &["released", state])),
+                "{state}"
+            );
+        }
     }
 
     #[test]
