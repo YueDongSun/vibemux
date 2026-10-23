@@ -159,6 +159,8 @@ their tests:
 - `probe_env`, `view_model`
 - `workspace_inventory`, plus `dashboard::daemon_feed`, `dashboard::daemon_model`,
   and the `Workspace`, `Branch`, and `safe_text` items they use
+- the native folder picker, behind an optional `folder_dialog` feature that
+  enables `rfd` on Windows
 
 The repaint dependency becomes a narrow trait:
 
@@ -184,19 +186,21 @@ project list.
 
 | Command | Returns |
 |---|---|
-| `projects_list`, `project_pick()`, `project_forget(project_key)` | project rows with daemon state; `project_pick` runs the native folder dialog |
+| `projects_list`, `project_pick()`, `project_select(project_key)`, `project_forget(project_key)` | project rows with daemon state; `project_pick` runs the native folder dialog |
 | `daemon_start(project_key)`, `daemon_stop(project_key)` | job state; one job per project at a time |
-| `tasks_page(project_key, filter, cursor)`, `task_detail(project_key, task_id)` | Control v4 bounded summaries |
+| `tasks_snapshot(project_key)` | the existing `SupervisorSnapshot`: Control v4 bounded summaries |
+| `supervisor_action(project_key, action)` | the existing `SupervisorAction`: refresh, load more, load task, and the ADR 028 WezTerm inspect, link, focus, and unlink actions |
 | `task_window_open(project_key, task_id)` | opens a task window |
-| `terminal_link(…)`, `terminal_focus(…)`, `terminal_unlink(…)` | the existing ADR 028 WezTerm lease actions |
 | `ask_targets(project_key)` | Claude Code and Codex availability with reasons |
 | `ask_setup(project_key)` | writes default routes on this explicit call only, as today |
-| `ask_submit(project_key, harness, prompt)`, `ask_cancel(ask_id)` | Ask ID and phase |
+| `ask_confirm(project_key)` | records the once-per-folder paid-inference consent |
+| `ask_submit(project_key, harness, prompt)`, `ask_cancel(ask_id)`, `ask_status(ask_id)` | Ask ID, phase, and end state, without content |
 | `ask_reply(ask_id)` | the reply text; the only phase 1 command that returns vendor text |
 | `console_section(project_key, section)`, `probe_rerun()` | content-free console data |
 | `quick_search(query)` | at most 8 ranked entries |
 | `open_link(url)` | opens an `https://` URL in the default browser; anything else is refused |
 | `settings_get`, `settings_set(patch)` | settings |
+| `about_info` | app and WebView2 versions |
 
 Events to the UI carry no content: `projects_changed`,
 `snapshot_changed { project_key, revision }`, `ask_changed { ask_id, phase }`,
@@ -209,7 +213,8 @@ runs.
 Settings live in `desktop_settings.json` (schema 1, snake_case keys) in the
 Tauri app config directory: `appearance` (`light`, `dark`, `system`),
 `text_size`, `density`, `reduce_motion`, `sidebar_collapsed`, `start_page`,
-and `project_folders`. There is no import from the egui GUI's settings.
+`project_folders` (at most 16), and `ask_confirmed_projects` (at most 64; the
+once-per-folder Ask consent). There is no import from the egui GUI's settings.
 
 The bundle identifier uses reverse-DNS form without hyphens or underscores,
 for example `io.github.yuedongsun.vibemux`; PR 3 fixes it.
@@ -244,8 +249,9 @@ This depends on `fix/web_design_tokens` reaching `main` first.
   denied unless a capability grants it. One capability file,
   `capabilities/main_window.json`, grants exactly the command list in §5.3 plus
   event listening, for the main window and windows labeled `task_*`.
-- No `fs`, `shell`, `http`, or `opener` plugin is exposed to the webview.
-  `open_link` calls the opener from Rust after checking the scheme.
+- No Tauri plugin is registered, so none is exposed to the webview. `open_link`
+  checks the scheme and opens the default browser from Rust with the `open`
+  crate (5.4.5, MIT).
 - Navigation away from the app origin is refused.
 
 ### 5.6 Screens

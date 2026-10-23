@@ -70,9 +70,9 @@ UI libraries: `markdown-it` (MIT), `highlight.js` (BSD-3-Clause), and
 - `withGlobalTauri` off, `freezePrototype` on, navigation away from the app
   origin refused.
 - Every app command is declared in the app manifest and granted by one
-  capability file for the main window and `task_*` windows. No `fs`, `shell`,
-  `http`, or `opener` plugin is exposed to the webview; `open_link` opens
-  `https://` URLs from Rust.
+  capability file for the main window and `task_*` windows. No Tauri plugin is
+  registered, so no `fs`, `shell`, `http`, or `opener` plugin can reach the
+  webview; `open_link` opens `https://` URLs from Rust with the `open` crate.
 - Markdown renders with raw HTML disabled, only `https:`, `http:`, and
   `mailto:` links kept, and images off.
 
