@@ -165,7 +165,7 @@ their tests:
 The repaint dependency becomes a narrow trait:
 
 ```rust
-pub trait ChangeNotifier: Send + Sync {
+pub trait ChangeNotifier: Send + Sync + 'static {
     fn notify(&self);
 }
 ```

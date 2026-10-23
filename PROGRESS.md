@@ -6681,8 +6681,8 @@ post-guard binaries were not run on Linux.
 
 ### 2026-10-24 — vibemux_client extraction (desktop app phase 1, PR 1)
 
-**Scope:** `vibemux_client` and `vibemux_frontend` only (PR 1 of 2 in the
-desktop-app-phase-1 refactor plan; task 2 of 2). No daemon, store, control
+**Scope:** `vibemux_client` and `vibemux_frontend` only (PR 1 of 5 in the
+desktop-app-phase-1 refactor plan; Tasks 1 and 2). No daemon, store, control
 protocol, or CLI behavior changed, and no milestone or ADR status moves.
 This prepares GUI-neutral client code for reuse by a future Tauri desktop
 app proposed in [docs/desktop_app_design.md](docs/desktop_app_design.md)
@@ -6690,6 +6690,16 @@ app proposed in [docs/desktop_app_design.md](docs/desktop_app_design.md)
 exist yet, and nothing here builds it.
 
 **Implemented:**
+- Task 1 created the `vibemux_client` crate and moved the daemon/probe/Git
+  client modules (`cli_runner`, `daemon_control`, `daemon_session`,
+  `project_folder`, `supervisor_mapping`, `supervisor_model`,
+  `quick_search`, `probe_env`, `view_model`, `workspace_inventory`,
+  `dashboard::daemon_feed`, `dashboard::daemon_model`) out of
+  `vibemux_frontend`: `display_text::safe_text` moved into its own module,
+  `Workspace`/`Branch` moved into `workspace_inventory`, `rfd` moved behind
+  a new `folder_dialog` feature with `pick_folder_native` gated on it, and
+  `DaemonSession` is `pub` (struct and methods) with its `client`/
+  `generation` fields `pub(crate)`.
 - `vibemux_client::change_notifier` adds `ChangeNotifier` (a
   `notify(&self)` trait), `NoopNotifier`, and a test-only `CountingNotifier`
   (`#[cfg(any(test, feature = "test_support"))]`, gated by a new empty
