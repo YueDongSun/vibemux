@@ -30,6 +30,9 @@ const IMPROVE_MARKER: &str = "Check every title for blank input before writing t
 const HARMFUL_MARKER: &str = "Also refresh the project manifest.";
 /// Operational template wording that the fixture does not turn into a repair.
 const NO_GAIN_MARKER: &str = "Use a concise summary before editing the store.";
+/// The wording after which the worker reports that it is blocked, so the
+/// case workflow stops `blocked` after one request.
+const BLOCKED_MARKER: &str = "Ask an operator before editing the store.";
 
 fn store_file(source: &str) -> Value {
     json!({"src/store.mjs": taskboard_file(source)})
@@ -46,6 +49,11 @@ fn optimizer_script() -> Value {
             "variants": [
                 {"prompt_contains": IMPROVE_MARKER, "step": {"write": store_file(GOOD_STORE)}},
                 {"prompt_contains": HARMFUL_MARKER, "step": {"write": harmful}},
+                {"prompt_contains": BLOCKED_MARKER, "step": {
+                    "write": store_file(BLANK_TITLE_MUTANT),
+                    "checkpoint": {"messages": [{"kind": "blocked", "to": "supervisor",
+                        "text": "Waiting for an operator decision."}]},
+                }},
             ],
         },
         "store/repair": {"write": store_file(BLANK_TITLE_MUTANT)},
@@ -127,6 +135,28 @@ fn cases_of<'a>(report: &'a Value, split: &str) -> Vec<&'a Value> {
         .collect()
 }
 
+/// How every case workflow of a cycle ended, and which slots are leased
+/// now: a failed rejection assertion names the cause, not only the summary.
+async fn cycle_diagnostics(fixture: &WorkflowFixture, report: &Value) -> Value {
+    let mut cases = Vec::new();
+    for case in report["cases"].as_array().expect("cases") {
+        let workflow_id = case["workflow_id"]
+            .as_str()
+            .expect("id")
+            .parse()
+            .expect("uuid");
+        let status = fixture.status(workflow_id).await;
+        cases.push(
+            json!({"split": case["split"], "policy_digest": case["policy_digest"],
+            "phase": status["phase"], "blocked_reason": status["blocked_reason"],
+            "last_run": status["last_run"], "leases": status["leases"],
+            "tasks": status["tasks"], "receipts": status["receipts"]}),
+        );
+    }
+    json!({"cases": cases, "slots": fixture.client.workflow_slots().await.ok(),
+        "worker_turns": fixture.started_keys()})
+}
+
 /// O02 and O03: the cycle gates candidates on train, ranks them on dev,
 /// consults the protected holdout once for the best one, rejects a
 /// forbidden field, a hard-gate failure, and a no-gain change, promotes
@@ -181,7 +211,8 @@ async fn only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back() {
             &json!("no_improvement"),
             &Value::Null,
         ],
-        "{report:#}"
+        "{report:#}\n{:#}",
+        cycle_diagnostics(&fixture, &report).await
     );
     let promoted_digest = &outcomes[3]["candidate_digest"];
     assert!(promoted_digest.is_string());
@@ -316,6 +347,36 @@ async fn only_a_verified_improvement_is_promoted_and_it_can_be_rolled_back() {
         "optimizer_cycle",
         &json!({"report": report, "restored": restored, "replay": replay, "versions": versions}),
     );
+    fixture.shutdown().await;
+}
+
+/// A case workflow that stops `blocked` made one request and measured
+/// nothing: it must end the cycle, not look cheaper than the baseline's
+/// three requests and win promotion. This is the shape of a CI failure in
+/// which a stranded slot blocked every later case and the optimizer
+/// promoted a wording whose workers never ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_case_that_never_finishes_ends_the_cycle_instead_of_looking_cheaper() {
+    let fixture = WorkflowFixture::start(FixtureOptions::default()).await;
+    fixture.write_script(&optimizer_script());
+    write_suite(&fixture, 64);
+    write_candidates(&fixture, "wording", &[role_change(BLOCKED_MARKER)]);
+    assert_eq!(
+        fixture
+            .client
+            .workflow_policy_evaluate("wording", SUITE_ID)
+            .await,
+        Err(remote("optimizer_case_incomplete"))
+    );
+    assert_eq!(
+        fixture
+            .client
+            .workflow_policy_versions()
+            .await
+            .expect("versions"),
+        json!([])
+    );
+    assert_eq!(fixture.checkout_status(), "");
     fixture.shutdown().await;
 }
 

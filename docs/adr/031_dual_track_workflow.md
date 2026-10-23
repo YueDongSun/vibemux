@@ -254,6 +254,13 @@ refused at prepare.
   blocks promotion. "No improvement" is a valid result. Promotion affects
   future admissions only. `prompt rollback` returns the active version to
   its parent.
+- **Unfinished cases are not evidence.** A case counts only when its
+  workflow finished (`accepted`, `failed`, or `cancelled`) and holds no
+  lease. A workflow that stopped `blocked`, or that left a slot reserved
+  for an attempt that never settled, made few or no model requests because
+  it did not run, not because the wording was cheaper. Such a case ends the
+  cycle with `optimizer_case_incomplete` before anything is selected or
+  promoted, and a repeated evaluation resumes the unfinished workflows.
 - **Configuration.** `<state dir>/workflow_config.json` (schema 1, unknown
   fields rejected) requires:
   - `evidence_class`, `git_executable`, `slots`, `heartbeat_ms`, and
