@@ -17,8 +17,8 @@ export default defineConfig({
         description: 'Read-only VibeMux task and run status',
         start_url: '/',
         display: 'standalone',
-        background_color: '#f4f7fb',
-        theme_color: '#f4f7fb',
+        background_color: '#FAF9F5',
+        theme_color: '#FAF9F5',
         icons: [
           { src: '/vibemux_icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
         ],
