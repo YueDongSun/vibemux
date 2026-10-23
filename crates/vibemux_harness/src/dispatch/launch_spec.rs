@@ -179,9 +179,11 @@ pub fn structured_arguments(
         // `--tools=` removes every built-in tool, `--strict-mcp-config` skips
         // project and user MCP servers, and `--restricted` ignores project and
         // user settings files, so a repository cannot re-enable tools.
+        // `--bare` is left out on purpose (ADR 029 amendment of 2026-10-23):
+        // it accepts only an API key and never reads an OAuth login, so a
+        // subscription user's turn ended "Not logged in".
         NativeProtocol::ClaudeStreamJson => {
             let mut arguments: Vec<String> = owned(&[
-                "--bare",
                 "-p",
                 "--input-format",
                 "stream-json",
@@ -236,7 +238,6 @@ mod tests {
         )
         .expect("claude argv");
         for flag in [
-            "--bare",
             "--tools=",
             "--strict-mcp-config",
             "--restricted",
@@ -244,6 +245,8 @@ mod tests {
         ] {
             assert!(arguments.iter().any(|argument| argument == flag), "{flag}");
         }
+        // `--bare` would refuse a subscription (OAuth) login.
+        assert!(!arguments.iter().any(|argument| argument == "--bare"));
         assert_eq!(arguments[arguments.len() - 2..], ["--model", "sonnet"]);
     }
 

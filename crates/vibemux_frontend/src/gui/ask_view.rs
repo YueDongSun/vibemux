@@ -164,7 +164,7 @@ pub fn render_setup_card(ui: &mut Ui, c: &C, setup: &SetupJob) -> AskViewActions
                 muted(
                     ui,
                     c,
-                    "VibeMux runs one turn of the harness and shows its reply; it cannot change files. Claude gets no tools, so it answers from your prompt alone; Codex can read this folder under a read-only sandbox. Setup writes .vibemux\\harness_dispatch.json with read-only routes for the Claude and Codex executables found on this machine, then restarts VibeMux for this folder.",
+                    "VibeMux runs one turn of the harness and shows its reply; it cannot change files. Claude gets no tools, so it cannot open files and answers from your prompt and any CLAUDE.md files it loads; Codex can read this folder under a read-only sandbox. Setup writes .vibemux\\harness_dispatch.json with read-only routes for the Claude and Codex executables found on this machine, then restarts VibeMux for this folder.",
                 );
                 ui.add_space(12.0);
                 if design::accent_button(ui, c, "Enable Claude and Codex (read-only)").clicked() {
@@ -418,7 +418,7 @@ pub fn render_confirm(ctx: &egui::Context, c: &C, state: &ConfirmState) -> Confi
 #[must_use]
 pub fn turn_scope(harness: &str) -> &'static str {
     if harness == AgentKind::Claude.display_name() {
-        "Its route gives it no tools, so it answers from your prompt alone and cannot open or change files."
+        "Its route gives it no tools: it cannot open or change files, and it answers from your prompt and any CLAUDE.md files it loads."
     } else if harness == AgentKind::Codex.display_name() {
         "It can read files in this folder under a read-only sandbox but cannot change them."
     } else {
