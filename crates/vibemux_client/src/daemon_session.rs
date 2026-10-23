@@ -8,13 +8,13 @@ use vibemuxd::{
 /// Connection state carried between polls so a healthy daemon is verified once
 /// instead of once per tick.
 #[derive(Default)]
-pub(crate) struct DaemonSession {
-    pub(crate) client: Option<ControlClient>,
-    pub(crate) generation: Option<ControlGeneration>,
+pub struct DaemonSession {
+    pub client: Option<ControlClient>,
+    pub generation: Option<ControlGeneration>,
 }
 
 impl DaemonSession {
-    pub(crate) fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.client = None;
         self.generation = None;
     }
@@ -28,7 +28,7 @@ impl DaemonSession {
     /// one already verified. Any call failure should `invalidate` the cache,
     /// so a dropped connection forces a fresh verification before it is
     /// trusted again.
-    pub(crate) fn connect(&mut self, paths: &DaemonPaths) -> Result<(ControlClient, bool), String> {
+    pub fn connect(&mut self, paths: &DaemonPaths) -> Result<(ControlClient, bool), String> {
         let published = read_published(paths)?;
         let generation = published.generation();
         if self.client.is_some() && self.generation.as_ref() == Some(&generation) {

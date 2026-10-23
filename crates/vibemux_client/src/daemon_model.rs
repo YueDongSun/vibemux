@@ -9,7 +9,7 @@ use vibemuxd::{
     plugin_registry::PluginStatus,
 };
 
-use super::safe_text;
+use crate::display_text::safe_text;
 
 /// Decision rows the console keeps.
 pub const MAX_DECISIONS: usize = 64;

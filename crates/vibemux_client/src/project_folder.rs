@@ -85,6 +85,7 @@ pub const fn native_picker_available() -> bool {
 /// Shows the native folder picker, starting in `start` when given.
 /// Blocks until the user picks a folder or cancels. Returns `None` on
 /// cancel and on platforms without a native picker.
+#[cfg(feature = "folder_dialog")]
 #[must_use]
 pub fn pick_folder_native(start: Option<&Path>) -> Option<PathBuf> {
     #[cfg(windows)]

@@ -8,15 +8,35 @@ use std::{ffi::OsString, path::Path, time::Duration};
 
 use serde::Deserialize;
 
-use crate::{
-    cli_runner,
-    dashboard::{Branch, Workspace, safe_text},
-};
+use crate::{cli_runner, display_text::safe_text};
 
 /// How long one inventory read may take.
 pub const WORKSPACE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Characters of a commit id shown in a row.
 const SHORT_COMMIT_CHARS: usize = 8;
+
+#[derive(Clone, Debug)]
+pub struct Branch {
+    pub name: String,
+    pub role: String,
+    pub commit: String,
+    pub upstream: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Workspace {
+    pub current_branch: String,
+    pub head: String,
+    pub baseline: String,
+    pub ahead: u64,
+    pub behind: u64,
+    pub staged: usize,
+    pub unstaged: usize,
+    pub untracked: usize,
+    pub change_detection: String,
+    pub branches: Vec<Branch>,
+    pub worktrees: Vec<String>,
+}
 
 /// The JSON report `vibemuxctl workspace status` prints (schema 1).
 #[derive(Deserialize)]

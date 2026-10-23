@@ -13,7 +13,7 @@ use vibemuxd::{
     process::DaemonPaths,
 };
 
-use super::daemon_model::{
+use crate::daemon_model::{
     DaemonView, DecisionRow, MAX_DECISIONS, Section, TaskDetailView, merge_decisions,
     project_decision, project_dsh, project_health, project_plugins, project_routes, project_slots,
     project_task_detail, project_tasks, unavailable,

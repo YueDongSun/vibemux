@@ -1,0 +1,33 @@
+[package]
+name = "vibemux_client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GUI-neutral VibeMux client: daemon control, probe, and Git workspace I/O shared by every frontend"
+
+[features]
+folder_dialog = ["dep:rfd"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+time = { workspace = true, features = ["local-offset"] }
+tokio.workspace = true
+uuid.workspace = true
+vibemux_harness = { path = "../vibemux_harness" }
+vibemux_probe = { path = "../vibemux_probe" }
+vibemux_types = { path = "../vibemux_types" }
+vibemuxd = { path = "../vibemuxd" }
+
+[target.'cfg(windows)'.dependencies]
+# Native "Open folder" picker (Win32 dialog only), behind `folder_dialog`.
+# Default features are off: they add the Linux portal and Wayland stacks,
+# which this crate does not use; other platforms type or paste a path instead.
+rfd = { version = "=0.17.2", default-features = false, optional = true }
+
+[dev-dependencies]
+# Real-daemon feed tests use the Windows private-runtime path helper.
+vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
+tempfile.workspace = true
