@@ -171,3 +171,75 @@ servers, restricted mode, no tools) needs a submit and was not exercised.
   design (ADR 029 Decision 4).
 - Live vendors on Linux or WSL. Only native Windows was exercised.
 - Vendor versions other than those listed above.
+
+## Addendum (2026-10-23): one live Claude submit through the GUI's Ask
+
+The operator authorized exactly one live turn. It ran on native Windows 11
+through the GUI's own Ask workers (`vibemux_frontend::ask::worker`), driven
+by a throwaway example program that was removed afterwards. The daemon and
+dispatch code were unchanged since `main` at `5659805`.
+
+- **Setup.** A temporary Git folder held only a README. The GUI's one-click
+  setup ran the read-only probe, wrote one route (`claude`,
+  `claude_stream_json`, `allow_execution: true`, environment names
+  `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`), skipped Codex because it is
+  installed as a script shim, and restarted the folder's daemon.
+- **Bug found.** Before the fix on `fix/gui_ask_setup_detection`, the
+  restarted daemon listed Claude as `available: false`. Setup wrote the probe
+  cache but never asked the daemon to record it (`harness_refresh`), so any
+  Ask would have been refused as not detected. With the fix, setup records
+  detection, and the daemon listed Claude Code 2.1.304 as available.
+- **Submit.** One `harness_dispatch_submit` with a one-sentence question
+  about the README. The daemon admitted it and launched Claude Code 2.1.304
+  through the trampoline. The attempt ended `failed` with
+  `harness_process_failed` after about 1.5 s. The GUI's reply parser showed
+  Claude's message: "Not logged in · Please run /login". No model inference
+  ran.
+- **Cause.** The route's `--bare` flag. The installed CLI's help says that in
+  bare mode "Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper";
+  OAuth and keychain logins are never read. The daemon clears the
+  environment and forwards only the route's named variables, and the
+  default names carry no API key. So the Claude route cannot use a
+  subscription login, and an API key works only if its variable is both
+  set for the daemon and named by the route. Which way to go is an open
+  decision for the operator.
+- **Also seen.** `--tools=` leaves Claude no tools, so even an
+  authenticated turn cannot open files in the folder. The GUI's consent
+  text now says so.
+
+Still not verified: an authenticated Claude turn, any Codex turn, and a
+cancel against a live vendor.
+
+Follow-up decision: the operator chose to drop `--bare` from the read-only
+Claude route (ADR 029, amendment of 2026-10-23), so a subscription login
+can authenticate.
+
+### Second live submit, without `--bare` (2026-10-23)
+
+The operator authorized one more turn. A daemon built from the new argv ran
+the same GUI path in a fresh temporary folder: setup enabled Claude, the
+daemon listed Claude Code 2.1.304 as available, and one submit was admitted
+and launched.
+
+- **Result.** It ended `harness_process_failed` after about 2.1 s, again with
+  "Not logged in · Please run /login". The output records show the session
+  started (a `system` `init` record with `apiKeySource: none`, which is
+  normal for an OAuth login). The next `assistant` record carried
+  `error: authentication_failed`, and the `result` record had `is_error:
+  true`. So Claude Code sent its stored OAuth login and the API rejected it.
+  No model output was produced.
+- **Diagnosis, with no further turn.** `claude auth status`, run in an
+  environment that mirrors the dispatch environment, reported `loggedIn:
+  true` with `authMethod: oauth_token`. That command checks only that a
+  stored token is present. The Claude sessions that work on this host get
+  their credentials from the Claude desktop app, which injects
+  `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` into each session. Neither
+  variable is set persistently for the Windows user or the machine, so a
+  daemon started from the GUI or a terminal never sees them. The stored
+  standalone CLI login is most likely stale.
+- **Next step for the operator.** Refresh the standalone CLI login with
+  `claude auth login` in a terminal, then authorize another turn.
+  VibeMux does not enter credentials.
+
+Still not verified: an authenticated Claude turn, any Codex turn, and a
+cancel against a live vendor.

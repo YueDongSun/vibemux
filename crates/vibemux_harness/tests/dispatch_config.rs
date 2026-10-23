@@ -648,7 +648,6 @@ fn launch_argv_is_owned_by_the_protocol_profile() {
     }
     let claude = route(AgentKind::Claude, NativeProtocol::ClaudeStreamJson, None);
     let claude_argv = [
-        "--bare",
         "-p",
         "--input-format",
         "stream-json",

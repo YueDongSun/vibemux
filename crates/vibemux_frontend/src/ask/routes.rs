@@ -15,7 +15,7 @@ use std::{
 };
 
 use vibemux_harness::{
-    AgentKind,
+    AgentKind, HarnessRow,
     dispatch::{
         DispatchError, NativeProtocol,
         route_config::{
@@ -35,6 +35,25 @@ pub const ASK_HARNESSES: [(AgentKind, NativeProtocol); 2] = [
     (AgentKind::Claude, NativeProtocol::ClaudeStreamJson),
     (AgentKind::Codex, NativeProtocol::CodexAppServer),
 ];
+
+/// The planned routes the daemon will admit, and the harnesses of the rest.
+/// Dispatch admits only a harness the daemon has recorded as detected, so a
+/// route for an undetected one could never run and is not written.
+#[must_use]
+pub fn detected_routes(
+    routes: &[PlannedRoute],
+    rows: &[HarnessRow],
+) -> (Vec<PlannedRoute>, Vec<AgentKind>) {
+    let (detected, undetected): (Vec<PlannedRoute>, Vec<PlannedRoute>) =
+        routes.iter().cloned().partition(|route| {
+            rows.iter()
+                .any(|row| row.name == route.harness.command_name() && row.available)
+        });
+    (
+        detected,
+        undetected.into_iter().map(|route| route.harness).collect(),
+    )
+}
 
 /// One route the setup will write.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,6 +365,36 @@ mod tests {
         assert_eq!(value["routes"][0]["protocol"], "claude_stream_json");
         assert_eq!(value["routes"][1]["protocol"], "codex_app_server");
         assert_eq!(value["routes"][1]["allow_execution"], true);
+    }
+
+    #[test]
+    fn only_routes_the_daemon_detected_can_run() {
+        let route = |harness| PlannedRoute {
+            harness,
+            protocol: NativeProtocol::ClaudeStreamJson,
+            executable: PathBuf::from("claude.exe"),
+        };
+        let row = |name: &str, available| HarnessRow {
+            name: name.to_string(),
+            command: vec![name.to_string()],
+            protocol: vibemux_harness::HarnessProtocol::Pty,
+            provider: "vendor".to_string(),
+            available,
+            path: None,
+            roles: Vec::new(),
+            default: false,
+            launcher: None,
+            version: None,
+        };
+        let planned = [route(AgentKind::Claude), route(AgentKind::Codex)];
+        let (detected, undetected) =
+            detected_routes(&planned, &[row("claude", true), row("codex", false)]);
+        assert_eq!(detected, [route(AgentKind::Claude)]);
+        assert_eq!(undetected, [AgentKind::Codex]);
+        // A daemon that never recorded detection admits nothing.
+        let (detected, undetected) = detected_routes(&planned, &[]);
+        assert!(detected.is_empty());
+        assert_eq!(undetected.len(), 2);
     }
 
     #[test]
