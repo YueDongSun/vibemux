@@ -247,7 +247,8 @@ it and rejects any edge not listed here.
   the canonical project root with the read-only protocol profiles from
   `a955484`: Codex `sandbox: read-only` and `approvalPolicy: never`; Claude
   `--bare`, `--tools=`, `--strict-mcp-config`, `--restricted`, and `dontAsk`
-  (no built-in tools, no project or user MCP servers or settings files); ACP
+  (no built-in tools, no project or user MCP servers or settings files;
+  `--bare` was removed by the amendment of 2026-10-23 below); ACP
   `fs` and `terminal` capabilities false; every approval or permission request
   declined. ACP agents run their own built-in tools and send only the
   permission requests their own configuration asks for. OpenCode documents
@@ -695,3 +696,43 @@ unavailable" for Claude and Codex targets only. Every gate stays in the
 daemon (configured route, detection, `allow_execution`, one dispatch per
 project, read-only profiles), and a one-shot dispatch is still not a
 continuous coordinator-chat adapter. The daemon contract is unchanged.
+
+## Amendment (2026-10-23): the read-only Claude route drops `--bare`
+
+Decided by the operator after one live submit.
+
+- **Context.** One operator-authorized submit, sent through the GUI's Ask,
+  ended `harness_process_failed` with Claude's reply "Not logged in". Under
+  `--bare`, Claude Code 2.1.304 authenticates only with `ANTHROPIC_API_KEY`
+  or `apiKeyHelper` and never reads an OAuth or keychain login, so a
+  subscription login could never authenticate a dispatch turn. Evidence is
+  in [harness_dispatch_validation.md](../evidence/harness_dispatch_validation.md).
+- **Decision.** The read-only Claude argv no longer passes `--bare`. It is
+  built by `structured_arguments`, which the standalone dispatcher of ADR 040
+  shares. It keeps `-p` with stream-json input and output, `--permission-mode
+  dontAsk`, `--tools=`, `--strict-mcp-config`, `--restricted`, and
+  `--no-session-persistence`. The environment is unchanged: the system names
+  plus the route's names (setup's defaults are `USERPROFILE`, `APPDATA`, and
+  `LOCALAPPDATA`, where Claude Code keeps its login). The writable worker
+  profile of ADR 031 (`writable_profile.rs`) still passes `--bare`; this
+  decision does not change it.
+- **What stays off.** No built-in tools. No project or user MCP servers.
+  User, project, and local settings files are ignored, including their
+  hooks, permissions, and plugin choices; managed settings and `--settings`
+  still apply. No session transcript is saved. The prompt travels on stdin.
+- **What `--bare` used to skip and may now run.** CLAUDE.md auto-discovery,
+  so project and user memory files can enter the turn's context. Claude
+  Code's own background features: auto-memory, LSP, plugin sync,
+  attribution, and prefetches. Hooks of installed plugins, unless
+  `--restricted` already excludes them. With no tools the turn cannot act on
+  what it reads, but CLAUDE.md text can reach the model, and Claude Code can
+  write its own state under the user profile (for example a token refresh).
+  Which of these features run during a tool-free `-p` turn is unverified.
+- **Verification.** The launch-spec unit test asserts that `--bare` is
+  absent, and the config test pins the full argv. The fixture-driven daemon
+  dispatch tests pass. A second operator-authorized live submit, without
+  `--bare`, started the session, but the API rejected the CLI's stored OAuth
+  login (`authentication_failed`). On this host, working Claude sessions get
+  their credentials from the Claude desktop app, and a daemon does not
+  inherit them. An authenticated live turn is still unverified and needs a
+  valid standalone CLI login (`claude auth login`).

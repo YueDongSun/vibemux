@@ -423,7 +423,16 @@ never starts a daemon or a harness.
 chip, type a prompt (at most 32 KiB), and press Enter or Send. The GUI asks
 the active folder's daemon to run one [harness dispatch](#harness-dispatch-pre-alpha-adr-029)
 turn with the read-only profile and shows the reply in the conversation as
-it arrives; Cancel asks the daemon to stop it. One Ask runs at a time. The
+it arrives; Cancel asks the daemon to stop it. One Ask runs at a time. Claude's
+route gives it no tools, so it cannot open files; Codex can read
+the folder under a read-only sandbox. Claude's read-only route runs without
+`--bare`, so it can use the subscription login Claude Code keeps under your
+user profile. It still has no tools, no MCP servers, and no user or project
+settings, but it can read CLAUDE.md files into the turn's context (ADR 029,
+amendment of 2026-10-23). The login must be valid for the standalone CLI:
+run `claude auth login` in a terminal once. Credentials that the Claude
+desktop app supplies to its own sessions do not reach a daemon. An
+authenticated live Claude turn has not been verified yet. The
 first Ask in a folder asks you to confirm once, because the turn may use
 your subscription or paid inference. Replies live in the daemon's memory and
 are lost when it restarts; the window keeps its last 20 Asks and clears them

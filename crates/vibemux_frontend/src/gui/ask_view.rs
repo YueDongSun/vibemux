@@ -151,7 +151,7 @@ pub fn render_setup_card(ui: &mut Ui, c: &C, setup: &SetupJob) -> AskViewActions
     let mut actions = AskViewActions::default();
     card(ui, c, |ui| {
         ui.label(
-            RichText::new("Ask Claude or Codex about this folder")
+            RichText::new("Ask Claude or Codex")
                 .font(typography::display_font(
                     ui.ctx(),
                     typography::TASK_TITLE_SIZE,
@@ -164,7 +164,7 @@ pub fn render_setup_card(ui: &mut Ui, c: &C, setup: &SetupJob) -> AskViewActions
                 muted(
                     ui,
                     c,
-                    "VibeMux runs one read-only turn of the harness in this folder and shows its reply; it cannot change files. Setup writes .vibemux\\harness_dispatch.json with read-only routes for the Claude and Codex executables found on this machine, then restarts VibeMux for this folder.",
+                    "VibeMux runs one turn of the harness and shows its reply; it cannot change files. Claude gets no tools, so it cannot open files and answers from your prompt and any CLAUDE.md files it loads; Codex can read this folder under a read-only sandbox. Setup writes .vibemux\\harness_dispatch.json with read-only routes for the Claude and Codex executables found on this machine, then restarts VibeMux for this folder.",
                 );
                 ui.add_space(12.0);
                 if design::accent_button(ui, c, "Enable Claude and Codex (read-only)").clicked() {
@@ -386,8 +386,10 @@ pub fn render_confirm(ctx: &egui::Context, c: &C, state: &ConfirmState) -> Confi
             ui.add(
                 egui::Label::new(
                     RichText::new(format!(
-                        "VibeMux will run one read-only {} turn in {}. It can read the folder but not change it, and it may use your subscription or paid inference. VibeMux asks this once per folder.",
-                        state.harness, state.folder
+                        "VibeMux will run one {} turn in {}. {} It may use paid inference. VibeMux asks this once per folder.",
+                        state.harness,
+                        state.folder,
+                        turn_scope(&state.harness)
                     ))
                     .size(13.5)
                     .color(c.muted),
@@ -408,6 +410,20 @@ pub fn render_confirm(ctx: &egui::Context, c: &C, state: &ConfirmState) -> Confi
         choice = ConfirmChoice::Cancel;
     }
     choice
+}
+
+/// What a read-only turn of `harness` can reach, as its dispatch route
+/// sets it (ADR 029): Claude runs with no tools; Codex runs in a read-only
+/// sandbox.
+#[must_use]
+pub fn turn_scope(harness: &str) -> &'static str {
+    if harness == AgentKind::Claude.display_name() {
+        "Its route gives it no tools: it cannot open or change files, and it answers from your prompt and any CLAUDE.md files it loads."
+    } else if harness == AgentKind::Codex.display_name() {
+        "It can read files in this folder under a read-only sandbox but cannot change them."
+    } else {
+        "It runs read-only and cannot change files."
+    }
 }
 
 fn card(ui: &mut Ui, c: &C, body: impl FnOnce(&mut Ui)) {
@@ -468,6 +484,15 @@ mod tests {
         assert!(!entry.running());
         assert_eq!(entry.reply, "Whole answer");
         assert_eq!(entry.request_id, Some(request_id));
+    }
+
+    #[test]
+    fn the_consent_says_what_each_harness_can_reach() {
+        assert!(turn_scope("Claude").contains("no tools"));
+        assert!(turn_scope("Codex").contains("read-only sandbox"));
+        for harness in ["Claude", "Codex", "Other"] {
+            assert!(turn_scope(harness).contains("change"));
+        }
     }
 
     #[test]

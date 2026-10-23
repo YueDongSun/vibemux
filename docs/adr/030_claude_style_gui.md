@@ -477,3 +477,22 @@ and 900×600. A bridge test shows the feed and the inventory read run only
 while the page is open. Screenshots of the `console`, `console_harnesses`,
 and `console_daemon` preview scenes and of Settings at 960×600 were checked
 by eye.
+
+### Addendum (2026-10-23): live Ask check
+
+One operator-authorized live Claude submit through the GUI's Ask found two
+defects and one limit:
+
+- One-click setup now records harness detection (`harness_refresh`) before
+  it writes routes. It writes only the routes whose harness the daemon
+  detected, reports the rest as skipped, and then restarts the daemon to
+  load them. Before this, a fresh folder's daemon listed every harness as
+  undetected, so dispatch refused each Ask.
+- The consent text claimed that a turn can read the folder. Claude's route
+  has no tools (`--tools=`), so it says that Claude answers from the prompt
+  alone; Codex reads under a read-only sandbox.
+- Claude's route ran with `--bare`, which accepts only an API key and never
+  a subscription login, so the turn ended "Not logged in". The operator chose
+  to drop `--bare` from the read-only route (ADR 029, amendment of
+  2026-10-23). An authenticated turn is still to be verified. Evidence is in
+  [harness_dispatch_validation.md](../evidence/harness_dispatch_validation.md).

@@ -130,7 +130,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
-| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; no live execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
+| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
@@ -6492,6 +6492,81 @@ workspace status` JSON. ADR 030 records the amendment.
 
 **Not verified:** the Console was not clicked through in a live window
 against a running daemon, and Re-probe was not run from the window.
+
+### 2026-10-23 - GUI Ask: setup records detection; first live Claude submit
+
+**Scope:** `vibemux_frontend` only (`fix/gui_ask_setup_detection`). No
+daemon, store, control protocol, or CLI changes.
+
+**Fixed:**
+- One-click setup now asks the folder's daemon to record harness detection
+  from the probe cache it saved (`harness_refresh`, as `vibemuxctl
+  harnesses` does) before it writes any route. Before this, a fresh
+  folder's daemon listed every harness as undetected, so dispatch refused
+  every Ask. Setup then writes only the routes whose harness the daemon
+  detected, reports the rest as skipped, fails without writing when none
+  is detected, and restarts the daemon to load the routes. Detection
+  survives the restart. A setup-only run in a fresh temporary folder (no
+  prompt) wrote only `claude`, and the daemon kept Claude available after
+  the restart.
+- The consent dialog and the setup card no longer say that a turn can read
+  the folder. Claude's route has no tools; Codex reads under a read-only
+  sandbox.
+
+**Live evidence (operator-authorized, one turn):** see the 2026-10-23
+addendum in
+[harness_dispatch_validation.md](docs/evidence/harness_dispatch_validation.md).
+Through the GUI's own Ask workers, setup enabled Claude and the daemon then
+listed Claude Code 2.1.304 as available. One submit was admitted and
+launched through the trampoline, and it ended `harness_process_failed`
+after about 1.5 s. Claude's reply was "Not logged in · Please run /login",
+because `--bare` accepts only an API key. No model inference ran. The
+temporary folder, its daemon, and the driver were removed. A stale runtime
+descriptor left by an interrupted daemon was cleared with `vibemuxctl
+daemon inspect` and `daemon recover --confirmation`.
+
+**Validation executed (Rust 1.92.0, native Windows 11):** `cargo fmt --all
+-- --check` passed; `cargo clippy -p vibemux_frontend --all-targets
+--all-features -- -D warnings` passed; `cargo test -p vibemux_frontend
+--all-features` passed (lib 283, 1 ignored, and every other test binary).
+
+**Decision:** the operator chose a read-only Claude route without `--bare`
+so a subscription login can work; see the next entry.
+
+### 2026-10-23 - Read-only Claude route drops `--bare` (ADR 029 amendment)
+
+**Scope:** `vibemux_harness::dispatch::launch_spec`, the argv shared by the
+daemon (ADR 029) and the standalone dispatcher (ADR 040). The ADR 031
+writable worker profile is unchanged. No daemon, store, control protocol, or
+CLI changes.
+
+**Implemented:** the read-only Claude argv no longer passes `--bare`, which
+accepts only an API key and never an OAuth login. `--tools=`,
+`--strict-mcp-config`, `--restricted`, `--no-session-persistence`, and
+`--permission-mode dontAsk` stay. ADR 029 records the decision and what
+`--bare` used to skip (CLAUDE.md discovery and Claude Code's background
+features).
+
+**Validation executed (Rust 1.92.0, native Windows 11):** `cargo test -p
+vibemux_harness -p vibemux_harness_native --all-features` passed (306 tests
+in 14 binaries); `cargo test -p vibemuxd --features test_helpers` passed for
+`harness_dispatch`, `control_harness_dispatch`, `launch_trampoline`,
+`decision_route`, `native_controller_runtime`, and the library (179 tests).
+fmt, clippy, and WSL results are in the PR.
+
+**Live evidence (operator-authorized, one turn):** a daemon built from the
+new argv ran one Claude submit through the GUI's Ask in a fresh temporary
+folder. The session started (a `system` `init` record), and then the API
+rejected Claude Code's stored OAuth login (`authentication_failed`, "Not
+logged in · Please run /login"). No model output was produced. `claude auth
+status` in a dispatch-like environment reports a stored OAuth token. Working
+Claude sessions on this host get their credentials from the Claude desktop
+app, which a daemon does not inherit, so the standalone CLI login is likely
+stale. The temporary folder, its daemon, and the driver were removed.
+
+**Not verified:** an authenticated live Claude turn. It needs a valid
+standalone CLI login (`claude auth login`, an operator action) and another
+authorization.
 
 ### 2026-10-23 - Prompt-policy evaluation: an unfinished case no longer looks cheaper
 
