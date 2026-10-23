@@ -130,7 +130,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
-| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepts only an API key; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
+| Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
@@ -6530,6 +6530,29 @@ daemon inspect` and `daemon recover --confirmation`.
 --all-features -- -D warnings` passed; `cargo test -p vibemux_frontend
 --all-features` passed (lib 283, 1 ignored, and every other test binary).
 
-**Open decision:** how Claude Asks should authenticate. Options are an API
-key forwarded by name, or a read-only route without `--bare` that can use a
-subscription login. Either changes ADR 029's posture.
+**Decision:** the operator chose a read-only Claude route without `--bare`
+so a subscription login can work; see the next entry.
+
+### 2026-10-23 - Read-only Claude route drops `--bare` (ADR 029 amendment)
+
+**Scope:** `vibemux_harness::dispatch::launch_spec`, the argv shared by the
+daemon (ADR 029) and the standalone dispatcher (ADR 040). The ADR 031
+writable worker profile is unchanged. No daemon, store, control protocol, or
+CLI changes.
+
+**Implemented:** the read-only Claude argv no longer passes `--bare`, which
+accepts only an API key and never an OAuth login. `--tools=`,
+`--strict-mcp-config`, `--restricted`, `--no-session-persistence`, and
+`--permission-mode dontAsk` stay. ADR 029 records the decision and what
+`--bare` used to skip (CLAUDE.md discovery and Claude Code's background
+features).
+
+**Validation executed (Rust 1.92.0, native Windows 11):** `cargo test -p
+vibemux_harness -p vibemux_harness_native --all-features` passed (306 tests
+in 14 binaries); `cargo test -p vibemuxd --features test_helpers` passed for
+`harness_dispatch`, `control_harness_dispatch`, `launch_trampoline`,
+`decision_route`, `native_controller_runtime`, and the library (179 tests).
+fmt, clippy, and WSL results are in the PR.
+
+**Not verified:** an authenticated live Claude turn. It needs the
+operator's next authorization.

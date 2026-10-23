@@ -491,8 +491,8 @@ defects and one limit:
 - The consent text claimed that a turn can read the folder. Claude's route
   has no tools (`--tools=`), so it says that Claude answers from the prompt
   alone; Codex reads under a read-only sandbox.
-- Claude's route runs with `--bare`, which accepts only an API key and never
-  a subscription login, so the turn ended "Not logged in". Changing the
-  route's flags or forwarding an API key changes ADR 029's posture. It is
-  left as an open decision for the operator. Evidence is in
+- Claude's route ran with `--bare`, which accepts only an API key and never
+  a subscription login, so the turn ended "Not logged in". The operator chose
+  to drop `--bare` from the read-only route (ADR 029, amendment of
+  2026-10-23). An authenticated turn is still to be verified. Evidence is in
   [harness_dispatch_validation.md](../evidence/harness_dispatch_validation.md).

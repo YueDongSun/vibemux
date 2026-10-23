@@ -209,3 +209,7 @@ dispatch code were unchanged since `main` at `5659805`.
 
 Still not verified: an authenticated Claude turn, any Codex turn, and a
 cancel against a live vendor.
+
+Follow-up decision: the operator chose to drop `--bare` from the read-only
+Claude route (ADR 029, amendment of 2026-10-23), so a subscription login
+can authenticate. A live turn under the new argv has not run yet.
