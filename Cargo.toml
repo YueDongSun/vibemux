@@ -74,7 +74,7 @@ sysinfo = { version = "=0.36.1", default-features = false, features = ["system"]
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
 time = { version = "=0.3.47", features = ["formatting", "parsing", "serde"] }
-tokio = { version = "=1.47.1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "=1.51.6", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "=0.8.23"
 url = "=2.5.8"
 uuid = { version = "=1.25.0", features = ["serde", "v4"] }
