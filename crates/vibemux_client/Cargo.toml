@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GUI-neutral VibeMux client: daemon control, probe, and Git workspace I/O shared by every frontend"
+description = "GUI-neutral VibeMux client: daemon control, probe, Ask, and Git workspace I/O shared by every frontend"
 
 [features]
 folder_dialog = ["dep:rfd"]

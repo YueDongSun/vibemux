@@ -5858,8 +5858,6 @@ dependencies = [
  "vibemux_dsh",
  "vibemux_harness",
  "vibemux_probe",
- "vibemux_types",
- "vibemuxd",
 ]
 
 [[package]]

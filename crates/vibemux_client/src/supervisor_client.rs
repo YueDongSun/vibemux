@@ -611,7 +611,7 @@ fn connection_failure(code: &str) -> ConnectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::change_notifier::NoopNotifier;
+    use crate::change_notifier::{CountingNotifier, NoopNotifier};
     use vibemux_types::{
         Run, RunSpec, Task, TaskSpec,
         a2a::{A2aRunAction, A2aRunStart, A2aRunUpdate, RunWorkspace},
@@ -682,11 +682,16 @@ mod tests {
         let before = writer.handle().unwrap().a2a_run(run_id).unwrap();
         writer.shutdown().unwrap();
         let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
-        let mut client = FrontendClient::start(temp.path().into(), Arc::new(NoopNotifier)).unwrap();
+        let notifier = Arc::new(CountingNotifier::default());
+        let mut client = FrontendClient::start(temp.path().into(), notifier.clone()).unwrap();
         let snapshot = wait_snapshot(&mut client, |snapshot| {
             snapshot.connection.status == ConnectionStatus::Connected && snapshot.tasks.len() == 1
         })
         .await;
+        assert!(
+            notifier.count() >= 1,
+            "a Connected snapshot must have been preceded by at least one notify()"
+        );
         assert_eq!(snapshot.tasks[0].title, "Observe real task");
         assert_eq!(snapshot.tasks[0].runs[0].run_id, run_id.to_string());
         let serialized = serde_json::to_string(snapshot.as_ref()).unwrap();

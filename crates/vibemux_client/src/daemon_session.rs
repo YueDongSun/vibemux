@@ -9,8 +9,8 @@ use vibemuxd::{
 /// instead of once per tick.
 #[derive(Default)]
 pub struct DaemonSession {
-    pub client: Option<ControlClient>,
-    pub generation: Option<ControlGeneration>,
+    pub(crate) client: Option<ControlClient>,
+    pub(crate) generation: Option<ControlGeneration>,
 }
 
 impl DaemonSession {

@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
-//! Shared display-text sanitization: every string that reaches a renderer
-//! passes through [`safe_text`] first.
+//! Shared display-text sanitization for single-line display fields.
 
 use vibemux_harness::terminal_text::display_character;
 

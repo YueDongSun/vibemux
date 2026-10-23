@@ -10,11 +10,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Wakes a frontend when backend state changed. Implementors decide what
 /// "wake" means (an egui repaint, a channel send, nothing at all).
+///
+/// Calling contract: `notify()` is called from worker threads, possibly from
+/// inside a Tokio runtime, so it must be cheap and non-blocking — it must not
+/// call `blocking_send` or `Handle::block_on`. It may also be called while the
+/// owner is dropping its client (`FrontendClient::drop` joins the worker that
+/// calls `notify()`), so an implementation must not take any lock the owner
+/// holds across that drop.
 pub trait ChangeNotifier: Send + Sync + 'static {
     fn notify(&self);
 }
 
 /// Does nothing. For headless use and tests that do not observe wakeups.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct NoopNotifier;
 
 impl ChangeNotifier for NoopNotifier {

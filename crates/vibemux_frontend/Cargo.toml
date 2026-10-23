@@ -54,13 +54,9 @@ vibemux_probe = { path = "../vibemux_probe" }
 vibemux_client = { path = "../vibemux_client", features = ["folder_dialog"] }
 vibemux_dsh = { path = "../vibemux_dsh" }
 vibemux_harness = { path = "../vibemux_harness" }
-vibemuxd = { path = "../vibemuxd" }
-vibemux_types = { path = "../vibemux_types" }
 time = { workspace = true, features = ["local-offset"] }
 uuid.workspace = true
 image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
 
 [dev-dependencies]
-# Real-daemon feed tests use the Windows private-runtime path helper.
-vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
 tempfile.workspace = true

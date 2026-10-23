@@ -399,3 +399,35 @@ fn missing_dispatch_binary() -> Option<&'static str> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::change_notifier::CountingNotifier;
+
+    #[test]
+    fn spawn_catalog_notifies_when_its_result_is_ready() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let notifier = Arc::new(CountingNotifier::default());
+        let receiver = spawn_catalog(temp.path().to_path_buf(), notifier.clone());
+        let result = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("spawn_catalog must deliver a result within the deadline");
+        assert!(
+            result.is_err(),
+            "no daemon is running for this fresh folder"
+        );
+        // `notify()` runs on the worker thread immediately after the result is
+        // sent, so the receiving thread can briefly observe the result before
+        // the count is incremented; poll up to the same deadline instead of
+        // asserting on the exact interleaving.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while notifier.count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            notifier.count() >= 1,
+            "spawn_catalog must notify when its result is ready"
+        );
+    }
+}
