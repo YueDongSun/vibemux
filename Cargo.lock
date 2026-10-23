@@ -5765,6 +5765,7 @@ dependencies = [
  "vibemux_harness_native",
  "vibemux_platform",
  "vibemux_probe",
+ "vibemux_types",
  "vibemuxd",
 ]
 

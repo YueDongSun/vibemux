@@ -120,7 +120,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Windows-first product path | `PARTIAL` | README, platform docs, Windows CI, protected control runtime | Native daemon lifecycle and the declared ACL boundary have evidence; live WezTerm/ConPTY multi-harness operation is not implemented |
 | Rust workspace and canonical domain/event core | `PARTIAL` | root `Cargo.toml`, `vibemux_types`, `vibemux_events` | Rust 2024/MSRV workspace, typed IDs, state machines, events, and property tests exist; tracing and public compatibility policy remain incomplete |
 | Rust SQLite store and single-writer daemon | `VERIFIED` | `vibemux_store`, `vibemuxd`, `vibemux_cli`, `vibemux_platform` | M3 is implemented within scope: migrations/WAL, atomic state+event, replay/idempotency, bounded writer, authenticated IPC, lifecycle, explicit recovery, and Windows protected runtime |
-| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, `dispatch`, `decide`, and `decisions`; the unified `status`, `workspace status`, `probe`, `ui`, and standalone `harness` commands with `--format auto|text|json` (ADR 041) | Lifecycle, harness registry, one-shot harness dispatch, advisory decision commands, and the read-only workspace/probe/dashboard views exist; Task/Run/plugin command parity does not |
+| Rust CLI | `PARTIAL` | `vibemuxctl daemon` with `start`, `health`, `inspect`, `recover`, or `stop`; `vibemuxctl harnesses`, `switch`, `dispatch`, `decide`, and `decisions`; the unified `status`, `workspace status`, `probe`, `ui`, and standalone `harness` commands with `--format auto|text|json` (ADR 041) | Lifecycle, harness registry, one-shot harness dispatch, advisory decision commands, the read-only workspace/probe/dashboard views, read-only `tasks list`/`show` and `plugins status`, and observation-only `terminal inspect`/`link`/`focus`/`unlink` exist, with `scripts/install_local_tools.ps1` to install the release binaries together; standalone task creation and `send` (pane input) have no Rust equivalent |
 | Plugin protocol v1 foundation | `VERIFIED` | `vibemux_plugin_protocol`, checked-in Protobuf/TOML fixtures | M4.0 is verified as an isolated private pre-alpha wire/manifest/negotiation/lifecycle foundation; it does not spawn or mutate state |
 | Plugin process supervisor foundation | `VERIFIED` | `vibemux_plugin_supervisor`, real mock-child process tests | M4.1 is verified as an isolated supervisor foundation with bounded channels, deadlines, cancellation, heartbeat, stderr cap, shutdown, and crash containment |
 | Daemon-owned plugin registry and read-only status | `VERIFIED` | `vibemuxd::plugin_registry`, explicit startup config, IPC v2 `plugin_status` | Native Windows real mock-child/standalone-daemon evidence; lifetime budgets/backoff/quarantine; no writable plugin API, operator recovery, SDK, vendor plugin, or Task/Run routing |
@@ -6340,6 +6340,63 @@ protocol, CLI, or observer contract changes. ADR 030 records the amendment.
 **Not verified:** the console-less launch and startup log were exercised by
 unit tests and a manual launch, not by an automated end-to-end Windows test;
 other display scales, IME input, and screen readers were not tested.
+
+### 2026-10-22 - vibemuxctl tasks, plugins, and terminal verbs, and a local install script
+
+Status: Rust CLI stays `PARTIAL`. No new control operation, schema, or ADR: the
+verbs are thin clients of operations the daemon already served to the console,
+GUI, web, and MCP frontends.
+
+- `vibemuxctl tasks list [--after] [--limit]` and `tasks show <task_id>` print the
+  daemon's bounded read models (Control v4). An unknown task fails with
+  `frontend_task_not_found`. Neither creates a task.
+- `vibemuxctl plugins status` prints the plugin registry state (read-only).
+- `vibemuxctl terminal inspect|link|focus|unlink` drive the existing
+  observation-only terminal operations. Nothing attaches to a pane, sends input,
+  or launches a harness. The terminal verbs need a daemon the operator started
+  with `--plugin-config`, which `vibemuxctl daemon start` does not pass.
+- `scripts/install_local_tools.ps1` copies the release binaries into one
+  directory (default `%LOCALAPPDATA%\VibeMux\bin`) and, only with
+  `-add_to_user_path`, appends it to the user PATH.
+- The unified CLI guide maps each Python `vibemux` command to its Rust verb.
+
+**Not implemented:** standalone task creation and `send` (they would need a new
+control operation and an ADR, and pane input and harness launch into native
+terminals remain premature), `diff`, and passing `--plugin-config` through
+`daemon start`. A populated task page was not read through the CLI: the live
+check below saw an empty store, so the JSON shape of a real task rests on the
+daemon's existing read-model types.
+
+**Validation executed (Rust 1.92.0, native Windows 11, `CARGO_TARGET_DIR` under `%TEMP%`):**
+
+- `cargo +1.92.0 fmt --all -- --check`: passed.
+- `cargo +1.92.0 clippy -p vibemux_cli --all-targets --all-features --locked --offline -- -D warnings`: passed.
+- `cargo +1.92.0 test -p vibemux_cli --all-features --locked --offline`: passed.
+  `vibemux_cli` lib 72 (59 before), `bootstrap_process` 4, `unified_commands` 8
+  (7 before). The documented-command parse test covers the new CLAUDE.md,
+  README, and guide lines.
+- A real local daemon in a scratch Git project (debug binaries, no vendor CLI or
+  paid API): `tasks list` and `plugins status` returned empty pages; `tasks show`
+  and `terminal inspect` of unknown ids failed with `frontend_task_not_found` and
+  `terminal_run_unavailable`; `terminal focus` of an unknown binding failed with
+  `terminal_link_expired`; `terminal unlink` of an unknown binding succeeded
+  because the daemon's unlink is idempotent; `tasks list --limit 0` exited 2.
+  No terminal plugin was configured, so `link` and a populated `inspect` did not
+  run.
+- The install script ran with `-dry_run`, then into a scratch directory, and
+  twice (idempotent); the installed `vibemuxctl` started its sibling `vibemuxd`
+  and read `tasks list`. `-add_to_user_path` was exercised only as a dry run,
+  and the `-build` path only as `cargo check --release --locked` with the same
+  package and binary arguments, not as a full release build.
+- Observed, not changed here: piping `vibemuxctl daemon start` into `cut` from
+  Git Bash did not return until the daemon stopped, as if the daemon inherited
+  the pipe handle.
+- Two hosted Codex review findings were fixed after the first push, the first
+  with a test that failed before the fix: the shared scanner took an option as
+  a flag's value (`plugins status --project-root --unknown` named a project
+  `--unknown`), and the install script resolved a relative `CARGO_TARGET_DIR`
+  against the caller's directory instead of the repository root where it
+  builds (reproduced from another directory before the fix).
 
 ### 2026-10-23 - GUI: project folders and daemon Start/Stop
 

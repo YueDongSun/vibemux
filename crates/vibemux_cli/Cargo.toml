@@ -47,6 +47,7 @@ vibemux_frontend = { path = "../vibemux_frontend" }
 vibemux_harness = { path = "../vibemux_harness" }
 vibemux_harness_native = { path = "../vibemux_harness_native" }
 vibemux_probe = { path = "../vibemux_probe" }
+vibemux_types = { path = "../vibemux_types" }
 vibemuxd = { path = "../vibemuxd" }
 
 [target.'cfg(windows)'.dependencies]

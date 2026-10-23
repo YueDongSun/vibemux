@@ -7,9 +7,13 @@ use crate::{
     dispatch_commands::run_dispatch,
     dsh_commands::run_dsh,
     failure::Failure,
-    harness_list, harness_switch, probe,
+    harness_list, harness_switch,
+    plugin_commands::run_plugin_status,
+    probe,
     recovery::{inspect_runtime, recover_runtime},
     start_daemon, stop_daemon,
+    task_commands::run_task,
+    terminal_commands::run_terminal,
     workflow_commands::run_workflow,
     workspace,
 };
@@ -270,6 +274,24 @@ async fn run_control(command: CliCommand) -> Result<Value, DaemonCliError> {
         } => {
             let paths = paths(project_root).await?;
             run_workflow(&paths, command).await
+        }
+        CliCommand::Tasks {
+            project_root,
+            command,
+        } => {
+            let paths = paths(project_root).await?;
+            run_task(&paths, command).await
+        }
+        CliCommand::Plugins { project_root } => {
+            let paths = paths(project_root).await?;
+            run_plugin_status(&paths).await
+        }
+        CliCommand::Terminal {
+            project_root,
+            command,
+        } => {
+            let paths = paths(project_root).await?;
+            run_terminal(&paths, command).await
         }
         CliCommand::Help | CliCommand::Version => Err(DaemonCliError::InvalidArguments),
     }

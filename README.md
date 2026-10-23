@@ -108,6 +108,15 @@ After a daemon crashes, run `inspect` first. Only when status is `recoverable` m
 
 Recovery never kills a PID and never opens or modifies the Python/Rust database. It refuses if any artifact, PID, or confirmation changes.
 
+To run `vibemuxctl` by name rather than from `.\target\debug\`, install the release binaries together and add their directory to your **user** PATH (the machine PATH and the Python `vibemux` command are untouched; `-dry_run` reports without changing anything):
+
+```powershell
+.\scripts\install_local_tools.ps1 -build -dry_run
+.\scripts\install_local_tools.ps1 -build -add_to_user_path
+```
+
+With a daemon running, `tasks list`, `tasks show`, `plugins status`, and `terminal inspect|link|focus|unlink` print the daemon's content-free read models; they create nothing, and `terminal` never attaches to a pane or sends input. The [unified CLI guide](docs/guides/unified_cli_guide.md) has the full syntax and a table mapping each Python `vibemux` command to its Rust verb.
+
 Windows stores the bearer descriptor and primary cooperative writer lock under `%LOCALAPPDATA%\VibeMux\runtime\<project_hash>`; the protected root and its inheritance rules allow only the current logon user, `SYSTEM`, and Administrators. The databases and a compatibility writer lock remain project-local; the new daemon holds both writer locks to exclude legacy writers. Agents under the same logon SID are the collaboration trust domain. POSIX continues to use the project-local `.vibemux/` descriptor at mode `0600` and a randomized UDS path.
 
 The release-start performance can be re-measured with a fixed script; the script refuses a project that already has a daemon descriptor:

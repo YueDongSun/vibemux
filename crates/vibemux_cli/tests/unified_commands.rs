@@ -352,3 +352,26 @@ fn harness_replay_text_tallies_kinds_without_vendor_content() {
     }
     assert!(!directory.path().join(".vibemux").exists());
 }
+
+#[test]
+fn observation_verbs_report_a_missing_daemon_instead_of_starting_one() {
+    let directory = repository();
+    let id = "11111111-1111-4111-8111-111111111111";
+    for arguments in [
+        vec!["tasks", "list"],
+        vec!["tasks", "show", id],
+        vec!["plugins", "status"],
+        vec!["terminal", "inspect", id, id],
+        vec!["terminal", "focus", id],
+    ] {
+        let mut full = vec!["--json"];
+        full.extend(&arguments);
+        let output = run(directory.path(), &full);
+        assert_eq!(output.status.code(), Some(4), "{arguments:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error_code"], "daemon_not_running", "{arguments:?}");
+    }
+    let usage = run(directory.path(), &["--json", "tasks", "create"]);
+    assert_eq!(usage.status.code(), Some(2));
+    assert!(!directory.path().join(".vibemux").exists());
+}

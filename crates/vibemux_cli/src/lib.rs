@@ -4,15 +4,19 @@
 //! harness commands that share one command tree and output contract.
 
 pub mod application;
+mod argument_scan;
 pub mod command;
 pub mod decision_commands;
 pub mod dispatch_commands;
 pub mod dsh_commands;
 pub mod failure;
 pub mod output;
+pub mod plugin_commands;
 pub use vibemux_probe::snapshot as probe;
 mod prompt_input;
 pub mod recovery;
+pub mod task_commands;
+pub mod terminal_commands;
 pub mod workflow_commands;
 pub mod workspace;
 
@@ -235,6 +239,20 @@ pub enum CliCommand {
     Dsh {
         project_root: Option<PathBuf>,
         command: dsh_commands::DshCommand,
+    },
+    /// The read-only `tasks list|show` verbs.
+    Tasks {
+        project_root: Option<PathBuf>,
+        command: task_commands::TaskCommand,
+    },
+    /// The read-only `plugins status` verb.
+    Plugins {
+        project_root: Option<PathBuf>,
+    },
+    /// The observation-only `terminal` verbs.
+    Terminal {
+        project_root: Option<PathBuf>,
+        command: terminal_commands::TerminalCommand,
     },
     /// The workflow, slots, context, session, and prompt verbs.
     Workflow {
@@ -485,6 +503,15 @@ pub fn parse_cli_arguments(
     }
     if verb == "decide" || verb == "decisions" {
         return decision_commands::parse_decision_arguments(verb, &arguments[1..]);
+    }
+    if verb == "tasks" {
+        return task_commands::parse_task_arguments(&arguments[1..]);
+    }
+    if verb == "plugins" {
+        return plugin_commands::parse_plugin_arguments(&arguments[1..]);
+    }
+    if verb == "terminal" {
+        return terminal_commands::parse_terminal_arguments(&arguments[1..]);
     }
     if verb == "dsh" {
         return match dsh_commands::parse_dsh_arguments(&arguments[1..])? {

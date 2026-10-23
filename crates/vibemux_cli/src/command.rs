@@ -12,7 +12,7 @@ const MAX_ARGUMENTS: usize = 32;
 const MAX_CONTROL_ARGUMENTS: usize = 1024;
 /// The daemon lifecycle and daemon-backed control verbs routed to
 /// [`parse_cli_arguments`].
-const CONTROL_VERBS: [&str; 11] = [
+const CONTROL_VERBS: [&str; 14] = [
     "harnesses",
     "switch",
     "dispatch",
@@ -24,6 +24,9 @@ const CONTROL_VERBS: [&str; 11] = [
     "context",
     "session",
     "prompt",
+    "tasks",
+    "plugins",
+    "terminal",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,7 +122,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
         Some(
             "daemon" | "harness" | "workspace" | "probe" | "ui" | "harnesses" | "switch"
             | "dispatch" | "decide" | "decisions" | "dsh" | "workflow" | "slots" | "context"
-            | "session" | "prompt",
+            | "session" | "prompt" | "tasks" | "plugins" | "terminal",
         ) if arguments.len() == 2 && matches!(arguments[1].to_str(), Some("--help" | "-h")) => {
             Command::Help(topic(first)?)
         }
@@ -286,6 +289,12 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
   vibemuxctl dsh prompt --prompt-file <path|-> [--project-root <path>]
   vibemuxctl dsh poll [--after-sequence <n>] [--project-root <path>]
   vibemuxctl dsh status|cancel|close [--project-root <path>]
+  vibemuxctl tasks list [--after <task_id>] [--limit <limit>] [--project-root <path>]
+  vibemuxctl tasks show <task_id> [--project-root <path>]
+  vibemuxctl plugins status [--project-root <path>]
+  vibemuxctl terminal inspect <task_id> <run_id> [--plugin-id <id>] [--project-root <path>]
+  vibemuxctl terminal link <task_id> <run_id> --instance-id <id> --pane-id <pane_id> [--plugin-id <id>] [--project-root <path>]
+  vibemuxctl terminal focus|unlink <binding_id> [--project-root <path>]
 ";
 
 pub fn help(topic: Topic) -> String {
@@ -314,6 +323,9 @@ Operate explicitly (daemon)
   workflow, slots, context, session, prompt
                       Dual-track workflows (ADR 031)
   dsh                 DSH sessions (ADR 032)
+  tasks               Read-only Task/Run list and detail
+  plugins             Read-only plugin registry status
+  terminal            Observation-only pane inspect | link | focus | unlink
   help control        Full syntax for the daemon-backed verbs
 
 Native harness (standalone, no daemon)
@@ -393,6 +405,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_observation_verbs_route_to_the_control_parser_and_the_control_help() {
+        let binding = "11111111-1111-4111-8111-111111111111";
+        for verb in ["tasks", "plugins", "terminal"] {
+            let invocation = parse([verb, "--help"].map(OsString::from)).unwrap();
+            assert!(matches!(invocation.command, Command::Help(Topic::Control)));
+            assert!(help(Topic::Control).contains(&format!("vibemuxctl {verb} ")));
+        }
+        for arguments in [
+            vec!["tasks", "list"],
+            vec!["plugins", "status"],
+            vec!["terminal", "focus", binding],
+        ] {
+            let invocation = parse(arguments.into_iter().map(OsString::from)).unwrap();
+            assert!(matches!(invocation.command, Command::Control(_)));
+        }
+        for arguments in [
+            vec!["tasks"],
+            vec!["tasks", "create"],
+            vec!["plugins", "restart"],
+            vec!["terminal", "send", binding],
+        ] {
+            let error = parse(arguments.into_iter().map(OsString::from)).err();
+            assert_eq!(
+                error.map(|failure| failure.code().to_string()),
+                Some("cli_invalid_arguments".to_string())
+            );
+        }
+    }
+
     /// The documented value for a `<placeholder>` in a command line.
     fn placeholder_value(name: &str) -> &'static str {
         match name {
@@ -403,8 +445,12 @@ mod tests {
             "path" => "input_path",
             "path|-" => "-",
             "n" => "0",
+            "limit" => "5",
+            "pane_id" => "7",
             "uuid" | "id" | "request_id" | "decision_id" | "workflow_id" | "bundle_id"
-            | "session_id" | "candidate_id" | "suite_id" => "11111111-1111-4111-8111-111111111111",
+            | "session_id" | "candidate_id" | "suite_id" | "task_id" | "run_id" | "binding_id" => {
+                "11111111-1111-4111-8111-111111111111"
+            }
             other => panic!("undocumented placeholder <{other}>"),
         }
     }
