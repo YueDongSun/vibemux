@@ -30,7 +30,7 @@ Key invariants from `AGENTS.md` §2: user messages are data (never interpolated 
 Rust crate dependency direction (from `AGENTS.md` §4.2):
 
 ```text
-types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli
+types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux_client → vibemux_frontend → vibemux-cli
 ```
 
 Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary (`AgentKind`/`LauncherKind`/`ProbeState`) lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it — the harness crate pulls no probe I/O. Full crate responsibilities and data flow are in [docs/architecture.md](docs/architecture.md).
@@ -58,6 +58,7 @@ crates/vibemux_harness_native/     # ADR 040 bounded vendor stream adapters and 
 crates/vibemux_model_peer/         # optional out-of-process model peer; never receives a core writer handle
 crates/vibemux_mcp/                # ADR 035 first-party read-only MCP frontend over the daemon client (stdio)
 crates/vibemux_web/                # ADR 033 operator-started read-only mobile web surface (+ the ADR 042 console's daemon views, opt-in loopback local page mode); build.rs needs crates/vibemux_web/web/dist (npm ci && npm run build)
+crates/vibemux_client/             # GUI-neutral daemon, probe, Ask, and Git client shared by the frontends
 crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump + read-only multi-pane console with content-free daemon views (ADR 041/042)
 crates/vibemux_workspace/          # Git worktree lifecycle, owner receipts, and cleanup
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v10: health/plugin/harness/frontend/terminal/dispatch/workflow/dsh/decision ops, model-supervisor and contract-edit ops + harness dispatch, workflow, DSH, and decision services)

@@ -2,7 +2,10 @@
 //! No daemon startup, SQLite access, provider invocation, or implicit retries
 //! of focus/link actions occur here.
 
-use crate::{daemon_session::DaemonSession, supervisor_mapping, supervisor_model::*};
+use crate::{
+    change_notifier::ChangeNotifier, daemon_session::DaemonSession, supervisor_mapping,
+    supervisor_model::*,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -42,7 +45,10 @@ pub struct FrontendClient {
 }
 
 impl FrontendClient {
-    pub fn start(project_root: PathBuf, context: egui::Context) -> Result<Self, std::io::Error> {
+    pub fn start(
+        project_root: PathBuf,
+        notifier: Arc<dyn ChangeNotifier>,
+    ) -> Result<Self, std::io::Error> {
         let (actions, requests) = mpsc::channel(ACTION_CAPACITY);
         let mut initial = SupervisorSnapshot::unavailable();
         initial.project_name = project_root
@@ -66,13 +72,13 @@ impl FrontendClient {
                         updates,
                         requests,
                         stopped,
-                        context,
+                        notifier,
                     )),
                     Err(_) => {
                         let mut failed = initial;
                         failed.connection = connection_failure("frontend_runtime_unavailable");
                         updates.send_replace(Arc::new(failed));
-                        context.request_repaint();
+                        notifier.notify();
                     }
                 }
             })?;
@@ -116,7 +122,7 @@ async fn read_loop(
     updates: watch::Sender<Arc<SupervisorSnapshot>>,
     mut requests: mpsc::Receiver<SupervisorAction>,
     mut stopped: watch::Receiver<bool>,
-    context: egui::Context,
+    notifier: Arc<dyn ChangeNotifier>,
 ) {
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -172,7 +178,7 @@ async fn read_loop(
             .format(&time::format_description::well_known::Rfc3339)
             .ok();
         updates.send_replace(Arc::clone(&published));
-        context.request_repaint();
+        notifier.notify();
     }
 }
 
@@ -605,6 +611,7 @@ fn connection_failure(code: &str) -> ConnectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::change_notifier::NoopNotifier;
     use vibemux_types::{
         Run, RunSpec, Task, TaskSpec,
         a2a::{A2aRunAction, A2aRunStart, A2aRunUpdate, RunWorkspace},
@@ -675,8 +682,7 @@ mod tests {
         let before = writer.handle().unwrap().a2a_run(run_id).unwrap();
         writer.shutdown().unwrap();
         let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
-        let mut client =
-            FrontendClient::start(temp.path().into(), egui::Context::default()).unwrap();
+        let mut client = FrontendClient::start(temp.path().into(), Arc::new(NoopNotifier)).unwrap();
         let snapshot = wait_snapshot(&mut client, |snapshot| {
             snapshot.connection.status == ConnectionStatus::Connected && snapshot.tasks.len() == 1
         })
@@ -760,8 +766,7 @@ mod tests {
             .record;
         writer.shutdown().unwrap();
         let server = DaemonControlServer::start_for_paths(&paths).await.unwrap();
-        let mut client =
-            FrontendClient::start(temp.path().into(), egui::Context::default()).unwrap();
+        let mut client = FrontendClient::start(temp.path().into(), Arc::new(NoopNotifier)).unwrap();
         let first = wait_snapshot(&mut client, |snapshot| {
             snapshot.connection.status == ConnectionStatus::Connected
                 && snapshot.tasks.len() == 1

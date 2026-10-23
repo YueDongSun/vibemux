@@ -9,6 +9,7 @@ description = "GUI-neutral VibeMux client: daemon control, probe, and Git worksp
 
 [features]
 folder_dialog = ["dep:rfd"]
+test_support = []
 
 [dependencies]
 serde.workspace = true

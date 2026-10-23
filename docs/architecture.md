@@ -160,10 +160,14 @@ plugin-host
   ↑
 vibemuxd
   ↑
+vibemux_client
+  ↑
+vibemux_frontend
+  ↑
 vibemux-cli
 ```
 
-With the current crates placed in that layering: `types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux-cli`. `vibemux_decision_peer` sits beside `vibemuxd` at the process level and depends only on `vibemux_decision`.
+With the current crates placed in that layering: `types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux_client → vibemux_frontend → vibemux-cli`. `vibemux_decision_peer` sits beside `vibemuxd` at the process level and depends only on `vibemux_decision`.
 
 ## Core versus plugin boundary
 

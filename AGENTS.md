@@ -156,6 +156,10 @@ plugin-host
   ↑
 vibemuxd
   ↑
+vibemux_client
+  ↑
+vibemux_frontend
+  ↑
 vibemux-cli
 ```
 
