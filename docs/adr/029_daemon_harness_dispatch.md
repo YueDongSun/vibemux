@@ -730,5 +730,9 @@ Decided by the operator after one live submit.
   Which of these features run during a tool-free `-p` turn is unverified.
 - **Verification.** The launch-spec unit test asserts that `--bare` is
   absent, and the config test pins the full argv. The fixture-driven daemon
-  dispatch tests pass. An authenticated live turn is pending the operator's
-  next authorization.
+  dispatch tests pass. A second operator-authorized live submit, without
+  `--bare`, started the session, but the API rejected the CLI's stored OAuth
+  login (`authentication_failed`). On this host, working Claude sessions get
+  their credentials from the Claude desktop app, and a daemon does not
+  inherit them. An authenticated live turn is still unverified and needs a
+  valid standalone CLI login (`claude auth login`).

@@ -6554,5 +6554,16 @@ in 14 binaries); `cargo test -p vibemuxd --features test_helpers` passed for
 `decision_route`, `native_controller_runtime`, and the library (179 tests).
 fmt, clippy, and WSL results are in the PR.
 
-**Not verified:** an authenticated live Claude turn. It needs the
-operator's next authorization.
+**Live evidence (operator-authorized, one turn):** a daemon built from the
+new argv ran one Claude submit through the GUI's Ask in a fresh temporary
+folder. The session started (a `system` `init` record), and then the API
+rejected Claude Code's stored OAuth login (`authentication_failed`, "Not
+logged in · Please run /login"). No model output was produced. `claude auth
+status` in a dispatch-like environment reports a stored OAuth token. Working
+Claude sessions on this host get their credentials from the Claude desktop
+app, which a daemon does not inherit, so the standalone CLI login is likely
+stale. The temporary folder, its daemon, and the driver were removed.
+
+**Not verified:** an authenticated live Claude turn. It needs a valid
+standalone CLI login (`claude auth login`, an operator action) and another
+authorization.

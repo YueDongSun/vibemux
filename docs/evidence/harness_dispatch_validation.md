@@ -212,4 +212,34 @@ cancel against a live vendor.
 
 Follow-up decision: the operator chose to drop `--bare` from the read-only
 Claude route (ADR 029, amendment of 2026-10-23), so a subscription login
-can authenticate. A live turn under the new argv has not run yet.
+can authenticate.
+
+### Second live submit, without `--bare` (2026-10-23)
+
+The operator authorized one more turn. A daemon built from the new argv ran
+the same GUI path in a fresh temporary folder: setup enabled Claude, the
+daemon listed Claude Code 2.1.304 as available, and one submit was admitted
+and launched.
+
+- **Result.** It ended `harness_process_failed` after about 2.1 s, again with
+  "Not logged in · Please run /login". The output records show the session
+  started (a `system` `init` record with `apiKeySource: none`, which is
+  normal for an OAuth login). The next `assistant` record carried
+  `error: authentication_failed`, and the `result` record had `is_error:
+  true`. So Claude Code sent its stored OAuth login and the API rejected it.
+  No model output was produced.
+- **Diagnosis, with no further turn.** `claude auth status`, run in an
+  environment that mirrors the dispatch environment, reported `loggedIn:
+  true` with `authMethod: oauth_token`. That command checks only that a
+  stored token is present. The Claude sessions that work on this host get
+  their credentials from the Claude desktop app, which injects
+  `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` into each session. Neither
+  variable is set persistently for the Windows user or the machine, so a
+  daemon started from the GUI or a terminal never sees them. The stored
+  standalone CLI login is most likely stale.
+- **Next step for the operator.** Refresh the standalone CLI login with
+  `claude auth login` in a terminal, then authorize another turn.
+  VibeMux does not enter credentials.
+
+Still not verified: an authenticated Claude turn, any Codex turn, and a
+cancel against a live vendor.
