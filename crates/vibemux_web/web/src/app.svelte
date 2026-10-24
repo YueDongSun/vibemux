@@ -304,7 +304,7 @@
 </script>
 
 <svelte:head>
-  <meta name="color-scheme" content="light" />
+  <meta name="color-scheme" content="light dark" />
 </svelte:head>
 
 <div class="app_shell">
