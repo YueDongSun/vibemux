@@ -28,6 +28,15 @@ export default defineConfig({
       },
     }),
   ],
+  server: {
+    fs: {
+      // The shared design tokens live outside this package, in the
+      // repo-root `config/` directory (`src/style.css` imports
+      // `config/design_tokens.css`); without this, the dev server
+      // refuses to serve a file outside its default workspace root.
+      allow: ['.', '../../../config'],
+    },
+  },
   build: {
     outDir: 'dist',
     sourcemap: false,

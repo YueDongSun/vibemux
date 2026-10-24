@@ -1,0 +1,216 @@
+#![forbid(unsafe_code)]
+//! Parity and contrast pins for `config/design_tokens.css`.
+//!
+//! `config/design_tokens.css` is the shared stylesheet the mobile web
+//! surface (`crates/vibemux_web/web/src/style.css`) and a future Tauri
+//! desktop UI both load. This test keeps its light block in lockstep
+//! with the compiled-in `claude_light` palette, its two dark blocks in
+//! lockstep with each other and with the compiled-in `claude` palette
+//! (both exported to `config/theme_palettes.json`, pinned separately by
+//! `palette_parity.rs`), and every semantic text/background pair at or
+//! above WCAG AA (4.5:1).
+//!
+//! Parsing is plain string splitting on purpose (no regex, no new
+//! dependency): the CSS here is a small, fully controlled subset
+//! (`--name: value;` declarations inside three flat, non-nested
+//! blocks), so `find`/`split_once`/`split(';')` are enough.
+
+use std::collections::BTreeMap;
+
+use serde_json::Value;
+use vibemux_frontend::theme::contrast::{TEXT_CONTRAST_MINIMUM, contrast_ratio};
+use vibemux_frontend::theme::parse_hex_rgb;
+
+const TOKENS: &str = include_str!("../../../config/design_tokens.css");
+const PALETTES: &str = include_str!("../../../config/theme_palettes.json");
+
+/// The light block's selector is the bare `:root {`; neither dark
+/// selector contains that exact substring (they continue with `:not(`
+/// or `[data-theme=`), so a plain substring search is unambiguous.
+const LIGHT_SELECTOR: &str = ":root {";
+/// `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { … } }`.
+const DARK_MEDIA_SELECTOR: &str = ":root:not([data-theme=\"light\"]) {";
+/// `:root[data-theme="dark"] { … }`.
+const DARK_EXPLICIT_SELECTOR: &str = ":root[data-theme=\"dark\"] {";
+
+/// Return the declaration text between `selector`'s own trailing `{`
+/// (each selector constant already ends in `" {"`) and its matching
+/// `}`. The three token blocks never nest braces, so the first `}`
+/// found is always the right one.
+fn block_body<'a>(css: &'a str, selector: &str) -> &'a str {
+    let start = css
+        .find(selector)
+        .unwrap_or_else(|| panic!("selector {selector:?} not found in config/design_tokens.css"));
+    let body = &css[start + selector.len()..];
+    let close = body
+        .find('}')
+        .unwrap_or_else(|| panic!("no closing '}}' for selector {selector:?}"));
+    &body[..close]
+}
+
+/// Parse `name: value;` declarations (including `color-scheme` and
+/// every `--token`) into a name -> value map.
+fn parse_declarations(body: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for raw_declaration in body.split(';') {
+        let declaration = raw_declaration.trim();
+        if declaration.is_empty() {
+            continue;
+        }
+        let (name, value) = declaration
+            .split_once(':')
+            .unwrap_or_else(|| panic!("malformed declaration {declaration:?}"));
+        map.insert(name.trim().to_string(), value.trim().to_string());
+    }
+    map
+}
+
+/// Parse only the `--token: #RRGGBB;` custom properties, keyed by the
+/// token name with the leading `--` stripped.
+fn parse_hex_tokens(body: &str) -> BTreeMap<String, String> {
+    parse_declarations(body)
+        .into_iter()
+        .filter_map(|(name, value)| {
+            name.strip_prefix("--")
+                .map(|bare_name| (bare_name.to_string(), value))
+        })
+        .collect()
+}
+
+fn exported_palette<'a>(palettes: &'a Value, name: &str) -> &'a Value {
+    palettes["palettes"]
+        .as_array()
+        .expect("config/theme_palettes.json must have a palettes array")
+        .iter()
+        .find(|palette| palette["name"].as_str() == Some(name))
+        .unwrap_or_else(|| panic!("palette {name:?} missing from config/theme_palettes.json"))
+}
+
+fn assert_hex_equal(
+    block_name: &str,
+    css_token: &str,
+    css_hex: &str,
+    json_field: &str,
+    json_hex: &str,
+) {
+    let css_rgb = parse_hex_rgb(css_hex)
+        .unwrap_or_else(|| panic!("{block_name} --{css_token} is not #RRGGBB: {css_hex:?}"));
+    let json_rgb = parse_hex_rgb(json_hex).unwrap_or_else(|| {
+        panic!("{block_name} palette field {json_field} is not #RRGGBB: {json_hex:?}")
+    });
+    assert_eq!(
+        css_rgb, json_rgb,
+        "{block_name} block: --{css_token} ({css_hex}) does not match exported palette field {json_field} ({json_hex})"
+    );
+}
+
+#[test]
+fn base_tokens_match_the_exported_palettes() {
+    let palettes: Value =
+        serde_json::from_str(PALETTES).expect("config/theme_palettes.json must be valid JSON");
+
+    // (css block name, block body selector, exported palette name)
+    let blocks = [
+        ("light", LIGHT_SELECTOR, "claude_light"),
+        ("dark (media)", DARK_MEDIA_SELECTOR, "claude"),
+        ("dark (explicit)", DARK_EXPLICIT_SELECTOR, "claude"),
+    ];
+
+    // (css token name, exported palette field name)
+    let direct_pairs = [
+        ("bg", "bg"),
+        ("surface", "surface"),
+        ("surface_alt", "surface_alt"),
+        ("border", "border"),
+        ("text_primary", "text_primary"),
+        ("accent", "accent"),
+        ("success", "success"),
+        ("warning", "warning"),
+        ("danger", "danger"),
+    ];
+
+    for (block_name, selector, palette_name) in blocks {
+        let tokens = parse_hex_tokens(block_body(TOKENS, selector));
+        let palette = exported_palette(&palettes, palette_name);
+
+        for (css_token, json_field) in direct_pairs {
+            let css_hex = tokens
+                .get(css_token)
+                .unwrap_or_else(|| panic!("{block_name} block missing --{css_token}"));
+            let json_hex = palette[json_field]
+                .as_str()
+                .unwrap_or_else(|| panic!("palette {palette_name} missing field {json_field}"));
+            assert_hex_equal(block_name, css_token, css_hex, json_field, json_hex);
+        }
+
+        // --muted_text (CSS) corresponds to text_muted (exported palette).
+        let muted_css_hex = tokens
+            .get("muted_text")
+            .unwrap_or_else(|| panic!("{block_name} block missing --muted_text"));
+        let muted_json_hex = palette["text_muted"]
+            .as_str()
+            .unwrap_or_else(|| panic!("palette {palette_name} missing field text_muted"));
+        assert_hex_equal(
+            block_name,
+            "muted_text",
+            muted_css_hex,
+            "text_muted",
+            muted_json_hex,
+        );
+    }
+}
+
+#[test]
+fn the_two_dark_blocks_are_identical() {
+    let media_block = parse_declarations(block_body(TOKENS, DARK_MEDIA_SELECTOR));
+    let explicit_block = parse_declarations(block_body(TOKENS, DARK_EXPLICIT_SELECTOR));
+    assert_eq!(
+        media_block, explicit_block,
+        "the `@media (prefers-color-scheme: dark)` block and the `:root[data-theme=\"dark\"]` block must declare identical name -> value pairs"
+    );
+}
+
+#[test]
+fn every_text_pair_meets_wcag_aa() {
+    let light_tokens = parse_hex_tokens(block_body(TOKENS, LIGHT_SELECTOR));
+    // The two dark blocks are pinned identical by `the_two_dark_blocks_are_identical`;
+    // checking one is sufficient for contrast coverage.
+    let dark_tokens = parse_hex_tokens(block_body(TOKENS, DARK_MEDIA_SELECTOR));
+
+    let assert_contrast = |block_name: &str,
+                           tokens: &BTreeMap<String, String>,
+                           fg_name: &str,
+                           bg_name: &str| {
+        let fg_hex = tokens
+            .get(fg_name)
+            .unwrap_or_else(|| panic!("{block_name} block missing --{fg_name}"));
+        let bg_hex = tokens
+            .get(bg_name)
+            .unwrap_or_else(|| panic!("{block_name} block missing --{bg_name}"));
+        let fg = parse_hex_rgb(fg_hex)
+            .unwrap_or_else(|| panic!("{block_name} --{fg_name} is not #RRGGBB: {fg_hex:?}"));
+        let bg = parse_hex_rgb(bg_hex)
+            .unwrap_or_else(|| panic!("{block_name} --{bg_name} is not #RRGGBB: {bg_hex:?}"));
+        let ratio = contrast_ratio(fg, bg);
+        assert!(
+            ratio >= TEXT_CONTRAST_MINIMUM,
+            "{block_name} block: --{fg_name}/--{bg_name} contrast ratio {ratio:.2} is below WCAG AA {TEXT_CONTRAST_MINIMUM}"
+        );
+    };
+
+    for (block_name, tokens) in [("light", &light_tokens), ("dark", &dark_tokens)] {
+        for text_name in ["text_primary", "muted_text", "accent_text"] {
+            for bg_name in ["bg", "surface", "surface_alt"] {
+                assert_contrast(block_name, tokens, text_name, bg_name);
+            }
+        }
+        assert_contrast(block_name, tokens, "on_accent", "accent");
+        assert_contrast(block_name, tokens, "success_text", "success_tint");
+        assert_contrast(block_name, tokens, "warning_text", "warning_tint");
+        assert_contrast(block_name, tokens, "danger_text", "danger_tint");
+        for text_name in ["success_text", "warning_text", "danger_text"] {
+            assert_contrast(block_name, tokens, text_name, "bg");
+        }
+        assert_contrast(block_name, tokens, "accent_text", "accent_tint");
+    }
+}
