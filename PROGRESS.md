@@ -6759,3 +6759,75 @@ exist yet, and nothing here builds it.
 - `cargo tree -p vibemux_client -e normal --all-features | grep -E
   "egui|eframe|ratatui|crossterm|winit"` produced no output: the crate
   still has no GUI dependency.
+
+### 2026-10-24 — Workflow test failures name the verifier suites that did not pass
+
+**Scope:** `vibemuxd` integration-test support and nine workflow test files.
+No daemon, control-protocol, status-view, schema, CLI, or verifier change;
+no milestone or ADR status moves.
+
+**Symptom:** GitHub Actions job 120869449600 (run 40093030207, PR 45 at
+`824f286`) failed `rust (windows-latest)` in the `cargo nextest` step, in
+`workflow_cooperate::two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration`
+(phase `failed`, expected `accepted`).
+- `track_a`'s `api` suite reported 1 of 25 tests failed on the reference
+  candidate. An unscripted repair turn then failed with
+  `dispatch_not_completed`.
+- The same test passed in that job's earlier `cargo test` step, on the same
+  commit and runner, and on Ubuntu.
+- The status view printed by the assertion is content-free by design and
+  omits `failed_tests`, so the log could not say which check failed.
+
+**Implemented:**
+- `WorkflowFixture::assert_phase(&status, expected)` in
+  `crates/vibemuxd/tests/workflow_support/mod.rs`.
+  - On a mismatch it panics with every verifier suite that did not pass, in
+    receipt order, read from the Control export receipts: task (or
+    integration), suite, status, exit code, counts, blocked reason, and
+    failed test names. The names are already path-free in receipts.
+  - It then prints the status.
+  - The export read is best-effort (`try_export_all`), so an export error
+    cannot hide the failure being reported.
+- `suite_failures` is the pure summarizer behind it.
+- The 13 `assert_eq!(phase(&status), "accepted", ...)` assertions in
+  `workflow_admission`, `workflow_compare`, `workflow_control`,
+  `workflow_cooperate`, `workflow_gates`, `workflow_launch_authority`,
+  `workflow_literals`, `workflow_model_supervisor`, and `workflow_share` use
+  it.
+- The daemon's status projection (`SuiteView`) is unchanged.
+- `failed_answer_delivery_does_not_block_later_repair` pins the helper
+  against real export data. Its first `track_a` candidate is the
+  `blank_title_accepted` store mutant, so the summary must contain
+  `- track_a store: failed (exit 1, ` and `add_validation_codes`. Calling
+  `assert_phase(&status, "failed")` on the accepted workflow must panic
+  with that summary.
+
+**Load investigation (not reproduced):** the `api` suite was run directly
+on `calibration/good` with Node's TAP reporter (Node 24.18.0, 24 logical
+CPUs, native Windows 11). It ran once, then 16, 48, and twice 64 copies in
+parallel: 193 runs with no failure.
+- Unloaded, every check finished within 0.9 s.
+- At 64-way parallelism (about 2.7× oversubscribed) the slowest checks
+  were:
+  - `mutations_durable_before_response`: up to 9.2 s within its 60 s test
+    timeout;
+  - `corrupt_data_file_fails_startup_unchanged`: 8.4 s for four
+    misconfigured starts, each bounded at 10 s;
+  - `concurrent_creates_not_lost`: 7.9 s, where 40 concurrent POSTs each
+    have a 10 s request timeout. This is the least headroom measured.
+- No bound was changed: none was shown to cause the CI failure, and
+  loosening one on a guess would weaken a candidate check. The next CI
+  occurrence will name the failing check.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemuxd --all-features` over the nine edited test
+  binaries passed: `workflow_admission` 6, `workflow_compare` 2,
+  `workflow_control` 5, `workflow_cooperate` 2, `workflow_gates` 4,
+  `workflow_launch_authority` 5, `workflow_literals` 2,
+  `workflow_model_supervisor` 7, `workflow_share` 2 — 35 total.
+
+**Not verified:** the CI failure's cause. A local Windows host with 24
+logical CPUs did not reproduce it under load.

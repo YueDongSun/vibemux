@@ -221,7 +221,7 @@ async fn a_paused_session_shows_its_exact_next_prompt_and_one_slot_runs_sequenti
     let status = fixture
         .wait_phase(workflow, &["accepted", "failed", "blocked"])
         .await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     let b_started = &fixture.started("track_b/implement_1");
     assert_eq!(b_started.len(), 1);
     assert_eq!(b_started[0]["prompt"].as_str(), Some(next_text.as_str()));
@@ -377,7 +377,7 @@ async fn a_restart_stops_the_workflow_and_the_resumed_run_repeats_no_completed_t
     let status = fixture
         .wait_phase(workflow, &["accepted", "failed", "blocked"])
         .await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     // Track B's completed turn and its candidate exist exactly once.
     let b_keys: Vec<String> = fixture
         .started_keys()

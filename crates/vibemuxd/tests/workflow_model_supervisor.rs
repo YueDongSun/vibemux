@@ -359,7 +359,7 @@ async fn model_supervisor_runs_owned_workers_and_accepts_only_after_real_gates()
         !fixture.rendezvous_failed(),
         "a model-assigned implementation turn never saw the other one running: {status:#}"
     );
-    assert_eq!(phase(&status), "accepted", "{status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     {
         let actions = model.actions.lock().expect("action log");
         for expected in [

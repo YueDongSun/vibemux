@@ -12,8 +12,8 @@ mod workflow_support;
 use serde_json::{Value, json};
 use vibemux_workflow::Sha256Digest;
 use workflow_support::{
-    FixtureOptions, RequirementDraft, WorkflowFixture, good_files, phase, policy, review_pass,
-    session_id, store_request, store_task, task_spec, workflow_id,
+    FixtureOptions, RequirementDraft, WorkflowFixture, good_files, policy, review_pass, session_id,
+    store_request, store_task, task_spec, workflow_id,
 };
 
 const SYNTAX: [&str; 1] = ["syntax"];
@@ -181,7 +181,7 @@ async fn adversarial_literals_reach_the_worker_verbatim_and_change_no_policy() {
     let status = fixture
         .wait_phase(workflow, &["accepted", "failed", "blocked"])
         .await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     let delivered = fixture.started("store/implement_1");
     assert_eq!(delivered.len(), 1);
     let delivered_prompt = delivered[0]["prompt"].as_str().expect("prompt");
