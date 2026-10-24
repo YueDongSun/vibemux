@@ -30,10 +30,13 @@ export default defineConfig({
   ],
   server: {
     fs: {
-      // The shared design tokens live outside this package, in the
-      // repo-root `config/` directory (`src/style.css` imports
-      // `config/design_tokens.css`); without this, the dev server
-      // refuses to serve a file outside its default workspace root.
+      // Vite inlines a CSS `@import` from disk at transform time, so
+      // `src/style.css`'s `@import '../../../../config/design_tokens.css'`
+      // resolves without this setting. `server.fs.allow` only guards the
+      // dev server's HTTP `/@fs/` requests: the `../../../config` entry
+      // keeps `/@fs/` access to the repo-root `config/` directory open
+      // for assets a page might reference from there, and `.` (resolved
+      // against the project root) keeps this package's own files served.
       allow: ['.', '../../../config'],
     },
   },

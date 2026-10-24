@@ -9,8 +9,13 @@
  *
  * Colors are the `claude_light` (light) and `claude` (dark) entries in
  * `config/theme_palettes.json`, pinned by
- * `crates/vibemux_frontend/tests/design_tokens_parity.rs`. Do not edit
- * a token's value here without updating that source palette too.
+ * `crates/vibemux_frontend/tests/design_tokens_parity.rs`. Only the 10
+ * base colors (bg, surface, surface_alt, border, text_primary, accent,
+ * success, warning, danger, muted_text) have a source in that palette
+ * file; do not edit one of those without updating the palette too. The
+ * derived tokens (`*_text`, `*_tint`, `*_edge`, `on_accent`,
+ * `control_border`) are hand-tuned and are protected only by this
+ * file's WCAG AA contrast test, not by a source palette field.
  *
  * With no `data-theme` attribute set anywhere, the page follows the OS
  * appearance via `prefers-color-scheme`, exactly as before this file
