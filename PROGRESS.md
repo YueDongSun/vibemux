@@ -6759,3 +6759,140 @@ exist yet, and nothing here builds it.
 - `cargo tree -p vibemux_client -e normal --all-features | grep -E
   "egui|eframe|ratatui|crossterm|winit"` produced no output: the crate
   still has no GUI dependency.
+
+### 2026-10-24 — Web Push VAPID signing moves off `web-push` and `jwt-simple` 0.12
+
+**Scope:** Web Push request construction in `vibemux_web`, the workspace
+dependency set, `deny.toml`, `.cargo/audit.toml`, ADR 033 (amendment), and
+the `vibemux_web`/mobile design docs. No daemon, store, control protocol,
+CLI, HTTP API, or frontend behavior changed, and no milestone or ADR status
+moves.
+
+**Why:** RUSTSEC-2026-0387 (`crypto-bigint` < 0.7.6: operations meant to be
+constant-time can branch on secret data) reached VibeMux only through
+`web-push` 0.11.0 → `jwt-simple` 0.12.12 → `p256`/`k256`/`p384` 0.13 →
+`elliptic-curve` 0.13 → `crypto-bigint` 0.5.5. The operator accepted a
+scoped, temporary ignore in `9ea239f` (merged with PR 41) until VAPID signing
+left that chain. RUSTSEC-2023-0071 (`rsa`) came through the same
+`jwt-simple`, via `superboring`.
+
+**Approach (crates.io checked 2026-10-24):** `web-push` 0.11.0 is still the
+latest release and pins `jwt-simple` 0.12. `jwt-simple` 0.13.0–0.15.0 use the
+0.14 curves, but every one of them requires `superboring` with default
+features, which enable `rsa`, so RUSTSEC-2023-0071 would stay.
+`web-push-native` 0.5.0 still uses `p256` 0.13 and `jwt-simple` 0.12. The
+chosen path signs VAPID tokens with `p256` 0.14 directly and keeps payload
+encryption on the same `ece` 2.4.2 call `web-push` made, now as a direct
+dependency.
+
+**Implemented:**
+- `crates/vibemux_web/src/vapid.rs` (new): `VapidKey` parses the stored
+  base64url raw P-256 scalar (exactly 32 canonical bytes), derives the
+  uncompressed public key, generates new keys (bounded retries, as before),
+  signs compact ES256 JWTs (`{"typ":"JWT","alg":"ES256"}` header,
+  `aud`/`exp`/`sub` claims, RFC 6979 nonces, raw `r || s` signature), and
+  formats the RFC 8292 `vapid t=…, k=…` header value.
+- `crates/vibemux_web/src/push_message.rs` (new): `build_push_request`
+  decodes the subscription keys, encrypts with `ece::encrypt` (RFC 8291
+  `aes128gcm`, record padded to a multiple of 128 bytes, fresh salt and
+  ephemeral key each call), signs for the endpoint's origin with a 12-hour
+  expiry, and returns the `TTL: 300`, `Urgency: low`, `Content-Encoding:
+  aes128gcm`, `Content-Length`, `Content-Type: application/octet-stream`,
+  and `Authorization` headers plus the body, in the order `web-push` used.
+- `push.rs` holds the parsed `VapidKey` instead of a cached public-key
+  string, passes it to `send_one`, and sends the `build_push_request` result
+  through the unchanged reqwest client and address policy. The `web-push`
+  imports, `generate_vapid_private_key`, and `public_key_from_private` are
+  gone.
+- Workspace `Cargo.toml`: removed `web-push` and `jwt-simple`; added
+  `ece = "=2.4.2"` (`backend-openssl` only, dropping its unused
+  `serializable-keys` default) and `p256 = "=0.14.0"` (`ecdsa` only).
+  `vibemux_web` drops its unused `jwt-simple` dev-dependency. `Cargo.lock`
+  removes 72 packages (among them `web-push`, `jwt-simple`, `superboring`,
+  `rsa`, the 0.13 curve crates, and `crypto-bigint` 0.5.5) and adds 13
+  (`p256` 0.14.0, `ecdsa` 0.17.0, `elliptic-curve` 0.14.1, `crypto-bigint`
+  0.7.6, `hmac` 0.13.0, …). One duplicate is new (`hmac` 0.12/0.13: `ece`'s
+  `hkdf` 0.12 versus `rfc6979` 0.6), and 13 earlier duplicates resolve.
+- `deny.toml` and `.cargo/audit.toml`: both ignores are removed
+  (`ignore = []`); the `ece` MPL-2.0 license exception stays, with its
+  comment updated.
+- ADR 033 gains an amendment of 2026-10-24; `docs/vibemux_web.md` and
+  `docs/mobile_access_design.md` §10.2 record the replacement.
+
+**Behavior and compatibility:** stored `push_state.json` files keep working:
+the key encoding is unchanged, and an existing key yields the same
+`applicationServerKey`, so browser subscriptions stay valid. The encrypted
+payload, its padding, and the `TTL`/`Urgency`/`Content-Encoding`/
+`Content-Length`/`Content-Type` headers are unchanged. The VAPID JWT
+now carries exactly `aud`, `exp` (12 hours, as before), and `sub`; the
+`iat` and `nbf` claims `jwt-simple` added are gone (RFC 8292 requires
+neither). Delivery is otherwise unchanged.
+
+**Security impact:** the VAPID private key stays in the same private
+state file (user-only ACL). It is now parsed once at startup and held as a
+`p256` `SigningKey`, which zeroizes on drop, instead of being re-read for
+each send. Signing runs on `crypto-bigint` 0.7.6, the release that fixes
+RUSTSEC-2026-0387, with RFC 6979 nonces, so no RNG is involved in signing.
+Payload encryption (`ece` over OpenSSL) and the endpoint, DNS-pinning,
+redirect, deadline, and response-size policies are unchanged. Errors stay
+content-free. Failure paths are tested: malformed stored keys, malformed
+subscription keys, and non-tuple origins are rejected.
+
+**Tests added (pinned vectors):**
+- `vapid::tests::token_layout_and_signature_encoding_match_the_rfc8292_example`:
+  our signing input for the RFC 8292 §2.4 claims equals the RFC token's
+  first two segments byte for byte, and the RFC's signature verifies under
+  the RFC's `k` key in raw `r || s` form.
+- `vapid::tests::deterministic_token_matches_an_independent_rfc6979_signature`:
+  for a fixed test key (SHA-256 of a fixed label), the public key, the
+  token, and the `Authorization` value equal values computed independently
+  with Python `cryptography` 44.0.1 (key derivation) and the OpenSSL 3.5.4
+  CLI (`pkeyutl -rawin -digest sha256 -pkeyopt nonce-type:1`).
+- `vapid::tests::stored_private_keys_must_be_canonical_nonzero_scalars`.
+- `push_message::tests::linked_ece_backend_decrypts_the_rfc8291_example_message`:
+  the RFC 8291 §5 body (salt, sender key, and Appendix A ciphertext checked)
+  decrypts to the RFC plaintext with the RFC receiver keys. The body is 144
+  bytes; the RFC's sample request header says `Content-Length: 145`, which
+  its own body contradicts.
+- `push_message::tests::push_request_headers_and_vapid_token_are_pinned`:
+  exact header list, with the `Authorization` token equal to the
+  independent vector above. Its `now` is a literal, and a compile-time
+  assertion keeps the token lifetime within RFC 8292's 24 hours.
+- `push_message::tests::push_request_body_is_one_padded_rfc8291_record_for_the_subscription`:
+  for 51- and 1024-byte payloads, the body is `86 + padded record + 16`
+  bytes (matching `Content-Length`), `rs = 4096`, `idlen = 65`, the key id is a P-256 point distinct
+  from the VAPID key, the RFC 8291 receiver key decrypts it, and salt and
+  ephemeral key differ between calls.
+- `push_message::tests::audience_is_the_endpoint_origin` and
+  `push_message::tests::malformed_subscription_keys_are_rejected`.
+- `push::tests::persisted_vapid_key_keeps_its_public_key_across_the_signer_change`;
+  `push::tests::encrypted_push_request_is_constructible_without_network_io`
+  is rewritten onto `build_push_request` from a started `PushService`.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `npm ci && npm run build` in `crates/vibemux_web/web` passed (Node
+  24.18.0 locally; CI pins Node 22).
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemux_web --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemux_web --all-features` passed: lib 41 (9 new), bin 0,
+  `console_poller` 2, `control_bridge` 3, `http_contract` 9, doc-tests 0 —
+  55 total.
+- `cargo metadata --locked` passed for the whole workspace. `cargo tree
+  --workspace --all-features --locked -i crypto-bigint` shows only 0.7.6,
+  reached through `p256` → `vibemux_web`; `-i rsa` matches no package.
+- `cargo deny check` (cargo-deny 0.20.2, the CI pin) passed with no
+  ignores: `advisories ok, bans ok, licenses ok, sources ok`. Remaining
+  warnings are duplicates and the yanked `clipboard-win` 5.4.1 that
+  `eframe` pulls in, both unrelated to this change.
+- `cargo audit` (cargo-audit 0.22.2, the CI pin; 1352 advisories loaded)
+  passed with no ignores; its only warning is the same yanked
+  `clipboard-win` 5.4.1.
+
+**Not verified:** the local Rust builds used command-local
+`OPENSSL_DIR`/`OPENSSL_NO_VENDOR` against Anaconda's OpenSSL 3.0.17, because
+the Git Bash Perl here lacks `Locale::Maketext::Simple` for the vendored
+OpenSSL build; CI's vendored build is unchanged but was not run locally.
+Workspace-wide clippy and tests were not run; only `vibemux_web` uses the
+changed crates. Delivery to a real installed PWA on iOS or Android remains
+the unverified ADR 033 gate.

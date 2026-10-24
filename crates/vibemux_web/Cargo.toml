@@ -25,8 +25,9 @@ time.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 url.workspace = true
 uuid.workspace = true
-web-push.workspace = true
+ece.workspace = true
 openssl.workspace = true
+p256.workspace = true
 vibemuxd = { path = "../vibemuxd" }
 vibemux_harness = { path = "../vibemux_harness" }
 vibemux_types = { path = "../vibemux_types" }
@@ -34,7 +35,6 @@ vibemux_platform = { path = "../vibemux_platform" }
 
 [dev-dependencies]
 tempfile.workspace = true
-jwt-simple.workspace = true
 vibemux_store = { path = "../vibemux_store" }
 vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
 vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }

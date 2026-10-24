@@ -15,10 +15,8 @@ use std::{
 };
 use tokio::sync::watch;
 use url::Url;
-use web_push::{
-    ContentEncoding, SubscriptionInfo, SubscriptionKeys, VapidSignatureBuilder,
-    WebPushMessageBuilder, request_builder::build_request,
-};
+
+use crate::{push_message::build_push_request, vapid::VapidKey};
 
 const MAX_SUBSCRIPTIONS: usize = 32;
 const MAX_PUSH_STATE_BYTES: usize = 2 * 1024 * 1024;
@@ -35,7 +33,6 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(3);
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(600)];
 const MAX_CONSECUTIVE_FAILURES: u8 = 5;
-const MAX_KEY_GENERATION_ATTEMPTS: usize = 64;
 const PUSH_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
@@ -125,7 +122,7 @@ pub struct PushService {
     allowed_hosts: BTreeSet<String>,
     vapid_subject: String,
     state: Arc<Mutex<PushState>>,
-    public_key: String,
+    vapid_key: VapidKey,
 }
 
 impl PushService {
@@ -179,7 +176,7 @@ impl PushService {
         } else {
             PushState {
                 schema_version: PUSH_SCHEMA_VERSION,
-                vapid_private_key: generate_vapid_private_key()?,
+                vapid_private_key: VapidKey::generate_base64().map_err(|_| PushError)?,
                 instance_token_epoch: None,
                 subscriptions: Vec::new(),
                 recent_events: BTreeMap::new(),
@@ -191,7 +188,7 @@ impl PushService {
         {
             return Err(PushError);
         }
-        let public_key = public_key_from_private(&state.vapid_private_key)?;
+        let vapid_key = VapidKey::from_base64(&state.vapid_private_key).map_err(|_| PushError)?;
         let instance_token_epoch =
             URL_SAFE_NO_PAD.encode(Sha256::digest(instance_token.as_bytes()));
         if state.instance_token_epoch.as_deref() != Some(instance_token_epoch.as_str()) {
@@ -206,13 +203,13 @@ impl PushService {
             allowed_hosts,
             vapid_subject,
             state: Arc::new(Mutex::new(state)),
-            public_key,
+            vapid_key,
         })
     }
 
     #[must_use]
     pub fn public_key(&self) -> String {
-        self.public_key.clone()
+        self.vapid_key.public_key().to_owned()
     }
 
     /// Persist an authenticated browser subscription. Call from spawn_blocking.
@@ -376,6 +373,7 @@ impl PushService {
                 &endpoint,
                 &self.allowed_hosts,
                 &self.state,
+                &self.vapid_key,
                 &self.vapid_subject,
                 event,
             )
@@ -646,6 +644,7 @@ async fn send_with_retries(
     endpoint: &str,
     allowed_hosts: &BTreeSet<String>,
     state_lock: &Mutex<PushState>,
+    vapid_key: &VapidKey,
     subject: &str,
     event: &PushEvent,
 ) -> Result<(), DeliveryFailure> {
@@ -655,7 +654,16 @@ async fn send_with_retries(
             .map(Some)
             .chain(std::iter::once(None))
         {
-            match send_one(endpoint, allowed_hosts, state_lock, subject, event).await {
+            match send_one(
+                endpoint,
+                allowed_hosts,
+                state_lock,
+                vapid_key,
+                subject,
+                event,
+            )
+            .await
+            {
                 Ok(()) => return Ok(()),
                 Err(DeliveryFailure::Expired) => return Err(DeliveryFailure::Expired),
                 Err(DeliveryFailure::Permanent) => match retry_delay {
@@ -676,6 +684,7 @@ async fn send_one(
     endpoint: &str,
     allowed_hosts: &BTreeSet<String>,
     state_lock: &Mutex<PushState>,
+    vapid_key: &VapidKey,
     subject: &str,
     event: &PushEvent,
 ) -> Result<(), DeliveryFailure> {
@@ -717,42 +726,28 @@ async fn send_one(
         .resolve_to_addrs(&host, &addresses)
         .build()
         .map_err(|_| DeliveryFailure::Permanent)?;
-    let subscription_info = SubscriptionInfo {
-        endpoint: endpoint.to_owned(),
-        keys: SubscriptionKeys {
-            p256dh: subscription.keys.p256dh,
-            auth: subscription.keys.auth,
-        },
-    };
-    let private_key = {
-        let state = state_lock.lock().map_err(|_| DeliveryFailure::Permanent)?;
-        state.vapid_private_key.clone()
-    };
-    let mut vapid = VapidSignatureBuilder::from_base64_no_sub(&private_key)
-        .map_err(|_| DeliveryFailure::Permanent)?
-        .add_sub_info(&subscription_info);
-    vapid.add_claim("sub", subject.to_owned());
-    let signature = vapid.build().map_err(|_| DeliveryFailure::Permanent)?;
     // Generation and control sequence are local dedupe keys, never notification content.
     let payload =
         serde_json::to_vec(&PushPayload::from(event)).map_err(|_| DeliveryFailure::Permanent)?;
     if payload.len() > MAX_PAYLOAD_BYTES {
         return Err(DeliveryFailure::Permanent);
     }
-    let mut message = WebPushMessageBuilder::new(&subscription_info);
-    message.set_ttl(300);
-    message.set_urgency(web_push::Urgency::Low);
-    message.set_payload(ContentEncoding::Aes128Gcm, &payload);
-    message.set_vapid_signature(signature);
-    let built = build_request::<Vec<u8>>(message.build().map_err(|_| DeliveryFailure::Permanent)?);
+    let push_request = build_push_request(
+        &parsed,
+        &subscription.keys.p256dh,
+        &subscription.keys.auth,
+        &payload,
+        vapid_key,
+        subject,
+        now_seconds(),
+    )
+    .map_err(|_| DeliveryFailure::Permanent)?;
     let mut request = client.post(endpoint);
-    for (name, value) in built.headers() {
-        let value = value.to_str().map_err(|_| DeliveryFailure::Permanent)?;
-        request = request.header(name.as_str(), value);
+    for (name, value) in push_request.headers {
+        request = request.header(name, value);
     }
-    let body = built.body().clone();
     let response = request
-        .body(body)
+        .body(push_request.body)
         .send()
         .await
         .map_err(|_| DeliveryFailure::Permanent)?;
@@ -866,23 +861,6 @@ fn valid_vapid_subject(subject: &str) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && url.fragment().is_none()
-}
-
-fn generate_vapid_private_key() -> Result<String, PushError> {
-    for _ in 0..MAX_KEY_GENERATION_ATTEMPTS {
-        let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes).map_err(|_| PushError)?;
-        let candidate = URL_SAFE_NO_PAD.encode(bytes);
-        if VapidSignatureBuilder::from_base64_no_sub(&candidate).is_ok() {
-            return Ok(candidate);
-        }
-    }
-    Err(PushError)
-}
-
-fn public_key_from_private(private_key: &str) -> Result<String, PushError> {
-    let builder = VapidSignatureBuilder::from_base64_no_sub(private_key).map_err(|_| PushError)?;
-    Ok(URL_SAFE_NO_PAD.encode(builder.get_public_key()))
 }
 
 fn prune_subscriptions(state: &mut PushState) {
