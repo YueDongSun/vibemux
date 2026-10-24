@@ -6844,4 +6844,8 @@ daemon's process-tree containment, as before.
 
 **Not verified:** no CI run has yet exercised the crash path; the CI root
 cause stays unknown until an occurrence records a `verifier_crash` reason.
-The local direct-shell browser hang was not investigated.
+The local direct-shell browser hang was not investigated. One observed
+fact about it: the hung runs, killed by calibrate's `taskkill /T` and by
+the shell `timeout`, left 173 headless Edge processes (verifier temp
+profiles) running until they were stopped by hand. On this host, a killed
+verifier's browsers are not reached through its process tree.
