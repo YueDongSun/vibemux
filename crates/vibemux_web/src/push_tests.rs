@@ -531,37 +531,70 @@ fn event_payload_is_a_strict_identifier_and_state_whitelist() {
 
 #[test]
 fn encrypted_push_request_is_constructible_without_network_io() {
-    let mut private = [0u8; 32];
-    getrandom::fill(&mut private).expect("random key");
-    let private = URL_SAFE_NO_PAD.encode(private);
+    let temp = private_temporary_state();
+    let service = PushService::startup(
+        temp.path(),
+        vec!["push.example.test".into()],
+        "mailto:operator@example.test".into(),
+        INSTANCE_TOKEN,
+    )
+    .expect("startup");
     let keys = generated_browser_keys();
-    let subscription = SubscriptionInfo::new(
-        "https://push.example.test/send/opaque".to_owned(),
-        keys.p256dh,
-        keys.auth,
-    );
-    let mut signature = VapidSignatureBuilder::from_base64_no_sub(&private)
-        .expect("VAPID key")
-        .add_sub_info(&subscription);
-    signature.add_claim("sub", "mailto:operator@example.test");
-    let mut message = WebPushMessageBuilder::new(&subscription);
-    message.set_ttl(300);
-    message.set_payload(
-        ContentEncoding::Aes128Gcm,
+    let endpoint = Url::parse("https://push.example.test/send/opaque").expect("endpoint");
+    let request = build_push_request(
+        &endpoint,
+        &keys.p256dh,
+        &keys.auth,
         br#"{"kind":"task","id":"task_1","state":"in_progress"}"#,
-    );
-    message.set_vapid_signature(signature.build().expect("VAPID signature"));
-    let request = build_request::<Vec<u8>>(message.build().expect("encrypted message"));
-    assert_eq!(request.method(), "POST");
-    assert!(request.headers().contains_key("authorization"));
-    assert_eq!(
+        &service.vapid_key,
+        &service.vapid_subject,
+        now_seconds(),
+    )
+    .expect("encrypted message");
+    let authorization = request
+        .headers
+        .iter()
+        .find(|(name, _)| *name == "Authorization")
+        .map(|(_, value)| value.as_str())
+        .expect("authorization header");
+    assert!(authorization.starts_with("vapid t="));
+    assert!(authorization.ends_with(&format!(", k={}", service.public_key())));
+    assert!(
         request
-            .headers()
-            .get("content-encoding")
-            .and_then(|value| value.to_str().ok()),
-        Some("aes128gcm")
+            .headers
+            .contains(&("Content-Encoding", "aes128gcm".to_owned()))
     );
-    assert!(request.body().len() > 80);
+    assert!(request.body.len() > 80);
+}
+
+#[test]
+fn persisted_vapid_key_keeps_its_public_key_across_the_signer_change() {
+    use crate::vapid::tests::{TEST_PRIVATE_KEY, TEST_PUBLIC_KEY};
+
+    let temp = private_temporary_state();
+    // The schema-1 state stores the raw P-256 scalar as base64url, the same
+    // encoding the earlier web-push signer generated and read.
+    let existing = PushState {
+        schema_version: PUSH_SCHEMA_VERSION,
+        vapid_private_key: TEST_PRIVATE_KEY.to_owned(),
+        instance_token_epoch: None,
+        subscriptions: Vec::new(),
+        recent_events: BTreeMap::new(),
+    };
+    persist_state(&temp.path().join("push_state.json"), &existing).expect("seed state");
+    let service = PushService::startup(
+        temp.path(),
+        vec!["push.example.test".into()],
+        "mailto:operator@example.test".into(),
+        INSTANCE_TOKEN,
+    )
+    .expect("startup with existing key");
+    // Browsers bind subscriptions to this applicationServerKey.
+    assert_eq!(service.public_key(), TEST_PUBLIC_KEY);
+    assert_eq!(
+        service.state.lock().expect("state").vapid_private_key,
+        TEST_PRIVATE_KEY
+    );
 }
 
 #[test]
