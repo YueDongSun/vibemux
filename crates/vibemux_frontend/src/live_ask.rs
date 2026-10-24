@@ -5,7 +5,10 @@
 
 use std::{
     path::Path,
-    sync::mpsc::{Receiver, TryRecvError},
+    sync::{
+        Arc,
+        mpsc::{Receiver, TryRecvError},
+    },
 };
 
 use vibemux_harness::AgentKind;
@@ -15,7 +18,7 @@ use crate::{
         AskHandle, SetupOutcome, UNCONFIGURED,
         worker::{spawn_ask, spawn_catalog, spawn_setup},
     },
-    gui::{AskAvailability, AskState},
+    gui::{AskAvailability, AskState, EguiNotifier},
 };
 
 /// The code shown when a worker thread could not start or stopped early.
@@ -88,17 +91,28 @@ impl AskBridge {
             return;
         };
         if recheck && self.connected {
-            self.catalog = Some(spawn_catalog(folder.to_path_buf(), context.clone()));
+            self.catalog = Some(spawn_catalog(
+                folder.to_path_buf(),
+                Arc::new(EguiNotifier(context.clone())),
+            ));
             state.set_availability(AskAvailability::Checking);
         }
         if let Some((harness, prompt)) = launch {
-            match spawn_ask(folder.to_path_buf(), harness, prompt, context.clone()) {
+            match spawn_ask(
+                folder.to_path_buf(),
+                harness,
+                prompt,
+                Arc::new(EguiNotifier(context.clone())),
+            ) {
                 Ok(handle) => self.running = Some(handle),
                 Err(_) => state.fail_running(WORKER_UNAVAILABLE),
             }
         }
         if setup {
-            self.setup = Some(spawn_setup(folder.to_path_buf(), context.clone()));
+            self.setup = Some(spawn_setup(
+                folder.to_path_buf(),
+                Arc::new(EguiNotifier(context.clone())),
+            ));
         }
     }
 

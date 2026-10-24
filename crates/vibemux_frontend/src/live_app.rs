@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     daemon_control::{self, DaemonCommand, DaemonControlResult},
-    gui::{DaemonJob, VibeMuxApp},
+    gui::{DaemonJob, EguiNotifier, VibeMuxApp},
     live_ask::AskBridge,
     live_console::ConsoleBridge,
     supervisor_client::FrontendClient,
@@ -122,7 +122,7 @@ fn connect(
         snapshot.connection.detail = Some("Open a folder to observe its tasks.".into());
         return (None, Arc::new(snapshot));
     };
-    match FrontendClient::start(folder, context.clone()) {
+    match FrontendClient::start(folder, Arc::new(EguiNotifier(context.clone()))) {
         Ok(client) => (Some(client), Arc::new(snapshot)),
         Err(_) => {
             snapshot.connection.detail =

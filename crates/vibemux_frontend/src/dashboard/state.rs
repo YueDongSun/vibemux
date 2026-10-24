@@ -226,28 +226,7 @@ impl State {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Branch {
-    pub name: String,
-    pub role: String,
-    pub commit: String,
-    pub upstream: String,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Workspace {
-    pub current_branch: String,
-    pub head: String,
-    pub baseline: String,
-    pub ahead: u64,
-    pub behind: u64,
-    pub staged: usize,
-    pub unstaged: usize,
-    pub untracked: usize,
-    pub change_detection: String,
-    pub branches: Vec<Branch>,
-    pub worktrees: Vec<String>,
-}
+pub use vibemux_client::workspace_inventory::{Branch, Workspace};
 
 /// Immutable presentation metadata, independent of optional Git inventory.
 #[derive(Clone, Debug)]

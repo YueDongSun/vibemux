@@ -14,10 +14,6 @@
 //! session driver instead, because it owns a runtime process rather than a
 //! read-only probe report.
 
-pub mod ask;
-mod cli_runner;
-pub mod daemon_control;
-mod daemon_session;
 pub mod dashboard;
 pub mod dsh_tui;
 pub mod gui;
@@ -26,17 +22,15 @@ mod live_ask;
 mod live_console;
 #[cfg(feature = "gui_screenshot")]
 pub mod preview;
-pub mod probe_env;
-pub mod project_folder;
-pub mod quick_search;
 pub mod startup_log;
-pub mod supervisor_client;
-mod supervisor_mapping;
-pub mod supervisor_model;
 pub mod theme;
 pub mod tui;
-pub mod view_model;
-mod workspace_inventory;
+
+use vibemux_client::workspace_inventory;
+pub use vibemux_client::{
+    ask, daemon_control, probe_env, project_folder, quick_search, supervisor_client,
+    supervisor_model, view_model,
+};
 
 pub use supervisor_model::*;
 pub use view_model::ViewModel;

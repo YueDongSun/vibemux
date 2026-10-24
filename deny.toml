@@ -21,4 +21,5 @@ allow = ["MPL-2.0"]
 [advisories]
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "rsa is reached only via web-push -> jwt-simple -> superboring; VAPID signs with ES256 and VibeMux never uses RSA keys; no patched rsa release exists" },
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 is reached only via web-push -> jwt-simple 0.12 -> p256/k256/p384 0.13 for VAPID ES256 signing; no patched 0.5.x release exists and web-push 0.11.0, the latest, still requires jwt-simple 0.12; remove once VAPID signing moves to jwt-simple 0.13 or later" },
 ]

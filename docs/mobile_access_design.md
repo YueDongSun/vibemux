@@ -62,7 +62,7 @@ What already exists and is reusable:
   a `TaskId` cursor), `HarnessDispatchStatus`/`Output`, `DshSessionPoll`,
   and `WorkflowStatus`. Each connection carries one request; there is no
   server-push channel, so clients poll.
-- **Polling-client precedent.** `crates/vibemux_frontend/src/supervisor_client.rs`
+- **Polling-client precedent.** `crates/vibemux_client/src/supervisor_client.rs`
   polls the control pipe every 5 s (`POLL_INTERVAL`) and never opens the
   database — the exact client class a web/bot surface would join.
 - **Content-free responses.** Frontend query responses are bounded and omit
@@ -643,7 +643,7 @@ verification, live device tests) are execution work, not research gaps.
   `frontend_task`, dispatch/DSH/workflow status). Both `vibemux_cli` and
   `vibemux_frontend` consume it through a path dependency on `vibemuxd`;
   `vibemux_web` follows the same pattern. Connection setup imitates the
-  `connect()` sequence in `crates/vibemux_frontend/src/supervisor_client.rs`
+  `connect()` sequence in `crates/vibemux_client/src/supervisor_client.rs`
   (descriptor existence, `validate_runtime_dir`, `verify_control_security`,
   then `from_descriptor`).
 - **Paths and runtime security** come from `DaemonPaths`
@@ -680,7 +680,7 @@ verification, live device tests) are execution work, not research gaps.
 - **Integration-test shape**: tempfile + `DaemonPaths` + a seeded writer
   store + `DaemonControlServer::start_for_paths` + a real named-pipe
   client, with polling helpers and explicit timeouts
-  (`crates/vibemux_frontend/src/supervisor_client.rs` tests); daemon-level
+  (`crates/vibemux_client/src/supervisor_client.rs` tests); daemon-level
   process tests live in `crates/vibemuxd/tests/`.
 
 ### 10.2 Dependencies under the §16 review

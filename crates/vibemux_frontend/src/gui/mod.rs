@@ -11,6 +11,7 @@ mod console;
 mod daemon_card;
 mod design;
 mod diagnostics;
+mod egui_notifier;
 mod folders;
 mod quick_switcher;
 mod section_page;
@@ -30,6 +31,7 @@ pub use ask_view::{AskAvailability, AskEntry, SetupJob};
 pub use chat::wrapped_label as render_wrapped_label;
 pub use console::{ConsoleData, ConsoleSection, WorkspaceLoad};
 pub use daemon_card::DaemonJob;
+pub(crate) use egui_notifier::EguiNotifier;
 pub use settings::SettingsSection;
 pub use supervisor_app::SupervisorApp as VibeMuxApp;
 pub use supervisor_state::{

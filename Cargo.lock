@@ -5711,6 +5711,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibemux_client"
+version = "0.2.0-alpha.1"
+dependencies = [
+ "rfd",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "uuid",
+ "vibemux_harness",
+ "vibemux_probe",
+ "vibemux_types",
+ "vibemuxd",
+]
+
+[[package]]
 name = "vibemux_decision"
 version = "0.2.0-alpha.1"
 dependencies = [
@@ -5772,18 +5789,16 @@ dependencies = [
  "egui",
  "image",
  "ratatui",
- "rfd",
  "serde",
  "serde_json",
  "tempfile",
  "time",
  "tokio",
  "uuid",
+ "vibemux_client",
  "vibemux_dsh",
  "vibemux_harness",
  "vibemux_probe",
- "vibemux_types",
- "vibemuxd",
 ]
 
 [[package]]

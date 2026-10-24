@@ -6678,3 +6678,84 @@ blocks every later case. The new diagnostics print the end code and lease
 states that confirm or reject this on the next occurrence. The guard stops a
 stranded slot from producing a promotion; it does not prevent the stall. The
 post-guard binaries were not run on Linux.
+
+### 2026-10-24 — vibemux_client extraction (desktop app phase 1, PR 1)
+
+**Scope:** `vibemux_client` and `vibemux_frontend` only (PR 1 of 5 in the
+desktop-app-phase-1 refactor plan; Tasks 1 and 2). No daemon, store, control
+protocol, or CLI behavior changed, and no milestone or ADR status moves.
+This prepares GUI-neutral client code for reuse by a future Tauri desktop
+app proposed in [docs/desktop_app_design.md](docs/desktop_app_design.md)
+([ADR 043](docs/adr/043_tauri_desktop_app.md), `Proposed`); that app does not
+exist yet, and nothing here builds it.
+
+**Implemented:**
+- Task 1 created the `vibemux_client` crate and moved the daemon/probe/Git
+  client modules (`cli_runner`, `daemon_control`, `daemon_session`,
+  `project_folder`, `supervisor_mapping`, `supervisor_model`,
+  `quick_search`, `probe_env`, `view_model`, `workspace_inventory`,
+  `dashboard::daemon_feed`, `dashboard::daemon_model`) out of
+  `vibemux_frontend`: `display_text::safe_text` moved into its own module,
+  `Workspace`/`Branch` moved into `workspace_inventory`, `rfd` moved behind
+  a new `folder_dialog` feature with `pick_folder_native` gated on it, and
+  `DaemonSession` is `pub` (struct and methods) with its `client`/
+  `generation` fields `pub(crate)`.
+- `vibemux_client::change_notifier` adds `ChangeNotifier` (a
+  `notify(&self)` trait), `NoopNotifier`, and a test-only `CountingNotifier`
+  (`#[cfg(any(test, feature = "test_support"))]`, gated by a new empty
+  `test_support` feature) so the crate can observe a wakeup without egui.
+- `supervisor_client.rs` (`FrontendClient`) and `ask/` (`worker`, `session`,
+  `routes`, `reply_text`) moved from `vibemux_frontend` into
+  `vibemux_client`, with every `egui::Context` parameter and
+  `request_repaint()` call replaced by `Arc<dyn ChangeNotifier>` and
+  `notify()`: `FrontendClient::start`, `ask::worker::spawn_ask`,
+  `spawn_catalog`, and `spawn_setup`. Their tests that built
+  `egui::Context::default()` now use `Arc::new(NoopNotifier)`.
+  `tests/daemon_feed.rs` moved the same way, unchanged except its import
+  path (`vibemux_client::{daemon_feed, daemon_model}`).
+- `vibemux_frontend::gui::egui_notifier::EguiNotifier` is a new
+  `pub(crate)` newtype (`EguiNotifier(pub egui::Context)`) implementing
+  `ChangeNotifier` by calling `request_repaint()`; `live_app.rs` and
+  `live_ask.rs` construct `Arc::new(EguiNotifier(context.clone()))` at the
+  four moved call sites. `live_console.rs`'s own `spawn_workspace` and
+  `spawn_probe` were not moved and still take `egui::Context` directly, as
+  they did before.
+- `vibemux_frontend::lib.rs` re-exports `ask` and `supervisor_client` from
+  `vibemux_client` alongside the modules Task 1 already re-exported, so
+  existing paths such as `vibemux_frontend::ask::…` keep resolving; its
+  now-unused private `use vibemux_client::{daemon_session,
+  supervisor_mapping, …}` imports were dropped (nothing in the crate
+  references them once `ask` and `supervisor_client` moved out), following
+  the same reasoning Task 1 applied to `cli_runner`.
+- `AGENTS.md` §4.2, `CLAUDE.md`, and `docs/architecture.md` gain
+  `vibemux_client` and `vibemux_frontend` in the dependency-direction
+  line/diagram (`vibemuxd → vibemux_client → vibemux_frontend →
+  vibemux-cli`); `CLAUDE.md`'s layout quick map gains a
+  `crates/vibemux_client/` row.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemux_client -p vibemux_frontend -p vibemux_cli
+  --all-targets --all-features -- -D warnings` passed.
+- `cargo test -p vibemux_client --all-features` passed: lib 63 (including
+  the new `change_notifier::tests::counting_notifier_counts_each_notify`),
+  `daemon_feed` 4, doc-tests 0 — 67 total.
+- `cargo test -p vibemux_frontend --all-features` passed: lib 221 (1
+  ignored, the pre-existing golden-fixture generator), `cli` 6,
+  `palette_parity` 2, `supervisor_ui` 10, binaries `vibemux_dashboard` 2,
+  `vibemux_dsh_tui` 4, `vibemux_frontend_preview` 6, `vibemux_frontend_tui`
+  2, `vibemux_frontend`/`vibemux_frontend_dump` 0, doc-tests 0 — 253 total
+  (+1 ignored).
+- `cargo test -p vibemux_cli --all-features` passed on the first run (no
+  flake rerun needed): lib 72, `bootstrap_process` 4, `unified_commands` 8,
+  the four fixture binaries and `vibemuxctl` 0 each, doc-tests 0 — 84
+  total.
+- `67 + 253 + 84 = 404` passed, 0 failed, 1 ignored across the three
+  crates; Task 1's baseline was `39 + 280 = 319` (1 ignored) for
+  `vibemux_client` + `vibemux_frontend` alone, and the net `+24` in
+  `vibemux_client` exactly matches the `-23` moved out of
+  `vibemux_frontend`'s lib tests (19 from `ask/`, 4 from
+  `supervisor_client.rs`) plus the one new `change_notifier` test.
+- `cargo tree -p vibemux_client -e normal --all-features | grep -E
+  "egui|eframe|ratatui|crossterm|winit"` produced no output: the crate
+  still has no GUI dependency.

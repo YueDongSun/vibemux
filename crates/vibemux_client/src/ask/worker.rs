@@ -33,6 +33,7 @@ use super::{
     session::{self, AskEnd, AskPhase, AskUpdate, AttemptStatus, DispatchPort},
 };
 use crate::{
+    change_notifier::ChangeNotifier,
     daemon_control::{self, DaemonCommand, DaemonControlResult},
     daemon_session::DaemonSession,
 };
@@ -138,7 +139,7 @@ pub fn spawn_ask(
     project_root: PathBuf,
     harness: AgentKind,
     prompt: String,
-    context: egui::Context,
+    notifier: Arc<dyn ChangeNotifier>,
 ) -> std::io::Result<AskHandle> {
     let request = DispatchRequest {
         schema_version: DISPATCH_REQUEST_SCHEMA_VERSION,
@@ -159,7 +160,7 @@ pub fn spawn_ask(
                 } else {
                     let _ = sender.try_send(update);
                 }
-                context.request_repaint();
+                notifier.notify();
             };
             let Some(runtime) = runtime() else {
                 deliver(failed(request_id, "frontend_runtime_unavailable"), &sender);
@@ -196,7 +197,7 @@ pub fn spawn_ask(
 /// why none can ([`UNCONFIGURED`] when the folder has no dispatch config).
 pub fn spawn_catalog(
     project_root: PathBuf,
-    context: egui::Context,
+    notifier: Arc<dyn ChangeNotifier>,
 ) -> Receiver<Result<Vec<AgentKind>, String>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let spawned = std::thread::Builder::new()
@@ -206,7 +207,7 @@ pub fn spawn_catalog(
                 .ok_or_else(|| "frontend_runtime_unavailable".to_string())
                 .and_then(|runtime| runtime.block_on(catalog(&project_root)));
             let _ = sender.send(result);
-            context.request_repaint();
+            notifier.notify();
         });
     if spawned.is_err() {
         let (failed_sender, failed) = mpsc::sync_channel(1);
@@ -246,13 +247,16 @@ pub enum SetupOutcome {
 /// Writes default read-only routes for the detected Claude Code and Codex
 /// executables, refreshes the probe cache, and restarts the folder's daemon
 /// so it loads them.
-pub fn spawn_setup(project_root: PathBuf, context: egui::Context) -> Receiver<SetupOutcome> {
+pub fn spawn_setup(
+    project_root: PathBuf,
+    notifier: Arc<dyn ChangeNotifier>,
+) -> Receiver<SetupOutcome> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let spawned = std::thread::Builder::new()
         .name("gui_ask_setup".into())
         .spawn(move || {
             let _ = sender.send(setup(&project_root));
-            context.request_repaint();
+            notifier.notify();
         });
     if spawned.is_err() {
         let (failed_sender, failed) = mpsc::sync_channel(1);
@@ -394,4 +398,29 @@ fn missing_dispatch_binary() -> Option<&'static str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::change_notifier::CountingNotifier;
+
+    #[test]
+    fn spawn_catalog_notifies_when_its_result_is_ready() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let notifier = Arc::new(CountingNotifier::default());
+        let receiver = spawn_catalog(temp.path().to_path_buf(), notifier.clone());
+        let result = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("spawn_catalog must deliver a result within the deadline");
+        assert!(
+            result.is_err(),
+            "no daemon is running for this fresh folder"
+        );
+        // The worker sends the result before it calls `notify()`.
+        assert!(
+            notifier.wait_for_count(1, Duration::from_secs(10)),
+            "spawn_catalog must notify when its result is ready"
+        );
+    }
 }

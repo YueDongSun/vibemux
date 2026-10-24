@@ -51,21 +51,12 @@ eframe.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vibemux_probe = { path = "../vibemux_probe" }
+vibemux_client = { path = "../vibemux_client", features = ["folder_dialog"] }
 vibemux_dsh = { path = "../vibemux_dsh" }
 vibemux_harness = { path = "../vibemux_harness" }
-vibemuxd = { path = "../vibemuxd" }
-vibemux_types = { path = "../vibemux_types" }
 time = { workspace = true, features = ["local-offset"] }
 uuid.workspace = true
 image = { version = "=0.25.9", default-features = false, features = ["png"], optional = true }
 
-[target.'cfg(windows)'.dependencies]
-# Native "Open folder" picker (Win32 dialog only). Default features are off:
-# they add the Linux portal and Wayland stacks, which the GUI does not use;
-# other platforms type or paste a path instead.
-rfd = { version = "=0.17.2", default-features = false }
-
 [dev-dependencies]
-# Real-daemon feed tests use the Windows private-runtime path helper.
-vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
 tempfile.workspace = true

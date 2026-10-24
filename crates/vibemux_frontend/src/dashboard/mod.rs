@@ -2,8 +2,7 @@
 //! behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It consumes a
 //! probe report plus optional local Git inventory and never starts a daemon,
 //! a harness, or a model turn.
-pub mod daemon_feed;
-pub mod daemon_model;
+pub use vibemux_client::{daemon_feed, daemon_model};
 mod daemon_render;
 pub mod filter;
 mod model;

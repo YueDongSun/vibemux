@@ -1,22 +1,9 @@
-use vibemux_harness::{
-    dispatch::{AdapterCapability, adapter_capability},
-    terminal_text::display_character,
-};
+use vibemux_harness::dispatch::{AdapterCapability, adapter_capability};
 use vibemux_probe::{AgentKind, ProbeReport, ProbeState, RouteKind};
 
 use crate::view_model::{route_label, state_label};
 
-const MAX_DISPLAY_CHARACTERS: usize = 160;
-
-/// One display line: every whitespace or terminal-unsafe character becomes a
-/// space, and the text is cut at `MAX_DISPLAY_CHARACTERS`.
-pub fn safe_text(value: &str) -> String {
-    value
-        .chars()
-        .take(MAX_DISPLAY_CHARACTERS)
-        .map(display_character)
-        .collect()
-}
+pub use vibemux_client::display_text::safe_text;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeTuiSlotState {

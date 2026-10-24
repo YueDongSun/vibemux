@@ -8,9 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use vibemux_frontend::dashboard::{
-    DaemonView, Section,
+use vibemux_client::{
     daemon_feed::{DaemonFeed, FeedRequest},
+    daemon_model::{DaemonView, Section},
 };
 use vibemux_types::{
     Run, RunSpec, Task, TaskSpec,
