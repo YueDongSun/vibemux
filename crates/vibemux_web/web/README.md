@@ -28,6 +28,10 @@ IDs, and states; notification clicks open or focus the fixed application root.
 Push delivery is best-effort through the local process, and no live iOS or
 Android delivery claim is made here.
 
+`src/style.css` imports the repo-root `config/design_tokens.css` for its
+design tokens, so this folder is not self-contained: a copy of this folder
+alone, or a sparse checkout without `config/`, fails at that `@import`.
+
 Build with the repository-pinned Node 22.22.x runtime:
 
 ```powershell

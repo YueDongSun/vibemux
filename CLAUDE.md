@@ -40,6 +40,7 @@ Domain crates must not depend on platform, database, terminal, or network implem
 ```
 src/vibemux/           # Python prototype (CLI: typer + rich; `vibemux theme` snippets)
 config/theme_palettes.json         # exported GUI palettes (pinned by the palette_parity test)
+config/design_tokens.css           # shared CSS design tokens for the web and desktop UIs (pinned by the design_tokens_parity test)
 crates/vibemux_types/              # IDs, state machines, frontend query types
 crates/vibemux_events/             # canonical event envelopes, idempotency
 crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness registry/profiles/rows + canonical event drafts + dispatch protocol state machines + DSH session substrate (pure logic, no I/O)
