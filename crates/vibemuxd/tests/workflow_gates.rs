@@ -78,7 +78,7 @@ async fn an_out_of_scope_file_is_refused_and_repaired() {
         "store/review": review_pass(),
     }});
     let (_, status) = run_store(&fixture, "store_out_of_scope", &SYNTAX, &script).await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     let candidates = candidates(&status);
     assert_eq!(candidates.len(), 2);
     assert_eq!(candidates[0]["admitted"], false);
@@ -176,7 +176,7 @@ async fn one_bounded_repair_closes_an_injected_defect() {
         "store/review": review_pass(),
     }});
     let (prepared, status) = run_store(&fixture, "store_repair", &STORE_SUITE, &script).await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     let candidates = candidates(&status);
     assert_eq!(candidates.len(), 2);
     let defective = verification_of(&status, &candidates[0]["candidate_digest"]);

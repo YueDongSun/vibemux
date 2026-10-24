@@ -59,7 +59,7 @@ async fn the_trusted_suite_selects_the_correct_candidate_and_refuses_the_defect(
     let workflow = workflow_id(&prepared);
     fixture.start_workflow(&prepared).await;
     let status = fixture.wait_idle(workflow).await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
 
     let candidates = status["receipts"]["candidates"]
         .as_array()

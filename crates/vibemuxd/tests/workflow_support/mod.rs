@@ -836,6 +836,48 @@ impl WorkflowFixture {
         }
     }
 
+    /// Asserts the settled phase. On a mismatch the panic adds every
+    /// verifier suite that did not pass, read from the exported receipts:
+    /// the status view omits failed test names and exit codes.
+    pub async fn assert_phase(&self, status: &Value, expected: &str) {
+        if phase(status) == expected {
+            return;
+        }
+        let summary = match status["workflow_id"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            Some(workflow_id) => match self.try_export_all(workflow_id).await {
+                Ok(items) => suite_failures(&items),
+                Err(error) => format!("export unavailable: {error:?}"),
+            },
+            None => "status has no workflow id".to_string(),
+        };
+        panic!(
+            "phase {} is not {expected}\nverifier suites that did not pass:\n{summary}\nstatus: {status:#}",
+            phase(status)
+        );
+    }
+
+    /// [`Self::export_all`] without assertions, for a failure path that
+    /// must not hide the failure it reports.
+    async fn try_export_all(&self, workflow_id: Uuid) -> Result<Vec<Value>, ControlError> {
+        let mut items = Vec::new();
+        let mut cursor = 0;
+        for _ in 0..MAX_EXPORT_PAGES {
+            let page = self.client.workflow_export(workflow_id, cursor).await?;
+            items.extend(page["items"].as_array().into_iter().flatten().cloned());
+            match page["next"]
+                .as_u64()
+                .and_then(|next| usize::try_from(next).ok())
+            {
+                Some(next) => cursor = next,
+                None => break,
+            }
+        }
+        Ok(items)
+    }
+
     /// Every export item, following the page cursor to the end.
     pub async fn export_all(&self, workflow_id: Uuid) -> Vec<Value> {
         let mut items = Vec::new();
@@ -1274,6 +1316,48 @@ pub fn rendezvous(group: &str, parties: usize) -> Value {
 pub fn review_pass() -> Value {
     json!({"review": {"verdict": "pass", "findings": [],
         "checks_executed": ["read the candidate diff"]}})
+}
+
+/// One line per verifier suite that did not pass, in receipt order, from
+/// workflow export items: task (or integration), suite, status, exit code,
+/// counts, blocked reason, and failed test names. Receipt names are already
+/// path-free.
+pub fn suite_failures(export_items: &[Value]) -> String {
+    let mut lines = Vec::new();
+    for item in export_items {
+        let receipt = &item["body"];
+        if item["kind"] != "receipt" || receipt["kind"] != "verification" {
+            continue;
+        }
+        let verification = &receipt["body"];
+        let task = verification["task_key"].as_str().unwrap_or("integration");
+        for suite in verification["suites"].as_array().into_iter().flatten() {
+            if suite["status"] == "passed" {
+                continue;
+            }
+            let failed_tests: Vec<&str> = suite["failed_tests"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            lines.push(format!(
+                "- {task} {}: {} (exit {}, {} of {} failed, blocked reason {}): [{}]",
+                suite["suite_id"].as_str().unwrap_or("?"),
+                suite["status"].as_str().unwrap_or("?"),
+                suite["exit_code"],
+                suite["tests_failed"],
+                suite["tests_total"],
+                suite["blocked_reason"],
+                failed_tests.join(", ")
+            ));
+        }
+    }
+    if lines.is_empty() {
+        "(none)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 pub fn phase(status: &Value) -> &str {
