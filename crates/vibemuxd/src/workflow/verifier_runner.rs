@@ -335,4 +335,33 @@ mod tests {
         let (timeout, _) = map_result(&suite(), vec![], None, 5, Some((output("passed"), digest)));
         assert_eq!(timeout.status, SuiteStatus::Blocked);
     }
+
+    /// The TaskBoard verifier's crash writer (`crash_result.mjs`) reports an
+    /// escaped error as `blocked` with a path-free reason, which must reach
+    /// the receipt intact; without a result file the cause stays unknown.
+    #[test]
+    fn a_crash_classified_blocked_result_keeps_its_reason() {
+        let reason =
+            "verifier_crash: unhandled_rejection TypeError ERR_FIXTURE at browser_suite.mjs:412";
+        let mut crashed = output("blocked");
+        crashed.tests_total = 0;
+        crashed.tests_passed = 0;
+        crashed.tests_failed = 0;
+        crashed.failed_tests.clear();
+        crashed.blocked_reason = Some(reason.into());
+        let (result, _) = map_result(
+            &suite(),
+            vec![],
+            Some(2),
+            5,
+            Some((crashed, Sha256Digest::of(b"out"))),
+        );
+        assert_eq!(result.status, SuiteStatus::Blocked);
+        assert_eq!(result.blocked_reason.as_deref(), Some(reason));
+        let (missing, _) = map_result(&suite(), vec![], Some(1), 5, None);
+        assert_eq!(
+            missing.blocked_reason.as_deref(),
+            Some("verifier_output_missing")
+        );
+    }
 }
