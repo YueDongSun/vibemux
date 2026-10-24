@@ -6,7 +6,14 @@
 //! [`NoopNotifier`].
 
 #[cfg(any(test, feature = "test_support"))]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant},
+};
+
+/// How often [`CountingNotifier::wait_for_count`] rereads the count.
+#[cfg(any(test, feature = "test_support"))]
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Wakes a frontend when backend state changed. Implementors decide what
 /// "wake" means (an egui repaint, a channel send, nothing at all).
@@ -42,6 +49,22 @@ impl CountingNotifier {
     pub fn count(&self) -> usize {
         self.count.load(Ordering::SeqCst)
     }
+
+    /// Blocks until at least `minimum` notifications arrived or `timeout`
+    /// elapsed, and returns whether the count was reached. Workers publish
+    /// their result before calling `notify()`, so a test that has just seen
+    /// the result must wait for the notification instead of reading the
+    /// count once.
+    pub fn wait_for_count(&self, minimum: usize, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.count() < minimum {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(WAIT_POLL_INTERVAL);
+        }
+        true
+    }
 }
 
 #[cfg(any(test, feature = "test_support"))]
@@ -61,5 +84,13 @@ mod tests {
         notifier.notify();
         notifier.notify();
         assert_eq!(notifier.count(), 2);
+    }
+
+    #[test]
+    fn wait_for_count_reports_whether_the_count_was_reached() {
+        let notifier = CountingNotifier::default();
+        assert!(!notifier.wait_for_count(1, Duration::from_millis(20)));
+        notifier.notify();
+        assert!(notifier.wait_for_count(1, Duration::ZERO));
     }
 }

@@ -417,16 +417,9 @@ mod tests {
             result.is_err(),
             "no daemon is running for this fresh folder"
         );
-        // `notify()` runs on the worker thread immediately after the result is
-        // sent, so the receiving thread can briefly observe the result before
-        // the count is incremented; poll up to the same deadline instead of
-        // asserting on the exact interleaving.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while notifier.count() == 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        // The worker sends the result before it calls `notify()`.
         assert!(
-            notifier.count() >= 1,
+            notifier.wait_for_count(1, Duration::from_secs(10)),
             "spawn_catalog must notify when its result is ready"
         );
     }

@@ -688,10 +688,11 @@ mod tests {
             snapshot.connection.status == ConnectionStatus::Connected && snapshot.tasks.len() == 1
         })
         .await;
-        assert!(
-            notifier.count() >= 1,
-            "a Connected snapshot must have been preceded by at least one notify()"
-        );
+        // `read_loop` publishes the snapshot before it calls `notify()`.
+        let notified = tokio::task::block_in_place(|| {
+            notifier.wait_for_count(1, std::time::Duration::from_secs(10))
+        });
+        assert!(notified, "publishing a Connected snapshot must notify");
         assert_eq!(snapshot.tasks[0].title, "Observe real task");
         assert_eq!(snapshot.tasks[0].runs[0].run_id, run_id.to_string());
         let serialized = serde_json::to_string(snapshot.as_ref()).unwrap();
