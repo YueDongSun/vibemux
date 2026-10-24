@@ -51,7 +51,7 @@ use super::{
     },
     error::WorkflowError,
     integration::{CleanupEntry, clean_up_workspaces, integrate},
-    runtime::{Control, RunContext, Unit},
+    runtime::{Control, RunContext, Unit, request_cancel},
     startup::finish_cancel,
 };
 use crate::harness_dispatch::call_writer;
@@ -828,14 +828,10 @@ pub(crate) async fn stop(context: &RunContext) -> Result<RunEnd, WorkflowError> 
             Ok(RunEnd::Paused)
         }
         Control::Cancel | Control::Run => {
-            let record = context.record().await?;
+            // The operator's cancel commits the same request concurrently.
+            let record = request_cancel(&context.writer, context.workflow_id).await?;
             if record.phase == WorkflowPhase::Cancelled {
                 return Ok(RunEnd::Cancelled);
-            }
-            if record.phase != WorkflowPhase::CancelRequested {
-                context
-                    .transition(WorkflowPhase::CancelRequested, Some("operator_cancel"))
-                    .await?;
             }
             finish_cancel(
                 &context.writer,
