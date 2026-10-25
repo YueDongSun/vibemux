@@ -1,0 +1,122 @@
+/*
+ * Shared design tokens for every VibeMux surface that renders a UI
+ * (the mobile web surface today; a future Tauri desktop UI next).
+ *
+ * This file holds only CSS custom properties plus `color-scheme`.
+ * Page-level styling (font-family, color, background, font-synthesis,
+ * text-rendering, -webkit-font-smoothing, and everything layout-related)
+ * stays in each consumer's own stylesheet.
+ *
+ * Colors are the `claude_light` (light) and `claude` (dark) entries in
+ * `config/theme_palettes.json`, pinned by
+ * `crates/vibemux_frontend/tests/design_tokens_parity.rs`. Only the 10
+ * base colors (bg, surface, surface_alt, border, text_primary, accent,
+ * success, warning, danger, muted_text) have a source in that palette
+ * file; do not edit one of those without updating the palette too. The
+ * derived tokens (`*_text`, `*_tint`, `*_edge`, `on_accent`,
+ * `control_border`) are hand-tuned and are protected only by this
+ * file's WCAG AA contrast test, not by a source palette field.
+ *
+ * With no `data-theme` attribute set anywhere, the page follows the OS
+ * appearance via `prefers-color-scheme`, exactly as before this file
+ * existed. `data-theme="light"`/`data-theme="dark"` let a consumer
+ * (e.g. an in-app theme switch) force a theme regardless of the OS
+ * setting.
+ */
+
+:root {
+  color-scheme: light;
+  --bg: #FAF9F5;
+  --surface: #F5F4ED;
+  --surface_alt: #FFFFFF;
+  --border: #E6E3DA;
+  --text_primary: #141413;
+  --accent: #C96442;
+  --success: #3F7A4A;
+  --warning: #8F6414;
+  --danger: #B03A2E;
+  --accent_text: #9C5036;
+  --muted_text: #6B6960;
+  --on_accent: #141413;
+  --control_border: #888680;
+  --accent_tint: #F2E0D7;
+  --accent_edge: #E9C5B6;
+  --success_tint: #E0E7DD;
+  --success_text: #3B7044;
+  --warning_tint: #EBE4D6;
+  --warning_edge: #D5C5A6;
+  --warning_text: #835C14;
+  --danger_tint: #F0DED9;
+  --danger_edge: #E0B6AF;
+  --danger_text: #B03A2E;
+  --font_display: Georgia, Cambria, serif;
+  --font_ui: 'Segoe UI', system-ui, sans-serif;
+  --font_code: 'Cascadia Code', ui-monospace, Consolas, monospace;
+  --size_display: 30px;
+  --size_title: 22px;
+  --size_task_title: 17px;
+  --size_body: 15px;
+  --size_nav: 14px;
+  --size_action: 13px;
+  --size_small: 12px;
+  --size_micro: 11px;
+  --radius_card: 14px;
+  --radius_button: 10px;
+  --radius_pill: 999px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #262624;
+    --surface: #1F1E1D;
+    --surface_alt: #30302E;
+    --border: #3A3935;
+    --text_primary: #F5F4EE;
+    --accent: #D97757;
+    --success: #8AB487;
+    --warning: #D9A85F;
+    --danger: #E07A6F;
+    --accent_text: #DF9075;
+    --muted_text: #A8A59B;
+    --on_accent: #262624;
+    --control_border: #7B7A76;
+    --accent_tint: #44342D;
+    --accent_edge: #654236;
+    --success_tint: #343A32;
+    --success_text: #8AB487;
+    --warning_tint: #3F382C;
+    --warning_edge: #655439;
+    --warning_text: #D9A85F;
+    --danger_tint: #40322E;
+    --danger_edge: #67433E;
+    --danger_text: #E2867C;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #262624;
+  --surface: #1F1E1D;
+  --surface_alt: #30302E;
+  --border: #3A3935;
+  --text_primary: #F5F4EE;
+  --accent: #D97757;
+  --success: #8AB487;
+  --warning: #D9A85F;
+  --danger: #E07A6F;
+  --accent_text: #DF9075;
+  --muted_text: #A8A59B;
+  --on_accent: #262624;
+  --control_border: #7B7A76;
+  --accent_tint: #44342D;
+  --accent_edge: #654236;
+  --success_tint: #343A32;
+  --success_text: #8AB487;
+  --warning_tint: #3F382C;
+  --warning_edge: #655439;
+  --warning_text: #D9A85F;
+  --danger_tint: #40322E;
+  --danger_edge: #67433E;
+  --danger_text: #E2867C;
+}

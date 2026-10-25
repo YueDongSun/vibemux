@@ -1,0 +1,104 @@
+@import '../../../../config/design_tokens.css';
+
+/*
+ * Page-level styling for the desktop shell. Colors, fonts, sizes, and
+ * radii come from the shared tokens; only layout and composition live here.
+ */
+
+:root {
+  font-family: var(--font_ui);
+  font-size: var(--size_body);
+  color: var(--text_primary);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  height: 100%;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 12px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.brand {
+  font-family: var(--font_display);
+  font-size: var(--size_title);
+  line-height: 1.2;
+}
+
+.sidebar_note {
+  margin: 0;
+  color: var(--muted_text);
+  font-size: var(--size_nav);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.top_bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.breadcrumb {
+  font-size: var(--size_nav);
+  color: var(--muted_text);
+}
+
+.connection_dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius_pill);
+  background: var(--success);
+}
+
+.empty_state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  text-align: center;
+}
+
+.greeting {
+  margin: 0;
+  font-family: var(--font_display);
+  font-size: var(--size_display);
+  font-weight: 400;
+}
+
+.empty_note {
+  margin: 0;
+  color: var(--muted_text);
+  font-size: var(--size_nav);
+}
