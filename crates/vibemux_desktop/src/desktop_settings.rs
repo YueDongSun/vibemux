@@ -233,8 +233,10 @@ mod tests {
 
     #[test]
     fn a_patch_changes_only_the_fields_it_carries() {
-        let mut settings = DesktopSettings::default();
-        settings.appearance = Appearance::Dark;
+        let mut settings = DesktopSettings {
+            appearance: Appearance::Dark,
+            ..DesktopSettings::default()
+        };
         let patch = SettingsPatch {
             density: Some(Density::Compact),
             ..SettingsPatch::default()
