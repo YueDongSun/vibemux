@@ -1,0 +1,33 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main_window",
+  "description": "The main window and the task windows: the command list plus event listening.",
+  "windows": ["main", "task_*"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-projects-list",
+    "allow-project-pick",
+    "allow-project-select",
+    "allow-project-forget",
+    "allow-daemon-start",
+    "allow-daemon-stop",
+    "allow-tasks-snapshot",
+    "allow-supervisor-action",
+    "allow-task-window-open",
+    "allow-ask-targets",
+    "allow-ask-setup",
+    "allow-ask-confirm",
+    "allow-ask-submit",
+    "allow-ask-cancel",
+    "allow-ask-status",
+    "allow-ask-reply",
+    "allow-console-section",
+    "allow-probe-rerun",
+    "allow-quick-search",
+    "allow-open-link",
+    "allow-settings-get",
+    "allow-settings-set",
+    "allow-about-info"
+  ]
+}

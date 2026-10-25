@@ -132,6 +132,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
+| Desktop app (ADR 043) | `PARTIAL — SKELETON` | `vibemux_desktop` (Tauri 2 shell), `crates/vibemux_desktop/ui` (Svelte 5 UI), the fixed 23-command list, `desktop_settings.json`, the navigation guard, and the lockdown tests | The project, Ask, task, console, and settings screens; no vendor text is fetched yet; the egui GUI is still the shipped frontend |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -7195,3 +7196,126 @@ parallel: 193 runs with no failure.
 
 **Not verified:** the CI failure's cause. A local Windows host with 24
 logical CPUs did not reproduce it under load.
+
+### 2026-10-24 — Tauri desktop app skeleton (ADR 043, PR 3 of 5)
+
+**Scope:** the new `vibemux_desktop` crate and its Svelte 5 UI (PR 3 of 5 in
+the desktop-app-phase-1 refactor plan; Tasks 4 and 5). No daemon, store,
+control protocol, or CLI behavior changed. The egui GUI is untouched and
+remains the shipped frontend; this step adds the shell that will replace it.
+
+**Implemented:**
+- Task 4 added `crates/vibemux_desktop/ui`: a Svelte 5, Vite 8, and
+  TypeScript 5.9 shell whose `app.svelte` renders the sidebar and main
+  columns, styled from the shared `config/design_tokens.css`; `src/lib/
+  {ui_contract,backend,api_client,fixture_backend}.ts` hold the 23-command
+  contract, the backend interface, the Tauri client, and the demo backend;
+  `tests/fixture_guard_test.ts` fails when the production bundle still
+  contains the fixture marker.
+- Task 5 added the `vibemux_desktop` crate: `command_names.rs` (the 23
+  commands), `command_error.rs`, `navigation.rs` (the app origin and the
+  configured dev origin only), `desktop_settings.rs` (`desktop_settings.json`,
+  schema 1, at most 16 project folders and 64 Ask confirmations, written
+  through a temporary file and a rename), `event_sink.rs`, `ui_contract.rs`,
+  `app_state.rs`, `windows.rs` (the main window is created in Rust so that it
+  gets the navigation guard), and `commands.rs` (all 23 commands registered;
+  the ones that belong to a later step answer `not_implemented`).
+- `tauri.conf.json` carries the reviewed CSP verbatim, `withGlobalTauri`
+  off, `freezePrototype` on, no configured window, and no plugin;
+  `capabilities/main_window.json` grants the 23 `allow-…` permissions plus
+  `core:event:allow-listen` and `core:event:allow-unlisten` for the `main`
+  and `task_*` windows. `tests/lockdown.rs` pins the CSP, the remote-URL
+  rule, the prototype freeze, the empty window list, the capability set,
+  the plugin rule, and the absence of a GUI dependency.
+- The build script asserts that `crates/vibemux_desktop/ui/dist/index.html`
+  exists, declares the command list in the Tauri app manifest, and draws the
+  window icon when the committed assets are absent.
+- `CLAUDE.md`, `README.md`, and CI follow: the layout map and the build
+  commands name the desktop crate, the README documents the build and run
+  steps, and CI installs the Tauri system libraries on Linux and builds the
+  UI before the Rust steps.
+
+**Deviations from the plan, and why:**
+- `tauri_build::AppManifest::commands` takes a `&'static [&'static str]`, so
+  the command list is a `static` rather than the `const` the plan wrote.
+- The plan generates the icons with `npx tauri icon`, which needs npm and
+  the network. The build script draws the same mark instead, so the Windows
+  resource step and the Tauri context always have an icon; the drawn assets
+  stay untracked.
+- The desktop UI's `package-lock.json` was generated with Node 24.18.0 (the
+  machine's active nvm selection) while `engines.node` pins 22.22.0; npm
+  resolved the exact pinned versions and flagged only an engine warning.
+
+**Verification executed 2026-10-24 (native Windows 11, in the desktop app's
+shell):**
+- `crates/vibemux_desktop/ui`: `npm install` (51 packages, lockfile
+  generated), `npm run build` (116 modules; the shared tokens are inlined
+  into the built CSS), `npm run typecheck` (0 errors, 0 warnings),
+  `npm test` (the fixture guard passes: no fixture marker in the production
+  bundle), a fixture-mode build (the marker IS present in `dist_fixture`,
+  then removed), and `npm audit --audit-level=low` (0 vulnerabilities).
+- `cargo fmt --all -- --check` passed (after `cargo fmt --all` normalized
+  the new desktop crate sources).
+- `cargo check -p vibemux_desktop` resolved and compiled the Tauri
+  dependency tree and updated `Cargo.lock`; the desktop crate itself was
+  not yet type-checked, because the build stops earlier at the first
+  C dependency.
+
+**Not verified, with the reason:** every Rust gate that compiles a C
+dependency (`cargo check`, `test`, `clippy` for `vibemux_desktop` and for
+untouched crates such as `vibemux_store`) fails on this machine when the
+build is launched from this desktop app, in its bash and in its terminal
+tab alike: `cl.exe`, spawned by the `cc` crate inside a cargo build script,
+dies with `D8050` ("cannot execute c1.dll"), before parsing any source.
+The same `cl.exe` compiles the same files (for example `sqlite3.c` with the
+exact cc flag set) when a plain build script or a direct shell invokes it,
+so the trigger is the cc-spawn context under the app's process lineage, not
+the sources. The gates that remain are, from a terminal that is not spawned
+by the desktop app: `cargo fmt --all -- --check`, `cargo clippy -p
+vibemux_desktop --all-targets --all-features -- -D warnings`, and
+`cargo test -p vibemux_desktop --all-features`; `cargo deny check` may then
+need per-crate MPL-2.0 exceptions in `deny.toml` for the Tauri build chain.
+No screen has been seen, and no daemon, Ask, or vendor text is involved
+yet.
+
+### 2026-10-25 — Desktop skeleton: first CI round and review fixes (PR #47)
+
+**Scope:** fixes on the `worktree-desktop_app_skeleton` branch after its
+first CI run and the Codex review, before merge. No daemon, store, control
+protocol, or CLI behavior changes.
+
+**Fixed from CI (run 40162230020):**
+- Clippy rejected the icon module's hand-rolled mask-row rounding
+  (`(SIZE + 31) / 32 * 4`); it is `SIZE.div_ceil(32) * 4` now. This failure
+  stopped the build before the crate compiled, so the rest of the crate is
+  still awaiting its first full compile in CI.
+- `cargo deny` rejected five MPL-2.0 crates from the Servo CSS family that
+  tauri-build's asset codegen pulls in (`cssparser`, `cssparser-macros`,
+  `dtoa-short`, `option-ext`, `selectors`) and `target-lexicon`
+  (Apache-2.0 WITH LLVM-exception); `deny.toml` now carries per-crate
+  exceptions for exactly those, matching the existing `ece` pattern, and an
+  advisory ignore for the unmaintained-but-not-vulnerable `proc-macro-error`
+  (RUSTSEC-2024-0370) reached through the same chain.
+
+**Fixed from the review (Codex findings P1/P2):**
+- P1, `windows.rs`: the window selected the configured `devUrl` whenever the
+  config carried one, so the documented `npm run build && cargo run`
+  procedure would load `http://localhost:5180` (a dead page) instead of the
+  bundled assets, and the navigation guard trusted the dev origin in every
+  build. The crate now enables Tauri's `custom-protocol` by default (the
+  canonical scaffold pattern: a plain `cargo run` loads `ui/dist`, and dev
+  builds run with `--no-default-features` exactly as `tauri dev` does), the
+  window always uses the app URL, and the guard receives the dev origin only
+  when `tauri::is_dev()` is true. The README and CLAUDE.md document the
+  hot-reload invocation accordingly.
+- P2, `app_state.rs`: overlapping `settings_set` calls could read the same
+  settings before either wrote, race on the shared `.json.tmp` path, and
+  lose one patch. `apply_settings` now holds the write lock across the whole
+  read-apply-save-publish transaction, and a two-thread regression test
+  asserts both patches land in the file.
+
+**Validation executed:** `cargo fmt --all -- --check` passed locally after
+the changes. The compile/test gates still run in CI only, for the same
+machine-local `cl.exe` reason recorded above; the next CI round is their
+first run against the fixed crate.
+

@@ -111,6 +111,7 @@ crates/
 ├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
 ├── vibemux_client/             # GUI-neutral daemon, probe, Ask, and Git client shared by the frontends
 ├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + navigable read-only dashboard + DSH terminal surface + ASCII dump
+├── vibemux_desktop/           # ADR 043 Tauri 2 desktop shell; the Svelte 5 UI is crates/vibemux_desktop/ui
 ├── vibemux_mcp/                # first-party MCP stdio frontend + contained metadata reader (ADR 035)
 ├── vibemuxd/                   # M3 daemon (writer worker + control IPC v10 + plugin registry + harness dispatch + workflow + DSH session + decision service)
 └── vibemux_cli/                # pre-alpha vibemuxctl: unified command tree (status/workspace/probe/ui/harness, --format), daemon lifecycle, harnesses/switch + dispatch + workflow/DSH/decision client (ADR 041)
@@ -163,12 +164,12 @@ vibemuxd
   ↑
 vibemux_client
   ↑
-vibemux_frontend
+vibemux_frontend / vibemux_desktop
   ↑
 vibemux-cli
 ```
 
-With the current crates placed in that layering: `types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux_client → vibemux_frontend → vibemux-cli`. `vibemux_decision_peer` sits beside `vibemuxd` at the process level and depends only on `vibemux_decision`.
+With the current crates placed in that layering: `types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux_client → vibemux_frontend / vibemux_desktop → vibemux-cli`. `vibemux_decision_peer` sits beside `vibemuxd` at the process level and depends only on `vibemux_decision`. `vibemux_desktop` is the Tauri shell (ADR 043): it drives `vibemux_client` and exposes a fixed command list to a locked-down webview that never holds a daemon credential or a filesystem path.
 
 ## Core versus plugin boundary
 

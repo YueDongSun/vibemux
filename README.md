@@ -18,6 +18,7 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Dual-track workflow (ADR 031) | `PARTIAL — OFFLINE ONLY` | Daemon-owned `cooperate`/`compare` workflows over two owned worktrees, TaskSpec source validation, fenced leases, context broker and shares, independent review, trusted verifier and integration gates, bounded prompt-policy optimizer, schema-5 records, Control v6, `vibemuxctl workflow`, and an offline acceptance runner; verified with fixture workers on native Windows | AAG gateway client, live supervisor/compiler/workers, native TUI sessions and handoff, paused-prompt editing, and any live acceptance |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
 | Native MCP frontend (ADR 035) | `PARTIAL — PRE-ALPHA` | Rust stdio metadata tools over the existing daemon client, explicit default-denied grant, bounded projections and contained reader lifecycle; native Windows fixture coverage | Live deployment, Linux qualification and operator acceptance |
+| Desktop app (ADR 043) | `PARTIAL — SKELETON` | Tauri 2 shell with a Svelte 5 UI, the fixed 23-command list, the app's own settings file, the navigation guard, and the lockdown tests | The project, Ask, task, console, and settings screens; the egui GUI is still the shipped frontend |
 
 Authoritative milestones, evidence, and release plan: [PROGRESS.md](PROGRESS.md).
 
@@ -475,6 +476,22 @@ The canonical GUI palette values are exported to `config/theme_palettes.json` (p
 Machine-readable evidence for scripts and CI: `vibemux_frontend_tui --json` prints the versioned probe report; `vibemux_frontend_dump` prints a plain-text snapshot. Theme selection never affects either output.
 
 Golden render fixtures per theme (80x24 and 120x32) live in `crates/vibemux_frontend/tests/fixtures/golden/`; regenerate after an intentional visual change with `cargo test -p vibemux_frontend write_golden_fixtures -- --ignored`.
+
+## Desktop app (ADR 043, pre-alpha)
+
+The desktop app is a Tauri 2 shell around the GUI-neutral `vibemux_client`, with a Svelte 5 UI. Its webview holds no daemon credential and no filesystem path: it calls a fixed list of typed commands, and `ask_reply` is the only one that returns vendor text. No Tauri plugin is registered, `withGlobalTauri` is off, the prototype is frozen, and navigation away from the app origin is refused.
+
+```powershell
+# The UI is built first: the crate embeds crates/vibemux_desktop/ui/dist.
+cd crates/vibemux_desktop/ui
+npm install
+npm run build
+cd ../..
+
+cargo run -p vibemux_desktop
+```
+
+For hot reload, run `npm run dev` in the UI directory and `cargo run --no-default-features -p vibemux_desktop` in another terminal: without the default `custom-protocol` feature the window loads the dev server on `http://localhost:5180`, and a plain `cargo run` always loads the bundled `ui/dist` assets. The app keeps its own `desktop_settings.json` in the Tauri app config directory and never reads the egui GUI's settings. This step ships the shell, the settings file, the navigation guard, and the lockdown tests; the screens arrive in later steps. See [ADR 043](docs/adr/043_tauri_desktop_app.md) and [docs/desktop_app_design.md](docs/desktop_app_design.md).
 
 ## Development commands
 
