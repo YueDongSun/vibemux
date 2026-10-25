@@ -16,8 +16,8 @@ use vibemux_harness::{
     dispatch::{DispatchRequest, request::DISPATCH_REQUEST_SCHEMA_VERSION},
 };
 use workflow_support::{
-    FixtureOptions, TaskDraft, WorkflowFixture, cooperative_request, good_files, phase, policy,
-    remote, review_pass, store_request, store_task, track_a, track_b, workflow_id,
+    FixtureOptions, TaskDraft, WorkflowFixture, cooperative_request, good_files, policy, remote,
+    review_pass, store_request, store_task, track_a, track_b, workflow_id,
 };
 
 const SYNTAX: [&str; 1] = ["syntax"];
@@ -318,7 +318,7 @@ async fn with_no_free_slot_a_workflow_blocks_until_one_is_released() {
     let status = fixture
         .wait_phase(waiting_id, &["accepted", "failed", "blocked"])
         .await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     assert_eq!(fixture.checkout_status(), "");
     fixture.shutdown().await;
 }
