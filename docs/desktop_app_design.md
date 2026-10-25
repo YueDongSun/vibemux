@@ -66,7 +66,7 @@ Non-goals:
 |---|---|---|
 | GUI | egui 0.34 Supervisor Chat: welcome, task list, docked drawer, detached task windows, project folders with daemon Start/Stop, read-only Ask, Console (7 sections), Settings (5 sections), `Ctrl+K`, `Ctrl+/` | ADRs 028, 030, 042 |
 | Web UI | Svelte 5.57.2, Vite 8.3.3, TypeScript 5.9.3, Node 22.22.0; read-only mobile surface | ADR 033, `crates/vibemux_web/web` |
-| Design tokens | snake_case CSS variables from `claude_light` with a `claude` dark variant and AA-checked derived colors | commit `0f08aa5`, only on `origin/fix/web_design_tokens` |
+| Design tokens | snake_case CSS variables from `claude_light` with a `claude` dark variant and AA-checked derived colors, shared from `config/design_tokens.css` | reached `main` via PR #40 (`a4aa0da`); shared into `config/design_tokens.css` by commit `12aa02c` |
 | Task reads | Control v4 `frontend_tasks` / `frontend_task`, content-free, bounded | ADR 028 |
 | Ask | one read-only structured turn through ADR 029 dispatch; reply lives in daemon memory | ADRs 029, 030 amendment |
 | Console reads | content-free daemon feed, probe view model, Git inventory | ADR 042 |

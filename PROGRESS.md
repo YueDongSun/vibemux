@@ -6961,3 +6961,75 @@ against a real `WriterWorker`:
 reproduced end to end through the daemon; the unit test reproduces its end
 state at the writer instead. The rest of the workspace test suite was not run
 locally (only `vibemuxd`'s workflow cancel paths changed).
+
+### 2026-10-24 — shared design tokens (desktop app phase 1, PR 2)
+
+**Scope:** `config/design_tokens.css`, `crates/vibemux_web/web/src/style.css`,
+`crates/vibemux_web/web/vite_config.ts`, and
+`crates/vibemux_frontend/tests/design_tokens_parity.rs` only (PR 2 of 5 in
+the desktop-app-phase-1 refactor plan; Task 3). No daemon, store, control
+protocol, or CLI behavior changed. No milestone or ADR status moves: ADR 043
+(the Tauri desktop app) stays `Proposed`, and the desktop app itself does
+not exist yet — this only prepares a token source it will later consume.
+
+**Implemented:**
+- `config/design_tokens.css` (new) holds the design tokens that used to
+  live only in `crates/vibemux_web/web/src/style.css`, in three blocks:
+  a light `:root { color-scheme: light; ... }` (colors from the
+  `claude_light` palette plus every non-color font/size/radius token), a
+  `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  ... } }` (colors from the `claude` palette), and an explicit
+  `:root[data-theme="dark"] { ... }` with the same dark colors. The file
+  holds only custom properties plus `color-scheme`; page-level styling
+  (font-family, color, background, font-synthesis, text-rendering,
+  `-webkit-font-smoothing`) stays in each consumer's own stylesheet.
+  `data-theme` is not set anywhere yet, so `prefers-color-scheme`-driven
+  behavior is unchanged from before this file existed; the explicit
+  selector exists for a future consumer (a theme switch, or the desktop
+  shell) to force a theme.
+- `crates/vibemux_web/web/src/style.css` now imports the shared file
+  (`@import '../../../../config/design_tokens.css';`) as its first
+  statement instead of declaring the token blocks itself, followed by its
+  own `:root` block for the page-styling declarations that stayed local.
+- `crates/vibemux_web/web/vite_config.ts` adds `server.fs.allow: ['.',
+  '../../../config']` so a future `vite dev` session can serve
+  `config/design_tokens.css` from outside the package root.
+- `crates/vibemux_frontend/tests/design_tokens_parity.rs` (new) pins three
+  things with plain string parsing (no regex, no new dependency): the
+  light block's base colors and both dark blocks' colors match the
+  compiled-in `claude_light`/`claude` palettes exported to
+  `config/theme_palettes.json` (itself pinned to the compiled palettes by
+  `palette_parity.rs`); the two dark blocks declare identical name/value
+  pairs; and every semantic text/background pair (light and dark) meets
+  WCAG AA (4.5:1) via the existing `theme::contrast` helpers.
+
+**Validation executed (Rust 1.92.0, native Windows 11; Node 24.19.0 against
+the repository-pinned 22.22.0 requirement, EBADENGINE warning only):**
+- `cargo test -p vibemux_frontend --test design_tokens_parity` passed: 3
+  tests (`base_tokens_match_the_exported_palettes`,
+  `the_two_dark_blocks_are_identical`, `every_text_pair_meets_wcag_aa`).
+- `cargo test -p vibemux_frontend --test palette_parity` passed: 2 tests
+  (pre-existing, unaffected regression check).
+- `cargo fmt -p vibemux_frontend -- --check` passed (after one
+  `cargo fmt -p vibemux_frontend` pass to fix 4 line-wrapping diffs in the
+  new test file).
+- `cargo clippy -p vibemux_frontend --test design_tokens_parity
+  --all-features -- -D warnings` passed with no warnings.
+- In `crates/vibemux_web/web`: `npm ci` (364 packages), `npm run
+  typecheck` (384 files, 0 errors), `npm test` (15 passed), `npm run
+  build` (124 modules transformed, built successfully with no
+  filesystem-access errors), then `grep -c "\-\-accent_text"
+  dist/assets/*.css` → `1` (one CSS file, 5 occurrences inside it — once
+  per theme-aware rule referencing the token). `node_modules` and `dist`
+  were deleted afterward; `git status --short` showed only the four
+  intended files changed.
+- Mutation check: temporarily changed the light block's `--bg` from
+  `#FAF9F5` to `#FFFFFF`, confirmed `base_tokens_match_the_exported_palettes`
+  failed naming the block/token/both hex values, then restored the exact
+  original content and confirmed a clean rerun.
+
+**Not verified:** `vite dev` (the dev server itself) was not run, so the
+`server.fs.allow` relative-path resolution is unexercised by any check
+above — `npm run build` does not need it, since Rollup's build-time CSS
+`@import` resolution does not go through the dev server's `fs.allow`
+guard. CI was not run yet at the time of this entry.
