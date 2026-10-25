@@ -11,6 +11,13 @@ description = "Tauri desktop app for VibeMux: projects, one-shot Asks, tasks, co
 name = "vibemux_desktop"
 path = "src/lib.rs"
 
+[features]
+# The bundled protocol is the default, so a plain `cargo run` loads the
+# built `ui/dist` assets. Dev builds run with `--no-default-features`
+# (as `tauri dev` does), which selects the configured dev server instead.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [[bin]]
 name = "vibemux_desktop"
 path = "src/main.rs"

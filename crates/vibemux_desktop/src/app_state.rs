@@ -43,17 +43,17 @@ impl AppState {
         &self.settings_path
     }
 
-    /// Applies a patch and writes the file. The in-memory copy changes
-    /// only when the write succeeds.
+    /// Applies a patch and writes the file. The write lock is held across
+    /// the whole transaction — reading the current settings, applying the
+    /// patch, writing the file, and publishing the new value — so
+    /// overlapping calls serialize instead of losing updates or racing on
+    /// the temporary file. The in-memory copy changes only when the write
+    /// succeeds.
     pub fn apply_settings(&self, patch: &SettingsPatch) -> io::Result<()> {
-        let updated = {
-            let settings = self.settings.read().map_err(io::Error::other)?;
-            let mut updated = settings.clone();
-            updated.apply(patch);
-            updated
-        };
-        save_settings_at(&self.settings_path, &updated)?;
         let mut settings = self.settings.write().map_err(io::Error::other)?;
+        let mut updated = settings.clone();
+        updated.apply(patch);
+        save_settings_at(&self.settings_path, &updated)?;
         *settings = updated;
         Ok(())
     }
@@ -98,5 +98,36 @@ mod tests {
         assert_eq!(state.settings().appearance, Appearance::Dark);
         let stored = load_settings_at(&path);
         assert_eq!(stored.appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn overlapping_patches_are_both_applied() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop_settings.json");
+        let state = Arc::new(AppState::new(
+            path.clone(),
+            Arc::new(RecordingEventSink::default()),
+        ));
+
+        let appearance_state = Arc::clone(&state);
+        let appearance = std::thread::spawn(move || {
+            appearance_state.apply_settings(&SettingsPatch {
+                appearance: Some(Appearance::Dark),
+                ..SettingsPatch::default()
+            })
+        });
+        let density_state = Arc::clone(&state);
+        let density = std::thread::spawn(move || {
+            density_state.apply_settings(&SettingsPatch {
+                density: Some(Density::Compact),
+                ..SettingsPatch::default()
+            })
+        });
+        appearance.join().expect("thread").expect("applied");
+        density.join().expect("thread").expect("applied");
+
+        let stored = load_settings_at(&path);
+        assert_eq!(stored.appearance, Appearance::Dark);
+        assert_eq!(stored.density, Density::Compact);
     }
 }

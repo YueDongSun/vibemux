@@ -6842,3 +6842,44 @@ need per-crate MPL-2.0 exceptions in `deny.toml` for the Tauri build chain.
 No screen has been seen, and no daemon, Ask, or vendor text is involved
 yet.
 
+### 2026-10-25 — Desktop skeleton: first CI round and review fixes (PR #47)
+
+**Scope:** fixes on the `worktree-desktop_app_skeleton` branch after its
+first CI run and the Codex review, before merge. No daemon, store, control
+protocol, or CLI behavior changes.
+
+**Fixed from CI (run 40162230020):**
+- Clippy rejected the icon module's hand-rolled mask-row rounding
+  (`(SIZE + 31) / 32 * 4`); it is `SIZE.div_ceil(32) * 4` now. This failure
+  stopped the build before the crate compiled, so the rest of the crate is
+  still awaiting its first full compile in CI.
+- `cargo deny` rejected five MPL-2.0 crates from the Servo CSS family that
+  tauri-build's asset codegen pulls in (`cssparser`, `cssparser-macros`,
+  `dtoa-short`, `option-ext`, `selectors`) and `target-lexicon`
+  (Apache-2.0 WITH LLVM-exception); `deny.toml` now carries per-crate
+  exceptions for exactly those, matching the existing `ece` pattern, and an
+  advisory ignore for the unmaintained-but-not-vulnerable `proc-macro-error`
+  (RUSTSEC-2024-0370) reached through the same chain.
+
+**Fixed from the review (Codex findings P1/P2):**
+- P1, `windows.rs`: the window selected the configured `devUrl` whenever the
+  config carried one, so the documented `npm run build && cargo run`
+  procedure would load `http://localhost:5180` (a dead page) instead of the
+  bundled assets, and the navigation guard trusted the dev origin in every
+  build. The crate now enables Tauri's `custom-protocol` by default (the
+  canonical scaffold pattern: a plain `cargo run` loads `ui/dist`, and dev
+  builds run with `--no-default-features` exactly as `tauri dev` does), the
+  window always uses the app URL, and the guard receives the dev origin only
+  when `tauri::is_dev()` is true. The README and CLAUDE.md document the
+  hot-reload invocation accordingly.
+- P2, `app_state.rs`: overlapping `settings_set` calls could read the same
+  settings before either wrote, race on the shared `.json.tmp` path, and
+  lose one patch. `apply_settings` now holds the write lock across the whole
+  read-apply-save-publish transaction, and a two-thread regression test
+  asserts both patches land in the file.
+
+**Validation executed:** `cargo fmt --all -- --check` passed locally after
+the changes. The compile/test gates still run in CI only, for the same
+machine-local `cl.exe` reason recorded above; the next CI round is their
+first run against the fixed crate.
+

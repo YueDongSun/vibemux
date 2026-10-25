@@ -164,7 +164,7 @@ fn ico_bytes(pixels: &[[u8; 4]]) -> Vec<u8> {
             xor.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }
     }
-    let mask_row = (SIZE + 31) / 32 * 4;
+    let mask_row = SIZE.div_ceil(32) * 4;
     let and_mask = vec![0u8; mask_row * SIZE];
 
     let mut info = Vec::with_capacity(40);

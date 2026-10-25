@@ -491,7 +491,7 @@ cd ../..
 cargo run -p vibemux_desktop
 ```
 
-`npm run dev` serves the UI on `http://localhost:5180` with hot reload, and the Rust side then loads that dev origin instead of the bundled assets. The app keeps its own `desktop_settings.json` in the Tauri app config directory and never reads the egui GUI's settings. This step ships the shell, the settings file, the navigation guard, and the lockdown tests; the screens arrive in later steps. See [ADR 043](docs/adr/043_tauri_desktop_app.md) and [docs/desktop_app_design.md](docs/desktop_app_design.md).
+For hot reload, run `npm run dev` in the UI directory and `cargo run --no-default-features -p vibemux_desktop` in another terminal: without the default `custom-protocol` feature the window loads the dev server on `http://localhost:5180`, and a plain `cargo run` always loads the bundled `ui/dist` assets. The app keeps its own `desktop_settings.json` in the Tauri app config directory and never reads the egui GUI's settings. This step ships the shell, the settings file, the navigation guard, and the lockdown tests; the screens arrive in later steps. See [ADR 043](docs/adr/043_tauri_desktop_app.md) and [docs/desktop_app_design.md](docs/desktop_app_design.md).
 
 ## Development commands
 

@@ -18,8 +18,37 @@ allow = [
 crate = "ece"
 allow = ["MPL-2.0"]
 
+# The Servo CSS family (via tauri-build's asset codegen -> kuchikiki) is
+# MPL-2.0; accept that license for these crates only.
+[[licenses.exceptions]]
+crate = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "option-ext"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "selectors"
+allow = ["MPL-2.0"]
+
+# target-lexicon (via the Tauri toolchain) carries the LLVM exception on
+# top of Apache-2.0; accept it for this crate only.
+[[licenses.exceptions]]
+crate = "target-lexicon"
+allow = ["Apache-2.0 WITH LLVM-exception"]
+
 [advisories]
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "rsa is reached only via web-push -> jwt-simple -> superboring; VAPID signs with ES256 and VibeMux never uses RSA keys; no patched rsa release exists" },
   { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 is reached only via web-push -> jwt-simple 0.12 -> p256/k256/p384 0.13 for VAPID ES256 signing; no patched 0.5.x release exists and web-push 0.11.0, the latest, still requires jwt-simple 0.12; remove once VAPID signing moves to jwt-simple 0.13 or later" },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but not vulnerable and has no patched release; it is reached through the Tauri build chain (tauri-build -> tauri-utils)" },
 ]

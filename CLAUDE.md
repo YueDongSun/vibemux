@@ -107,7 +107,7 @@ MSRV is **Rust 1.92.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 - Read-only multi-pane console (ADR 041/042, also `vibemuxctl ui`): `cargo run -p vibemux_frontend --bin vibemux_dashboard -- --project-root .` (`1`-`7` views incl. daemon Tasks/Daemon/Sessions/Decisions, `L` single/split/grid, `Tab` next pane, `z` zoom, `/` filter, `r` refresh, `t` theme; reads only content-free daemon state, never starts a daemon)
 - DSH terminal surface (ADR 032; needs an operator `.vibemux/dsh_session.json`): `cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .` (`--config`, `--theme`, `--print-config`; `Enter` sends, `Esc` cancels the turn, `Ctrl-F` searches the in-memory transcript, `Home`/`End` jump, `Ctrl-C` quits)
 - GUI (egui/eframe, opens a window): `cargo run -p vibemux_frontend --bin vibemux_frontend`
-- Desktop app (ADR 043, opens a window): build the UI first with `npm install && npm run build` in `crates/vibemux_desktop/ui` (Node 22), then `cargo run -p vibemux_desktop`
+- Desktop app (ADR 043, opens a window): build the UI first with `npm install && npm run build` in `crates/vibemux_desktop/ui` (Node 22), then `cargo run -p vibemux_desktop`. Hot reload: `npm run dev` in the UI directory plus `cargo run --no-default-features -p vibemux_desktop` (the default `custom-protocol` feature makes plain `cargo run` load the bundled `ui/dist` assets)
 
 ### Daemon + harness surface (Windows, pre-alpha)
 
