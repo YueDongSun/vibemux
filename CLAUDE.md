@@ -30,7 +30,7 @@ Key invariants from `AGENTS.md` §2: user messages are data (never interpolated 
 Rust crate dependency direction (from `AGENTS.md` §4.2):
 
 ```text
-types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux_client → vibemux_frontend → vibemux-cli
+types → events → harness → workflow / decision → store / workspace / platform / a2a / probe → plugin-api → plugin-host → vibemuxd → vibemux_client → vibemux_frontend / vibemux_desktop → vibemux-cli
 ```
 
 Domain crates must not depend on platform, database, terminal, or network implementations. `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary (`AgentKind`/`LauncherKind`/`ProbeState`) lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it — the harness crate pulls no probe I/O. Full crate responsibilities and data flow are in [docs/architecture.md](docs/architecture.md).
@@ -59,6 +59,7 @@ crates/vibemux_model_peer/         # optional out-of-process model peer; never r
 crates/vibemux_mcp/                # ADR 035 first-party read-only MCP frontend over the daemon client (stdio)
 crates/vibemux_web/                # ADR 033 operator-started read-only mobile web surface (+ the ADR 042 console's daemon views, opt-in loopback local page mode); build.rs needs crates/vibemux_web/web/dist (npm ci && npm run build)
 crates/vibemux_client/             # GUI-neutral daemon, probe, Ask, and Git client shared by the frontends
+crates/vibemux_desktop/           # ADR 043 Tauri 2 desktop shell (the Svelte 5 UI is crates/vibemux_desktop/ui); build.rs needs crates/vibemux_desktop/ui/dist (npm install && npm run build)
 crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump + read-only multi-pane console with content-free daemon views (ADR 041/042)
 crates/vibemux_workspace/          # Git worktree lifecycle, owner receipts, and cleanup
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v10: health/plugin/harness/frontend/terminal/dispatch/workflow/dsh/decision ops, model-supervisor and contract-edit ops + harness dispatch, workflow, DSH, and decision services)
@@ -106,6 +107,7 @@ MSRV is **Rust 1.92.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 - Read-only multi-pane console (ADR 041/042, also `vibemuxctl ui`): `cargo run -p vibemux_frontend --bin vibemux_dashboard -- --project-root .` (`1`-`7` views incl. daemon Tasks/Daemon/Sessions/Decisions, `L` single/split/grid, `Tab` next pane, `z` zoom, `/` filter, `r` refresh, `t` theme; reads only content-free daemon state, never starts a daemon)
 - DSH terminal surface (ADR 032; needs an operator `.vibemux/dsh_session.json`): `cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .` (`--config`, `--theme`, `--print-config`; `Enter` sends, `Esc` cancels the turn, `Ctrl-F` searches the in-memory transcript, `Home`/`End` jump, `Ctrl-C` quits)
 - GUI (egui/eframe, opens a window): `cargo run -p vibemux_frontend --bin vibemux_frontend`
+- Desktop app (ADR 043, opens a window): build the UI first with `npm install && npm run build` in `crates/vibemux_desktop/ui` (Node 22), then `cargo run -p vibemux_desktop`
 
 ### Daemon + harness surface (Windows, pre-alpha)
 
@@ -212,6 +214,7 @@ Release-start benchmark (script refuses a project that already has a daemon desc
 - **One task per branch/worktree.** Use `feat/<issue>-<short-name>`, `fix/<issue>-<short-name>`, `refactor/<issue>-<short-name>`, or `docs/<issue>-<short-name>`.
 - **Never claim "tests pass" unless they were executed on the change you're handing off.** Record the exact commands and outcomes.
 - **`vibemux_web` will not compile until its frontend is built.** Its `build.rs` asserts `crates/vibemux_web/web/dist`; run `npm ci && npm run build` in `crates/vibemux_web/web` (Node 22) first, or pass `--exclude vibemux_web` to workspace-wide cargo commands. CI runs the web `typecheck`/`test`/`audit`/`build` before the Rust steps.
+- **`vibemux_desktop` will not compile until its UI is built.** Its `build.rs` asserts `crates/vibemux_desktop/ui/dist`; run `npm install && npm run build` in `crates/vibemux_desktop/ui` (Node 22) first, or pass `--exclude vibemux_desktop` to workspace-wide cargo commands. On Linux the Tauri build also needs `libwebkit2gtk-4.1-dev`; CI installs it before the Rust steps.
 - **Rust library crates should use `#![forbid(unsafe_code)]`.** `unsafe` is only allowed in a narrow platform module and requires an accepted ADR plus a `// SAFETY:` comment.
 - **No unbounded channels, no async mutex across `.await`, no `unwrap`/`expect` on untrusted runtime input.** Blocking SQLite/Git/filesystem/process work goes through `spawn_blocking` or a dedicated worker.
 - **No public Rust ABI plugin.** Plugins are out-of-process executables speaking length-delimited Protobuf over stdin/stdout (`vibemux_plugin_protocol`). WASM may be considered later for deterministic policy/transform plugins, but never as a substitute for OS-accessing harness or terminal plugins.

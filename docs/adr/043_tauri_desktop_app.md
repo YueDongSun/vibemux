@@ -1,8 +1,8 @@
 # ADR 043: Tauri desktop app replaces the egui GUI
 
-Status: Proposed (draft, 2026-10-24). Becomes Accepted with the
-`vibemux_desktop` skeleton PR (design §10, PR 3). The design and the operator's
-decisions are in [docs/desktop_app_design.md](../desktop_app_design.md).
+Status: Accepted (2026-10-24) with the `vibemux_desktop` skeleton PR (design
+§10, PR 3). The design and the operator's decisions are in
+[docs/desktop_app_design.md](../desktop_app_design.md).
 
 On acceptance this ADR supersedes the egui presentation decisions of
 [ADR 028](028_supervisor_chat_frontend.md) and
@@ -73,6 +73,10 @@ UI libraries: `markdown-it` (MIT), `highlight.js` (BSD-3-Clause), and
   capability file for the main window and `task_*` windows. No Tauri plugin is
   registered, so no `fs`, `shell`, `http`, or `opener` plugin can reach the
   webview; `open_link` opens `https://` URLs from Rust with the `open` crate.
+  The generated permission name is `allow-<command>` with the command's
+  underscores replaced by dashes (`allow-projects-list`), and the command
+  list must be a `static`, because the app manifest takes a
+  `&'static [&'static str]`.
 - Markdown renders with raw HTML disabled, only `https:`, `http:`, and
   `mailto:` links kept, and images off.
 
@@ -138,6 +142,12 @@ its installed version.
 These prove contracts and layout at tested sizes. They do not prove WebView2
 behavior on every Windows build, IME behavior with every input method, or any
 vendor behavior.
+
+The skeleton PR that accepts this ADR adds the shell, the settings file, the
+navigation guard, and the lockdown tests. Its build gates (`cargo fmt`,
+`cargo clippy`, `cargo test -p vibemux_desktop`, and the UI `typecheck`,
+`test`, and `build`) were still outstanding when the ADR was accepted, so
+the skeleton is not yet a qualified build.
 
 ## Alternatives
 

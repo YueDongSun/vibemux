@@ -5,6 +5,7 @@ members = [
     "crates/vibemux_client",
     "crates/vibemux_decision",
     "crates/vibemux_decision_peer",
+    "crates/vibemux_desktop",
     "crates/vibemux_dsh",
     "crates/vibemux_events",
     "crates/vibemux_frontend",
@@ -72,6 +73,8 @@ jwt-simple = { version = "=0.12.12", default-features = false, features = ["pure
 qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
 fs4 = { version = "=0.13.1", default-features = false, features = ["sync"] }
 sysinfo = { version = "=0.36.1", default-features = false, features = ["system"] }
+tauri = "=2.12.5"
+tauri-build = "=2.7.4"
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
 time = { version = "=0.3.47", features = ["formatting", "parsing", "serde"] }
