@@ -55,9 +55,10 @@ fn no_remote_urls_in_config() {
     let config = read_json("tauri.conf.json");
     let mut strings = Vec::new();
     collect_strings(&config, &mut strings);
-    let remote: BTreeSet<&String> = strings
+    let remote: BTreeSet<String> = strings
         .iter()
         .filter(|text| text.starts_with("http://") || text.starts_with("https://"))
+        .cloned()
         .collect();
     assert_eq!(
         remote,

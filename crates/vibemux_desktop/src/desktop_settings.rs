@@ -182,8 +182,10 @@ mod tests {
     fn an_unknown_schema_version_gives_the_defaults() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("desktop_settings.json");
-        let mut settings = DesktopSettings::default();
-        settings.schema_version = SETTINGS_SCHEMA_VERSION + 1;
+        let settings = DesktopSettings {
+            schema_version: SETTINGS_SCHEMA_VERSION + 1,
+            ..DesktopSettings::default()
+        };
         std::fs::write(&path, serde_json::to_string(&settings).expect("JSON")).expect("file");
         assert_eq!(load_settings_at(&path), DesktopSettings::default());
     }
@@ -192,15 +194,17 @@ mod tests {
     fn saving_and_loading_round_trips() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("desktop_settings.json");
-        let mut settings = DesktopSettings::default();
-        settings.appearance = Appearance::Dark;
-        settings.text_size = TextSize::Large;
-        settings.density = Density::Compact;
-        settings.reduce_motion = true;
-        settings.sidebar_collapsed = true;
-        settings.start_page = StartPage::Console;
-        settings.project_folders = vec![PathBuf::from("C:/projects/one")];
-        settings.ask_confirmed_projects = vec![PathBuf::from("C:/projects/one")];
+        let settings = DesktopSettings {
+            appearance: Appearance::Dark,
+            text_size: TextSize::Large,
+            density: Density::Compact,
+            reduce_motion: true,
+            sidebar_collapsed: true,
+            start_page: StartPage::Console,
+            project_folders: vec![PathBuf::from("C:/projects/one")],
+            ask_confirmed_projects: vec![PathBuf::from("C:/projects/one")],
+            ..DesktopSettings::default()
+        };
         save_settings_at(&path, &settings).expect("saved");
         assert_eq!(load_settings_at(&path), settings);
     }
@@ -209,13 +213,15 @@ mod tests {
     fn the_folder_lists_are_capped() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("desktop_settings.json");
-        let mut settings = DesktopSettings::default();
-        settings.project_folders = (0..20)
-            .map(|index| PathBuf::from(format!("C:/projects/{index}")))
-            .collect();
-        settings.ask_confirmed_projects = (0..80)
-            .map(|index| PathBuf::from(format!("C:/confirmed/{index}")))
-            .collect();
+        let settings = DesktopSettings {
+            project_folders: (0..20)
+                .map(|index| PathBuf::from(format!("C:/projects/{index}")))
+                .collect(),
+            ask_confirmed_projects: (0..80)
+                .map(|index| PathBuf::from(format!("C:/confirmed/{index}")))
+                .collect(),
+            ..DesktopSettings::default()
+        };
         save_settings_at(&path, &settings).expect("saved");
         let loaded = load_settings_at(&path);
         assert_eq!(loaded.project_folders.len(), MAX_PROJECT_FOLDERS);

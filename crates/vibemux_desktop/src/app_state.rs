@@ -78,9 +78,11 @@ mod tests {
     fn the_settings_file_is_read_at_construction() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("desktop_settings.json");
-        let mut settings = DesktopSettings::default();
-        settings.appearance = Appearance::Dark;
-        settings.density = Density::Compact;
+        let settings = DesktopSettings {
+            appearance: Appearance::Dark,
+            density: Density::Compact,
+            ..DesktopSettings::default()
+        };
         save_settings_at(&path, &settings).expect("saved");
 
         let state = AppState::new(path, Arc::new(RecordingEventSink::default()));
