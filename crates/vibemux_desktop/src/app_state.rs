@@ -50,7 +50,10 @@ impl AppState {
     /// the temporary file. The in-memory copy changes only when the write
     /// succeeds.
     pub fn apply_settings(&self, patch: &SettingsPatch) -> io::Result<()> {
-        let mut settings = self.settings.write().map_err(io::Error::other)?;
+        let mut settings = self
+            .settings
+            .write()
+            .map_err(|_| io::Error::other("the settings lock is poisoned"))?;
         let mut updated = settings.clone();
         updated.apply(patch);
         save_settings_at(&self.settings_path, &updated)?;
