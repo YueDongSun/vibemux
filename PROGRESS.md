@@ -7033,3 +7033,93 @@ the repository-pinned 22.22.0 requirement, EBADENGINE warning only):**
 above — `npm run build` does not need it, since Rollup's build-time CSS
 `@import` resolution does not go through the dev server's `fs.allow`
 guard. CI was not run yet at the time of this entry.
+
+### 2026-10-24 — TaskBoard verifier: an escaped error leaves a `blocked` result instead of no result
+
+**Scope:** the TaskBoard Lite trusted verifier (`tests/fixtures/taskboard_lite/verifier/`),
+one `vibemuxd` unit test pinning how its result is read, and the fixture
+README. No daemon behavior, control-protocol, schema, or CLI change; no
+milestone or ADR status moves.
+
+**Symptom:** GitHub Actions job 120842351850 (run 40078325555, attempt 2,
+PR 42 at `5f5917a`) failed `rust (windows-latest)` in
+`workflow_cooperate::failed_answer_delivery_does_not_block_later_repair`.
+`track_b`'s `browser_frontend_only` suite was `blocked` with
+`verifier_output_missing`. The workflow then ran a `track_b` repair turn the
+fixture script does not define, which failed with `dispatch_not_completed`.
+The push-triggered run 40078268096 on the identical commit passed the test
+under both `cargo test` and `nextest`.
+
+**What is established:**
+- `verifier_output_missing` means the verifier exited with a code but left
+  no readable result file (`verifier_runner::map_result`); a timeout reports
+  `verifier_timeout_or_spawn_failure` instead.
+- The daemon drains verifier stderr without retaining it, so CI could not
+  show why.
+- `run_verifier.mjs` promised a result file for every exit except a usage
+  error. But an uncaught exception or unhandled rejection anywhere after
+  argument parsing (a rejection nobody awaits, an emitter `error`, a failed
+  final `writeFile`) ended Node with exit 1 and no file. The new
+  run-level test reproduces exactly that against the original
+  `run_verifier.mjs` (exit 1, no result).
+
+**What is not established:** which error ended the CI run.
+- Eight local Windows runs of `workflow_cooperate` (86 verifier runs) with
+  temporary, uncommitted instrumentation reproduced nothing: no verifier was
+  terminated externally, none exited without a result, and no `taskkill`
+  tree kill ran.
+- The stale-PID `taskkill /T` hazard that `browser_suite.mjs` already
+  documents remains a hypothesis; it would need a live browser kill on a
+  slow runner.
+
+**Implemented:**
+- `verifier/crash_result.mjs` (new): `install_crash_result_writer` handles
+  `uncaughtException` and `unhandledRejection`. It writes one `blocked`
+  result synchronously, and exits 2.
+  - The reason is `verifier_crash: <origin> <error class> [code]
+    [at <file>.mjs:<line>]`. It never includes a message or a directory,
+    and it stays within the daemon's 160-character reason bound with no
+    ` (` for `test_name` to cut.
+  - Only the first failure is recorded.
+- `run_verifier.mjs` installs the writer right after argument parsing (usage
+  errors keep their no-file exit 3). Its result reuses `build_result`, now
+  with a shared `blocked_outcome`.
+- `verifier_runner::tests::a_crash_classified_blocked_result_keeps_its_reason`
+  pins the consumer side: such a result maps to `blocked` with its reason
+  intact, and a missing file still reads `verifier_output_missing`.
+- The fixture README documents the crash result.
+
+**Effect and limits:** a crash of this kind now fails the suite as
+`blocked` with a classified cause recorded in the verifier receipt, so the
+next CI occurrence names its cause. It does not make an affected run pass.
+A crashed verifier also still leaves its children and temp root to the
+daemon's process-tree containment, as before.
+
+**Validation executed (Rust 1.92.0, Node 24.18.0, native Windows 11):**
+- `node --test tests/fixtures/taskboard_lite/verifier/crash_result.test.mjs`
+  passed, 5 tests. The run-level test fails against the original
+  `run_verifier.mjs` (exit 1, no result file).
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemuxd --all-features --lib verifier_runner` passed, 2
+  tests (1 new).
+- `cargo test -p vibemuxd --all-features --test workflow_cooperate` passed
+  3 of 3 runs.
+- `--lib --test workflow_control --test workflow_model_supervisor --test
+  supervisor_workflow --test workflow_admission` passed: 133, 5, 7, 4, 6.
+- `node calibration/calibrate.mjs` met every `api` and `store` expectation
+  (6 of 9 mutants plus `good`'s `api`/`store`). The `browser` and
+  `browser_frontend_only` runs hung until calibrate's 300 s run timeout.
+  A direct `browser` run on `calibration/good` from this shell hung for
+  330 s with both the original and the changed `run_verifier.mjs`, so it
+  predates this change. The same suites passed inside the daemon's
+  contained launch in the `workflow_cooperate` runs above.
+
+**Not verified:** no CI run has yet exercised the crash path; the CI root
+cause stays unknown until an occurrence records a `verifier_crash` reason.
+The local direct-shell browser hang was not investigated. One observed
+fact about it: the hung runs, killed by calibrate's `taskkill /T` and by
+the shell `timeout`, left 173 headless Edge processes (verifier temp
+profiles) running until they were stopped by hand. On this host, a killed
+verifier's browsers are not reached through its process tree.
