@@ -54,6 +54,7 @@ pub const VERSION_CONFLICT_CODE: &str = "store_workflow_version_conflict";
 const LEASE_ENDED_CODE: &str = "workflow_lease_ended";
 /// Bound on retries of one versioned update under concurrent changes.
 const MAX_VERSION_RETRIES: usize = 8;
+const OPERATOR_CANCEL_CODE: &str = "operator_cancel";
 /// Bound on lease rounds of one unit; a unit that needs more has looped.
 const MAX_LEASE_ROUNDS: u32 = 64;
 /// While a cancellation could not reach a turn that is still being
@@ -671,6 +672,54 @@ pub(crate) async fn transition(
     .await
 }
 
+/// Commits `cancel_requested` unless the workflow is already cancelling.
+///
+/// Operator cancellation signals the coordinator before it writes, and a
+/// coordinator stopping on that signal commits the same edge, so either may
+/// land first. The one that loses sees the committed request (directly, or
+/// after a version conflict) and returns it instead of failing the repeated
+/// edge. Terminal phases still refuse the transition.
+pub(crate) async fn request_cancel(
+    writer: &WriterHandle,
+    workflow_id: Uuid,
+) -> Result<WorkflowRecord, WorkflowError> {
+    for _ in 0..MAX_VERSION_RETRIES {
+        let reader = writer.clone();
+        let record = call_writer(move || reader.workflow_record(workflow_id))
+            .await?
+            .ok_or(WorkflowError::NotFound)?;
+        if matches!(
+            record.phase,
+            WorkflowPhase::CancelRequested | WorkflowPhase::Cancelled
+        ) {
+            return Ok(record);
+        }
+        let handle = writer.clone();
+        let version = record.version;
+        match call_writer(move || {
+            handle.transition_workflow(
+                workflow_id,
+                version,
+                WorkflowPhase::CancelRequested,
+                Some(OPERATOR_CANCEL_CODE.to_string()),
+                OffsetDateTime::now_utc(),
+            )
+        })
+        .await
+        {
+            Err(WriterError::Store { code }) if code == VERSION_CONFLICT_CODE => {}
+            other => {
+                return other
+                    .map(|commit| commit.record)
+                    .map_err(WorkflowError::from);
+            }
+        }
+    }
+    Err(WorkflowError::Writer {
+        code: VERSION_CONFLICT_CODE.to_string(),
+    })
+}
+
 pub(crate) async fn settle_lease(
     writer: &WriterHandle,
     lease: &LeaseRecord,
@@ -810,5 +859,170 @@ mod tests {
         assert!(!inventory.contains(&workspace.path));
         assert_eq!(git(&executable, &repo, &["rev-parse", "HEAD"]).trim(), base);
         assert_eq!(git(&executable, &repo, &["status", "--porcelain"]), "");
+    }
+
+    /// A prepared single-task workflow; `label` keeps contract ids distinct.
+    fn cancel_fixture_workflow(writer: &WriterHandle, label: &str) -> WorkflowRecord {
+        use vibemux_workflow::{
+            contract::{ContractArtifact, RouteTransformation},
+            slots::EvidenceClass,
+            supervisor::LoopBudget,
+            task_spec::WorkflowMode,
+            workflow_record::{ContentStoreMode, TaskProgress, WorkflowTask},
+        };
+
+        let base_commit = "0123456789abcdef0123456789abcdef01234567".to_string();
+        let identifier = |value: &str| SpecIdentifier::new(value).expect("identifier");
+        let contract = ContractArtifact {
+            schema_version: 1,
+            contract_id: Sha256Digest::of(label.as_bytes()),
+            workflow_key: "cancel_race".into(),
+            task_key: "cancel_task".into(),
+            contract_version: 1,
+            task_spec_digest: Sha256Digest::of(b"spec"),
+            policy_digest: Sha256Digest::of(b"policy"),
+            template_digest: Sha256Digest::of(b"template"),
+            template_version: "worker_v1".into(),
+            harness_profile: "fixture_writable_v1".into(),
+            route_transformation: RouteTransformation::None,
+            context_bundle_digests: vec![],
+            base_commit: base_commit.clone(),
+            rendered_prompt_digest: Sha256Digest::of(b"prompt"),
+            rendered_prompt_bytes: 100,
+            previous_contract_id: None,
+            semantic_diff: None,
+        };
+        let record = WorkflowRecord {
+            schema_version: 1,
+            workflow_id: Uuid::new_v4(),
+            request_key: format!("cancel_race_{label}"),
+            workflow_key: identifier("cancel_race"),
+            mode: WorkflowMode::Cooperate,
+            phase: WorkflowPhase::Prepared,
+            version: 1,
+            evidence_class: EvidenceClass::Fixture,
+            base_commit,
+            policy_digest: Sha256Digest::of(b"policy"),
+            verifier_digest: Sha256Digest::of(b"verifier"),
+            integration_suites: vec![identifier("api")],
+            tasks: vec![WorkflowTask {
+                task_key: identifier("cancel_task"),
+                contract_id: contract.contract_id,
+                contract_version: 1,
+                required_suites: vec![identifier("api")],
+                progress: TaskProgress::Pending,
+                turns_used: 0,
+                repairs_used: 0,
+                max_turns: 4,
+                max_repairs: 1,
+                accepted_candidate: None,
+                failure_code: None,
+            }],
+            budget: LoopBudget {
+                decisions_remaining: 16,
+                malformed_repairs_remaining: 2,
+                model_requests_remaining: 40,
+                deadline_unix_ms: u64::MAX,
+            },
+            content_store: ContentStoreMode::Disabled,
+            blocked_reason: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        writer
+            .prepare_workflow(record, vec![contract], OffsetDateTime::now_utc())
+            .expect("prepare workflow")
+            .record
+    }
+
+    fn error_code(result: Result<WorkflowRecord, WorkflowError>) -> Option<String> {
+        result.err().map(|error| error.code().to_string())
+    }
+
+    #[tokio::test]
+    async fn request_cancel_is_idempotent_when_the_other_cancel_path_commits_first() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let worker =
+            crate::WriterWorker::start(&directory.path().join("cancel.sqlite3")).expect("writer");
+        let writer = worker.handle().expect("writer handle");
+
+        // The coordinator stopping on the cancel signal committed the request
+        // between the operator's phase read and its own write.
+        let raced = cancel_fixture_workflow(&writer, "raced").workflow_id;
+        transition(&writer, raced, WorkflowPhase::Running, None)
+            .await
+            .expect("running");
+        let committed = transition(
+            &writer,
+            raced,
+            WorkflowPhase::CancelRequested,
+            Some(OPERATOR_CANCEL_CODE),
+        )
+        .await
+        .expect("first cancel request");
+        // Both paths used this plain transition, which refuses the repeated
+        // edge: the operator saw `workflow_invalid_transition` for a cancel
+        // that took effect.
+        assert_eq!(
+            error_code(
+                transition(
+                    &writer,
+                    raced,
+                    WorkflowPhase::CancelRequested,
+                    Some(OPERATOR_CANCEL_CODE),
+                )
+                .await
+            ),
+            Some("workflow_invalid_transition".to_string())
+        );
+        let repeated = request_cancel(&writer, raced)
+            .await
+            .expect("second cancel request");
+        assert_eq!(repeated.phase, WorkflowPhase::CancelRequested);
+        assert_eq!(repeated.version, committed.version, "no second commit");
+        let cancelled = transition(&writer, raced, WorkflowPhase::Cancelled, None)
+            .await
+            .expect("cancelled");
+        let after = request_cancel(&writer, raced)
+            .await
+            .expect("cancel after cancellation finished");
+        assert_eq!(after.phase, WorkflowPhase::Cancelled);
+        assert_eq!(after.version, cancelled.version);
+
+        // The first caller commits exactly one request.
+        let fresh = cancel_fixture_workflow(&writer, "fresh").workflow_id;
+        let running = transition(&writer, fresh, WorkflowPhase::Running, None)
+            .await
+            .expect("running");
+        let requested = request_cancel(&writer, fresh)
+            .await
+            .expect("cancel request");
+        assert_eq!(requested.phase, WorkflowPhase::CancelRequested);
+        assert_eq!(requested.version, running.version + 1);
+
+        // A terminal phase still refuses cancellation.
+        let failed = cancel_fixture_workflow(&writer, "failed").workflow_id;
+        transition(&writer, failed, WorkflowPhase::Running, None)
+            .await
+            .expect("running");
+        transition(
+            &writer,
+            failed,
+            WorkflowPhase::Failed,
+            Some("fixture_failure"),
+        )
+        .await
+        .expect("failed");
+        assert_eq!(
+            error_code(request_cancel(&writer, failed).await),
+            Some("workflow_invalid_transition".to_string())
+        );
+        assert_eq!(
+            error_code(request_cancel(&writer, Uuid::new_v4()).await),
+            Some(WorkflowError::NotFound.code().to_string())
+        );
+
+        drop(writer);
+        worker.shutdown().expect("writer shutdown");
     }
 }

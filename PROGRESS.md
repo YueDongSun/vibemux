@@ -6896,3 +6896,68 @@ OpenSSL build; CI's vendored build is unchanged but was not run locally.
 Workspace-wide clippy and tests were not run; only `vibemux_web` uses the
 changed crates. Delivery to a real installed PWA on iOS or Android remains
 the unverified ADR 033 gate.
+
+### 2026-10-24 — Workflow cancel no longer reports `workflow_invalid_transition` for a cancel that took effect
+
+**Scope:** `vibemuxd` workflow cancellation (`workflow/runtime.rs`,
+`workflow/service.rs`, `workflow/coordinator.rs`). No control-protocol, store
+schema, CLI, or status-vocabulary change; no milestone or ADR status moves.
+
+**Symptom:** CI run 40078325555 (PR 42, commit `5f5917a`) failed
+`rust (ubuntu-latest)` in
+`workflow_model_supervisor::cancel_during_model_inference_prevents_a_delayed_assignment`:
+`workflow_cancel` returned `Remote { code: "workflow_invalid_transition" }`.
+The push-triggered run 40078268096 on the identical commit passed the same
+test under both `cargo test` and `nextest`. That PR touched only
+`vibemux_web`, which is not in `vibemuxd`'s dependency tree.
+
+**Root cause:** `WorkflowService::cancel` signals the coordinator before it
+writes `cancel_requested`, and a coordinator that stops on that signal
+(`coordinator::stop`) writes the same edge. Each side read the phase and then
+called the plain `transition`, which retries only on a version conflict. When
+the other side had already committed `cancel_requested`, the second write hit
+`WorkflowPhase::can_transition_to` (`cancel_requested → cancel_requested` is
+not an edge) and failed. The operator then saw an error for a cancel that had
+taken effect. By the same reading of the code, the reverse order (the
+operator's write first) could fail the coordinator's `stop` instead; that case
+was not observed.
+
+**Implemented:**
+- `runtime::request_cancel` commits `cancel_requested` unless the record is
+  already `cancel_requested` or `cancelled`, in which case it returns the
+  record unchanged. It writes with the record version it just read and
+  re-reads on a version conflict, within the existing
+  `MAX_VERSION_RETRIES` bound. Terminal phases (`accepted`, `failed`) still
+  refuse the edge with `workflow_invalid_transition`.
+- `WorkflowService::cancel` (default branch) and `coordinator::stop`
+  (cancel branch) both call it; the shared `operator_cancel` reason code is
+  now one constant. The signal-before-write order is unchanged.
+
+**Tests added:**
+`workflow::runtime::tests::request_cancel_is_idempotent_when_the_other_cancel_path_commits_first`,
+against a real `WriterWorker`:
+- It reproduces the race's end state deterministically: one side's
+  `cancel_requested` is committed, and a repeated plain `transition` returns
+  `workflow_invalid_transition`, which is the CI failure.
+- `request_cancel` then returns the record with the same version and no
+  second commit, and it does the same after `cancelled`.
+- From `running` it commits exactly one request (version + 1).
+- It still refuses a `failed` workflow and an unknown workflow id.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemuxd --all-features --lib --test workflow_control
+  --test workflow_model_supervisor --test supervisor_workflow --test
+  workflow_admission` passed: lib 133 (1 new), `supervisor_workflow` 4,
+  `workflow_admission` 6, `workflow_control` 5, `workflow_model_supervisor`
+  7 — 155 total.
+- `cancel_during_model_inference_prevents_a_delayed_assignment` passed 10 of
+  10 repeated local runs. The race appeared on Linux CI, so this is a sanity
+  check, not proof; the unit test above carries the evidence.
+
+**Not verified:** the interleaving that failed on Linux CI was not
+reproduced end to end through the daemon; the unit test reproduces its end
+state at the writer instead. The rest of the workspace test suite was not run
+locally (only `vibemuxd`'s workflow cancel paths changed).
