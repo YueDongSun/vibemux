@@ -149,7 +149,7 @@ async fn an_operator_share_reaches_the_other_track_and_survives_restarts() {
     let status = fixture
         .wait_phase(workflow, &["accepted", "failed", "blocked"])
         .await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     let delivered = fixture.started("track_b/implement_3");
     assert_eq!(delivered.len(), 1);
     let delivered_prompt = delivered[0]["prompt"].as_str().expect("prompt");
@@ -248,7 +248,7 @@ async fn purged_bundle_content_is_never_forged_into_a_later_turn() {
     let status = fixture
         .wait_phase(workflow, &["accepted", "failed", "blocked"])
         .await;
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     let delivered = fixture.started("track_b/implement_3");
     assert_eq!(delivered.len(), 1);
     let delivered_prompt = delivered[0]["prompt"].as_str().expect("prompt");

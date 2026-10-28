@@ -1,0 +1,41 @@
+[package]
+name = "vibemux_desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tauri desktop app for VibeMux: projects, one-shot Asks, tasks, console, and settings"
+
+[lib]
+name = "vibemux_desktop"
+path = "src/lib.rs"
+
+[features]
+# The bundled protocol is the default, so a plain `cargo run` loads the
+# built `ui/dist` assets. Dev builds run with `--no-default-features`
+# (as `tauri dev` does), which selects the configured dev server instead.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "vibemux_desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+url.workspace = true
+uuid.workspace = true
+tauri.workspace = true
+vibemux_client = { path = "../vibemux_client", features = ["folder_dialog"] }
+vibemux_types = { path = "../vibemux_types" }
+vibemuxd = { path = "../vibemuxd" }
+
+[dev-dependencies]
+tempfile.workspace = true
+vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }

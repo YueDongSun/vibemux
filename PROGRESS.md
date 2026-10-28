@@ -132,6 +132,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
+| Desktop app (ADR 043) | `PARTIAL — SKELETON` | `vibemux_desktop` (Tauri 2 shell), `crates/vibemux_desktop/ui` (Svelte 5 UI), the fixed 23-command list, `desktop_settings.json`, the navigation guard, and the lockdown tests | The project, Ask, task, console, and settings screens; no vendor text is fetched yet; the egui GUI is still the shipped frontend |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -6759,3 +6760,562 @@ exist yet, and nothing here builds it.
 - `cargo tree -p vibemux_client -e normal --all-features | grep -E
   "egui|eframe|ratatui|crossterm|winit"` produced no output: the crate
   still has no GUI dependency.
+
+### 2026-10-24 — Web Push VAPID signing moves off `web-push` and `jwt-simple` 0.12
+
+**Scope:** Web Push request construction in `vibemux_web`, the workspace
+dependency set, `deny.toml`, `.cargo/audit.toml`, ADR 033 (amendment), and
+the `vibemux_web`/mobile design docs. No daemon, store, control protocol,
+CLI, HTTP API, or frontend behavior changed, and no milestone or ADR status
+moves.
+
+**Why:** RUSTSEC-2026-0387 (`crypto-bigint` < 0.7.6: operations meant to be
+constant-time can branch on secret data) reached VibeMux only through
+`web-push` 0.11.0 → `jwt-simple` 0.12.12 → `p256`/`k256`/`p384` 0.13 →
+`elliptic-curve` 0.13 → `crypto-bigint` 0.5.5. The operator accepted a
+scoped, temporary ignore in `9ea239f` (merged with PR 41) until VAPID signing
+left that chain. RUSTSEC-2023-0071 (`rsa`) came through the same
+`jwt-simple`, via `superboring`.
+
+**Approach (crates.io checked 2026-10-24):** `web-push` 0.11.0 is still the
+latest release and pins `jwt-simple` 0.12. `jwt-simple` 0.13.0–0.15.0 use the
+0.14 curves, but every one of them requires `superboring` with default
+features, which enable `rsa`, so RUSTSEC-2023-0071 would stay.
+`web-push-native` 0.5.0 still uses `p256` 0.13 and `jwt-simple` 0.12. The
+chosen path signs VAPID tokens with `p256` 0.14 directly and keeps payload
+encryption on the same `ece` 2.4.2 call `web-push` made, now as a direct
+dependency.
+
+**Implemented:**
+- `crates/vibemux_web/src/vapid.rs` (new): `VapidKey` parses the stored
+  base64url raw P-256 scalar (exactly 32 canonical bytes), derives the
+  uncompressed public key, generates new keys (bounded retries, as before),
+  signs compact ES256 JWTs (`{"typ":"JWT","alg":"ES256"}` header,
+  `aud`/`exp`/`sub` claims, RFC 6979 nonces, raw `r || s` signature), and
+  formats the RFC 8292 `vapid t=…, k=…` header value.
+- `crates/vibemux_web/src/push_message.rs` (new): `build_push_request`
+  decodes the subscription keys, encrypts with `ece::encrypt` (RFC 8291
+  `aes128gcm`, record padded to a multiple of 128 bytes, fresh salt and
+  ephemeral key each call), signs for the endpoint's origin with a 12-hour
+  expiry, and returns the `TTL: 300`, `Urgency: low`, `Content-Encoding:
+  aes128gcm`, `Content-Length`, `Content-Type: application/octet-stream`,
+  and `Authorization` headers plus the body, in the order `web-push` used.
+- `push.rs` holds the parsed `VapidKey` instead of a cached public-key
+  string, passes it to `send_one`, and sends the `build_push_request` result
+  through the unchanged reqwest client and address policy. The `web-push`
+  imports, `generate_vapid_private_key`, and `public_key_from_private` are
+  gone.
+- Workspace `Cargo.toml`: removed `web-push` and `jwt-simple`; added
+  `ece = "=2.4.2"` (`backend-openssl` only, dropping its unused
+  `serializable-keys` default) and `p256 = "=0.14.0"` (`ecdsa` only).
+  `vibemux_web` drops its unused `jwt-simple` dev-dependency. `Cargo.lock`
+  removes 72 packages (among them `web-push`, `jwt-simple`, `superboring`,
+  `rsa`, the 0.13 curve crates, and `crypto-bigint` 0.5.5) and adds 13
+  (`p256` 0.14.0, `ecdsa` 0.17.0, `elliptic-curve` 0.14.1, `crypto-bigint`
+  0.7.6, `hmac` 0.13.0, …). One duplicate is new (`hmac` 0.12/0.13: `ece`'s
+  `hkdf` 0.12 versus `rfc6979` 0.6), and 13 earlier duplicates resolve.
+- `deny.toml` and `.cargo/audit.toml`: both ignores are removed
+  (`ignore = []`); the `ece` MPL-2.0 license exception stays, with its
+  comment updated.
+- ADR 033 gains an amendment of 2026-10-24; `docs/vibemux_web.md` and
+  `docs/mobile_access_design.md` §10.2 record the replacement.
+
+**Behavior and compatibility:** stored `push_state.json` files keep working:
+the key encoding is unchanged, and an existing key yields the same
+`applicationServerKey`, so browser subscriptions stay valid. The encrypted
+payload, its padding, and the `TTL`/`Urgency`/`Content-Encoding`/
+`Content-Length`/`Content-Type` headers are unchanged. The VAPID JWT
+now carries exactly `aud`, `exp` (12 hours, as before), and `sub`; the
+`iat` and `nbf` claims `jwt-simple` added are gone (RFC 8292 requires
+neither). Delivery is otherwise unchanged.
+
+**Security impact:** the VAPID private key stays in the same private
+state file (user-only ACL). It is now parsed once at startup and held as a
+`p256` `SigningKey`, which zeroizes on drop, instead of being re-read for
+each send. Signing runs on `crypto-bigint` 0.7.6, the release that fixes
+RUSTSEC-2026-0387, with RFC 6979 nonces, so no RNG is involved in signing.
+Payload encryption (`ece` over OpenSSL) and the endpoint, DNS-pinning,
+redirect, deadline, and response-size policies are unchanged. Errors stay
+content-free. Failure paths are tested: malformed stored keys, malformed
+subscription keys, and non-tuple origins are rejected.
+
+**Tests added (pinned vectors):**
+- `vapid::tests::token_layout_and_signature_encoding_match_the_rfc8292_example`:
+  our signing input for the RFC 8292 §2.4 claims equals the RFC token's
+  first two segments byte for byte, and the RFC's signature verifies under
+  the RFC's `k` key in raw `r || s` form.
+- `vapid::tests::deterministic_token_matches_an_independent_rfc6979_signature`:
+  for a fixed test key (SHA-256 of a fixed label), the public key, the
+  token, and the `Authorization` value equal values computed independently
+  with Python `cryptography` 44.0.1 (key derivation) and the OpenSSL 3.5.4
+  CLI (`pkeyutl -rawin -digest sha256 -pkeyopt nonce-type:1`).
+- `vapid::tests::stored_private_keys_must_be_canonical_nonzero_scalars`.
+- `push_message::tests::linked_ece_backend_decrypts_the_rfc8291_example_message`:
+  the RFC 8291 §5 body (salt, sender key, and Appendix A ciphertext checked)
+  decrypts to the RFC plaintext with the RFC receiver keys. The body is 144
+  bytes; the RFC's sample request header says `Content-Length: 145`, which
+  its own body contradicts.
+- `push_message::tests::push_request_headers_and_vapid_token_are_pinned`:
+  exact header list, with the `Authorization` token equal to the
+  independent vector above. Its `now` is a literal, and a compile-time
+  assertion keeps the token lifetime within RFC 8292's 24 hours.
+- `push_message::tests::push_request_body_is_one_padded_rfc8291_record_for_the_subscription`:
+  for 51- and 1024-byte payloads, the body is `86 + padded record + 16`
+  bytes (matching `Content-Length`), `rs = 4096`, `idlen = 65`, the key id is a P-256 point distinct
+  from the VAPID key, the RFC 8291 receiver key decrypts it, and salt and
+  ephemeral key differ between calls.
+- `push_message::tests::audience_is_the_endpoint_origin` and
+  `push_message::tests::malformed_subscription_keys_are_rejected`.
+- `push::tests::persisted_vapid_key_keeps_its_public_key_across_the_signer_change`;
+  `push::tests::encrypted_push_request_is_constructible_without_network_io`
+  is rewritten onto `build_push_request` from a started `PushService`.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `npm ci && npm run build` in `crates/vibemux_web/web` passed (Node
+  24.18.0 locally; CI pins Node 22).
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemux_web --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemux_web --all-features` passed: lib 41 (9 new), bin 0,
+  `console_poller` 2, `control_bridge` 3, `http_contract` 9, doc-tests 0 —
+  55 total.
+- `cargo metadata --locked` passed for the whole workspace. `cargo tree
+  --workspace --all-features --locked -i crypto-bigint` shows only 0.7.6,
+  reached through `p256` → `vibemux_web`; `-i rsa` matches no package.
+- `cargo deny check` (cargo-deny 0.20.2, the CI pin) passed with no
+  ignores: `advisories ok, bans ok, licenses ok, sources ok`. Remaining
+  warnings are duplicates and the yanked `clipboard-win` 5.4.1 that
+  `eframe` pulls in, both unrelated to this change.
+- `cargo audit` (cargo-audit 0.22.2, the CI pin; 1352 advisories loaded)
+  passed with no ignores; its only warning is the same yanked
+  `clipboard-win` 5.4.1.
+
+**Not verified:** the local Rust builds used command-local
+`OPENSSL_DIR`/`OPENSSL_NO_VENDOR` against Anaconda's OpenSSL 3.0.17, because
+the Git Bash Perl here lacks `Locale::Maketext::Simple` for the vendored
+OpenSSL build; CI's vendored build is unchanged but was not run locally.
+Workspace-wide clippy and tests were not run; only `vibemux_web` uses the
+changed crates. Delivery to a real installed PWA on iOS or Android remains
+the unverified ADR 033 gate.
+
+### 2026-10-24 — Workflow cancel no longer reports `workflow_invalid_transition` for a cancel that took effect
+
+**Scope:** `vibemuxd` workflow cancellation (`workflow/runtime.rs`,
+`workflow/service.rs`, `workflow/coordinator.rs`). No control-protocol, store
+schema, CLI, or status-vocabulary change; no milestone or ADR status moves.
+
+**Symptom:** CI run 40078325555 (PR 42, commit `5f5917a`) failed
+`rust (ubuntu-latest)` in
+`workflow_model_supervisor::cancel_during_model_inference_prevents_a_delayed_assignment`:
+`workflow_cancel` returned `Remote { code: "workflow_invalid_transition" }`.
+The push-triggered run 40078268096 on the identical commit passed the same
+test under both `cargo test` and `nextest`. That PR touched only
+`vibemux_web`, which is not in `vibemuxd`'s dependency tree.
+
+**Root cause:** `WorkflowService::cancel` signals the coordinator before it
+writes `cancel_requested`, and a coordinator that stops on that signal
+(`coordinator::stop`) writes the same edge. Each side read the phase and then
+called the plain `transition`, which retries only on a version conflict. When
+the other side had already committed `cancel_requested`, the second write hit
+`WorkflowPhase::can_transition_to` (`cancel_requested → cancel_requested` is
+not an edge) and failed. The operator then saw an error for a cancel that had
+taken effect. By the same reading of the code, the reverse order (the
+operator's write first) could fail the coordinator's `stop` instead; that case
+was not observed.
+
+**Implemented:**
+- `runtime::request_cancel` commits `cancel_requested` unless the record is
+  already `cancel_requested` or `cancelled`, in which case it returns the
+  record unchanged. It writes with the record version it just read and
+  re-reads on a version conflict, within the existing
+  `MAX_VERSION_RETRIES` bound. Terminal phases (`accepted`, `failed`) still
+  refuse the edge with `workflow_invalid_transition`.
+- `WorkflowService::cancel` (default branch) and `coordinator::stop`
+  (cancel branch) both call it; the shared `operator_cancel` reason code is
+  now one constant. The signal-before-write order is unchanged.
+
+**Tests added:**
+`workflow::runtime::tests::request_cancel_is_idempotent_when_the_other_cancel_path_commits_first`,
+against a real `WriterWorker`:
+- It reproduces the race's end state deterministically: one side's
+  `cancel_requested` is committed, and a repeated plain `transition` returns
+  `workflow_invalid_transition`, which is the CI failure.
+- `request_cancel` then returns the record with the same version and no
+  second commit, and it does the same after `cancelled`.
+- From `running` it commits exactly one request (version + 1).
+- It still refuses a `failed` workflow and an unknown workflow id.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemuxd --all-features --lib --test workflow_control
+  --test workflow_model_supervisor --test supervisor_workflow --test
+  workflow_admission` passed: lib 133 (1 new), `supervisor_workflow` 4,
+  `workflow_admission` 6, `workflow_control` 5, `workflow_model_supervisor`
+  7 — 155 total.
+- `cancel_during_model_inference_prevents_a_delayed_assignment` passed 10 of
+  10 repeated local runs. The race appeared on Linux CI, so this is a sanity
+  check, not proof; the unit test above carries the evidence.
+
+**Not verified:** the interleaving that failed on Linux CI was not
+reproduced end to end through the daemon; the unit test reproduces its end
+state at the writer instead. The rest of the workspace test suite was not run
+locally (only `vibemuxd`'s workflow cancel paths changed).
+
+### 2026-10-24 — shared design tokens (desktop app phase 1, PR 2)
+
+**Scope:** `config/design_tokens.css`, `crates/vibemux_web/web/src/style.css`,
+`crates/vibemux_web/web/vite_config.ts`, and
+`crates/vibemux_frontend/tests/design_tokens_parity.rs` only (PR 2 of 5 in
+the desktop-app-phase-1 refactor plan; Task 3). No daemon, store, control
+protocol, or CLI behavior changed. No milestone or ADR status moves: ADR 043
+(the Tauri desktop app) stays `Proposed`, and the desktop app itself does
+not exist yet — this only prepares a token source it will later consume.
+
+**Implemented:**
+- `config/design_tokens.css` (new) holds the design tokens that used to
+  live only in `crates/vibemux_web/web/src/style.css`, in three blocks:
+  a light `:root { color-scheme: light; ... }` (colors from the
+  `claude_light` palette plus every non-color font/size/radius token), a
+  `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  ... } }` (colors from the `claude` palette), and an explicit
+  `:root[data-theme="dark"] { ... }` with the same dark colors. The file
+  holds only custom properties plus `color-scheme`; page-level styling
+  (font-family, color, background, font-synthesis, text-rendering,
+  `-webkit-font-smoothing`) stays in each consumer's own stylesheet.
+  `data-theme` is not set anywhere yet, so `prefers-color-scheme`-driven
+  behavior is unchanged from before this file existed; the explicit
+  selector exists for a future consumer (a theme switch, or the desktop
+  shell) to force a theme.
+- `crates/vibemux_web/web/src/style.css` now imports the shared file
+  (`@import '../../../../config/design_tokens.css';`) as its first
+  statement instead of declaring the token blocks itself, followed by its
+  own `:root` block for the page-styling declarations that stayed local.
+- `crates/vibemux_web/web/vite_config.ts` adds `server.fs.allow: ['.',
+  '../../../config']` so a future `vite dev` session can serve
+  `config/design_tokens.css` from outside the package root.
+- `crates/vibemux_frontend/tests/design_tokens_parity.rs` (new) pins three
+  things with plain string parsing (no regex, no new dependency): the
+  light block's base colors and both dark blocks' colors match the
+  compiled-in `claude_light`/`claude` palettes exported to
+  `config/theme_palettes.json` (itself pinned to the compiled palettes by
+  `palette_parity.rs`); the two dark blocks declare identical name/value
+  pairs; and every semantic text/background pair (light and dark) meets
+  WCAG AA (4.5:1) via the existing `theme::contrast` helpers.
+
+**Validation executed (Rust 1.92.0, native Windows 11; Node 24.19.0 against
+the repository-pinned 22.22.0 requirement, EBADENGINE warning only):**
+- `cargo test -p vibemux_frontend --test design_tokens_parity` passed: 3
+  tests (`base_tokens_match_the_exported_palettes`,
+  `the_two_dark_blocks_are_identical`, `every_text_pair_meets_wcag_aa`).
+- `cargo test -p vibemux_frontend --test palette_parity` passed: 2 tests
+  (pre-existing, unaffected regression check).
+- `cargo fmt -p vibemux_frontend -- --check` passed (after one
+  `cargo fmt -p vibemux_frontend` pass to fix 4 line-wrapping diffs in the
+  new test file).
+- `cargo clippy -p vibemux_frontend --test design_tokens_parity
+  --all-features -- -D warnings` passed with no warnings.
+- In `crates/vibemux_web/web`: `npm ci` (364 packages), `npm run
+  typecheck` (384 files, 0 errors), `npm test` (15 passed), `npm run
+  build` (124 modules transformed, built successfully with no
+  filesystem-access errors), then `grep -c "\-\-accent_text"
+  dist/assets/*.css` → `1` (one CSS file, 5 occurrences inside it — once
+  per theme-aware rule referencing the token). `node_modules` and `dist`
+  were deleted afterward; `git status --short` showed only the four
+  intended files changed.
+- Mutation check: temporarily changed the light block's `--bg` from
+  `#FAF9F5` to `#FFFFFF`, confirmed `base_tokens_match_the_exported_palettes`
+  failed naming the block/token/both hex values, then restored the exact
+  original content and confirmed a clean rerun.
+
+**Not verified:** `vite dev` (the dev server itself) was not run, so the
+`server.fs.allow` relative-path resolution is unexercised by any check
+above — `npm run build` does not need it, since Rollup's build-time CSS
+`@import` resolution does not go through the dev server's `fs.allow`
+guard. CI was not run yet at the time of this entry.
+
+### 2026-10-24 — TaskBoard verifier: an escaped error leaves a `blocked` result instead of no result
+
+**Scope:** the TaskBoard Lite trusted verifier (`tests/fixtures/taskboard_lite/verifier/`),
+one `vibemuxd` unit test pinning how its result is read, and the fixture
+README. No daemon behavior, control-protocol, schema, or CLI change; no
+milestone or ADR status moves.
+
+**Symptom:** GitHub Actions job 120842351850 (run 40078325555, attempt 2,
+PR 42 at `5f5917a`) failed `rust (windows-latest)` in
+`workflow_cooperate::failed_answer_delivery_does_not_block_later_repair`.
+`track_b`'s `browser_frontend_only` suite was `blocked` with
+`verifier_output_missing`. The workflow then ran a `track_b` repair turn the
+fixture script does not define, which failed with `dispatch_not_completed`.
+The push-triggered run 40078268096 on the identical commit passed the test
+under both `cargo test` and `nextest`.
+
+**What is established:**
+- `verifier_output_missing` means the verifier exited with a code but left
+  no readable result file (`verifier_runner::map_result`); a timeout reports
+  `verifier_timeout_or_spawn_failure` instead.
+- The daemon drains verifier stderr without retaining it, so CI could not
+  show why.
+- `run_verifier.mjs` promised a result file for every exit except a usage
+  error. But an uncaught exception or unhandled rejection anywhere after
+  argument parsing (a rejection nobody awaits, an emitter `error`, a failed
+  final `writeFile`) ended Node with exit 1 and no file. The new
+  run-level test reproduces exactly that against the original
+  `run_verifier.mjs` (exit 1, no result).
+
+**What is not established:** which error ended the CI run.
+- Eight local Windows runs of `workflow_cooperate` (86 verifier runs) with
+  temporary, uncommitted instrumentation reproduced nothing: no verifier was
+  terminated externally, none exited without a result, and no `taskkill`
+  tree kill ran.
+- The stale-PID `taskkill /T` hazard that `browser_suite.mjs` already
+  documents remains a hypothesis; it would need a live browser kill on a
+  slow runner.
+
+**Implemented:**
+- `verifier/crash_result.mjs` (new): `install_crash_result_writer` handles
+  `uncaughtException` and `unhandledRejection`. It writes one `blocked`
+  result synchronously, and exits 2.
+  - The reason is `verifier_crash: <origin> <error class> [code]
+    [at <file>.mjs:<line>]`. It never includes a message or a directory,
+    and it stays within the daemon's 160-character reason bound with no
+    ` (` for `test_name` to cut.
+  - Only the first failure is recorded.
+- `run_verifier.mjs` installs the writer right after argument parsing (usage
+  errors keep their no-file exit 3). Its result reuses `build_result`, now
+  with a shared `blocked_outcome`.
+- `verifier_runner::tests::a_crash_classified_blocked_result_keeps_its_reason`
+  pins the consumer side: such a result maps to `blocked` with its reason
+  intact, and a missing file still reads `verifier_output_missing`.
+- The fixture README documents the crash result.
+
+**Effect and limits:** a crash of this kind now fails the suite as
+`blocked` with a classified cause recorded in the verifier receipt, so the
+next CI occurrence names its cause. It does not make an affected run pass.
+A crashed verifier also still leaves its children and temp root to the
+daemon's process-tree containment, as before.
+
+**Validation executed (Rust 1.92.0, Node 24.18.0, native Windows 11):**
+- `node --test tests/fixtures/taskboard_lite/verifier/crash_result.test.mjs`
+  passed, 5 tests. The run-level test fails against the original
+  `run_verifier.mjs` (exit 1, no result file).
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemuxd --all-features --lib verifier_runner` passed, 2
+  tests (1 new).
+- `cargo test -p vibemuxd --all-features --test workflow_cooperate` passed
+  3 of 3 runs.
+- `--lib --test workflow_control --test workflow_model_supervisor --test
+  supervisor_workflow --test workflow_admission` passed: 133, 5, 7, 4, 6.
+- `node calibration/calibrate.mjs` met every `api` and `store` expectation
+  (6 of 9 mutants plus `good`'s `api`/`store`). The `browser` and
+  `browser_frontend_only` runs hung until calibrate's 300 s run timeout.
+  A direct `browser` run on `calibration/good` from this shell hung for
+  330 s with both the original and the changed `run_verifier.mjs`, so it
+  predates this change. The same suites passed inside the daemon's
+  contained launch in the `workflow_cooperate` runs above.
+
+**Not verified:** no CI run has yet exercised the crash path; the CI root
+cause stays unknown until an occurrence records a `verifier_crash` reason.
+The local direct-shell browser hang was not investigated. One observed
+fact about it: the hung runs, killed by calibrate's `taskkill /T` and by
+the shell `timeout`, left 173 headless Edge processes (verifier temp
+profiles) running until they were stopped by hand. On this host, a killed
+verifier's browsers are not reached through its process tree.
+
+### 2026-10-24 — Workflow test failures name the verifier suites that did not pass
+
+**Scope:** `vibemuxd` integration-test support and nine workflow test files.
+No daemon, control-protocol, status-view, schema, CLI, or verifier change;
+no milestone or ADR status moves.
+
+**Symptom:** GitHub Actions job 120869449600 (run 40093030207, PR 45 at
+`824f286`) failed `rust (windows-latest)` in the `cargo nextest` step, in
+`workflow_cooperate::two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integration`
+(phase `failed`, expected `accepted`).
+- `track_a`'s `api` suite reported 1 of 25 tests failed on the reference
+  candidate. An unscripted repair turn then failed with
+  `dispatch_not_completed`.
+- The same test passed in that job's earlier `cargo test` step, on the same
+  commit and runner, and on Ubuntu.
+- The status view printed by the assertion is content-free by design and
+  omits `failed_tests`, so the log could not say which check failed.
+
+**Implemented:**
+- `WorkflowFixture::assert_phase(&status, expected)` in
+  `crates/vibemuxd/tests/workflow_support/mod.rs`.
+  - On a mismatch it panics with every verifier suite that did not pass, in
+    receipt order, read from the Control export receipts: task (or
+    integration), suite, status, exit code, counts, blocked reason, and
+    failed test names. The names are already path-free in receipts.
+  - It then prints the status.
+  - The export read is best-effort (`try_export_all`), so an export error
+    cannot hide the failure being reported.
+- `suite_failures` is the pure summarizer behind it.
+- The 13 `assert_eq!(phase(&status), "accepted", ...)` assertions in
+  `workflow_admission`, `workflow_compare`, `workflow_control`,
+  `workflow_cooperate`, `workflow_gates`, `workflow_launch_authority`,
+  `workflow_literals`, `workflow_model_supervisor`, and `workflow_share` use
+  it.
+- The daemon's status projection (`SuiteView`) is unchanged.
+- `failed_answer_delivery_does_not_block_later_repair` pins the helper
+  against real export data. Its first `track_a` candidate is the
+  `blank_title_accepted` store mutant, so the summary must contain
+  `- track_a store: failed (exit 1, ` and `add_validation_codes`. Calling
+  `assert_phase(&status, "failed")` on the accepted workflow must panic
+  with that summary.
+
+**Load investigation (not reproduced):** the `api` suite was run directly
+on `calibration/good` with Node's TAP reporter (Node 24.18.0, 24 logical
+CPUs, native Windows 11). It ran once, then 16, 48, and twice 64 copies in
+parallel: 193 runs with no failure.
+- Unloaded, every check finished within 0.9 s.
+- At 64-way parallelism (about 2.7× oversubscribed) the slowest checks
+  were:
+  - `mutations_durable_before_response`: up to 9.2 s within its 60 s test
+    timeout;
+  - `corrupt_data_file_fails_startup_unchanged`: 8.4 s for four
+    misconfigured starts, each bounded at 10 s;
+  - `concurrent_creates_not_lost`: 7.9 s, where 40 concurrent POSTs each
+    have a 10 s request timeout. This is the least headroom measured.
+- No bound was changed: none was shown to cause the CI failure, and
+  loosening one on a guess would weaken a candidate check. The next CI
+  occurrence will name the failing check.
+
+**Validation executed (Rust 1.92.0, native Windows 11):**
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy -p vibemuxd --all-targets --all-features -- -D warnings`
+  passed.
+- `cargo test -p vibemuxd --all-features` over the nine edited test
+  binaries passed: `workflow_admission` 6, `workflow_compare` 2,
+  `workflow_control` 5, `workflow_cooperate` 2, `workflow_gates` 4,
+  `workflow_launch_authority` 5, `workflow_literals` 2,
+  `workflow_model_supervisor` 7, `workflow_share` 2 — 35 total.
+
+**Not verified:** the CI failure's cause. A local Windows host with 24
+logical CPUs did not reproduce it under load.
+
+### 2026-10-24 — Tauri desktop app skeleton (ADR 043, PR 3 of 5)
+
+**Scope:** the new `vibemux_desktop` crate and its Svelte 5 UI (PR 3 of 5 in
+the desktop-app-phase-1 refactor plan; Tasks 4 and 5). No daemon, store,
+control protocol, or CLI behavior changed. The egui GUI is untouched and
+remains the shipped frontend; this step adds the shell that will replace it.
+
+**Implemented:**
+- Task 4 added `crates/vibemux_desktop/ui`: a Svelte 5, Vite 8, and
+  TypeScript 5.9 shell whose `app.svelte` renders the sidebar and main
+  columns, styled from the shared `config/design_tokens.css`; `src/lib/
+  {ui_contract,backend,api_client,fixture_backend}.ts` hold the 23-command
+  contract, the backend interface, the Tauri client, and the demo backend;
+  `tests/fixture_guard_test.ts` fails when the production bundle still
+  contains the fixture marker.
+- Task 5 added the `vibemux_desktop` crate: `command_names.rs` (the 23
+  commands), `command_error.rs`, `navigation.rs` (the app origin and the
+  configured dev origin only), `desktop_settings.rs` (`desktop_settings.json`,
+  schema 1, at most 16 project folders and 64 Ask confirmations, written
+  through a temporary file and a rename), `event_sink.rs`, `ui_contract.rs`,
+  `app_state.rs`, `windows.rs` (the main window is created in Rust so that it
+  gets the navigation guard), and `commands.rs` (all 23 commands registered;
+  the ones that belong to a later step answer `not_implemented`).
+- `tauri.conf.json` carries the reviewed CSP verbatim, `withGlobalTauri`
+  off, `freezePrototype` on, no configured window, and no plugin;
+  `capabilities/main_window.json` grants the 23 `allow-…` permissions plus
+  `core:event:allow-listen` and `core:event:allow-unlisten` for the `main`
+  and `task_*` windows. `tests/lockdown.rs` pins the CSP, the remote-URL
+  rule, the prototype freeze, the empty window list, the capability set,
+  the plugin rule, and the absence of a GUI dependency.
+- The build script asserts that `crates/vibemux_desktop/ui/dist/index.html`
+  exists, declares the command list in the Tauri app manifest, and draws the
+  window icon when the committed assets are absent.
+- `CLAUDE.md`, `README.md`, and CI follow: the layout map and the build
+  commands name the desktop crate, the README documents the build and run
+  steps, and CI installs the Tauri system libraries on Linux and builds the
+  UI before the Rust steps.
+
+**Deviations from the plan, and why:**
+- `tauri_build::AppManifest::commands` takes a `&'static [&'static str]`, so
+  the command list is a `static` rather than the `const` the plan wrote.
+- The plan generates the icons with `npx tauri icon`, which needs npm and
+  the network. The build script draws the same mark instead, so the Windows
+  resource step and the Tauri context always have an icon; the drawn assets
+  stay untracked.
+- The desktop UI's `package-lock.json` was generated with Node 24.18.0 (the
+  machine's active nvm selection) while `engines.node` pins 22.22.0; npm
+  resolved the exact pinned versions and flagged only an engine warning.
+
+**Verification executed 2026-10-24 (native Windows 11, in the desktop app's
+shell):**
+- `crates/vibemux_desktop/ui`: `npm install` (51 packages, lockfile
+  generated), `npm run build` (116 modules; the shared tokens are inlined
+  into the built CSS), `npm run typecheck` (0 errors, 0 warnings),
+  `npm test` (the fixture guard passes: no fixture marker in the production
+  bundle), a fixture-mode build (the marker IS present in `dist_fixture`,
+  then removed), and `npm audit --audit-level=low` (0 vulnerabilities).
+- `cargo fmt --all -- --check` passed (after `cargo fmt --all` normalized
+  the new desktop crate sources).
+- `cargo check -p vibemux_desktop` resolved and compiled the Tauri
+  dependency tree and updated `Cargo.lock`; the desktop crate itself was
+  not yet type-checked, because the build stops earlier at the first
+  C dependency.
+
+**Not verified, with the reason:** every Rust gate that compiles a C
+dependency (`cargo check`, `test`, `clippy` for `vibemux_desktop` and for
+untouched crates such as `vibemux_store`) fails on this machine when the
+build is launched from this desktop app, in its bash and in its terminal
+tab alike: `cl.exe`, spawned by the `cc` crate inside a cargo build script,
+dies with `D8050` ("cannot execute c1.dll"), before parsing any source.
+The same `cl.exe` compiles the same files (for example `sqlite3.c` with the
+exact cc flag set) when a plain build script or a direct shell invokes it,
+so the trigger is the cc-spawn context under the app's process lineage, not
+the sources. The gates that remain are, from a terminal that is not spawned
+by the desktop app: `cargo fmt --all -- --check`, `cargo clippy -p
+vibemux_desktop --all-targets --all-features -- -D warnings`, and
+`cargo test -p vibemux_desktop --all-features`; `cargo deny check` may then
+need per-crate MPL-2.0 exceptions in `deny.toml` for the Tauri build chain.
+No screen has been seen, and no daemon, Ask, or vendor text is involved
+yet.
+
+### 2026-10-25 — Desktop skeleton: first CI round and review fixes (PR #47)
+
+**Scope:** fixes on the `worktree-desktop_app_skeleton` branch after its
+first CI run and the Codex review, before merge. No daemon, store, control
+protocol, or CLI behavior changes.
+
+**Fixed from CI (run 40162230020):**
+- Clippy rejected the icon module's hand-rolled mask-row rounding
+  (`(SIZE + 31) / 32 * 4`); it is `SIZE.div_ceil(32) * 4` now. This failure
+  stopped the build before the crate compiled, so the rest of the crate is
+  still awaiting its first full compile in CI.
+- `cargo deny` rejected five MPL-2.0 crates from the Servo CSS family that
+  tauri-build's asset codegen pulls in (`cssparser`, `cssparser-macros`,
+  `dtoa-short`, `option-ext`, `selectors`) and `target-lexicon`
+  (Apache-2.0 WITH LLVM-exception); `deny.toml` now carries per-crate
+  exceptions for exactly those, matching the existing `ece` pattern, and an
+  advisory ignore for the unmaintained-but-not-vulnerable `proc-macro-error`
+  (RUSTSEC-2024-0370) reached through the same chain.
+
+**Fixed from the review (Codex findings P1/P2):**
+- P1, `windows.rs`: the window selected the configured `devUrl` whenever the
+  config carried one, so the documented `npm run build && cargo run`
+  procedure would load `http://localhost:5180` (a dead page) instead of the
+  bundled assets, and the navigation guard trusted the dev origin in every
+  build. The crate now enables Tauri's `custom-protocol` by default (the
+  canonical scaffold pattern: a plain `cargo run` loads `ui/dist`, and dev
+  builds run with `--no-default-features` exactly as `tauri dev` does), the
+  window always uses the app URL, and the guard receives the dev origin only
+  when `tauri::is_dev()` is true. The README and CLAUDE.md document the
+  hot-reload invocation accordingly.
+- P2, `app_state.rs`: overlapping `settings_set` calls could read the same
+  settings before either wrote, race on the shared `.json.tmp` path, and
+  lose one patch. `apply_settings` now holds the write lock across the whole
+  read-apply-save-publish transaction, and a two-thread regression test
+  asserts both patches land in the file.
+
+**Validation executed:** `cargo fmt --all -- --check` passed locally after
+the changes. The compile/test gates still run in CI only, for the same
+machine-local `cl.exe` reason recorded above; the next CI round is their
+first run against the fixed crate.
+

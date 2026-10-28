@@ -238,7 +238,7 @@ async fn request_tool_narrowing_reaches_every_fixture_launch() {
         let status = fixture
             .wait_phase(workflow, &["accepted", "failed", "blocked"])
             .await;
-        assert_eq!(phase(&status), "accepted", "status: {status:#}");
+        fixture.assert_phase(&status, "accepted").await;
 
         let worker_tools = expected_worker_tools(omitted_tool);
         let read_only_tools = expected_read_only_tools(omitted_tool);

@@ -9,8 +9,9 @@ mod workflow_support;
 
 use serde_json::{Value, json};
 use workflow_support::{
-    FixtureOptions, WorkflowFixture, cooperative_request, good_files, phase, policy, rendezvous,
-    review_pass, session_id, task_view, taskboard_file, track_a, track_b, workflow_id,
+    FixtureOptions, WorkflowFixture, cooperative_request, good_files, policy, rendezvous,
+    review_pass, session_id, suite_failures, task_view, taskboard_file, track_a, track_b,
+    workflow_id,
 };
 
 const QUESTION: &str = "Which error code does the store raise for a blank title?";
@@ -96,7 +97,7 @@ async fn failed_answer_delivery_does_not_block_later_repair() {
     let workflow = workflow_id(&prepared);
     fixture.start_workflow(&prepared).await;
     let status = fixture.wait_idle(workflow).await;
-    assert_eq!(phase(&status), "accepted", "{status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     assert_eq!(fixture.started("track_a/answer_2").len(), 1);
     let repair = fixture.started("track_a/repair_3");
     assert_eq!(repair.len(), 1, "repair did not launch");
@@ -114,6 +115,31 @@ async fn failed_answer_delivery_does_not_block_later_repair() {
         .expect("question");
     assert_eq!(question["state"], "delivered");
     let exported = fixture.export_all(workflow).await;
+    // A phase-assertion failure reports these receipts: the mutant store's
+    // first verification failed and names its failed checks.
+    let failures = suite_failures(&exported);
+    assert!(
+        failures.contains("- track_a store: failed (exit 1, "),
+        "{failures}"
+    );
+    assert!(failures.contains("add_validation_codes"), "{failures}");
+    // The same summary reaches the panic of a mismatched phase assertion.
+    let mismatch = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+        fixture.assert_phase(&status, "failed"),
+    ))
+    .await
+    .expect_err("an accepted workflow is not failed");
+    let panic_message = mismatch
+        .downcast_ref::<String>()
+        .expect("formatted panic message");
+    assert!(
+        panic_message.contains("phase accepted is not failed"),
+        "{panic_message}"
+    );
+    assert!(
+        panic_message.contains("add_validation_codes"),
+        "{panic_message}"
+    );
     let answer = exported
         .iter()
         .find(|item| {
@@ -180,7 +206,7 @@ async fn two_tracks_build_taskboard_with_a_scoped_bundle_and_isolated_integratio
         !fixture.rendezvous_failed(),
         "an implementation turn never saw the other one running: {status:#}"
     );
-    assert_eq!(phase(&status), "accepted", "status: {status:#}");
+    fixture.assert_phase(&status, "accepted").await;
     assert_eq!(status["last_run"]["end"]["end"], "accepted");
 
     // S01: both implementation turns ran in separate sessions and overlapped.

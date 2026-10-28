@@ -37,6 +37,7 @@ Verifier files:
 | `verifier/contract_stub_server.mjs` | Verifier-owned reference backend used only for `browser_frontend_only` |
 | `verifier/candidate_paths.mjs` | Candidate layout, temp directories, process launch, receipt validation, process cleanup |
 | `verifier/process_identity.mjs` | Start-time identity check that must confirm a process id before it is killed |
+| `verifier/crash_result.mjs` | Last-chance `blocked` result for an error that escapes every handler |
 
 "Comparison mode" for the store suite means it checks the same semantics as
 the API suite (validation codes, ordering, copies, persistence, corruption,
@@ -65,6 +66,11 @@ node verifier/run_verifier.mjs --candidate <product_dir> --suite <api|store|brow
   `/usr/bin/google-chrome`, `/usr/bin/chromium`. None found means `blocked`.
 - The default suite timeout is 120 s. Exit codes: 0 passed, 1 failed,
   2 blocked, 3 usage error (no result file is written for usage errors).
+  After argument parsing, an uncaught exception or unhandled rejection is
+  recorded by `crash_result.mjs` as `blocked` (exit 2) with a
+  `verifier_crash: <origin> <error class> [code] [at <file>.mjs:<line>]`
+  reason; the message and directories are left out because they can hold
+  a path.
 - The candidate directory is never written. Each run creates one temp root
   under `os.tmpdir()`; every data file, working directory, browser profile,
   and runner directory lives below it, and it is removed before exit, even

@@ -4,7 +4,8 @@
 //                         --out <result_file.json> [--browser <absolute browser path>] [--timeout_ms N]
 //
 // Exit codes: 0 passed, 1 failed, 2 blocked (a prerequisite is missing or the
-// verifier itself failed), 3 usage error (no result file is written).
+// verifier itself failed, including an uncaught error; see crash_result.mjs),
+// 3 usage error (no result file is written).
 // The candidate directory is never modified; all scratch data lives in
 // temporary directories under os.tmpdir() that are removed before exit.
 
@@ -13,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { run_browser_suite } from "./browser_suite.mjs";
+import { install_crash_result_writer } from "./crash_result.mjs";
 import {
   create_temp_dir,
   is_directory,
@@ -234,6 +236,10 @@ async function run_browser_mode(suite, candidate_dir, requested_browser, suite_t
 
 // ---------------------------------------------------------------- result --
 
+function blocked_outcome(blocked_reason) {
+  return { checks: [], extra_failures: [], command: [], browser: null, blocked_reason, cleanup_errors: [] };
+}
+
 function build_result({ suite, candidate_dir, outcome, duration_ms }) {
   const checks = outcome.checks;
   const failed_names = [
@@ -303,18 +309,23 @@ async function main() {
     throw error;
   }
   const started_at = Date.now();
+  // An error that escapes the handling below (a rejection nobody awaits, an
+  // emitter error, a failed final write) still leaves a blocked result.
+  install_crash_result_writer({
+    out_file: options.out_file,
+    result_for: (blocked_reason) =>
+      build_result({
+        suite: options.suite,
+        candidate_dir: options.candidate_dir,
+        outcome: blocked_outcome(blocked_reason),
+        duration_ms: Date.now() - started_at,
+      }),
+  });
   let outcome;
   try {
     outcome = await run_suite(options);
   } catch (error) {
-    outcome = {
-      checks: [],
-      extra_failures: [],
-      command: [],
-      browser: null,
-      blocked_reason: `verifier_error: ${error?.stack ?? error}`,
-      cleanup_errors: [],
-    };
+    outcome = blocked_outcome(`verifier_error: ${error?.stack ?? error}`);
   }
   const result = build_result({
     suite: options.suite,

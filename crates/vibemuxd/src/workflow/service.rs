@@ -47,7 +47,9 @@ use super::{
     },
     prepare::{PrepareContext, TemplateOverrides, WorkflowPlan, compile, start_binding},
     request::{MAX_POLICY_BYTES, WorkflowRequest},
-    runtime::{Control, RunContext, Unit, WorkflowSetup, now_ms, revoke_lease, transition},
+    runtime::{
+        Control, RunContext, Unit, WorkflowSetup, now_ms, request_cancel, revoke_lease, transition,
+    },
     share::{find_bundle, share_bundle},
     startup::{finish_cancel, load_setup, observe_slots, reconcile},
     state_files::StateFiles,
@@ -926,15 +928,11 @@ impl WorkflowService {
             WorkflowPhase::CancelRequested => {}
             _ => {
                 // The signal goes first, so a coordinator that observes the
-                // new phase already knows it is stopping.
+                // new phase already knows it is stopping. A coordinator that
+                // stops on the signal commits the same request, so this write
+                // may find it already done.
                 self.signal(workflow_id, Control::Cancel);
-                transition(
-                    writer,
-                    workflow_id,
-                    WorkflowPhase::CancelRequested,
-                    Some("operator_cancel"),
-                )
-                .await?;
+                request_cancel(writer, workflow_id).await?;
             }
         }
         let signalled = self.signal(workflow_id, Control::Cancel);

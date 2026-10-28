@@ -23,7 +23,7 @@
 - Settings file `desktop_settings.json`, schema 1, at most 16 project folders and 64 Ask-confirmed folders.
 - Polling: tasks every 5 s with `detail_revision` gating; the Ask worker's existing 400 ms cadence.
 - Commit messages: conventional prefix (`feat`, `fix`, `refactor`, `docs`, `test`, `ci`), no AI attribution.
-- `PROGRESS.md` changes in every PR that changes implementation status; planned behavior is never described as implemented.
+- `PROGRESS.md` changes in every implementation PR (spec §10); planned behavior is never described as implemented.
 - Disk: before Task 5, the drive holding the cargo target directory needs at least 20 GB free (on 2026-10-24 C: had 2.2 GB, I: 15 GB). If it does not, stop and ask the operator.
 - Task 3 starts only after `origin/fix/web_design_tokens` is merged into `main`.
 - The egui GUI is frozen during phase 1: bug fixes only, no new features.

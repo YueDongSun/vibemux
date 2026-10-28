@@ -302,3 +302,27 @@ Non-goals:
   VibeMux-operated remote exposure requires, because VibeMux itself keeps
   binding loopback only — stated as a bounded interpretation of ADR 024
   for this surface, re-examined by the M9 security review.
+
+## Amendment (2026-10-24): Web Push signing without `web-push`
+
+`vibemux_web` no longer depends on `web-push`. Its latest release, 0.11.0,
+requires `jwt-simple` 0.12, whose P-256/K-256/P-384 0.13 curve crates pull
+`crypto-bigint` 0.5 (RUSTSEC-2026-0387: operations meant to be constant-time
+can branch on secret data; fixed only in 0.7.6), and whose `superboring`
+backend pulls `rsa` (RUSTSEC-2023-0071). `jwt-simple` 0.13 and later move to
+the 0.14 curves but make `superboring`, and so `rsa`, a mandatory dependency;
+`web-push-native` 0.5 still uses the 0.13 curves. The replacement is a small
+adapter over two crates: `p256` 0.14 (`ecdsa` feature only) signs the RFC 8292
+ES256 VAPID token, a direct `ece` 2.4.2 dependency (OpenSSL backend, as
+before) encrypts the RFC 8291 `aes128gcm` body, and `vibemux_web` sets the
+push request headers itself.
+
+The persisted VAPID key encoding, the public key browsers subscribe with, the
+padded `aes128gcm` body, and the `TTL`/`Urgency` headers are unchanged. The
+VAPID token now carries exactly the RFC 8292 claims (`aud`, `exp` 12 hours
+ahead, `sub`); the `iat` and `nbf` claims `jwt-simple` added are gone. The
+`web-push` ≥ 0.10.3 floor in "Compatibility and rollback" (CVE-2025-53604,
+in that crate's built-in HTTP clients, which VibeMux never enabled) no longer
+applies. Both advisory ignores are removed, and `cargo deny` and `cargo audit`
+run without ignores. Delivery to a real installed PWA remains the unverified
+gate listed above.

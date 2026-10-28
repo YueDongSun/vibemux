@@ -43,6 +43,23 @@ jobs:
         working-directory: crates/vibemux_web/web
       - run: npm run build
         working-directory: crates/vibemux_web/web
+      # The Tauri desktop app compiles against the system WebKit on Linux and
+      # embeds the built Svelte UI, so the UI is built before the Rust steps.
+      - name: Install the Tauri system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev
+      - run: npm ci
+        working-directory: crates/vibemux_desktop/ui
+      - run: npm run typecheck
+        working-directory: crates/vibemux_desktop/ui
+      - run: npm run build
+        working-directory: crates/vibemux_desktop/ui
+      - run: npm test
+        working-directory: crates/vibemux_desktop/ui
+      - run: npm audit --audit-level=low
+        working-directory: crates/vibemux_desktop/ui
       - run: rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
       - run: rustup default 1.92.0
       - uses: shogo82148/actions-setup-perl@v1

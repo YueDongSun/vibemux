@@ -41,8 +41,9 @@ cargo run -p vibemux_web --locked -- <project_root>
 
 `web/dist` and `node_modules` are ignored and never committed. The compile-time
 embedding guard rejects absent shell, manifest, service worker, or JS bundle.
-`web-push` uses the ECE OpenSSL backend; CI provisions Perl for its vendored
-build, which also requires the normal platform C toolchain.
+Web Push payload encryption uses the `ece` crate's OpenSSL backend; CI
+provisions Perl for the vendored OpenSSL build, which also requires the normal
+platform C toolchain.
 
 The process is disabled when `<project_root>/.vibemux/web_config.json` is absent.
 Invalid config or secrets fail closed. A validated config has this shape:
@@ -254,6 +255,16 @@ The latter reuses the existing reqwest transport policy and brings ECE
 transitive implementation are constrained in the lockfile for Rust 1.85.
 This expands build/crypto dependencies; automated deny/audit outcomes are
 recorded in `PROGRESS.md` without ignored vulnerabilities.
+
+On 2026-10-24 `web-push` was replaced (ADR 033 amendment of that date):
+`p256` 0.14 (Apache-2.0 OR MIT, `ecdsa` feature only) signs the VAPID ES256
+token in `vapid.rs`, a direct `ece` 2.4.2 dependency (MPL-2.0,
+`backend-openssl` only) encrypts the RFC 8291 body in `push_message.rs`, and
+`vibemux_web` sets the push headers itself. This removes `jwt-simple`,
+`superboring`, `rsa`, and the 0.13 curve crates that carried `crypto-bigint`
+0.5, so `cargo deny` and `cargo audit` again run with no ignored advisories.
+Stored VAPID keys, the browser-facing public key, and the encrypted payload
+are unchanged; the VAPID token carries exactly `aud`, `exp`, and `sub`.
 
 Version 0.2.0 adds the console sections route, task events and artifacts on
 the task detail route, the five-view board, and the opt-in local page mode.
