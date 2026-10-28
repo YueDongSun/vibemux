@@ -1,9 +1,12 @@
 #![forbid(unsafe_code)]
 //! Read-only local agent, gateway, and A2A diagnostics, plus the trusted
 //! probe cache ([`cache`]) that persists one report for the daemon to read.
+//! The separate explicit [`sandbox_probe`] diagnostic owns disposable OS tests;
+//! its report is never a workflow capability or an ordinary probe-cache record.
 
 pub mod cache;
 
+pub mod sandbox_probe;
 pub mod snapshot;
 
 use std::{

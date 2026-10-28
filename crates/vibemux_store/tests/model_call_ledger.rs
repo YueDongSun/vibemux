@@ -977,3 +977,43 @@ fn a_mismatched_existing_compiler_association_cannot_move_between_workflows() {
         4
     );
 }
+
+#[test]
+fn compiler_owner_lookup_is_bounded_read_only_and_retains_original_call() {
+    let database = NamedTempFile::new().expect("owned database");
+    let mut store = open_store(database.path());
+    let workflow_id = Uuid::new_v4();
+    assert!(
+        store
+            .compiler_model_call(workflow_id)
+            .expect("empty read")
+            .is_none()
+    );
+    let compiler = compiler_admission(workflow_id, "compile this workflow");
+    complete_compiler(&mut store, &compiler);
+    let before = store
+        .model_call(compiler.call_id)
+        .expect("call")
+        .expect("record");
+    for _ in 0..3 {
+        let found = store
+            .compiler_model_call(workflow_id)
+            .expect("read")
+            .expect("compiler");
+        assert_eq!(found, before);
+    }
+    assert!(
+        store
+            .compiler_model_call(Uuid::new_v4())
+            .expect("other")
+            .is_none()
+    );
+    assert!(store.compiler_model_call(Uuid::nil()).is_err());
+    assert_eq!(
+        store
+            .model_call(compiler.call_id)
+            .expect("unchanged")
+            .expect("record"),
+        before
+    );
+}

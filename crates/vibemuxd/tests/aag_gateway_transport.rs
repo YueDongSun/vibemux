@@ -322,6 +322,7 @@ fn config(origin: &str) -> GatewayConfig {
             ),
         ],
         strict_routing: true,
+        live_admission: Default::default(),
     }
 }
 

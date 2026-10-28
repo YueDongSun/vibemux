@@ -24,6 +24,9 @@
 //! This is synthetic evidence only: it proves the daemon's orchestration,
 //! never a vendor model's behavior.
 
+#[path = "../fixtures/worker_broker.rs"]
+mod worker_broker;
+
 use std::{
     collections::BTreeMap,
     env,
@@ -69,6 +72,8 @@ struct Step {
     search: Vec<String>,
     #[serde(default)]
     run_dev_test: bool,
+    #[serde(default)]
+    broker_output: Option<String>,
     /// Relative path to new content.
     #[serde(default)]
     write: BTreeMap<String, String>,
@@ -181,6 +186,7 @@ fn run() -> Result<i32> {
     let protocol = protocol(&arguments)?;
     let grant = fixture_grant(&arguments, protocol)?;
     let development_runtime = fixture_development_runtime(&arguments)?;
+    let mut broker = worker_broker::BrokerClient::launch(&arguments)?;
     let executable = env::current_exe()?;
     let directory = executable.parent().ok_or("fixture_directory_missing")?;
     let script: Script = serde_json::from_slice(&std::fs::read(directory.join(SCRIPT_FILE_NAME))?)?;
@@ -206,6 +212,7 @@ fn run() -> Result<i32> {
                 &prompt,
                 grant,
                 development_runtime.as_deref(),
+                broker.as_mut(),
             )?;
             finish(protocol, &mut output, &turn)?;
         }
@@ -231,6 +238,7 @@ fn run() -> Result<i32> {
                         prompt,
                         grant,
                         development_runtime.as_deref(),
+                        broker.as_mut(),
                     )?;
                     finish(protocol, &mut output, &turn)?;
                     break;
@@ -276,9 +284,12 @@ fn fixture_grant(
             .map(String::as_str)
             .ok_or_else(|| "fixture_grant_missing".into())
     };
-    let expected = match protocol {
-        Protocol::CodexExec => "codex_fixture_writable_v1",
-        Protocol::Claude => "claude_fixture_writable_v1",
+    let broker = arguments.iter().any(|arg| arg == "--fixture_broker");
+    let expected = match (protocol, broker) {
+        (Protocol::CodexExec, false) => "codex_fixture_writable_v1",
+        (Protocol::Claude, false) => "claude_fixture_writable_v1",
+        (Protocol::CodexExec, true) => "codex_fixture_broker_v1",
+        (Protocol::Claude, true) => "claude_fixture_broker_v1",
     };
     if argument("--fixture_profile")? != expected {
         return Err("fixture_profile_mismatch".into());
@@ -312,6 +323,7 @@ fn perform(
     prompt: &str,
     grant: vibemux_harness::dispatch::writable_profile::WritableGrant,
     development_runtime: Option<&Path>,
+    broker: Option<&mut worker_broker::BrokerClient>,
 ) -> Result<Turn> {
     let facts = turn_facts(prompt)?;
     let key = format!("{}/{}_{}", facts.task_key, facts.purpose, facts.turn_number);
@@ -338,60 +350,29 @@ fn perform(
         None => step,
     };
     let step = select_variant(step, prompt);
-    let working_directory = env::current_dir()?;
-    for path in &step.read {
-        if !grant.read_files {
-            return Err("fixture_tool_permission_denied".into());
+    if let Some(broker) = broker {
+        if step.run_dev_test || !step.remove.is_empty() {
+            return Err("fixture_broker_operation_unsupported".into());
         }
-        std::fs::read(working_directory.join(relative(path)?))?;
-    }
-    for path in &step.search {
-        if !grant.search_files {
-            return Err("fixture_tool_permission_denied".into());
+        for path in &step.read {
+            broker.read(path)?;
         }
-        let directory = working_directory.join(relative(path)?);
-        for (index, entry) in std::fs::read_dir(directory)?.enumerate() {
-            if index >= 256 {
-                return Err("fixture_search_limit".into());
-            }
-            let _ = entry?.file_name();
+        for path in &step.search {
+            broker.search(path)?;
         }
-    }
-    if step.run_dev_test {
-        if !grant.run_dev_tests {
-            return Err("fixture_tool_permission_denied".into());
+        for (path, content) in &step.write {
+            broker.write(path, content, grant)?;
         }
-        // The fixture offers one fixed development command, never script-supplied argv.
-        let status =
-            std::process::Command::new(development_runtime.ok_or("fixture_runtime_missing")?)
-                .arg("--test")
-                .current_dir(&working_directory)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()?;
-        if !status.success() {
-            return Err("fixture_dev_test_failed".into());
+        broker.finish(step.broker_output.as_deref())?;
+        log(
+            directory,
+            json!({"event":"broker_published", "key":key, "at_ms":now_ms()}),
+        )?;
+    } else {
+        if step.broker_output.is_some() {
+            return Err("fixture_broker_fault_without_broker".into());
         }
-    }
-    for (path, content) in &step.write {
-        let target = working_directory.join(relative(path)?);
-        if (target.exists() && !grant.edit_files) || (!target.exists() && !grant.write_files) {
-            return Err("fixture_tool_permission_denied".into());
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(target, content)?;
-    }
-    for path in &step.remove {
-        if !grant.edit_files {
-            return Err("fixture_tool_permission_denied".into());
-        }
-        let target = working_directory.join(relative(path)?);
-        if target.is_file() {
-            std::fs::remove_file(target)?;
-        }
+        perform_direct_effects(step, grant, development_runtime)?;
     }
     if let Some(rendezvous) = &step.rendezvous {
         let met = wait_for_rendezvous(directory, &key, rendezvous);
@@ -460,6 +441,69 @@ fn perform(
         final_text,
         fail: step.fail,
     })
+}
+
+fn perform_direct_effects(
+    step: &Step,
+    grant: vibemux_harness::dispatch::writable_profile::WritableGrant,
+    development_runtime: Option<&Path>,
+) -> Result<()> {
+    let working_directory = env::current_dir()?;
+    for path in &step.read {
+        if !grant.read_files {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        std::fs::read(working_directory.join(relative(path)?))?;
+    }
+    for path in &step.search {
+        if !grant.search_files {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        let directory = working_directory.join(relative(path)?);
+        for (index, entry) in std::fs::read_dir(directory)?.enumerate() {
+            if index >= 256 {
+                return Err("fixture_search_limit".into());
+            }
+            let _ = entry?.file_name();
+        }
+    }
+    if step.run_dev_test {
+        if !grant.run_dev_tests {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        // The fixture offers one fixed development command, never script-supplied argv.
+        let status =
+            std::process::Command::new(development_runtime.ok_or("fixture_runtime_missing")?)
+                .arg("--test")
+                .current_dir(&working_directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()?;
+        if !status.success() {
+            return Err("fixture_dev_test_failed".into());
+        }
+    }
+    for (path, content) in &step.write {
+        let target = working_directory.join(relative(path)?);
+        if (target.exists() && !grant.edit_files) || (!target.exists() && !grant.write_files) {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, content)?;
+    }
+    for path in &step.remove {
+        if !grant.edit_files {
+            return Err("fixture_tool_permission_denied".into());
+        }
+        let target = working_directory.join(relative(path)?);
+        if target.is_file() {
+            std::fs::remove_file(target)?;
+        }
+    }
+    Ok(())
 }
 
 fn select_variant<'a>(step: &'a Step, prompt: &str) -> &'a Step {

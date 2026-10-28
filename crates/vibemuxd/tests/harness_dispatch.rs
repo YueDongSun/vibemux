@@ -1151,3 +1151,101 @@ fn the_loader_refuses_a_config_that_is_missing_oversized_or_not_a_regular_file()
     // A linked config is refused rather than followed.
     assert_eq!(load(), Some(DispatchError::ConfigInvalid));
 }
+
+/// The controller has exited while its contained publisher remains active.
+#[cfg(windows)]
+async fn publishing_fixture(grace_ms: u64) -> (DispatchFixture, Uuid, PathBuf, u32) {
+    let limits = json!({"deadline_ms": DEADLINE_MS, "shutdown_grace_ms": grace_ms});
+    let fixture = DispatchFixture::start(&[CODEX_EXEC], &[AgentKind::Codex], &limits).await;
+    let ready_path = fixture.set_mode("publishing_descendant");
+    let request = request(AgentKind::Codex, PROMPT);
+    fixture.submit(&request).await;
+    let descendant = wait_for_ready(&ready_path)
+        .await
+        .trim()
+        .parse()
+        .expect("child pid");
+    let controller = wait_for_ready(&ready_path.with_extension("controller"))
+        .await
+        .trim()
+        .parse()
+        .expect("controller pid");
+    assert!(process_gone_within(controller, Duration::from_secs(10)).await);
+    (fixture, request.request_id, ready_path, descendant)
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_completion_barrier_waits_for_publication_and_descendant_exit() {
+    let (mut fixture, request_id, ready_path, descendant) = publishing_fixture(10_000).await;
+    let before = fixture.service().status(request_id).await.expect("status");
+    std::fs::write(ready_path.with_extension("release"), b"release").expect("release");
+    let publication = timeout(
+        Duration::from_secs(2),
+        wait_for_ready(&ready_path.with_extension("published")),
+    )
+    .await;
+    let published = fixture
+        .service()
+        .status(request_id)
+        .await
+        .expect("published status");
+    std::fs::write(ready_path.with_extension("exit"), b"exit").expect("exit");
+    let record = fixture.settle(request_id).await;
+    let gone_at_finish = process_gone_within(descendant, Duration::ZERO).await;
+    fixture.close().await;
+    assert!(
+        !before.phase.is_terminal(),
+        "root exit released the dispatch while its publisher was active"
+    );
+    assert!(
+        publication.is_ok(),
+        "publisher was killed before atomic publication"
+    );
+    assert!(
+        !published.phase.is_terminal(),
+        "publication released ownership before the publisher exited"
+    );
+    assert_eq!(record.phase, DispatchPhase::Completed);
+    assert!(!record.process.expect("process").forced_termination);
+    assert!(
+        gone_at_finish,
+        "terminal dispatch retained a live descendant"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_completion_barrier_refuses_a_stuck_publisher() {
+    let (mut fixture, request_id, ready_path, descendant) = publishing_fixture(500).await;
+    let record = fixture.settle(request_id).await;
+    let gone_at_finish = process_gone_within(descendant, Duration::ZERO).await;
+    let published = ready_path.with_extension("published").exists();
+    fixture.close().await;
+    assert_eq!(record.phase, DispatchPhase::Failed);
+    assert_eq!(record.error_code, Some(DispatchError::ProcessFailed));
+    assert!(record.process.expect("process").forced_termination);
+    assert!(gone_at_finish);
+    assert!(!published);
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_completion_barrier_cancels_after_controller_exit() {
+    let (mut fixture, request_id, ready_path, descendant) = publishing_fixture(10_000).await;
+    let started = Instant::now();
+    fixture.service().cancel(request_id).await.expect("cancel");
+    let record = fixture.settle(request_id).await;
+    let elapsed = started.elapsed();
+    let gone_at_finish = process_gone_within(descendant, Duration::ZERO).await;
+    let published = ready_path.with_extension("published").exists();
+    fixture.close().await;
+    assert_eq!(record.phase, DispatchPhase::Cancelled);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "cancel waited for the natural publication grace"
+    );
+    assert!(record.process.expect("process").forced_termination);
+    assert!(gone_at_finish);
+    assert!(!published);
+}

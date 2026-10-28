@@ -34,6 +34,8 @@ pub enum WorkflowError {
     NotFound,
     #[error("contract digest does not match the prepared workflow")]
     ContractMismatch,
+    #[error("latest workflow start identity does not match the requested generation")]
+    StartIdentityMismatch,
     #[error("workflow is not in a phase that allows this operation")]
     InvalidPhase,
     #[error("workflow already runs in this daemon")]
@@ -46,6 +48,8 @@ pub enum WorkflowError {
     Workspace,
     #[error("verifier could not run")]
     Verifier,
+    #[error("owned process cleanup requires reconciliation")]
+    ProcessCleanupPending,
     #[error("model gateway call failed")]
     Gateway,
     #[error("context share is invalid")]
@@ -70,6 +74,8 @@ pub enum WorkflowError {
     /// no further input reaches a session.
     #[error("workflow stop was requested before the turn started")]
     StopRequested,
+    #[error("workflow lease renewal failed")]
+    LeaseLost,
     #[error("internal workflow error")]
     Internal,
     #[error("{code}")]
@@ -94,12 +100,14 @@ impl WorkflowError {
             Self::SlotUnavailable => "workflow_slot_unavailable",
             Self::NotFound => "workflow_not_found",
             Self::ContractMismatch => "workflow_contract_mismatch",
+            Self::StartIdentityMismatch => "workflow_start_identity_mismatch",
             Self::InvalidPhase => "workflow_invalid_phase",
             Self::AlreadyRunning => "workflow_already_running",
             Self::Git => "workflow_git_failed",
             Self::Snapshot => "workflow_snapshot_failed",
             Self::Workspace => "workflow_workspace_failed",
             Self::Verifier => "workflow_verifier_failed",
+            Self::ProcessCleanupPending => "workflow_process_cleanup_pending",
             Self::Gateway => "workflow_gateway_failed",
             Self::ShareInvalid => "workflow_share_invalid",
             Self::SessionNotFound => "workflow_session_not_found",
@@ -109,6 +117,7 @@ impl WorkflowError {
             Self::Optimizer { code } => code,
             Self::ShuttingDown => "workflow_shutting_down",
             Self::StopRequested => "workflow_stop_requested",
+            Self::LeaseLost => "workflow_lease_lost",
             Self::Internal => "workflow_internal",
             Self::Dispatch { code } | Self::Writer { code } => code,
         }

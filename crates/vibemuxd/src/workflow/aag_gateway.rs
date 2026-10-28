@@ -1,18 +1,23 @@
 //! Bounded loopback AAG transport for workflow model calls (ADR 031 §3).
 //!
-//! This is an effect boundary, not a route attestation service. A health/model
-//! snapshot is an observation only. Until AAG exposes request-scoped upstream
-//! evidence, live calls fail closed. Fixture calls exercise the same wire path
-//! against a local fake server without contacting a model.
+//! This effect boundary keeps health observations distinct from request-bound
+//! gateway routing evidence. Live calls require an explicit immutable v2 policy,
+//! an admission precondition and a matched terminal receipt before releasing text.
+//! Legacy fixture calls retain their separately owned listener requirement.
 
 #![allow(non_camel_case_types)]
 
-use std::{fmt, future::Future, net::SocketAddr, time::Duration};
+use std::{
+    fmt,
+    future::Future,
+    net::SocketAddr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 #[cfg(feature = "test_helpers")]
 use std::sync::Arc;
 
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, header::HeaderMap};
 use serde_json::{Value, json};
 #[cfg(feature = "test_helpers")]
 use tokio::net::TcpListener;
@@ -21,9 +26,12 @@ use vibemux_workflow::{
     Sha256Digest,
     gateway::{
         CORRELATION_HEADER, CallCorrelation, CallOutcome, FailureStage, GatewayConfig,
-        GatewayHealth, GatewayProtocol, ModelCallReceipt, ParsedCompletion, ProviderAttribution,
-        ReportedUsage, ResponseError, RetryDecision, RouteRole, StreamAccumulator, StreamEnd,
-        evaluate_route, parse_completion, request_body,
+        GatewayHealth, GatewayProtocol, LiveAdmission, ModelCallReceipt, ParsedCompletion,
+        ProviderAttribution, ReportedUsage, ResponseError, RetryDecision, RouteRole,
+        StreamAccumulator, StreamEnd, evaluate_route, parse_completion, request_body,
+    },
+    gateway_receipt::{
+        AagAdmission, AagBoundReceipt, AagReceiptCapabilities, AagSurface, GatewayObservedRouting,
     },
 };
 
@@ -33,6 +41,48 @@ const MAX_OBSERVATION_BYTES: usize = 64 * 1024;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_SSE_EVENT_BYTES: usize = 64 * 1024;
+const RECEIPT_CLOCK_SKEW_MS: u64 = 1_000;
+const RECEIPT_CAPABILITIES_PATH: &str = "/_aag/v2/receipt_capabilities";
+const RECEIPT_HEADER: &str = "x-aag-receipt";
+const RECEIPT_CAPABILITY_HEADER: &str = "x-aag-receipt-capability";
+const ROUTE_PRECONDITION_HEADER: &str = "x-aag-route-precondition";
+
+/// Request-local possession material. It is never logged, returned or serialized.
+struct ReceiptExchange {
+    nonce: String,
+    capability: [u8; 32],
+    admission: AagAdmission,
+    sent_at_ms: u64,
+}
+
+impl ReceiptExchange {
+    fn new(admission: AagAdmission) -> Result<Self, Aag_Gateway_Error> {
+        admission
+            .validate()
+            .map_err(|_| Aag_Gateway_Error::ReceiptInvalid)?;
+        let mut nonce = [0_u8; 16];
+        let mut capability = [0_u8; 32];
+        getrandom::fill(&mut nonce).map_err(|_| Aag_Gateway_Error::ReceiptEntropyUnavailable)?;
+        getrandom::fill(&mut capability)
+            .map_err(|_| Aag_Gateway_Error::ReceiptEntropyUnavailable)?;
+        Ok(Self {
+            nonce: lower_hex(&nonce),
+            capability,
+            admission,
+            sent_at_ms: clock_ms()?,
+        })
+    }
+
+    fn opt_in(&self) -> String {
+        format!("v2.{}.{}", self.nonce, lower_hex(&self.capability))
+    }
+}
+
+impl Drop for ReceiptExchange {
+    fn drop(&mut self) {
+        self.capability.fill(0);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Aag_Call_Class {
@@ -128,6 +178,11 @@ pub enum Aag_Gateway_Error {
     ResponseTooLarge,
     ResponseMalformed,
     ResponseEmpty,
+    ReceiptEntropyUnavailable,
+    ReceiptUnavailable,
+    ReceiptInvalid,
+    ReceiptExpired,
+    ReceiptClockUnavailable,
 }
 
 impl Aag_Gateway_Error {
@@ -155,6 +210,11 @@ impl Aag_Gateway_Error {
             Self::ResponseTooLarge => "gateway_response_too_large",
             Self::ResponseMalformed => "gateway_response_malformed",
             Self::ResponseEmpty => "gateway_response_empty",
+            Self::ReceiptEntropyUnavailable => "gateway_receipt_entropy_unavailable",
+            Self::ReceiptUnavailable => "gateway_receipt_unavailable",
+            Self::ReceiptInvalid => "gateway_receipt_invalid",
+            Self::ReceiptExpired => "gateway_receipt_expired",
+            Self::ReceiptClockUnavailable => "gateway_receipt_clock_unavailable",
         }
     }
 }
@@ -293,15 +353,19 @@ impl Aag_Model_Gateway {
         expected_config_digest: Sha256Digest,
         role: RouteRole,
     ) -> Result<&vibemux_workflow::gateway::RouteBinding, Aag_Gateway_Error> {
-        if class == Aag_Call_Class::Live {
+        if class == Aag_Call_Class::Live
+            && self.config.live_admission != LiveAdmission::BoundReceiptV2
+        {
             return Err(Aag_Gateway_Error::LiveAttestationUnavailable);
         }
-        match self.fixture_permit.as_ref() {
-            None => return Err(Aag_Gateway_Error::FixturePermitRequired),
-            Some(permit) if permit.address != self.origin_address => {
-                return Err(Aag_Gateway_Error::FixturePermitMismatch);
+        if class == Aag_Call_Class::Fixture {
+            match self.fixture_permit.as_ref() {
+                None => return Err(Aag_Gateway_Error::FixturePermitRequired),
+                Some(permit) if permit.address != self.origin_address => {
+                    return Err(Aag_Gateway_Error::FixturePermitMismatch);
+                }
+                Some(_) => {}
             }
-            Some(_) => {}
         }
         if expected_config_digest != self.config_digest {
             return Err(Aag_Gateway_Error::ConfigChanged);
@@ -374,6 +438,13 @@ impl Aag_Model_Gateway {
         };
         let request_digest = Sha256Digest::of(&encoded);
         let protocol = binding.protocol;
+        let receipt_exchange = match observation.admission_snapshot.clone() {
+            Some(admission) => match ReceiptExchange::new(admission) {
+                Ok(exchange) => Some(exchange),
+                Err(error) => return Aag_Call_Result::blocked(error, Some(observation)),
+            },
+            None => None,
+        };
         let mut http_request = self
             .client
             .post(format!("{}{}", self.origin, protocol.path()))
@@ -387,6 +458,20 @@ impl Aag_Model_Gateway {
                 .header("anthropic-version", "2023-06-01"),
             GatewayProtocol::OpenaiResponses => unreachable!("checked above"),
         };
+        if let Some(exchange) = &receipt_exchange {
+            let precondition = match exchange.admission.request_precondition() {
+                Ok(value) => value,
+                Err(_) => {
+                    return Aag_Call_Result::blocked(
+                        Aag_Gateway_Error::ReceiptInvalid,
+                        Some(observation),
+                    );
+                }
+            };
+            http_request = http_request
+                .header(RECEIPT_HEADER, exchange.opt_in())
+                .header(ROUTE_PRECONDITION_HEADER, precondition);
+        }
         let sent = bounded(http_request.send(), deadline, &mut cancel).await;
         let mut response = match sent {
             Ok(Ok(response)) => response,
@@ -431,6 +516,11 @@ impl Aag_Model_Gateway {
             }
         };
         let status = response.status();
+        // Validate after reading the bounded body so any refusal retains the
+        // actual response digest and observed-output evidence without releasing text.
+        let receipt_request_id = receipt_exchange
+            .as_ref()
+            .map(|exchange| response_receipt_identity(response.headers(), &exchange.nonce));
         if !status.is_success() {
             return self.failed(
                 &request,
@@ -465,15 +555,14 @@ impl Aag_Model_Gateway {
             );
         }
         let is_sse = request.stream;
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
-        let content_type = content_type.to_ascii_lowercase();
-        if (is_sse && !content_type.starts_with("text/event-stream"))
-            || (!is_sse && !content_type.starts_with("application/json"))
-        {
+        if !media_type_is(
+            response.headers(),
+            if is_sse {
+                "text/event-stream"
+            } else {
+                "application/json"
+            },
+        ) {
             return self.failed(
                 &request,
                 &observation,
@@ -606,7 +695,53 @@ impl Aag_Model_Gateway {
         };
         match completion {
             Ok(completion) => {
-                let receipt = self.receipt(
+                let gateway_evidence = if let Some(exchange) = &receipt_exchange {
+                    let expected_request_id = match receipt_request_id {
+                        Some(Ok(value)) => value,
+                        _ => {
+                            return self.body_failure(
+                                &request,
+                                &observation,
+                                request_digest,
+                                started,
+                                status,
+                                &raw,
+                                &stream,
+                                Aag_Gateway_Error::ReceiptInvalid,
+                            );
+                        }
+                    };
+                    match self
+                        .fetch_bound_receipt(
+                            exchange,
+                            &expected_request_id,
+                            &binding.model_alias,
+                            protocol,
+                            status,
+                            request.stream,
+                            deadline,
+                            &mut cancel,
+                        )
+                        .await
+                    {
+                        Ok(evidence) => Some(evidence),
+                        Err(error) => {
+                            return self.body_failure(
+                                &request,
+                                &observation,
+                                request_digest,
+                                started,
+                                status,
+                                &raw,
+                                &stream,
+                                error,
+                            );
+                        }
+                    }
+                } else {
+                    None
+                };
+                let mut receipt = self.receipt(
                     &request,
                     &observation,
                     request_digest,
@@ -617,6 +752,10 @@ impl Aag_Model_Gateway {
                     None,
                     &completion,
                 );
+                if let (Some(receipt), Some(evidence)) = (&mut receipt, gateway_evidence) {
+                    receipt.effective_provider =
+                        ProviderAttribution::GatewayObserved(Box::new(evidence));
+                }
                 Aag_Call_Result {
                     outcome: CallOutcome::Completed,
                     observation: Some(observation),
@@ -651,8 +790,82 @@ impl Aag_Model_Gateway {
         let models = self
             .fetch_json("/v1/models", observation_deadline, cancel)
             .await?;
-        GatewayHealth::from_responses(&health, &models)
-            .map_err(|_| Aag_Gateway_Error::ObservationUnavailable)
+        let mut observation = GatewayHealth::from_responses(&health, &models)
+            .map_err(|_| Aag_Gateway_Error::ObservationUnavailable)?;
+        if self.config.live_admission == LiveAdmission::BoundReceiptV2 {
+            let bytes = self
+                .fetch_json_bytes(
+                    RECEIPT_CAPABILITIES_PATH,
+                    None,
+                    observation_deadline,
+                    cancel,
+                )
+                .await?;
+            let capabilities = AagReceiptCapabilities::parse(&bytes)
+                .map_err(|_| Aag_Gateway_Error::ReceiptInvalid)?;
+            let admission = capabilities.admission();
+            // A stale /health pin cannot be cleared by the later capability read.
+            observation.pinned_provider_present |= admission.pinned_provider_present;
+            observation
+                .bind_admission(admission)
+                .map_err(|_| Aag_Gateway_Error::ReceiptInvalid)?;
+        }
+        Ok(observation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_bound_receipt(
+        &self,
+        exchange: &ReceiptExchange,
+        response_request_id: &str,
+        selector: &str,
+        protocol: GatewayProtocol,
+        status: StatusCode,
+        stream: bool,
+        deadline: Instant,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> Result<GatewayObservedRouting, Aag_Gateway_Error> {
+        let bytes = self
+            .fetch_json_bytes(
+                &format!("/_aag/v2/receipts/{}", exchange.nonce),
+                Some(exchange),
+                deadline,
+                cancel,
+            )
+            .await
+            .map_err(|error| match error {
+                Aag_Gateway_Error::ObservationUnavailable => Aag_Gateway_Error::ReceiptUnavailable,
+                other => other,
+            })?;
+        let bound =
+            AagBoundReceipt::parse(&bytes).map_err(|_| Aag_Gateway_Error::ReceiptInvalid)?;
+        let surface = match protocol {
+            GatewayProtocol::OpenaiChatCompletions => AagSurface::Chat,
+            GatewayProtocol::AnthropicMessages => AagSurface::Messages,
+            GatewayProtocol::OpenaiResponses => return Err(Aag_Gateway_Error::UnsupportedProtocol),
+        };
+        let evidence = bound
+            .validate_success(
+                &exchange.admission,
+                &exchange.nonce,
+                selector,
+                surface,
+                status.as_u16(),
+                stream,
+            )
+            .map_err(|_| Aag_Gateway_Error::ReceiptInvalid)?;
+        let routing = &evidence.receipt().routing_receipt;
+        if routing.request_id != response_request_id {
+            return Err(Aag_Gateway_Error::ReceiptInvalid);
+        }
+        let now = clock_ms()?;
+        if routing.issued_at_ms.saturating_add(RECEIPT_CLOCK_SKEW_MS) < exchange.sent_at_ms
+            || routing.issued_at_ms > now.saturating_add(RECEIPT_CLOCK_SKEW_MS)
+            || routing.expires_at_ms.is_none_or(|expires| expires <= now)
+        {
+            return Err(Aag_Gateway_Error::ReceiptExpired);
+        }
+        Ok(evidence)
     }
 
     async fn fetch_json(
@@ -661,17 +874,28 @@ impl Aag_Model_Gateway {
         deadline: Instant,
         cancel: &mut watch::Receiver<bool>,
     ) -> Result<Value, Aag_Gateway_Error> {
-        let sent = bounded(
-            self.client
-                .get(format!("{}{}", self.origin, path))
-                .bearer_auth(&self.credential.0)
-                .send(),
-            deadline,
-            cancel,
-        )
-        .await?
-        .map_err(|_| Aag_Gateway_Error::ObservationUnavailable)?;
-        if sent.status() != StatusCode::OK {
+        let bytes = self.fetch_json_bytes(path, None, deadline, cancel).await?;
+        serde_json::from_slice(&bytes).map_err(|_| Aag_Gateway_Error::ObservationUnavailable)
+    }
+
+    async fn fetch_json_bytes(
+        &self,
+        path: &str,
+        receipt_exchange: Option<&ReceiptExchange>,
+        deadline: Instant,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> Result<Vec<u8>, Aag_Gateway_Error> {
+        let mut request = self
+            .client
+            .get(format!("{}{}", self.origin, path))
+            .bearer_auth(&self.credential.0);
+        if let Some(exchange) = receipt_exchange {
+            request = request.header(RECEIPT_CAPABILITY_HEADER, lower_hex(&exchange.capability));
+        }
+        let sent = bounded(request.send(), deadline, cancel)
+            .await?
+            .map_err(|_| Aag_Gateway_Error::ObservationUnavailable)?;
+        if sent.status() != StatusCode::OK || !media_type_is(sent.headers(), "application/json") {
             return Err(Aag_Gateway_Error::ObservationUnavailable);
         }
         let mut response = sent;
@@ -692,7 +916,7 @@ impl Aag_Model_Gateway {
             }
             bytes.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&bytes).map_err(|_| Aag_Gateway_Error::ObservationUnavailable)
+        Ok(bytes)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -815,6 +1039,59 @@ impl Aag_Model_Gateway {
             attempt: request.correlation.attempt,
         })
     }
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        result.push(char::from(DIGITS[usize::from(byte & 15)]));
+    }
+    result
+}
+
+fn clock_ms() -> Result<u64, Aag_Gateway_Error> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Aag_Gateway_Error::ReceiptClockUnavailable)?;
+    u64::try_from(elapsed.as_millis()).map_err(|_| Aag_Gateway_Error::ReceiptClockUnavailable)
+}
+
+fn unique_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    value.to_str().ok()
+}
+
+fn media_type_is(headers: &HeaderMap, expected: &str) -> bool {
+    unique_header(headers, "content-type")
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
+}
+
+fn response_receipt_identity(
+    headers: &HeaderMap,
+    nonce: &str,
+) -> Result<String, Aag_Gateway_Error> {
+    if unique_header(headers, "x-aag-receipt-version") != Some("2")
+        || unique_header(headers, "x-aag-receipt-nonce") != Some(nonce)
+    {
+        return Err(Aag_Gateway_Error::ReceiptInvalid);
+    }
+    let request_id = unique_header(headers, "x-aag-request-id")
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+        .ok_or(Aag_Gateway_Error::ReceiptInvalid)?;
+    Ok(request_id.to_string())
 }
 
 fn map_response_error(error: ResponseError) -> Aag_Gateway_Error {

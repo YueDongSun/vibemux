@@ -12,12 +12,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 use vibemuxd::{
-    control::{ControlClient, ControlError},
+    control::{ControlClient, ControlError, MAX_PLANNING_ARGUMENT_BYTES, MAX_PLANNING_QUERY_BYTES},
     process::DaemonPaths,
-    workflow::request::{MAX_POLICY_BYTES, MAX_WORKFLOW_REQUEST_BYTES},
+    workflow::{
+        planning_profile::{PlanningQuery, PlanningRequest},
+        request::{MAX_POLICY_BYTES, MAX_WORKFLOW_REQUEST_BYTES},
+    },
 };
 
 use crate::{CliCommand, DaemonCliError, harness_client, map_control_error};
@@ -31,11 +35,22 @@ pub const EXPORT_FILE_NAME: &str = "workflow_export.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowCommand {
+    PlanningProfiles,
+    PlanRequest {
+        request_file: PathBuf,
+    },
+    PlanningObservation {
+        query_file: PathBuf,
+    },
     Prepare {
         request_file: PathBuf,
         policy_file: PathBuf,
     },
     Start {
+        contract: String,
+        request_id: Uuid,
+    },
+    StartObservation {
         contract: String,
         request_id: Uuid,
     },
@@ -54,6 +69,11 @@ pub enum WorkflowCommand {
     },
     Cancel {
         workflow_id: Uuid,
+    },
+    CancelStart {
+        contract: String,
+        request_id: Uuid,
+        generation: u64,
     },
     Export {
         workflow_id: Uuid,
@@ -90,9 +110,11 @@ pub enum WorkflowCommand {
 struct Flags {
     project_root: Option<PathBuf>,
     request_file: Option<PathBuf>,
+    query_file: Option<PathBuf>,
     policy_file: Option<PathBuf>,
     contract: Option<String>,
     request_id: Option<Uuid>,
+    generation: Option<u64>,
     out: Option<PathBuf>,
     bundle: Option<Uuid>,
     to: Option<Uuid>,
@@ -128,8 +150,14 @@ pub(crate) fn parse_workflow_arguments(
                 flags.project_root = Some(path()?);
                 2
             }
-            ("workflow", "prepare", "--request-file") if flags.request_file.is_none() => {
+            ("workflow", "prepare" | "plan_request", "--request-file")
+                if flags.request_file.is_none() =>
+            {
                 flags.request_file = Some(path()?);
+                2
+            }
+            ("workflow", "planning_observation", "--query-file") if flags.query_file.is_none() => {
+                flags.query_file = Some(path()?);
                 2
             }
             ("prompt", "edit", "--request-file") if flags.request_file.is_none() => {
@@ -140,16 +168,30 @@ pub(crate) fn parse_workflow_arguments(
                 flags.policy_file = Some(path()?);
                 2
             }
-            ("workflow", "start" | "supervisor_start", "--contract")
-                if flags.contract.is_none() =>
-            {
+            (
+                "workflow",
+                "start" | "supervisor_start" | "start_observation" | "cancel_start",
+                "--contract",
+            ) if flags.contract.is_none() => {
                 flags.contract = Some(text_value(value)?.to_string());
                 2
             }
-            ("workflow", "start" | "supervisor_start", "--request-id")
-                if flags.request_id.is_none() =>
-            {
+            (
+                "workflow",
+                "start" | "supervisor_start" | "start_observation" | "cancel_start",
+                "--request-id",
+            ) if flags.request_id.is_none() => {
                 flags.request_id = Some(parse_id(text_value(value)?)?);
+                2
+            }
+            ("workflow", "cancel_start", "--generation") if flags.generation.is_none() => {
+                flags.generation = Some(
+                    text_value(value)?
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|value| *value > 0)
+                        .ok_or(DaemonCliError::InvalidArguments)?,
+                );
                 2
             }
             ("workflow", "export", "--out") if flags.out.is_none() => {
@@ -197,6 +239,22 @@ pub(crate) fn parse_workflow_arguments(
         }
     };
     let command = match (verb, action) {
+        ("workflow", "planning_profiles") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PlanningProfiles
+        }
+        ("workflow", "plan_request") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PlanRequest {
+                request_file: flags.request_file.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("workflow", "planning_observation") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PlanningObservation {
+                query_file: flags.query_file.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
         ("workflow", "prepare") => {
             none(positional.is_some())?;
             WorkflowCommand::Prepare {
@@ -207,6 +265,13 @@ pub(crate) fn parse_workflow_arguments(
         ("workflow", "start") => {
             none(positional.is_some())?;
             WorkflowCommand::Start {
+                contract: flags.contract.ok_or(DaemonCliError::InvalidArguments)?,
+                request_id: flags.request_id.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("workflow", "start_observation") => {
+            none(positional.is_some())?;
+            WorkflowCommand::StartObservation {
                 contract: flags.contract.ok_or(DaemonCliError::InvalidArguments)?,
                 request_id: flags.request_id.ok_or(DaemonCliError::InvalidArguments)?,
             }
@@ -224,6 +289,14 @@ pub(crate) fn parse_workflow_arguments(
         }
         ("workflow", "pause") => WorkflowCommand::Pause { workflow_id: id()? },
         ("workflow", "cancel") => WorkflowCommand::Cancel { workflow_id: id()? },
+        ("workflow", "cancel_start") => {
+            none(positional.is_some())?;
+            WorkflowCommand::CancelStart {
+                contract: flags.contract.ok_or(DaemonCliError::InvalidArguments)?,
+                request_id: flags.request_id.ok_or(DaemonCliError::InvalidArguments)?,
+                generation: flags.generation.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
         ("workflow", "purge") => WorkflowCommand::Purge { workflow_id: id()? },
         ("workflow", "export") => WorkflowCommand::Export {
             workflow_id: id()?,
@@ -281,6 +354,28 @@ pub async fn run_workflow(
     paths: &DaemonPaths,
     command: WorkflowCommand,
 ) -> Result<Value, DaemonCliError> {
+    let planning_request = match &command {
+        WorkflowCommand::PlanRequest { request_file } => {
+            let request: PlanningRequest =
+                read_planning_document(request_file.clone(), MAX_PLANNING_ARGUMENT_BYTES).await?;
+            request
+                .validate()
+                .map_err(|_| input_error("cli_input_invalid_request"))?;
+            Some(request)
+        }
+        _ => None,
+    };
+    let planning_query = match &command {
+        WorkflowCommand::PlanningObservation { query_file } => {
+            let query: PlanningQuery =
+                read_planning_document(query_file.clone(), MAX_PLANNING_QUERY_BYTES).await?;
+            query
+                .validate()
+                .map_err(|_| input_error("cli_input_invalid_request"))?;
+            Some(query)
+        }
+        _ => None,
+    };
     let documents = match &command {
         WorkflowCommand::Prepare {
             request_file,
@@ -297,6 +392,17 @@ pub async fn run_workflow(
     };
     let client = harness_client(paths).await?;
     let answer = match command {
+        WorkflowCommand::PlanningProfiles => {
+            json!({"ok":true,"profiles":client.workflow_planning_profiles().await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::PlanRequest { .. } => {
+            let request = planning_request.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"planning":client.workflow_plan_request(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::PlanningObservation { .. } => {
+            let query = planning_query.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"planning":client.workflow_planning_observation(query).await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::Prepare { .. } => {
             let (request, policy) = documents.ok_or(DaemonCliError::InvalidArguments)?;
             let prepared = client
@@ -323,6 +429,12 @@ pub async fn run_workflow(
         } => {
             json!({"ok": true, "workflow": client.workflow_start(&contract, request_id).await.map_err(map_workflow_error)?})
         }
+        WorkflowCommand::StartObservation {
+            contract,
+            request_id,
+        } => {
+            json!({"ok":true,"observation":client.workflow_start_observation(&contract, request_id).await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::Status { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_status(workflow_id).await.map_err(map_workflow_error)?})
         }
@@ -337,6 +449,13 @@ pub async fn run_workflow(
         }
         WorkflowCommand::Pause { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_pause(workflow_id).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::CancelStart {
+            contract,
+            request_id,
+            generation,
+        } => {
+            json!({"ok":true,"workflow":client.workflow_cancel_start(&contract,request_id,generation).await.map_err(map_workflow_error)?})
         }
         WorkflowCommand::Cancel { workflow_id } => {
             json!({"ok": true, "workflow": client.workflow_cancel(workflow_id).await.map_err(map_workflow_error)?})
@@ -531,6 +650,40 @@ async fn read_document(path: PathBuf, limit: usize) -> Result<Value, DaemonCliEr
     serde_json::from_slice(&bytes).map_err(|_| input_error("cli_input_invalid_json"))
 }
 
+/// Only the planning entrypoints accept "-" as bounded JSON stdin.
+async fn read_planning_document<T: DeserializeOwned + Send + 'static>(
+    path: PathBuf,
+    limit: usize,
+) -> Result<T, DaemonCliError> {
+    tokio::task::spawn_blocking(move || {
+        if path == Path::new("-") {
+            parse_planning_document(std::io::stdin().lock(), limit)
+        } else {
+            let file =
+                std::fs::File::open(path).map_err(|_| input_error("cli_input_unavailable"))?;
+            parse_planning_document(file, limit)
+        }
+    })
+    .await
+    .map_err(|_| input_error("cli_input_unavailable"))?
+}
+
+fn parse_planning_document<T: DeserializeOwned>(
+    reader: impl Read,
+    limit: usize,
+) -> Result<T, DaemonCliError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| input_error("cli_input_unavailable"))?;
+    if bytes.len() > limit {
+        return Err(input_error("cli_input_too_large"));
+    }
+    // Deserialize directly into the closed DTO so duplicate fields are not lost in Value.
+    serde_json::from_slice(&bytes).map_err(|_| input_error("cli_input_invalid_json"))
+}
+
 fn input_error(code: &str) -> DaemonCliError {
     DaemonCliError::Control {
         code: code.to_string(),
@@ -574,6 +727,102 @@ mod tests {
     }
 
     #[test]
+    fn planning_commands_accept_only_their_bounded_document_inputs() {
+        assert_eq!(
+            parse("workflow", &["planning_profiles"]),
+            Ok(WorkflowCommand::PlanningProfiles)
+        );
+        for path in ["request.json", "-"] {
+            assert_eq!(
+                parse("workflow", &["plan_request", "--request-file", path]),
+                Ok(WorkflowCommand::PlanRequest {
+                    request_file: PathBuf::from(path)
+                })
+            );
+            assert_eq!(
+                parse("workflow", &["planning_observation", "--query-file", path]),
+                Ok(WorkflowCommand::PlanningObservation {
+                    query_file: PathBuf::from(path)
+                })
+            );
+        }
+        for arguments in [
+            vec!["planning_profiles", "extra"],
+            vec!["planning_profiles", "--request-file", "request.json"],
+            vec!["plan_request"],
+            vec!["plan_request", "--request-file", "request.json", "extra"],
+            vec![
+                "plan_request",
+                "--request-file",
+                "request.json",
+                "--policy-file",
+                "policy.json",
+            ],
+            vec![
+                "plan_request",
+                "--request-file",
+                "request.json",
+                "--request-file",
+                "second.json",
+            ],
+            vec![
+                "plan_request",
+                "--request-file",
+                "request.json",
+                "--slot",
+                "worker_a",
+            ],
+            vec!["plan_request", "--query-file", "query.json"],
+            vec!["planning_observation"],
+            vec!["planning_observation", "--request-file", "request.json"],
+            vec![
+                "planning_observation",
+                "--query-file",
+                "query.json",
+                "--execute",
+            ],
+        ] {
+            assert_eq!(
+                parse("workflow", &arguments),
+                Err(DaemonCliError::InvalidArguments)
+            );
+        }
+    }
+
+    #[test]
+    fn planning_document_reader_bounds_bytes_and_preserves_strict_json() {
+        let input = br#"{"schema_version":1,"profile_id":"research","profile_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","request_id":"10000000-0000-4000-8000-000000000001","request_text":"Inspect.","execute":false}"#;
+        let request: PlanningRequest =
+            parse_planning_document(std::io::Cursor::new(input), MAX_PLANNING_ARGUMENT_BYTES)
+                .expect("request");
+        request.validate().expect("valid request");
+        let duplicate = String::from_utf8(input.to_vec()).expect("utf8").replacen(
+            "{",
+            r#"{"execute":true,"#,
+            1,
+        );
+        assert!(
+            parse_planning_document::<PlanningRequest>(
+                std::io::Cursor::new(duplicate),
+                MAX_PLANNING_ARGUMENT_BYTES
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse_planning_document::<Value>(std::io::Cursor::new(vec![b' '; 1025]), 1024)
+                .expect_err("bounded")
+                .code(),
+            "cli_input_too_large"
+        );
+        assert_eq!(
+            parse_planning_document::<Value>(std::io::Cursor::new(vec![0xff]), 1024)
+                .expect_err("utf8")
+                .code(),
+            "cli_input_invalid_json"
+        );
+    }
+
+    #[test]
     fn every_command_parses_its_documented_form() {
         let id = Uuid::new_v4();
         let text = id.to_string();
@@ -611,6 +860,73 @@ mod tests {
                 request_id: id,
             })
         );
+        assert_eq!(
+            parse(
+                "workflow",
+                &[
+                    "start_observation",
+                    "--contract",
+                    "ab",
+                    "--request-id",
+                    &text
+                ]
+            ),
+            Ok(WorkflowCommand::StartObservation {
+                contract: "ab".to_string(),
+                request_id: id
+            })
+        );
+        assert!(parse("workflow", &["start_observation", "--contract", "ab"]).is_err());
+        assert!(
+            parse(
+                "workflow",
+                &[
+                    "start_observation",
+                    "--contract",
+                    "ab",
+                    "--request-id",
+                    &text,
+                    "extra"
+                ]
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse(
+                "workflow",
+                &[
+                    "cancel_start",
+                    "--contract",
+                    "ab",
+                    "--request-id",
+                    &text,
+                    "--generation",
+                    "2"
+                ]
+            ),
+            Ok(WorkflowCommand::CancelStart {
+                contract: "ab".to_string(),
+                request_id: id,
+                generation: 2
+            })
+        );
+        for invalid in ["0", "-1", "1.5", "18446744073709551616"] {
+            assert!(
+                parse(
+                    "workflow",
+                    &[
+                        "cancel_start",
+                        "--contract",
+                        "ab",
+                        "--request-id",
+                        &text,
+                        "--generation",
+                        invalid
+                    ]
+                )
+                .is_err()
+            );
+        }
         assert_eq!(
             parse("workflow", &["status", &text]),
             Ok(WorkflowCommand::Status { workflow_id: id })

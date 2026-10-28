@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "endpoint": "http://127.0.0.1:15721",
+  "credential_env": "AAG_GATEWAY_TOKEN",
+  "strict_routing": true,
+  "live_admission": "disabled",
+  "bindings": [
+    { "role": "compiler", "model_alias": "vibemux-compiler", "protocol": "openai_chat_completions", "max_output_tokens": 4096, "timeout_ms": 120000 },
+    { "role": "supervisor", "model_alias": "vibemux-supervisor", "protocol": "openai_chat_completions", "max_output_tokens": 4096, "timeout_ms": 120000 }
+  ]
+}

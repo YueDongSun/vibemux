@@ -116,3 +116,13 @@ the accompanying evidence summary. Pure reducer tests, fake-server transport,
 actual writer/control fixtures, platform diagnostics, and live acceptance are
 reported separately. No live gateway/model/vendor, publication or deployment
 evidence is inferred from an offline fixture.
+
+
+## Bound model-admission extension, 2026-10-28
+
+[ADR 054](054_gateway_bound_admission.md) adds explicit startup opt-in for AAG v2
+snapshot-bound model calls. Legacy/default Live admission still refuses before
+HTTP; opted-in calls require a matching complete gateway-observed receipt before
+returning text. This supersedes only the blanket model-HTTP refusal above. Native
+worker/reviewer profiles, tool grants, sandbox certification, attempt/lease gates
+and independent model attestation remain separate and unchanged.

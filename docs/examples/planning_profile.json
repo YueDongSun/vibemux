@@ -1,0 +1,25 @@
+{
+  "profile_id": "development",
+  "workflow_key": "application",
+  "mode": "cooperate",
+  "worker_slots": ["worker_a", "worker_b"],
+  "reviewer_slot": "reviewer",
+  "integration_suites": ["application_tests"],
+  "shared_contract_paths": {},
+  "policy": {
+    "schema_version": 1,
+    "policy_version": "policy_v1",
+    "writable_roots": ["src/**"],
+    "protected_paths": ["tests/**", "package.json", "package-lock.json"],
+    "allowed_tools": ["read_files", "search_files", "edit_files"],
+    "verifier_suites": [{"suite_id": "application_tests", "description": "Owner-installed application verification"}],
+    "budget_caps": {"max_turns": 4, "max_repairs": 1, "max_elapsed_seconds": 600, "max_model_requests": 10},
+    "max_parallel_slots": 2,
+    "max_supervisor_decisions": 8,
+    "max_optimizer_candidates": 0,
+    "content_store_opt_in": false,
+    "aag_only": true
+  },
+  "max_tasks": 2,
+  "allow_execution": false
+}

@@ -20,7 +20,11 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{Sha256Digest, canonical_json::canonical_digest};
+use crate::{
+    Sha256Digest,
+    canonical_json::canonical_digest,
+    gateway_receipt::{AagAdmission, GatewayObservedRouting},
+};
 
 pub const GATEWAY_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const ROUTE_GENERATION_DOMAIN: &str = "vibemux.workflow.route_generation.v1";
@@ -91,6 +95,22 @@ pub struct RouteBinding {
     pub timeout_ms: u64,
 }
 
+/// Explicit operator admission for model calls. Existing configurations remain disabled.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveAdmission {
+    #[default]
+    Disabled,
+    BoundReceiptV2,
+}
+
+impl LiveAdmission {
+    #[must_use]
+    pub const fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+}
+
 /// Operator-owned gateway configuration. It names the environment variable
 /// holding the gateway token, never the token itself.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -102,6 +122,9 @@ pub struct GatewayConfig {
     pub bindings: Vec<RouteBinding>,
     /// Refuse to route while the gateway reports a global provider pin.
     pub strict_routing: bool,
+    /// Bound to the startup-owned configuration; model output cannot enable it.
+    #[serde(default, skip_serializing_if = "LiveAdmission::is_disabled")]
+    pub live_admission: LiveAdmission,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Error, Ord, PartialEq, PartialOrd, Serialize)]
@@ -236,6 +259,9 @@ pub struct GatewayHealth {
     pub pinned_provider_present: bool,
     pub models: Vec<String>,
     pub route_generation: Sha256Digest,
+    /// A pre-request snapshot. Accepted admission is proved only by the matched receipt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admission_snapshot: Option<AagAdmission>,
 }
 
 impl GatewayHealth {
@@ -265,7 +291,24 @@ impl GatewayHealth {
             pinned_provider_present,
             models: aliases,
             route_generation,
+            admission_snapshot: None,
         })
+    }
+
+    /// Keep the legacy observation fingerprint distinct from AAG's native generation.
+    pub fn bind_admission(&mut self, snapshot: AagAdmission) -> Result<(), ResponseError> {
+        snapshot.validate().map_err(|_| ResponseError::Malformed)?;
+        if self.admission_snapshot.is_some() {
+            return Err(ResponseError::Malformed);
+        }
+        self.route_generation = canonical_digest(
+            "vibemux.workflow.route_generation.v2",
+            &json!({"legacy_observation":self.route_generation,"admission_snapshot":snapshot}),
+        )
+        .map_err(|_| ResponseError::Malformed)?;
+        self.pinned_provider_present |= snapshot.pinned_provider_present;
+        self.admission_snapshot = Some(snapshot);
+        Ok(())
     }
 }
 
@@ -670,11 +713,12 @@ pub enum CallOutcome {
     Blocked,
 }
 
-/// What the gateway would not tell us stays explicitly unknown.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// Gateway-observed routing is separate from independent upstream model attestation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAttribution {
     Unknown,
+    GatewayObserved(Box<GatewayObservedRouting>),
 }
 
 /// The content-free record of one model call.
@@ -740,6 +784,7 @@ mod tests {
                 ),
             ],
             strict_routing: true,
+            live_admission: LiveAdmission::Disabled,
         }
     }
 

@@ -83,6 +83,7 @@ fn gateway_config(endpoint: &str) -> GatewayConfig {
             binding(RouteRole::Reviewer, REVIEWER_ALIAS),
         ],
         strict_routing: true,
+        live_admission: Default::default(),
     }
 }
 

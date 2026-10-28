@@ -84,6 +84,17 @@ fn run() -> Result<i32> {
             return Ok(0);
         }
         "exit_code" => return Ok(EXIT_CODE_MODE_CODE),
+        "publication_child" => {
+            let ready_path = settings.ready_path.ok_or("fixture_ready_path_missing")?;
+            write_ready(&ready_path.with_extension("partial"), "unpublished")?;
+            wait_for_file(&ready_path.with_extension("release"))?;
+            std::fs::rename(
+                ready_path.with_extension("partial"),
+                ready_path.with_extension("published"),
+            )?;
+            wait_for_file(&ready_path.with_extension("exit"))?;
+            return Ok(0);
+        }
         // Starts a descendant before reading any input, then echoes stdin.
         "early_descendant" => {
             let ready_path = settings.ready_path.ok_or("fixture_ready_path_missing")?;
@@ -92,8 +103,18 @@ fn run() -> Result<i32> {
             io::copy(&mut io::stdin().lock(), &mut io::stdout().lock())?;
             return Ok(0);
         }
-        "normal" | "failed" | "hang" | "hang_initialize" | "cancel" | "malformed" | "oversized"
-        | "stderr" | "wrong_id" | "eof" | "descendant" => {}
+        "normal"
+        | "failed"
+        | "hang"
+        | "hang_initialize"
+        | "cancel"
+        | "malformed"
+        | "oversized"
+        | "stderr"
+        | "wrong_id"
+        | "eof"
+        | "descendant"
+        | "publishing_descendant" => {}
         _ => return Err("fixture_mode_invalid".into()),
     }
     let mut fixture = Fixture {
@@ -173,6 +194,34 @@ fn write_ready(path: &Path, content: &str) -> Result<()> {
     file.write_all(content.as_bytes())?;
     file.flush()?;
     Ok(())
+}
+
+fn wait_for_file(path: &Path) -> Result<()> {
+    let deadline = std::time::Instant::now() + SLEEP_LIMIT;
+    while !path.is_file() {
+        if std::time::Instant::now() >= deadline {
+            return Err("fixture_release_timeout".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn spawn_publishing_descendant(ready_path: &Path) -> Result<std::process::Child> {
+    let mut command = Command::new(env::current_exe()?);
+    command
+        .args([
+            "--fixture_mode",
+            "publication_child",
+            "--fixture_ready_path",
+        ])
+        .arg(ready_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+    Ok(command.spawn()?)
 }
 
 impl Fixture {
@@ -326,6 +375,20 @@ impl Fixture {
         )?;
         self.text(output, "synthetic first chunk")?;
         self.text(output, "synthetic second chunk")?;
+        if self.mode == "publishing_descendant" {
+            let ready_path = self
+                .ready_path
+                .as_ref()
+                .ok_or("fixture_ready_path_missing")?;
+            let child = spawn_publishing_descendant(ready_path)?;
+            write_ready(ready_path, &child.id().to_string())?;
+            write_ready(
+                &ready_path.with_extension("controller"),
+                &std::process::id().to_string(),
+            )?;
+            self.terminal(output, false)?;
+            return Ok(true);
+        }
         if self.mode == "descendant" {
             let ready_path = self
                 .ready_path

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "attempt_id": "14df04e1-27a5-41d2-a494-fd3e602b7258",
+  "operation_id": "c2cfacb9-75d3-43a5-9aba-cb11ce4591a2",
+  "suite_id": "arithmetic_example",
+  "grants": {
+    "read_files": true,
+    "search_files": false,
+    "edit_files": false,
+    "write_files": false,
+    "run_dev_tests": true
+  },
+  "read_scopes": ["src/**", "tests/**"],
+  "forbidden_paths": [],
+  "files": [
+    {"path": "src/value.cjs", "content": "module.exports = 2;\n"},
+    {"path": "tests/arithmetic.test.cjs", "content": "const test = require('node:test');\nconst assert = require('node:assert/strict');\nconst value = require('../src/value.cjs');\ntest('addition', () => assert.equal(value + value, 4));\n"}
+  ],
+  "test_entries": ["tests/arithmetic.test.cjs"],
+  "timeout_ms": 8000,
+  "output_limit_bytes": 16384
+}

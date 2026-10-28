@@ -108,7 +108,18 @@ pub struct SlotSetup {
 }
 
 #[derive(Clone, Debug)]
+pub struct InstalledControllerSetup {
+    pub executable: PathBuf,
+    pub git_bash: PathBuf,
+    pub endpoint: std::net::SocketAddrV4,
+}
+
+#[derive(Clone, Debug)]
 pub struct FixtureOptions {
+    pub trace_verifier_suites: bool,
+    pub file_broker: bool,
+    pub installed_controller: Option<InstalledControllerSetup>,
+    pub heartbeat_ms: u64,
     pub slots: Vec<SlotSetup>,
     /// `None` keeps the opt-in content store off whatever the policy says.
     pub content_retention_days: Option<u32>,
@@ -121,6 +132,10 @@ pub struct FixtureOptions {
 impl Default for FixtureOptions {
     fn default() -> Self {
         Self {
+            trace_verifier_suites: false,
+            file_broker: false,
+            installed_controller: None,
+            heartbeat_ms: HEARTBEAT_MS,
             slots: vec![
                 SlotSetup {
                     slot_id: "slot_a",
@@ -369,6 +384,8 @@ struct ProjectPaths {
     runtime_dir: PathBuf,
     git: PathBuf,
     git_home: PathBuf,
+    file_broker: bool,
+    installed_controller: Option<InstalledControllerSetup>,
 }
 
 impl ProjectPaths {
@@ -417,7 +434,9 @@ impl ProjectPaths {
                 "executable": executable, "enabled": true, "allow_execution": allow_execution}));
         };
         install(AgentKind::Codex, NativeProtocol::CodexExec, true);
-        install(AgentKind::Claude, NativeProtocol::ClaudeStreamJson, true);
+        if options.installed_controller.is_none() {
+            install(AgentKind::Claude, NativeProtocol::ClaudeStreamJson, true);
+        }
         if options.acp_route {
             install(AgentKind::OpenCode, NativeProtocol::Acp, false);
         }
@@ -440,6 +459,12 @@ impl ProjectPaths {
                 "executable": executable, "entry_script": entry_script, "profile": "sdk",
                 "provider": "fixture", "model": "fixture", "enabled": true,
                 "allow_execution": true}));
+        }
+        if let Some(controller) = &options.installed_controller {
+            assert!(!options.acp_route && !options.dsh_route);
+            routes.push(json!({"harness":"claude","protocol":"claude_stream_json",
+                "executable":controller.executable, "model":"fixture-model",
+                "enabled":true,"allow_execution":true}));
         }
         write_json(
             &self.state_dir.join(DISPATCH_CONFIG_FILE_NAME),
@@ -476,6 +501,20 @@ impl ProjectPaths {
                 "{out}"
             ]),
         );
+        if options.trace_verifier_suites {
+            suites.insert(
+                "syntax_second".to_string(),
+                json!([
+                    format!("{{verifier_dir}}/{SYNTAX_SUITE_FILE_NAME}"),
+                    "--candidate",
+                    "{candidate}",
+                    "--suite",
+                    "syntax_second",
+                    "--out",
+                    "{out}"
+                ]),
+            );
+        }
         let environment_names: Vec<&str> = VERIFIER_ENVIRONMENT_CANDIDATES
             .into_iter()
             .filter(|name| std::env::var_os(name).is_some())
@@ -502,7 +541,7 @@ impl ProjectPaths {
                     "timeout_ms": VERIFIER_TIMEOUT_MS,
                     "environment_names": environment_names,
                 },
-                "heartbeat_ms": HEARTBEAT_MS,
+                "heartbeat_ms": options.heartbeat_ms,
                 "candidate_limits": {"max_files": 256, "max_file_bytes": 1_048_576,
                     "max_total_bytes": 8_388_608},
                 "content_retention_days": options.content_retention_days,
@@ -523,6 +562,28 @@ impl ProjectPaths {
             )),
             decision: None,
         };
+        if let Some(controller) = &self.installed_controller {
+            let guard = vibemux_harness::dispatch::installed_controller_guard::InstalledClaudeGuard::register(
+                &controller.executable, Path::new(env!("CARGO_BIN_EXE_vibemux_broker_fixture")),
+                &controller.git_bash, controller.endpoint,
+            ).expect("installed controller registration");
+            let synthetic = vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard::register_worker_copies(
+                Path::new(WORKER_FIXTURE), &self.vendor_dir, &[AgentKind::Codex],
+            ).expect("independent synthetic reviewer").with_file_broker(
+                Path::new(env!("CARGO_BIN_EXE_vibemux_broker_fixture")),
+            ).expect("review broker");
+            let server = DaemonControlServer::start_with_installed_controller_qualification(
+                &self.database(),
+                &self.runtime_dir,
+                settings,
+                guard,
+                synthetic,
+            )
+            .await
+            .expect("qualification server");
+            let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+            return (server, client);
+        }
         let guard =
             vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard::register_worker_copies(
                 Path::new(WORKER_FIXTURE),
@@ -534,6 +595,13 @@ impl ProjectPaths {
                 &std::fs::canonicalize(require_node()).expect("canonical node"),
             )
             .expect("fixture development runtime");
+        let guard = if self.file_broker {
+            guard
+                .with_file_broker(Path::new(env!("CARGO_BIN_EXE_vibemux_broker_fixture")))
+                .expect("pinned file broker")
+        } else {
+            guard
+        };
         let server = DaemonControlServer::start_with_fixture_execution(
             &self.database(),
             &self.runtime_dir,
@@ -561,12 +629,39 @@ pub struct WorkflowFixture {
 }
 
 impl WorkflowFixture {
+    pub fn lose_next_cleanup(&self, verifier: bool) {
+        self.server
+            .as_ref()
+            .expect("server")
+            .lose_next_fixture_cleanup(verifier)
+            .expect("fixture loss");
+    }
+
+    pub fn retained_process_count(&self) -> usize {
+        self.server
+            .as_ref()
+            .expect("server")
+            .fixture_retained_process_count()
+            .expect("retained owners")
+    }
+
+    pub async fn quarantine_lease(&self, lease_id: Uuid) {
+        self.server
+            .as_ref()
+            .expect("server")
+            .quarantine_fixture_lease(lease_id)
+            .await
+            .expect("quarantine lease");
+    }
+
     pub async fn start(options: FixtureOptions) -> Self {
         let node = require_node();
         let git = find_on_path("git").expect("git must be on PATH for the workflow tests");
         let temp = tempfile::tempdir().expect("temp");
         let project_root = temp.path().join("project");
         let paths = ProjectPaths {
+            file_broker: options.file_broker,
+            installed_controller: options.installed_controller.clone(),
             state_dir: project_root.join(".vibemux"),
             project_root,
             vendor_dir: temp.path().join("vendor"),
@@ -579,7 +674,14 @@ impl WorkflowFixture {
         copy_tree(&Path::new(TASKBOARD_DIR).join("verifier"), &verifier_dir);
         std::fs::write(
             verifier_dir.join(SYNTAX_SUITE_FILE_NAME),
-            SYNTAX_SUITE_SOURCE,
+            if options.trace_verifier_suites {
+                SYNTAX_SUITE_SOURCE.replace(
+                    "const started_ms =",
+                    "writeFileSync(values.out + \".started\", values.suite);\nconst started_ms =",
+                )
+            } else {
+                SYNTAX_SUITE_SOURCE.to_string()
+            },
         )
         .expect("syntax suite");
         for directory in [
@@ -589,6 +691,45 @@ impl WorkflowFixture {
             &paths.git_home,
         ] {
             std::fs::create_dir_all(directory).expect("directory");
+        }
+        if options.installed_controller.is_some() {
+            std::fs::write(
+                paths.project_root.join("CLAUDE.md"),
+                "UNRELATED_CUSTOMIZATION_CANARY_6437",
+            )
+            .expect("context canary");
+            let settings_dir = paths.project_root.join(".claude");
+            std::fs::create_dir(&settings_dir).expect("canary settings");
+            let marker = paths.project_root.join("unexpected_hook_marker.txt");
+            let script = format!(
+                "require('node:fs').writeFileSync({}, 'unexpected')",
+                serde_json::to_string(&marker).expect("marker")
+            );
+            let hook_script = paths.project_root.join("customization_canary.cjs");
+            std::fs::write(&hook_script, script).expect("canary script");
+            let command = format!("\"{}\" \"{}\"", node.display(), hook_script.display());
+            write_json(
+                &settings_dir.join("settings.json"),
+                &json!({"hooks":{"SessionStart":[{"hooks":[{
+                "type":"command","command":command}]}]}}),
+            );
+            write_json(
+                &paths.project_root.join(".mcp.json"),
+                &json!({"mcpServers":{"unexpected":{
+                "type":"stdio","command":node,"args":[hook_script]}}}),
+            );
+            assert!(
+                Command::new(&node)
+                    .arg(&hook_script)
+                    .status()
+                    .expect("canary control")
+                    .success()
+            );
+            assert!(
+                marker.is_file(),
+                "canary must produce a visible effect if executed"
+            );
+            std::fs::remove_file(marker).expect("clear canary control");
         }
         paths.git(&["init", "-q"]);
         paths.git(&["add", "-A"]);

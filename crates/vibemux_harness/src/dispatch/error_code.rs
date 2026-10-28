@@ -50,6 +50,7 @@ dispatch_errors! {
     Conflict => "harness_dispatch_conflict",
     NotFound => "harness_dispatch_not_found",
     OutputUnavailable => "harness_dispatch_output_unavailable",
+    BrokerCandidateInvalid => "harness_broker_candidate_invalid",
     Terminal => "harness_dispatch_terminal",
     InvalidTransition => "harness_dispatch_invalid_transition",
     StaleFence => "harness_dispatch_stale_fence",

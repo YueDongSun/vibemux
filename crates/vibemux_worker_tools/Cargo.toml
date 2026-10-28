@@ -1,0 +1,24 @@
+[package]
+name = "vibemux_worker_tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "vibemux_worker_tools"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+vibemux_harness = { path = "../vibemux_harness" }
+vibemux_platform = { path = "../vibemux_platform" }
+vibemux_workflow = { path = "../vibemux_workflow" }
+
+[dev-dependencies]
+sysinfo.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

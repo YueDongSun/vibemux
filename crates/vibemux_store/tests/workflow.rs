@@ -2717,3 +2717,72 @@ fn policy_versions_promote_for_future_admissions_and_roll_back() {
         1
     );
 }
+
+#[test]
+fn installed_controller_profile_is_fixture_only_and_attempt_bound() {
+    for class in [EvidenceClass::Fixture, EvidenceClass::Live] {
+        let (_file, mut store) = open_store();
+        let mut prepared = record("installed_controller_profile", &["track_a"]);
+        prepared.evidence_class = class;
+        let artifact = contract("track_a", 1, None);
+        store
+            .prepare_workflow(&prepared, std::slice::from_ref(&artifact), at(0))
+            .unwrap();
+        store
+            .bind_workflow_contract_authority(
+                artifact.contract_id,
+                &authority_spec(&artifact.task_key, artifact.contract_version),
+                at(0),
+            )
+            .unwrap();
+        let mut facts = slot("slot_a");
+        for evidence in facts.capabilities.values_mut() {
+            evidence.class = class;
+        }
+        store.upsert_workflow_slot(&facts, at(0)).unwrap();
+        let workflow = store
+            .transition_workflow(prepared.workflow_id, 1, WorkflowPhase::Running, None, at(1))
+            .unwrap()
+            .record;
+        let owned = lease(
+            &mut store,
+            &workflow,
+            "track_a",
+            "slot_a",
+            "qualification_tree",
+        );
+        let mut admission = attempt_admission(
+            &store,
+            workflow.workflow_id,
+            &owned,
+            "qualification_tree",
+            AttemptPurpose::Implement,
+        );
+        admission.execution.evidence_class = class;
+        admission.execution.harness_profile = "claude_broker_qualification_v1".into();
+        admission.execution.effective_route.profile = "claude_broker_qualification_v1".into();
+        if class == EvidenceClass::Live {
+            assert_eq!(
+                store.admit_workflow_attempt(&admission).unwrap_err().code(),
+                "store_workflow_launch_profile_mismatch"
+            );
+        } else {
+            let committed = store.admit_workflow_attempt(&admission).unwrap();
+            assert_eq!(
+                committed
+                    .attempt
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .harness_profile,
+                "claude_broker_qualification_v1"
+            );
+            admission.execution.harness_profile = "claude_fixture_writable_v1".into();
+            admission.execution.effective_route.profile = "claude_fixture_writable_v1".into();
+            assert_eq!(
+                store.admit_workflow_attempt(&admission).unwrap_err().code(),
+                "store_workflow_attempt_conflict"
+            );
+        }
+    }
+}

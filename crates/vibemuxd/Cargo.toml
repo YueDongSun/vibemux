@@ -44,7 +44,14 @@ name = "vibemux_decision_fixture"
 path = "src/bin/vibemux_decision_fixture.rs"
 required-features = ["test_helpers"]
 
+[[bin]]
+name = "vibemux_broker_fixture"
+path = "../vibemux_worker_tools/src/main.rs"
+required-features = ["test_helpers"]
+
 [dependencies]
+tempfile.workspace = true
+vibemux_worker_tools = { path = "../vibemux_worker_tools" }
 reqwest.workspace = true
 prost.workspace = true
 async-trait.workspace = true
@@ -77,5 +84,4 @@ vibemux_workflow = { path = "../vibemux_workflow" }
 [dev-dependencies]
 rusqlite.workspace = true
 sysinfo.workspace = true
-tempfile.workspace = true
 vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }

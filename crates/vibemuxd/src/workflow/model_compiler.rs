@@ -1,19 +1,22 @@
 //! Non-deterministic model interpretation, followed by the existing deterministic admission.
 use std::sync::Arc;
 
+use serde_json::Value;
 use time::OffsetDateTime;
 use tokio::sync::watch;
 use uuid::Uuid;
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier,
-    gateway::{GatewayConfig, RouteRole},
+    gateway::{GatewayConfig, LiveAdmission, RouteRole},
     model_call::{ModelCallAdmission, ModelCallRequest, compile_task_candidates},
     policy::OperatorPolicy,
+    task_spec::TaskSpec,
 };
 
 use super::{
+    aag_gateway::{Aag_Call_Class, Aag_Credential, Aag_Model_Gateway},
     error::WorkflowError,
-    model_runtime::{ModelGateway, run_model_call},
+    model_runtime::{AagModelGateway, ModelGateway, run_model_call},
     request::WorkflowRequest,
     runtime::WorkflowSetup,
 };
@@ -33,6 +36,40 @@ pub trait WorkflowModelGatewayFactory: Send + Sync {
         config: &GatewayConfig,
         config_digest: Sha256Digest,
     ) -> Result<Arc<dyn ModelGateway>, WorkflowError>;
+}
+
+/// Installed only for a pinned configuration explicitly requiring bound v2 receipts.
+/// Construction performs no credential lookup, socket I/O or model call.
+pub(crate) struct BoundReceiptGatewayFactory;
+
+impl WorkflowModelGatewayFactory for BoundReceiptGatewayFactory {
+    fn for_workflow(
+        &self,
+        workflow_id: Uuid,
+        config: &GatewayConfig,
+        config_digest: Sha256Digest,
+    ) -> Result<Arc<dyn ModelGateway>, WorkflowError> {
+        if config.live_admission != LiveAdmission::BoundReceiptV2 {
+            return Err(WorkflowError::Dispatch {
+                code: "gateway_live_attestation_unavailable".into(),
+            });
+        }
+        let credential =
+            Aag_Credential::named(config).map_err(|error| WorkflowError::Dispatch {
+                code: error.code().into(),
+            })?;
+        let gateway =
+            Aag_Model_Gateway::new(config.clone(), config_digest, credential).map_err(|error| {
+                WorkflowError::Dispatch {
+                    code: error.code().into(),
+                }
+            })?;
+        Ok(Arc::new(AagModelGateway::new(
+            gateway,
+            workflow_id,
+            Aag_Call_Class::Live,
+        )))
+    }
 }
 
 pub(crate) async fn compile_missing_specs(
@@ -68,6 +105,48 @@ pub(crate) async fn compile_missing_specs(
             .map_err(|_| WorkflowError::Internal)?;
         return Ok(());
     }
+    let mut input = serde_json::to_value(&*request).map_err(|_| WorkflowError::RequestInvalid)?;
+    input["operator_policy"] =
+        serde_json::to_value(policy).map_err(|_| WorkflowError::PolicyInvalid)?;
+    request.task_specs = compile_candidates(writer, setup, factory, workflow_id, input)
+        .await?
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()
+        .map_err(|_| WorkflowError::Internal)?;
+    Ok(())
+}
+
+/// One durable compiler interpretation. Callers supply owner-bound input; task
+/// assignments and final contract admission remain outside model authority.
+pub(super) async fn compile_candidates(
+    writer: &WriterHandle,
+    setup: &WorkflowSetup,
+    factory: Option<&Arc<dyn WorkflowModelGatewayFactory>>,
+    workflow_id: Uuid,
+    input: Value,
+) -> Result<Vec<TaskSpec>, WorkflowError> {
+    let call = compiler_call(setup, workflow_id, input).await?;
+    run_compiler_candidates(writer, setup, factory, workflow_id, call).await
+}
+
+/// Transient request bodies stay in memory. Only its content-free identity is
+/// published by a planning owner before this call can reach the gateway.
+pub(super) struct CompilerCall {
+    pub request: ModelCallRequest,
+    pub admission: ModelCallAdmission,
+}
+
+pub(super) async fn compiler_call(
+    setup: &WorkflowSetup,
+    workflow_id: Uuid,
+    mut input: Value,
+) -> Result<CompilerCall, WorkflowError> {
+    let source = input
+        .get("request_text")
+        .and_then(Value::as_str)
+        .ok_or(WorkflowError::RequestInvalid)?;
+    let source_digest = Sha256Digest::of(source.as_bytes());
     let config = setup
         .config
         .config
@@ -77,21 +156,14 @@ pub(crate) async fn compile_missing_specs(
     let binding = config
         .binding(RouteRole::Compiler)
         .ok_or(WorkflowError::CompilerUnavailable)?;
-    let factory = factory.ok_or_else(|| WorkflowError::Dispatch {
-        code: "gateway_live_attestation_unavailable".into(),
-    })?;
-    let gateway = factory.for_workflow(workflow_id, config, setup.config.digest)?;
-    let mut input = serde_json::to_value(&*request).map_err(|_| WorkflowError::RequestInvalid)?;
+
     let root = setup.canonical_root.clone();
     let base = tokio::task::spawn_blocking(move || read_head_commit(&root))
         .await
         .map_err(|_| WorkflowError::Internal)?
         .map_err(|_| WorkflowError::Git)?;
     input["base_commit"] = serde_json::json!(base);
-    input["original_request_ref"] =
-        serde_json::json!(Sha256Digest::of(request.request_text.as_bytes()));
-    input["operator_policy"] =
-        serde_json::to_value(policy).map_err(|_| WorkflowError::PolicyInvalid)?;
+    input["original_request_ref"] = serde_json::json!(source_digest);
     let model_request = ModelCallRequest {
         role: RouteRole::Compiler,
         requested_alias: binding.model_alias.clone(),
@@ -121,7 +193,7 @@ pub(crate) async fn compile_missing_specs(
     let now = super::runtime::millis(OffsetDateTime::now_utc());
     // A compiler makes at most one interpretation call under this request key.
     // A repeated prepared request reuses its admitted plan; ambiguous calls refuse replay.
-    let mut admission = ModelCallAdmission {
+    let admission = ModelCallAdmission {
         call_id,
         owner_key: SpecIdentifier::new(format!("compiler_{}", workflow_id.simple()))
             .map_err(|_| WorkflowError::Internal)?,
@@ -132,6 +204,34 @@ pub(crate) async fn compile_missing_specs(
             .ok_or(WorkflowError::PolicyInvalid)?,
         max_calls: 1,
     };
+    Ok(CompilerCall {
+        request: model_request,
+        admission,
+    })
+}
+
+pub(super) async fn run_compiler_candidates(
+    writer: &WriterHandle,
+    setup: &WorkflowSetup,
+    factory: Option<&Arc<dyn WorkflowModelGatewayFactory>>,
+    workflow_id: Uuid,
+    call: CompilerCall,
+) -> Result<Vec<TaskSpec>, WorkflowError> {
+    let config = setup
+        .config
+        .config
+        .gateway
+        .as_ref()
+        .ok_or(WorkflowError::CompilerUnavailable)?;
+    let factory = factory.ok_or_else(|| WorkflowError::Dispatch {
+        code: "gateway_live_attestation_unavailable".into(),
+    })?;
+    let gateway = factory.for_workflow(workflow_id, config, setup.config.digest)?;
+    let CompilerCall {
+        request: model_request,
+        mut admission,
+    } = call;
+    let call_id = admission.call_id;
     let lookup = writer.clone();
     if let Some(prior) = call_writer(move || lookup.model_call(call_id)).await? {
         admission.deadline_unix_ms = prior.admission.deadline_unix_ms;
@@ -148,13 +248,7 @@ pub(crate) async fn compile_missing_specs(
     .map_err(|error| WorkflowError::Dispatch {
         code: error.code().into(),
     })?;
-    request.task_specs = compile_task_candidates(&output.text)
-        .map_err(|error| WorkflowError::ContractRejected {
-            codes: vec![error.code().into()],
-        })?
-        .iter()
-        .map(serde_json::to_value)
-        .collect::<Result<_, _>>()
-        .map_err(|_| WorkflowError::Internal)?;
-    Ok(())
+    compile_task_candidates(&output.text).map_err(|error| WorkflowError::ContractRejected {
+        codes: vec![error.code().into()],
+    })
 }

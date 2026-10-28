@@ -181,12 +181,22 @@ impl TurnResult {
     }
 }
 
-/// Aborts the heartbeat task when the lease's holder is done.
-pub(crate) struct HeartbeatGuard(JoinHandle<()>);
+/// Retains heartbeat ownership and a sticky failure signal until the turn joins.
+/// Dropping the holder aborts renewal; losing the task also invalidates the lease.
+pub(crate) struct HeartbeatGuard {
+    task: JoinHandle<()>,
+    lost: watch::Receiver<bool>,
+}
+
+impl HeartbeatGuard {
+    fn is_lost(&self) -> bool {
+        *self.lost.borrow() || self.lost.has_changed().is_err()
+    }
+}
 
 impl Drop for HeartbeatGuard {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }
 
@@ -355,7 +365,8 @@ impl RunContext {
         let generation = lease.generation;
         let heartbeat_ms = self.setup.config.config.heartbeat_ms;
         let interval = Duration::from_millis(heartbeat_ms / 2).max(MIN_HEARTBEAT_INTERVAL);
-        HeartbeatGuard(tokio::spawn(async move {
+        let (signal, lost) = watch::channel(false);
+        let task = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
                 let writer = writer.clone();
@@ -374,10 +385,12 @@ impl RunContext {
                 })
                 .await;
                 if beat.is_err() {
+                    signal.send_replace(true);
                     break;
                 }
             }
-        }))
+        });
+        HeartbeatGuard { task, lost }
     }
 
     /// Releases a lease whose attempts settled. An already ended lease is
@@ -468,6 +481,7 @@ impl RunContext {
         &self,
         plan: &TurnPlan,
         deliveries: &[Delivery],
+        heartbeat: &HeartbeatGuard,
     ) -> Result<TurnResult, WorkflowError> {
         let spec = &plan.spec;
         let task_spec = self
@@ -487,6 +501,9 @@ impl RunContext {
         };
         let mut conflicts = 0;
         loop {
+            if heartbeat.is_lost() {
+                return Err(WorkflowError::LeaseLost);
+            }
             let record = self.record().await?;
             let turn = WorkflowTurn {
                 request_id: plan.request_id,
@@ -506,6 +523,18 @@ impl RunContext {
                     .ok_or(WorkflowError::SlotUnavailable)?,
                 working_directory: spec.working_directory.clone(),
                 base_commit: record.base_commit.clone(),
+                lease_loss: heartbeat.lost.clone(),
+                broker_scope: crate::harness_dispatch::BrokerScope {
+                    scratch_parent: self.setup.state.scratch(self.workflow_id),
+                    owned_paths: task_spec.owned_paths.clone(),
+                    read_scopes: task_spec.read_scopes.clone(),
+                    forbidden_paths: task_spec
+                        .forbidden_paths
+                        .iter()
+                        .chain(&self.plan.policy.protected_paths)
+                        .cloned()
+                        .collect(),
+                },
                 binding: WorkflowTurnBinding {
                     workflow_id: self.workflow_id,
                     expected_workflow_version: record.version,
@@ -523,6 +552,7 @@ impl RunContext {
             let outcome = self
                 .cancellable(
                     plan.request_id,
+                    heartbeat.lost.clone(),
                     self.dispatch
                         .run_workflow_turn(turn, move |attempt| async move {
                             if !message_ids.is_empty() {
@@ -540,6 +570,14 @@ impl RunContext {
                         }),
                 )
                 .await;
+            // Completion and lease loss can become ready together. Refuse the
+            // result after joining, even if dispatch had already completed.
+            if heartbeat.is_lost() {
+                return Err(WorkflowError::LeaseLost);
+            }
+            if self.dispatch.process_cleanup_pending() {
+                return Err(WorkflowError::ProcessCleanupPending);
+            }
             match outcome {
                 Err(error)
                     if error.code() == VERSION_CONFLICT_CODE && conflicts < MAX_VERSION_RETRIES =>
@@ -560,18 +598,33 @@ impl RunContext {
         }
     }
 
-    /// Awaits `turn`; a cancel signal is forwarded to the dispatch, and
-    /// retried while the turn is still being admitted.
-    async fn cancellable<T>(&self, request_id: Uuid, turn: impl Future<Output = T>) -> T {
+    /// Joins the turn after workflow cancellation or lease-renewal failure.
+    /// An admission still in progress is retried until its owned task is found.
+    async fn cancellable<T>(
+        &self,
+        request_id: Uuid,
+        mut lease_loss: watch::Receiver<bool>,
+        turn: impl Future<Output = T>,
+    ) -> T {
         let mut control = self.control.clone();
-        let mut cancel_pending = *control.borrow() == Control::Cancel;
+        let mut lease_lost = *lease_loss.borrow() || lease_loss.has_changed().is_err();
+        let mut cancel_pending = *control.borrow() == Control::Cancel || lease_lost;
         let mut control_open = true;
         tokio::pin!(turn);
         loop {
             if cancel_pending {
+                // The registered dispatch independently observes lease loss.
+                // This call records cancellation; it does not own interruption.
                 cancel_pending = self.dispatch.cancel(request_id).await.is_err();
             }
             tokio::select! {
+                biased;
+                changed = lease_loss.changed(), if !lease_lost => {
+                    if changed.is_err() || *lease_loss.borrow() {
+                        lease_lost = true;
+                        cancel_pending = true;
+                    }
+                }
                 result = &mut turn => return result,
                 changed = control.changed(), if control_open => {
                     match changed {

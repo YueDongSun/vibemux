@@ -21,6 +21,7 @@ pub mod contract_edit;
 pub mod execution_authority;
 pub mod gates;
 pub mod gateway;
+pub mod gateway_receipt;
 pub mod identifiers;
 pub mod leases;
 pub mod messages;

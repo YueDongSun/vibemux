@@ -14,6 +14,7 @@ use vibemux_workflow::SpecIdentifier;
 
 use super::*;
 use crate::workflow::error::WorkflowError;
+use crate::workflow::planning_profile::{PlanningQuery, PlanningRequest};
 
 /// Deadline of the operations that compile, read Git, or create
 /// worktrees.
@@ -22,6 +23,10 @@ pub const WORKFLOW_SLOW_DEADLINE: Duration = Duration::from_secs(120);
 pub const WORKFLOW_EVALUATION_DEADLINE: Duration = Duration::from_secs(3600);
 /// Bound on every argument except a prepare's, which the frame bounds.
 const MAX_LOOKUP_ARGUMENT_BYTES: usize = 1024;
+/// Bounded UTF-8 JSON document; request_text has its separate 16 KiB domain bound.
+pub const MAX_PLANNING_ARGUMENT_BYTES: usize = 24 * 1024;
+/// A planning observation contains identities and digests, never request text.
+pub const MAX_PLANNING_QUERY_BYTES: usize = 1024;
 /// Headroom for the response envelope around a payload.
 const RESPONSE_ENVELOPE_BYTES: usize = 1024;
 /// Why a prompt is answered without its text.
@@ -42,6 +47,14 @@ pub struct WorkflowStartArgument {
     /// The `start_contract` digest `prepare` returned, as hex.
     pub contract: String,
     pub request_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowCancelStartArgument {
+    pub contract: String,
+    pub request_id: Uuid,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,6 +102,59 @@ pub struct WorkflowEvaluateArgument {
 }
 
 impl ControlClient {
+    pub async fn workflow_planning_profiles(&self) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowPlanningProfiles,
+            None::<&()>,
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_plan_request(
+        &self,
+        request: PlanningRequest,
+    ) -> Result<Value, ControlError> {
+        self.require_operation(ControlOperation::WorkflowPlanRequest)?;
+        request
+            .validate()
+            .map_err(|_| ControlError::InvalidRequest)?;
+        if serde_json::to_vec(&request)
+            .map_err(|_| ControlError::InvalidRequest)?
+            .len()
+            > MAX_PLANNING_ARGUMENT_BYTES
+        {
+            return Err(ControlError::InvalidRequest);
+        }
+        self.workflow_request(
+            ControlOperation::WorkflowPlanRequest,
+            Some(&request),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_planning_observation(
+        &self,
+        query: PlanningQuery,
+    ) -> Result<Value, ControlError> {
+        self.require_operation(ControlOperation::WorkflowPlanningObservation)?;
+        query.validate().map_err(|_| ControlError::InvalidRequest)?;
+        if serde_json::to_vec(&query)
+            .map_err(|_| ControlError::InvalidRequest)?
+            .len()
+            > MAX_PLANNING_QUERY_BYTES
+        {
+            return Err(ControlError::InvalidRequest);
+        }
+        self.workflow_request(
+            ControlOperation::WorkflowPlanningObservation,
+            Some(&query),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
     pub async fn workflow_contract_edit(&self, edit: Value) -> Result<Value, ControlError> {
         self.workflow_request(
             ControlOperation::WorkflowContractEdit,
@@ -119,6 +185,23 @@ impl ControlClient {
     ) -> Result<Value, ControlError> {
         self.workflow_request(
             ControlOperation::WorkflowStart,
+            Some(&WorkflowStartArgument {
+                contract: contract.to_string(),
+                request_id,
+            }),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+
+    /// Positive-only read of the latest persisted execution for this exact start identity.
+    pub async fn workflow_start_observation(
+        &self,
+        contract: &str,
+        request_id: Uuid,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowStartObservation,
             Some(&WorkflowStartArgument {
                 contract: contract.to_string(),
                 request_id,
@@ -160,6 +243,24 @@ impl ControlClient {
     pub async fn workflow_pause(&self, workflow_id: Uuid) -> Result<Value, ControlError> {
         self.workflow_lookup(ControlOperation::WorkflowPause, workflow_id)
             .await
+    }
+
+    pub async fn workflow_cancel_start(
+        &self,
+        contract: &str,
+        request_id: Uuid,
+        generation: u64,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowCancelStart,
+            Some(&WorkflowCancelStartArgument {
+                contract: contract.to_string(),
+                request_id,
+                generation,
+            }),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
     }
 
     pub async fn workflow_cancel(&self, workflow_id: Uuid) -> Result<Value, ControlError> {
@@ -331,6 +432,18 @@ pub(super) async fn dispatch(
 ) -> Result<ControlPayload, ControlError> {
     let service = &state.workflow;
     let value = match operation {
+        ControlOperation::WorkflowPlanningProfiles => {
+            no_argument(argument)?;
+            encode(service.planning_profiles().await)?
+        }
+        ControlOperation::WorkflowPlanRequest => {
+            let request = parse_planning_request(argument)?;
+            encode(service.plan_request(request).await)?
+        }
+        ControlOperation::WorkflowPlanningObservation => {
+            let query = parse_planning_query(argument)?;
+            encode(service.planning_observation(query).await)?
+        }
         ControlOperation::WorkflowContractEdit => {
             let argument = argument.ok_or(ControlError::InvalidRequest)?;
             let edit: Value =
@@ -359,6 +472,12 @@ pub(super) async fn dispatch(
                 Sha256Digest::from_hex(&start.contract).ok_or(ControlError::InvalidRequest)?;
             encode(service.start_workflow(contract, start.request_id).await)?
         }
+        ControlOperation::WorkflowStartObservation => {
+            let start: WorkflowStartArgument = parse_lookup(argument)?;
+            let contract =
+                Sha256Digest::from_hex(&start.contract).ok_or(ControlError::InvalidRequest)?;
+            encode(service.start_observation(contract, start.request_id).await)?
+        }
         ControlOperation::WorkflowStatus => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;
             encode(service.status(lookup.workflow_id).await)?
@@ -380,6 +499,16 @@ pub(super) async fn dispatch(
         ControlOperation::WorkflowPause => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;
             encode(service.pause(lookup.workflow_id).await)?
+        }
+        ControlOperation::WorkflowCancelStart => {
+            let input: WorkflowCancelStartArgument = parse_lookup(argument)?;
+            let contract =
+                Sha256Digest::from_hex(&input.contract).ok_or(ControlError::InvalidRequest)?;
+            encode(
+                service
+                    .cancel_start(contract, input.request_id, input.generation)
+                    .await,
+            )?
         }
         ControlOperation::WorkflowCancel => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;
@@ -512,10 +641,89 @@ fn parse_lookup<T: DeserializeOwned>(argument: Option<String>) -> Result<T, Cont
     serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)
 }
 
+fn parse_planning_request(argument: Option<String>) -> Result<PlanningRequest, ControlError> {
+    let argument = argument.ok_or(ControlError::InvalidRequest)?;
+    if argument.len() > MAX_PLANNING_ARGUMENT_BYTES {
+        return Err(ControlError::InvalidRequest);
+    }
+    let request: PlanningRequest =
+        serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+    request
+        .validate()
+        .map_err(|_| ControlError::InvalidRequest)?;
+    Ok(request)
+}
+
+fn parse_planning_query(argument: Option<String>) -> Result<PlanningQuery, ControlError> {
+    let argument = argument.ok_or(ControlError::InvalidRequest)?;
+    if argument.len() > MAX_PLANNING_QUERY_BYTES {
+        return Err(ControlError::InvalidRequest);
+    }
+    let query: PlanningQuery =
+        serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+    query.validate().map_err(|_| ControlError::InvalidRequest)?;
+    Ok(query)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn planning_arguments_are_strict_bounded_and_do_not_accept_policy_overrides() {
+        let request_id = Uuid::new_v4();
+        let request = json!({
+            "schema_version":1,"profile_id":"research","profile_digest":"a".repeat(64),
+            "request_id":request_id,"request_text":"Investigate the supplied request.","execute":false
+        });
+        let parsed = parse_planning_request(Some(request.to_string())).expect("planning request");
+        assert_eq!(parsed.request_id, request_id);
+        let query = json!({
+            "schema_version":1,"profile_id":"research","profile_digest":"a".repeat(64),
+            "request_id":request_id,"request_sha256":"b".repeat(64),"execute":false
+        });
+        assert!(parse_planning_query(Some(query.to_string())).is_ok());
+        for patch in [
+            json!({"policy":{}}),
+            json!({"slot":"worker_a"}),
+            json!({"schema_version":2}),
+            json!({"request_id":Uuid::nil()}),
+            json!({"request_text":"x".repeat(16*1024+1)}),
+            json!({"execute":"true"}),
+            json!({"profile_digest":"invalid"}),
+        ] {
+            let mut invalid = request.clone();
+            invalid
+                .as_object_mut()
+                .expect("object")
+                .extend(patch.as_object().expect("patch").clone());
+            assert!(matches!(
+                parse_planning_request(Some(invalid.to_string())),
+                Err(ControlError::InvalidRequest)
+            ));
+        }
+        let duplicate = request.to_string().replacen("{", r#"{"execute":true,"#, 1);
+        assert!(matches!(
+            parse_planning_request(Some(duplicate)),
+            Err(ControlError::InvalidRequest)
+        ));
+        assert!(matches!(
+            parse_planning_request(Some(" ".repeat(MAX_PLANNING_ARGUMENT_BYTES + 1))),
+            Err(ControlError::InvalidRequest)
+        ));
+        assert!(matches!(
+            parse_planning_query(Some(request.to_string())),
+            Err(ControlError::InvalidRequest)
+        ));
+        assert!(matches!(
+            parse_planning_query(Some(" ".repeat(MAX_PLANNING_QUERY_BYTES + 1))),
+            Err(ControlError::InvalidRequest)
+        ));
+        assert!(matches!(
+            parse_planning_query(None),
+            Err(ControlError::InvalidRequest)
+        ));
+    }
     #[test]
     fn lookup_arguments_are_strict_and_bounded() {
         let workflow_id = Uuid::new_v4();
@@ -533,6 +741,31 @@ mod tests {
                 Err(ControlError::InvalidRequest)
             );
         }
+    }
+
+    #[test]
+    fn start_identity_arguments_refuse_extra_fields_and_invalid_generation_types() {
+        let request_id = Uuid::new_v4();
+        let contract = "a".repeat(64);
+        let valid = json!({"contract":contract,"request_id":request_id,"generation":2});
+        let parsed: WorkflowCancelStartArgument =
+            parse_lookup(Some(valid.to_string())).expect("strict start identity");
+        assert_eq!(parsed.generation, 2);
+        for invalid in [
+            json!({"contract":contract,"request_id":request_id,"generation":"2"}),
+            json!({"contract":contract,"request_id":request_id,"generation":1.5}),
+            json!({"contract":contract,"request_id":request_id,"generation":2,"workflow_id":request_id}),
+            json!({"contract":contract,"request_id":request_id}),
+        ] {
+            assert_eq!(
+                parse_lookup::<WorkflowCancelStartArgument>(Some(invalid.to_string())),
+                Err(ControlError::InvalidRequest)
+            );
+        }
+        assert_eq!(
+            parse_lookup::<WorkflowStartArgument>(Some(valid.to_string())),
+            Err(ControlError::InvalidRequest)
+        );
     }
 
     #[test]

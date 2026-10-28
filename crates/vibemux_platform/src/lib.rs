@@ -10,6 +10,10 @@
 //! containment is safe code. Every other workspace crate keeps
 //! `#![forbid(unsafe_code)]`.
 
+#[cfg(windows)]
+pub mod process_stdio;
+pub mod sandbox_mxc;
+
 #[cfg(any(windows, unix))]
 mod process_tree;
 #[cfg(windows)]

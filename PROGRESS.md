@@ -6567,3 +6567,347 @@ stale. The temporary folder, its daemon, and the driver were removed.
 **Not verified:** an authenticated live Claude turn. It needs a valid
 standalone CLI login (`claude auth login`, an operator action) and another
 authorization.
+
+### 2026-10-26 - Explicit offline sandbox diagnostic (ADR 043)
+
+**Scope:** a fixed MXC command-construction adapter in `vibemux_platform`,
+an explicit `vibemux_sandbox_probe` binary and a versioned evidence validator
+in `vibemux_probe`. Ordinary probes, daemon state, Control, database schema,
+workflow admission and the live Claude profile remain unchanged.
+
+**Implemented:** the explicit command creates owned disposable fixtures,
+uses a fixed offline policy and contained launch trampoline, attempts twelve
+native syscall controls, and requires independent filesystem, loopback and
+cleanup evidence. Invalid observations, denied positive controls, partial
+output, timeout and unconfirmed cleanup cannot pass. Cancellation retains
+the fixture for reconciliation. The report is not reusable qualification.
+
+**Fresh verification:** Rust 1.92.0 on native Windows passed all 81 tests
+across the two affected crates' targets, strict Clippy and workspace fmt.
+The adapter's conditional symbolic-link assertion was skipped for Windows
+error 1314; native junction constructor checks were separately exercised.
+Independent review returned a qualified source PASS after the resolved
+scratch-parent namespace was checked before fixture creation. `cargo-deny`
+and `cargo-audit` were unavailable and were not installed. Full-workspace,
+Ubuntu and release validation were not run.
+
+**Native result:** the integrated command returns `unavailable`,
+`sandbox_mxc_unavailable`, and exit 3 against Codex CLI
+`0.164.0-alpha.11.1`. Its owned process tree, listener and fixture cleaned
+up successfully. A direct Node-launched fixed Rust workload produced all
+twelve expected syscall observations. A paired same-plan, same-effective-
+environment comparison retained a Node/Rust-forwarding startup difference;
+the cause remains unresolved. No fallback or capability promotion was added.
+
+See [the guide](docs/offline_sandbox_probe.md) for commands and exit semantics,
+and [the evidence record](docs/evidence/offline_sandbox_probe_validation.md)
+for the experiments, corrections and explicit acceptance limits. Live
+development still requires supported integrated sandbox execution,
+daemon-owned qualification, installed-Claude denial evidence and correlated
+AAG routing evidence.
+
+### 2026-10-27 - Offline native probe passes in a verified build context
+
+**Observed cause and recovery:** retained probe/diagnostic executables carried
+inherited Low Mandatory Level labels. Their user identity and restricted-SID
+state did not reveal the lower integrity context. Directory creation failed
+with Windows error 5. A fresh build of unchanged diagnostic source, and then the
+current probe in a fresh task-owned build tree, ran without changing any existing
+label, ACL, token, Job limit, saved setting or sandbox policy.
+
+**Native verification:** the complete contained `offline_mxc_native_v1` suite
+passed all twelve observations and every independent postcondition against Codex
+CLI `0.164.0-alpha.11.1` using Rust 1.92.0. Run
+`f9406c9f-4520-4e37-827b-260a5e799865` exited 0, observed no unexpected loopback
+accepts and removed its fixture. No production launcher or permission code changed.
+
+**Boundary:** this closes the tested offline native startup blocker for that
+artifact/context. Live writable workflows remain unqualified. Installed-Claude
+negative controls, daemon-owned qualification and per-launch evidence binding
+are still required; the diagnostic report remains non-reusable authority.
+
+### 2026-10-27 - Installed Claude grant compatibility evidence
+
+The installed `2.1.304` CLI completed twelve deterministic synthetic-API cases.
+The tested bare profile advertised no Write tool; Edit alone created a missing
+fixture file. Its native tool mapping therefore does not qualify the independent
+edit/create contract of ADR 036. Empty-tool injection and restricted outside-file
+controls behaved as recorded in `docs/evidence/claude_profile_validation.md`.
+Two earlier restricted-launch transport timeouts remain preserved failures.
+
+With native tools removed, an explicit single stdio MCP marker succeeded and
+rejected an unsupported argument. This establishes narrow transport feasibility
+for a separate broker profile, not a development broker, OS isolation, live model
+acceptance or daemon admission. Existing production profiles and permissions are
+unchanged; writable slots remain `Declared`.
+
+### 2026-10-27 - Closed worker-tool component and installed-client controls
+
+Implemented `vibemux_worker_tools` with independent read/search/create/edit
+grants, existing workflow path scopes, private snapshot construction and owner-only
+candidate/recovery output. Create cannot replace; edit cannot create and requires
+the current revision. Uncertain file or output effects retain the workspace.
+The stdio MCP surface cannot change roots/grants or launch a command. ADR 044 and
+`docs/worker_tools.md` define the component and its remaining integration gates.
+
+Fresh native Windows checks passed 19 tests (3 executable, 10 grant/workspace,
+6 protocol), strict Clippy and workspace formatting. The session-deadline
+regression first reproduced a buffered mutation after expiry and then passed with
+the per-frame deadline fence. Four final installed Claude 2.1.304 cases used a
+synthetic local API and the actual Rust MCP executable: allowed create/edit
+produced expected candidates, edit-on-missing/create-on-existing were refused,
+and each clean session removed its private worker workspace. Review returned a
+qualified component PASS. No live model/provider was used for these controls.
+
+This is component implementation and installed-client evidence. It does not
+establish sandboxed development tests, protected controller configuration,
+daemon attempt/lease admission, candidate integration or live workflow acceptance.
+The existing native profile and writable slot evidence remain unchanged. Broader
+workspace CI and non-Windows behavior are not inferred from the focused gate.
+
+### 2026-10-27 - Disposable offline development-test executor
+
+Added `vibemux_dev_test` and the owner API in `vibemux_worker_tools` (ADR 045).
+It requires ReadFiles plus RunDevTests for every admitted input, materializes a
+separate private copy, uses fixed Node arguments under offline MXC and an owned
+Job/trampoline, and discards test-side mutations. Reports keep process exit,
+descendant shutdown, output completion and cleanup separate; candidate output
+and exit zero never certify assertions. Existing MCP/bootstrap and workflow
+admission are unchanged.
+
+Fresh Windows verification passed 22 default component tests and all nine
+explicit installed-runtime tests against Node 24.18.0 and Codex CLI
+`0.164.0-alpha.11.1`. Controls include the real command/example, outside-file and
+IPv4/IPv6 canaries, timeout/output limits, cancellation, detached/inherited-pipe
+descendants, lost ownership and retained cleanup failure. Strict Clippy,
+workspace fmt and current public-artifact checks passed. Independent source
+review returned a qualified component PASS. Full-workspace and non-Windows
+validation were not run.
+
+The earlier default Node loader failure and incorrect junction-creation fixture
+expectation are preserved in `docs/evidence/development_test_validation.md`.
+The tested backend denied junction creation; no successful junction cleanup is
+claimed. The next acceptance work is broker/daemon-owned execution integration,
+protected controller startup and runtime qualification bound to each launch.
+Disk-growth limits and recursive-cleanup time bounds remain unimplemented.
+
+
+### 2026-10-27 - Broker test dispatch and retained lifecycle fixes
+
+Implemented explicit bootstrap v2 with fixed owner suites, read/run admission,
+verified current-snapshot extraction, revision and semantic replay refusal,
+responsive cancellation, busy-call refusal and private execution receipts.
+Version 1 remains compatible. Edited workspaces survive unpolled/idle-future
+abortion and failed/panicking publication; only complete candidate publication
+permits cleanup. Duplicate typed JSON fields are rejected, and failed workspace
+cleanup retains its owner marker.
+
+Fresh Windows checks passed 33 worker default tests and 46 platform default
+tests. Three explicit pipe-lifetime controls passed, as did the trusted
+trampoline/file-marker control. Strict all-target Clippy and workspace formatting
+passed. Independent review returned a qualified source PASS for the safe pipe
+factory and ownership flow. Its implementation uses safe APIs; the original
+unsafe allowlist remains unchanged.
+
+Native acceptance is still open. Earlier installed-Claude synthetic-API calls
+exercised positive test dispatch and invalid-argument refusal, but they precede
+the final transport replacement. Current MXC startup controls did not produce
+stdout or file markers with either already-installed backend version, across
+null, untouched-pipe and IOCP output modes. The direct trusted trampoline works.
+Historical sharing-violation cleanup failures remain failures. Cooperative owner
+experiments were unqualified, archived and removed from production. No runtime
+policy was weakened and no live slot was promoted.
+
+See `docs/broker_development_tests.md` and
+`docs/evidence/broker_test_validation.md`. Daemon lease binding, protected
+controller startup, resource/disclosure qualification and full live/remote
+workflow acceptance remain unfinished. Whole-workspace and non-Windows gates
+were not run for this increment.
+
+### 2026-10-27 - Workflow lease-loss interruption prerequisite
+
+Tracing closed-broker integration exposed a daemon lifecycle gap: rejected
+heartbeat renewal stopped the heartbeat task but did not interrupt its active
+worker or reviewer. New end-to-end fixtures reproduced both failures before the
+fix. Lease holders now signal loss to the registered dispatch owner, including
+loss during admission or unexpected heartbeat-owner termination. The owner joins
+execution cleanup; the coordinator refuses the result with workflow_lease_lost.
+Durable cancellation and lease settlement retain the existing writer fences.
+
+Fresh Windows checks passed 4 owner-race tests, 2 real synthetic workflow
+quarantine regressions, and all 5 related workflow-control tests. Strict
+all-target Clippy and the default daemon build passed. Independent source review
+returned PASS. No fixture fault-injection operation was added to Control, and
+the default build excludes the hook.
+
+See ADR 049 and docs/evidence/workflow_lease_loss_validation.md. This closes the
+observed lease-renewal-failure interruption gap; it does not add an independent
+expiry watchdog or redesign completed-review receipt semantics. Closed broker
+candidate admission, controller startup, native sandbox qualification, and the
+broader live/remote R&D acceptance remain unfinished.
+
+### 2026-10-27 - Daemon process completion and uncertainty retention
+
+Closed the observed post-terminal cancellation delay and made Windows completion
+explicitly wait for root exit plus an empty owned Job. The daemon now uses the
+safe asynchronous output-pipe factory, retains one shutdown grace through EOF,
+and joins forced cleanup under a shared bound. Correlated protocol cancellation
+keeps its graceful path.
+
+Unconfirmed dispatch cleanup retains its exact owner and durable reservation.
+Unconfirmed verifier cleanup stops before result consumption or another suite.
+Both prevent workflow publication and automatic worktree cleanup. POSIX failed
+signalling preserves the unreaped leader and safe owner Drop order.
+
+Fresh Windows evidence: 26 dispatch, 6 trampoline, 2 cleanup-loss workflow,
+3 Control, 5 workflow-control, 2 lease-loss and 1 EOF-framing tests passed.
+Original failure evidence and the two caught compatibility regressions remain
+recorded. Strict all-target Clippy, the default daemon build, and independent
+source review passed. Fault fixtures discard a real cleanup receipt; they do
+not claim an induced operating-system failure.
+
+See ADR 050 and docs/evidence/native_completion_barrier_validation.md. Broker
+artifact admission, startup/containment/release-failure uncertainty, native
+controller/sandbox qualification, non-Windows runtime checks and broader
+live/remote R&D acceptance remain open. No live slot or deployment was enabled.
+
+
+### 2026-10-27 - File broker admitted by daemon workflow attempts
+
+Implemented explicit Windows codex_fixture_broker_v1 and
+claude_fixture_broker_v1 profiles. Synthetic controllers now use the actual stdio
+MCP file broker over a private current-turn snapshot. After process settlement,
+the daemon validates complete owner output, rechecks and imports into its reserved
+worktree, then publishes fenced completion. Existing review, trusted verification
+and candidate gates remain authoritative.
+
+Private recovery input/output survives unpolled, failed or ambiguous ownership.
+New paths use no-clobber creation; existing content and cancellation/lease signals
+are rechecked after staging and immediately before publication. Inline import
+remains joined; bounded file sizes do not imply bounded OS I/O latency.
+
+Fresh evidence: 37 dispatch units, 23 broker grant/admission tests, 7 fixture guard
+tests, 5 broker workflows, 26 native dispatch tests, 2 lease-loss workflows and
+1 legacy repair passed. Strict changed-package all-target Clippy, the default
+daemon build and qualified independent source review passed. The original
+envelope-decoding failure and review corrections are retained in the evidence
+record. See ADR 051 and docs/evidence/workflow_file_broker_validation.md.
+
+This completes fixture broker-to-daemon integration. Native controller/sandbox
+qualification, bootstrap-v2 command integration, startup-failure reconciliation,
+remote execution and the broader live four-direction R&D acceptance remain open.
+
+
+### 2026-10-27 - Installed Claude through daemon broker qualification
+
+Added an explicit test-helper installed-controller guard and
+claude_broker_qualification_v1. Frozen per-attempt environments, private
+configuration, typed controller selection and pinned executables connect installed
+Claude 2.1.304 to the existing file broker and daemon ownership/import flow.
+The new profile is rejected for Live evidence and cannot replace an admitted
+attempt profile.
+
+Four explicitly invoked installed tests covered nine workflow cases: accepted
+worker and read-only reviewer paths, six refusal cases, and cancellation after a
+broker effect. Distinct pinned controllers preserve the existing independent-review
+gate. Project context/hook/MCP canaries and exact API observations were checked;
+the inference server used only a synthetic local key/model.
+
+Fresh checks passed 84 distinct targeted tests across installed controls, API
+observation, store/profile binding, guards, dispatch units and compatibility.
+Strict all-target Clippy, the default build and the qualified independent source
+review passed. Original failures and corrections remain in
+docs/evidence/installed_controller_qualification.md; ADR 052 records the boundary.
+
+Live gateway routing, full configuration/egress isolation, native MXC command and
+verifier qualification, remote execution and the full four-direction goal remain
+open. No Live slot, deployment or production credential was enabled.
+
+
+### 2026-10-27 - Native startup phase diagnosis remains unqualified
+
+Added an explicit ignored phase diagnostic with unchanged five-second acceptance
+and three-second cleanup bounds. Two short observations and a separate
+30-second timing observation produced no marker/root exit or output EOF.
+The exact backend appeared early in the first sample; root reaping and observed
+Job emptiness after termination did not establish output/resource settlement.
+
+The timing extension remains failed acceptance and does not support a small
+startup-delay explanation. PPID descendant data is explicitly unverified
+ancestry, not Job ownership. Failed fixtures and reports remain available.
+No policy, deadline for acceptance, permission, backend selection or Live slot
+was weakened.
+
+The default worker suite passed 47 tests; 17 native tests stayed explicitly
+ignored. Strict Clippy and independent source review passed for the diagnostic
+contracts. See docs/evidence/mxc_startup_phase_observations.md. Native startup and
+cleanup remain unresolved; further retries require new diagnostic evidence.
+
+
+### 2026-10-28 - Observe lost workflow starts and cancel only the matched generation
+
+Added Control v11 workflow_start_observation and workflow_cancel_start, plus matching
+thin CLI commands. Observation reads the latest workflow/execution under one writer
+callback and verifies exact contract/plan/start identity. Missing or replaced latest
+identity remains not_observed with retry_allowed false. Conditional cancellation
+holds the lifecycle permit from generation check through intent/signalling.
+No schema migration, execution-profile promotion, remote listener or Mxc retry.
+
+Fresh Windows evidence:60 targeted Rust tests passed (3 new integrations, 43 Control,
+3 CLI, 6 admission, 5 existing control), strict changed-package all-target Clippy, default
+daemon check, standalone CLI build/help, formatting and714-file public-artifact gate.
+Actual Control responses passed the Hub's current validators with 4 observations,
+1 cancellation and9 negative checks. Hub's 1,688 tests, source/artifact gates and focused
+12-check browser flow passed. Independent source review closed cancellation and
+late-legacy overwrite races; source PASS retains fixture/live distinctions.
+See ADR 053 and docs/evidence/workflow_start_recovery_validation.md.
+
+This resolves owner correlation needed before remote workflow routing. The latest
+row is not a historical receipt ledger; legacy ID-only cancellation remains separate.
+Native startup/resource settlement, Live admission, remote transport and broader
+four-direction R&D acceptance remain open.
+
+
+## 2026-10-28: Explicit bound AAG model admission
+
+Implemented [ADR 054](docs/adr/054_gateway_bound_admission.md): disabled-by-default
+Live model-call policy, AAG v2 snapshot preconditions, strict terminal receipt
+consumption and a production startup-owned compiler/supervisor model factory.
+Old configuration serialization and stored unknown attribution remain compatible;
+new gateway-observed receipt rows require a compatible reader on rollback.
+Generic Control remains v11 with its existing minimum request versions.
+
+Verified 164 workflow unit tests + 2 policy tests, 13 new transport tests, 8 legacy
+transport tests, 2 durable-output tests, 1 existing compiler integration, and the
+explicit production-factory fixture. Actual AAG-source HTTP interoperability and
+legacy Hub v1 consumption passed using synthetic upstreams. Strict changed-package
+Clippy, default daemon check, formatting and 722-file artifact checks passed.
+See [validation and environment limits](docs/evidence/gateway_bound_admission_validation.md).
+
+This enables only explicitly configured, receipt-required model calls in source.
+Native workers/reviewers, sandbox/lease gates and scientific promotion are unchanged.
+No installed binary, Live provider, deployment or existing private configuration was
+used. High-level planning envelopes and complete R&D/live acceptance remain open.
+
+
+## 2026-10-28: Owner-bound high-level planning profiles
+
+Implemented [ADR 055](docs/adr/055_owner_planning_profiles.md): explicit startup
+profiles, immutable original-goal/compiler/start identity, deterministic approved-slot
+assignment, validated preparation and optional original-UUID execution. Control v12
+adds profiles/request/observation while retaining existing minimum versions. Generic
+preparation cannot claim the profile request namespace. Missing/uncertain outcomes
+never authorize another compiler or start call. No database schema changed.
+
+Fifteen planning/state/Control-focused checks and six selected integration fixtures
+passed, including one source-derived goal reaching accepted through fixture review
+and verification with generation one. Existing Control 46, admission 6, compiler 1,
+start observation/cancel 3 and model-call ledger 14 tests passed. Strict Clippy across
+daemon/CLI/store passed. Actual Control JSON passed the Hub consumer checks.
+See [validation record](docs/evidence/planning_profile_validation.md) for final CLI,
+artifact and environment evidence.
+
+The Hub local/signed-chat consumer and goal UI passed 1,806 tests and browser checks
+(13 focused; 207 broad/192 render claims). This does not certify native installed
+controllers, real model quality, remote freeform planning, private chat output or
+Live deployment. The complete R&D goal remains active.

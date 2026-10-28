@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "worker": {
+    "schema_version": 1,
+    "attempt_id": "9a91646c-e780-478d-a25c-a351ac7cfa01",
+    "grants": {
+      "read_files": true,
+      "search_files": true,
+      "edit_files": true,
+      "write_files": true,
+      "run_dev_tests": true
+    },
+    "owned_paths": [
+      "src/**"
+    ],
+    "read_scopes": [
+      "tests/**"
+    ],
+    "forbidden_paths": [],
+    "files": [
+      {
+        "path": "src/value.cjs",
+        "content": "module.exports = 2;\n"
+      },
+      {
+        "path": "tests/value.test.cjs",
+        "content": "const test = require('node:test');\nconst assert = require('node:assert/strict');\nconst value = require('../src/value.cjs');\ntest('value', () => assert.equal(value, 2));\n"
+      }
+    ]
+  },
+  "test_policy": {
+    "backend": "C:/approved_runtime/codex.exe",
+    "node": "C:/approved_runtime/node.exe",
+    "suites": [
+      {
+        "suite_id": "unit",
+        "test_entries": [
+          "tests/value.test.cjs"
+        ],
+        "timeout_ms": 8000,
+        "output_limit_bytes": 16384
+      }
+    ],
+    "max_runs": 4
+  }
+}

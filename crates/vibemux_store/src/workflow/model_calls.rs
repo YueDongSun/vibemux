@@ -303,6 +303,39 @@ pub(super) fn reserve_model_call_in(
 }
 
 impl SqliteStore {
+    /// Bounded read of the existing one-call compiler namespace, without admission.
+    pub fn compiler_model_call(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<Option<ModelCallRecord>, StoreError> {
+        if workflow_id.is_nil() {
+            return Err(workflow_error("model_call_compiler_association_invalid"));
+        }
+        let owner_key = format!("{COMPILER_OWNER_PREFIX}{}", workflow_id.simple());
+        let mut statement = self
+            .connection
+            .prepare("SELECT call_id FROM workflow_model_calls WHERE owner_key=? LIMIT 2")?;
+        let call_ids: Vec<String> = statement
+            .query_map([&owner_key], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        if call_ids.len() > 1 {
+            return Err(workflow_error("model_call_compiler_association_invalid"));
+        }
+        let Some(call_id) = call_ids.first() else {
+            return Ok(None);
+        };
+        let call_id = Uuid::parse_str(call_id)
+            .map_err(|_| workflow_error("model_call_compiler_association_invalid"))?;
+        let call = load_call(&self.connection, call_id)?
+            .ok_or_else(|| workflow_error("model_call_compiler_association_invalid"))?;
+        if compiler_workflow_id(&call.admission)? != Some(workflow_id)
+            || call.admission.owner_key.as_str() != owner_key
+        {
+            return Err(workflow_error("model_call_compiler_association_invalid"));
+        }
+        Ok(Some(call))
+    }
+
     pub fn model_call(&self, call_id: Uuid) -> Result<Option<ModelCallRecord>, StoreError> {
         load_call(&self.connection, call_id)
     }

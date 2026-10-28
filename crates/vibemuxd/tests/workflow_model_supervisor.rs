@@ -250,6 +250,7 @@ async fn start_model_fixture(
         endpoint: "http://127.0.0.1:9".into(),
         credential_env: "UNUSED_FIXTURE_CREDENTIAL".into(),
         strict_routing: true,
+        live_admission: Default::default(),
         bindings: vec![
             binding(RouteRole::Supervisor, SUPERVISOR_ALIAS),
             binding(RouteRole::WorkerA, "worker_a_alias"),

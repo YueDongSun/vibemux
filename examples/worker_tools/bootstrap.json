@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "attempt_id": "95739274-fae4-4f17-bbbf-03495da270b4",
+  "grants": {
+    "read_files": true,
+    "search_files": true,
+    "edit_files": false,
+    "write_files": false,
+    "run_dev_tests": false
+  },
+  "owned_paths": [],
+  "read_scopes": ["notes/**"],
+  "forbidden_paths": [],
+  "files": [{"path": "notes/example.txt", "content": "Synthetic component fixture. No live repository content.\n"}]
+}

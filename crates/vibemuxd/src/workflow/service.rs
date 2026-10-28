@@ -9,6 +9,14 @@
 //! vendor transcript or emits a prompt unless the operator asks for the
 //! retained text of a session explicitly.
 
+#[path = "planning.rs"]
+mod planning;
+
+mod start_observation;
+pub use start_observation::{
+    ConditionalPhaseControl, ObservedWorkflowStart, StartObservation, StartObservationStatus,
+};
+
 mod contract_edit;
 pub use contract_edit::{ContractEditRequest, ContractEditResponse, EditDisposition};
 
@@ -313,6 +321,19 @@ impl WorkflowService {
         dispatch: HarnessDispatchService,
         setup: Result<Arc<WorkflowSetup>, WorkflowError>,
     ) -> Self {
+        let model_factory: Option<Arc<dyn super::model_compiler::WorkflowModelGatewayFactory>> =
+            setup
+                .as_ref()
+                .ok()
+                .and_then(|loaded| loaded.config.config.gateway.as_ref())
+                .filter(|gateway| {
+                    gateway.live_admission
+                        == vibemux_workflow::gateway::LiveAdmission::BoundReceiptV2
+                })
+                .map(|_| {
+                    Arc::new(super::model_compiler::BoundReceiptGatewayFactory)
+                        as Arc<dyn super::model_compiler::WorkflowModelGatewayFactory>
+                });
         Self {
             inner: Arc::new(ServiceInner {
                 writer,
@@ -326,7 +347,7 @@ impl WorkflowService {
                 }),
                 lifecycle_gate: tokio::sync::Semaphore::new(1),
                 evaluation: tokio::sync::Mutex::new(()),
-                model_factory: None,
+                model_factory,
                 compiler_gate: tokio::sync::Semaphore::new(1),
             }),
         }
@@ -356,6 +377,39 @@ impl WorkflowService {
     /// policy's for operator requests, an evaluated policy's for an
     /// evaluation case.
     pub(super) async fn prepare_with(
+        &self,
+        request: serde_json::Value,
+        policy: serde_json::Value,
+        overrides: TemplateOverrides,
+    ) -> Result<PrepareResponse, WorkflowError> {
+        if request
+            .get("request_key")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|key| key.starts_with("profile_"))
+        {
+            return Err(WorkflowError::RequestInvalid);
+        }
+        self.prepare_owned_with(request, policy, overrides).await
+    }
+
+    /// Only the private planning child can reserve the profile request namespace.
+    async fn prepare_planning_with(
+        &self,
+        request: serde_json::Value,
+        policy: serde_json::Value,
+        overrides: TemplateOverrides,
+    ) -> Result<PrepareResponse, WorkflowError> {
+        if !request
+            .get("request_key")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|key| key.starts_with("profile_"))
+        {
+            return Err(WorkflowError::RequestInvalid);
+        }
+        self.prepare_owned_with(request, policy, overrides).await
+    }
+
+    async fn prepare_owned_with(
         &self,
         request: serde_json::Value,
         policy: serde_json::Value,
@@ -895,12 +949,21 @@ impl WorkflowService {
     /// after the request can no longer be accepted: the writer refuses
     /// acceptance outside `running` and `integrating`.
     pub async fn cancel(&self, workflow_id: Uuid) -> Result<PhaseControl, WorkflowError> {
-        let _lifecycle_permit = self
+        let lifecycle_permit = self
             .inner
             .lifecycle_gate
             .acquire()
             .await
             .map_err(|_| WorkflowError::Internal)?;
+        self.cancel_owned(workflow_id, &lifecycle_permit).await
+    }
+
+    /// Caller holds this service's lifecycle permit through all intent and signal effects.
+    async fn cancel_owned(
+        &self,
+        workflow_id: Uuid,
+        _lifecycle_permit: &tokio::sync::SemaphorePermit<'_>,
+    ) -> Result<PhaseControl, WorkflowError> {
         let record = self.record(workflow_id).await?;
         let writer = &self.inner.writer;
         match record.phase {

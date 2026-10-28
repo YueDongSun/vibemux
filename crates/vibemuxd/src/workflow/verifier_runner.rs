@@ -29,7 +29,7 @@ use super::{
 };
 use crate::bounded_file::read_regular_file;
 use crate::harness_dispatch::{
-    child_path_text,
+    HarnessDispatchService, child_path_text,
     native_process::{LaunchPlan, NativeProcess, resolve_environment},
 };
 
@@ -64,6 +64,7 @@ pub(crate) struct SuiteRun {
 
 /// Runs `suites` against `subject` and returns one result per suite.
 pub(crate) async fn run_suites(
+    dispatch: &HarnessDispatchService,
     config: &LoadedWorkflowConfig,
     trampoline: &Path,
     suites: &[SpecIdentifier],
@@ -78,6 +79,9 @@ pub(crate) async fn run_suites(
     let mut results = Vec::with_capacity(suites.len());
     let mut tool_versions = BTreeMap::new();
     for suite_id in suites {
+        if dispatch.process_cleanup_pending() {
+            return Err(WorkflowError::ProcessCleanupPending);
+        }
         let template = config
             .config
             .verifier
@@ -107,7 +111,15 @@ pub(crate) async fn run_suites(
         ];
         command.extend(template.iter().cloned());
         let started = Instant::now();
-        let exit_code = run_one(config, trampoline, arguments, scratch).await;
+        let exit_code = match run_one(config, trampoline, arguments, scratch, dispatch).await {
+            Ok(exit) => exit,
+            Err(process) => {
+                dispatch.retain_unsettled_process(*process);
+                // Do not consume/remove output or start another suite while
+                // the exact process owner remains unresolved.
+                return Err(WorkflowError::ProcessCleanupPending);
+            }
+        };
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let output = read_result(&out);
         let _ = std::fs::remove_file(&out);
@@ -134,24 +146,36 @@ async fn run_one(
     trampoline: &Path,
     arguments: Vec<String>,
     working_directory: &Path,
-) -> Option<i32> {
+    _dispatch: &HarnessDispatchService,
+) -> Result<Option<i32>, Box<NativeProcess>> {
     let mut names: Vec<String> = SYSTEM_ENVIRONMENT_NAMES
         .iter()
         .map(|name| (*name).to_string())
         .collect();
     names.extend(config.config.verifier.environment_names.iter().cloned());
-    let environment = resolve_environment(&names).ok()?;
+    let Ok(environment) = resolve_environment(&names) else {
+        return Ok(None);
+    };
+    let (Some(executable), Some(directory)) = (
+        child_path_text(&config.verifier_executable),
+        child_path_text(working_directory),
+    ) else {
+        return Ok(None);
+    };
     let plan = LaunchPlan {
+        environment: None,
         trampoline: trampoline.to_path_buf(),
-        executable: PathBuf::from(child_path_text(&config.verifier_executable)?),
+        executable: PathBuf::from(executable),
         spec: LaunchSpec {
             executable: config.verifier_executable.clone(),
             arguments,
             environment_names: names,
         },
-        working_directory: PathBuf::from(child_path_text(working_directory)?),
+        working_directory: PathBuf::from(directory),
     };
-    let mut process = NativeProcess::spawn(&plan, environment).await.ok()?;
+    let Ok(mut process) = NativeProcess::spawn(&plan, environment).await else {
+        return Ok(None);
+    };
     process.close_stdin();
     let deadline = Instant::now() + Duration::from_millis(config.config.verifier.timeout_ms);
     let drained = tokio::time::timeout_at(deadline, async {
@@ -170,11 +194,19 @@ async fn run_one(
     } else {
         Instant::now()
     };
-    let (exit, _) = process.finish(!drained, exit_deadline).await;
-    if exit.forced_termination {
-        return None;
+    let completion = process.finish(!drained, exit_deadline, None).await;
+    let exit = completion.exit;
+    let settled = completion.settled;
+    #[cfg(feature = "test_helpers")]
+    let settled = settled && !_dispatch.take_fixture_verifier_cleanup_loss();
+    if !settled {
+        return Err(Box::new(process));
     }
-    exit.exit_code
+    Ok(if exit.forced_termination {
+        None
+    } else {
+        exit.exit_code
+    })
 }
 
 fn read_result(path: &Path) -> Option<(VerifierOutput, Sha256Digest)> {

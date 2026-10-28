@@ -61,9 +61,8 @@ pub trait ModelGateway: Send + Sync {
 }
 
 /// Adapter from the generic one-shot runtime to the typed AAG transport.
-/// `Live` remains subject to the transport's explicit attestation refusal;
-/// fixture execution is possible only with a gateway carrying its owned
-/// fixture permit.
+/// Live model calls require explicit startup policy and matched v2 admission receipts.
+/// Fixture execution retains its owned-listener permit. Neither path qualifies native workers.
 pub struct AagModelGateway {
     gateway: Aag_Model_Gateway,
     workflow_id: Uuid,

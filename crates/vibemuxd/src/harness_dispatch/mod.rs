@@ -12,9 +12,16 @@
 //! runs at a time; probes are separately limited to one at a time and write
 //! nothing.
 
+mod broker_owner;
+#[cfg(feature = "test_helpers")]
+mod qualification_controller;
+#[cfg(feature = "test_helpers")]
+pub(crate) use qualification_controller::FixtureExecutionGuard;
 mod config_loader;
+pub(crate) use broker_owner::BrokerScope;
 mod executor;
 pub(crate) mod git_head;
+mod lease_watch;
 #[cfg(feature = "test_helpers")]
 pub mod native_process;
 #[cfg(not(feature = "test_helpers"))]
@@ -71,7 +78,7 @@ pub use transcript_store::{
 
 use executor::ExecutionPlan;
 pub(crate) use executor::call_writer;
-use native_process::LaunchPlan;
+use native_process::{LaunchPlan, NativeProcess};
 use transcript_store::TranscriptStore;
 
 /// File name of the launch trampoline next to the daemon executable.
@@ -203,6 +210,9 @@ pub(crate) struct WorkflowTurn {
     pub working_directory: PathBuf,
     pub base_commit: String,
     pub binding: WorkflowTurnBinding,
+    /// Sticky heartbeat failure, observed by the registered execution owner.
+    pub lease_loss: watch::Receiver<bool>,
+    pub broker_scope: BrokerScope,
 }
 
 /// What a finished workflow turn left behind.
@@ -235,6 +245,10 @@ struct ServiceInner {
     setup: Result<DispatchSetup, DispatchError>,
     transcripts: Arc<TranscriptStore>,
     registry: Mutex<AttemptRegistry>,
+    #[cfg(feature = "test_helpers")]
+    fixture_dispatch_cleanup_loss: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test_helpers")]
+    fixture_verifier_cleanup_loss: std::sync::atomic::AtomicBool,
 }
 
 /// Inputs fixed at startup.
@@ -245,7 +259,7 @@ struct DispatchSetup {
     working_directory: String,
     trampoline: Option<PathBuf>,
     #[cfg(feature = "test_helpers")]
-    fixture_guard: Option<vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard>,
+    fixture_guard: Option<FixtureExecutionGuard>,
 }
 
 /// What one workflow turn launches with.
@@ -256,6 +270,7 @@ struct WorkflowLaunch {
     resource_key: Sha256Digest,
     /// Recorded as both the harness profile and the effective route profile.
     profile: &'static str,
+    broker: Option<broker_owner::BrokerOwner>,
 }
 
 struct AttemptRegistry {
@@ -265,6 +280,9 @@ struct AttemptRegistry {
     /// Cancel signal of the running probe; also its one-at-a-time flag.
     probe: Option<watch::Sender<bool>>,
     tasks: JoinSet<()>,
+    /// Exact owners retained after unproven cleanup. Admission stops and
+    /// durable attempts stay nonterminal for explicit reconciliation.
+    cleanup_pending: HashMap<Uuid, NativeProcess>,
 }
 
 impl HarnessDispatchService {
@@ -282,7 +300,7 @@ impl HarnessDispatchService {
     pub(crate) async fn start_with_fixture_guard(
         writer: WriterHandle,
         settings: DispatchServiceSettings,
-        guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+        guard: FixtureExecutionGuard,
     ) -> Self {
         let setup = tokio::task::spawn_blocking(move || {
             let mut setup = prepare(&settings)?;
@@ -307,14 +325,57 @@ impl HarnessDispatchService {
                 writer,
                 setup,
                 transcripts: Arc::default(),
+                #[cfg(feature = "test_helpers")]
+                fixture_dispatch_cleanup_loss: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(feature = "test_helpers")]
+                fixture_verifier_cleanup_loss: std::sync::atomic::AtomicBool::new(false),
                 registry: Mutex::new(AttemptRegistry {
                     accepting: true,
                     attempts: HashMap::new(),
                     probe: None,
                     tasks: JoinSet::new(),
+                    cleanup_pending: HashMap::new(),
                 }),
             }),
         }
+    }
+
+    pub(crate) fn process_cleanup_pending(&self) -> bool {
+        !self.inner.registry().cleanup_pending.is_empty()
+    }
+
+    pub(crate) fn retain_unsettled_process(&self, process: NativeProcess) {
+        let mut registry = self.inner.registry();
+        registry.accepting = false;
+        registry.cleanup_pending.insert(Uuid::new_v4(), process);
+    }
+
+    /// Suppresses one already-observed fixture completion receipt. No OS
+    /// failure is fabricated, and only a registered synthetic owner can arm it.
+    #[cfg(feature = "test_helpers")]
+    pub(crate) fn lose_next_fixture_cleanup(&self, verifier: bool) -> Result<(), DispatchError> {
+        if self.inner.setup()?.fixture_guard.is_none() {
+            return Err(DispatchError::ExecutionDisabled);
+        }
+        let flag = if verifier {
+            &self.inner.fixture_verifier_cleanup_loss
+        } else {
+            &self.inner.fixture_dispatch_cleanup_loss
+        };
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[cfg(feature = "test_helpers")]
+    pub(crate) fn take_fixture_verifier_cleanup_loss(&self) -> bool {
+        self.inner
+            .fixture_verifier_cleanup_loss
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(feature = "test_helpers")]
+    pub(crate) fn fixture_retained_process_count(&self) -> usize {
+        self.inner.registry().cleanup_pending.len()
     }
 
     /// Content-free projection of the pinned routes.
@@ -408,6 +469,10 @@ impl HarnessDispatchService {
         };
         if receipt.record.phase == DispatchPhase::Admitted {
             let plan = ExecutionPlan {
+                #[cfg(feature = "test_helpers")]
+                forget_cleanup: false,
+                broker: None,
+                lease_loss: None,
                 launch,
                 session,
                 budget,
@@ -449,10 +514,33 @@ impl HarnessDispatchService {
         let launch_route = route.clone();
         let (grant, evidence_class) = (turn.grant, turn.evidence_class);
         let directory = turn.working_directory;
+        let broker_scope = turn.broker_scope;
+        let broker_binding = turn.binding.clone();
+        let request_id = turn.request_id;
         let prepared = tokio::task::spawn_blocking(move || {
-            inner
-                .setup()?
-                .workflow_launch(&launch_route, grant, evidence_class, &directory)
+            let mut prepared =
+                inner
+                    .setup()?
+                    .workflow_launch(&launch_route, grant, evidence_class, &directory)?;
+            if inner.setup()?.uses_file_broker(launch_route.harness) {
+                let broker = broker_owner::BrokerOwner::prepare(
+                    &directory,
+                    broker_scope,
+                    request_id,
+                    grant,
+                    &broker_binding,
+                    prepared.profile,
+                )?;
+                inner.setup()?.configure_broker(
+                    launch_route.harness,
+                    &broker,
+                    &mut prepared.launch,
+                )?;
+                prepared.working_directory = child_path_text(&prepared.launch.working_directory)
+                    .ok_or(DispatchError::WorkingDirectoryInvalid)?;
+                prepared.broker = Some(broker);
+            }
+            Ok(prepared)
         })
         .await
         .unwrap_or(Err(DispatchError::Internal))?;
@@ -540,13 +628,20 @@ impl HarnessDispatchService {
             }
             delivery_applied = true;
             let plan = ExecutionPlan {
+                #[cfg(feature = "test_helpers")]
+                forget_cleanup: self
+                    .inner
+                    .fixture_dispatch_cleanup_loss
+                    .swap(false, std::sync::atomic::Ordering::SeqCst),
+                broker: prepared.broker,
+                lease_loss: Some(turn.lease_loss.clone()),
                 launch: prepared.launch,
                 session,
                 budget,
                 limits: config.limits,
             };
             let (done, finished) = oneshot::channel();
-            if self.launch_workflow_turn(request_id, plan, protocol, done) {
+            if self.launch_workflow_turn(request_id, plan, protocol, done, turn.lease_loss) {
                 final_text = finished.await.ok().flatten();
             } else {
                 let writer = self.inner.writer.clone();
@@ -572,28 +667,29 @@ impl HarnessDispatchService {
         plan: ExecutionPlan,
         protocol: NativeProtocol,
         done: oneshot::Sender<Option<String>>,
+        lease_loss: watch::Receiver<bool>,
     ) -> bool {
         let mut registry = self.inner.registry();
         if !registry.accepting || registry.attempts.contains_key(&request_id) {
             return false;
         }
         let (signal, cancel) = watch::channel(false);
-        registry.attempts.insert(request_id, signal);
+        registry.attempts.insert(request_id, signal.clone());
         let writer = self.inner.writer.clone();
         let transcripts = Arc::clone(&self.inner.transcripts);
         let inner = Arc::downgrade(&self.inner);
         registry.tasks.spawn(async move {
-            let final_text = executor::run_attempt_with_final_text(
+            let execution = executor::run_attempt_with_final_text(
                 writer,
                 transcripts,
                 request_id,
                 plan,
                 cancel,
                 Some(protocol),
-            )
-            .await;
-            deregister(&inner, request_id);
-            let _ = done.send(final_text);
+            );
+            let completion = lease_watch::join_with_lease_loss(lease_loss, signal, execution).await;
+            deregister(&inner, request_id, completion.unsettled);
+            let _ = done.send(completion.final_text);
         });
         while registry.tasks.try_join_next().is_some() {}
         true
@@ -693,6 +789,10 @@ impl HarnessDispatchService {
         let session = ProtocolSession::for_probe(route, setup.working_directory.clone())?;
         let budget = CaptureBudget::new(route.protocol, &config.limits)?;
         let plan = ExecutionPlan {
+            #[cfg(feature = "test_helpers")]
+            forget_cleanup: false,
+            broker: None,
+            lease_loss: None,
             launch,
             session,
             budget,
@@ -714,11 +814,12 @@ impl HarnessDispatchService {
             registry.probe = Some(signal);
             let inner = Arc::downgrade(&self.inner);
             registry.tasks.spawn(async move {
-                let evidence = executor::run_probe(plan, cancel).await;
+                let execution = executor::run_probe(plan, cancel).await;
+                deregister(&inner, Uuid::new_v4(), execution.unsettled);
                 if let Some(inner) = inner.upgrade() {
                     inner.registry().probe = None;
                 }
-                let _ = report_sender.send(evidence);
+                let _ = report_sender.send(execution.evidence);
             });
         }
         let evidence = report
@@ -840,8 +941,9 @@ impl HarnessDispatchService {
                 let transcripts = Arc::clone(&self.inner.transcripts);
                 let inner = Arc::downgrade(&self.inner);
                 registry.tasks.spawn(async move {
-                    executor::run_attempt(writer, transcripts, request_id, plan, cancel).await;
-                    deregister(&inner, request_id);
+                    let unsettled =
+                        executor::run_attempt(writer, transcripts, request_id, plan, cancel).await;
+                    deregister(&inner, request_id, unsettled);
                 });
                 // Finished tasks need no join; drop their results.
                 while registry.tasks.try_join_next().is_some() {}
@@ -878,16 +980,46 @@ impl ServiceInner {
 }
 
 impl DispatchSetup {
+    fn uses_file_broker(&self, harness: AgentKind) -> bool {
+        #[cfg(feature = "test_helpers")]
+        {
+            self.fixture_guard
+                .as_ref()
+                .is_some_and(|guard| guard.uses_file_broker(harness))
+        }
+        #[cfg(not(feature = "test_helpers"))]
+        {
+            let _ = harness;
+            false
+        }
+    }
+
+    fn configure_broker(
+        &self,
+        harness: AgentKind,
+        owner: &broker_owner::BrokerOwner,
+        launch: &mut LaunchPlan,
+    ) -> Result<(), DispatchError> {
+        #[cfg(feature = "test_helpers")]
+        {
+            self.fixture_guard
+                .as_ref()
+                .ok_or(DispatchError::ExecutionDisabled)?
+                .configure_broker(harness, owner, launch)
+        }
+        #[cfg(not(feature = "test_helpers"))]
+        {
+            let _ = (harness, owner, launch);
+            Err(DispatchError::ExecutionDisabled)
+        }
+    }
+
     fn workflow_profile(&self, route: &DispatchRoute) -> Result<&'static str, DispatchError> {
         #[cfg(feature = "test_helpers")]
         if let Some(guard) = &self.fixture_guard {
             // Revalidates the registered image before admitting a fixture slot.
-            vibemux_harness::dispatch::fixture_guard::build_writable_fixture_launch_spec(
-                route,
-                WritableGrant::NONE,
-                guard,
-            )?;
-            return vibemux_harness::dispatch::fixture_guard::fixture_profile_id(route.harness);
+            guard.launch_spec(route, WritableGrant::NONE)?;
+            return guard.profile_id(route.harness);
         }
         writable_profile::writable_profile_id(route.protocol)
     }
@@ -914,6 +1046,7 @@ impl DispatchSetup {
         let (spec, profile) = self.workflow_spec(route, grant, evidence_class)?;
         Ok(WorkflowLaunch {
             launch: LaunchPlan {
+                environment: None,
                 trampoline,
                 executable: PathBuf::from(executable),
                 spec,
@@ -922,6 +1055,7 @@ impl DispatchSetup {
             working_directory,
             resource_key,
             profile,
+            broker: None,
         })
     }
 
@@ -939,12 +1073,8 @@ impl DispatchSetup {
                 return Err(DispatchError::ExecutionDisabled);
             }
             // Revalidates the registered image before every fixture launch.
-            let spec =
-                vibemux_harness::dispatch::fixture_guard::build_writable_fixture_launch_spec(
-                    route, grant, guard,
-                )?;
-            let profile =
-                vibemux_harness::dispatch::fixture_guard::fixture_profile_id(route.harness)?;
+            let spec = guard.launch_spec(route, grant)?;
+            let profile = guard.profile_id(route.harness)?;
             return Ok((spec, profile));
         }
         if evidence_class == vibemux_workflow::slots::EvidenceClass::Fixture {
@@ -966,6 +1096,7 @@ impl DispatchSetup {
         let executable = child_path_text(self.config.executable(route.harness)?)
             .ok_or(DispatchError::ExecutableUnavailable)?;
         Ok(LaunchPlan {
+            environment: None,
             trampoline,
             executable: PathBuf::from(executable),
             spec: build_launch_spec(route, mode)?,
@@ -974,9 +1105,14 @@ impl DispatchSetup {
     }
 }
 
-fn deregister(inner: &Weak<ServiceInner>, request_id: Uuid) {
+fn deregister(inner: &Weak<ServiceInner>, request_id: Uuid, unsettled: Option<NativeProcess>) {
     if let Some(inner) = inner.upgrade() {
-        inner.registry().attempts.remove(&request_id);
+        let mut registry = inner.registry();
+        if let Some(process) = unsettled {
+            registry.accepting = false;
+            registry.cleanup_pending.insert(request_id, process);
+        }
+        registry.attempts.remove(&request_id);
     }
 }
 

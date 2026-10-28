@@ -19,10 +19,11 @@ use std::{
 };
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    process::{Child, ChildStdin, Command},
+    sync::watch,
     task::JoinHandle,
-    time::{Instant, timeout},
+    time::{Instant, timeout, timeout_at},
 };
 use vibemux_harness::dispatch::{
     DispatchError, ProcessExit,
@@ -33,9 +34,10 @@ use vibemux_platform::{LAUNCH_GO_BYTE, ProcessTree};
 /// Bound on reaping once the tree is terminated, on releasing the go byte,
 /// and on the stderr drain after the process ended.
 const REAP_DEADLINE: Duration = Duration::from_secs(2);
-/// POSIX: poll interval while the trampoline may still exit on its own.
-#[cfg(unix)]
+/// Poll interval for the owned process or Windows Job accounting.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CLEANUP_DEADLINE: Duration = Duration::from_secs(6);
+const DRAIN_JOIN_RESERVE: Duration = Duration::from_millis(100);
 const STDERR_CHUNK_BYTES: usize = 8 * 1024;
 /// Scan only this many stderr bytes for fixed diagnostic categories. Raw
 /// stderr is neither retained nor logged; the byte count remains uncapped.
@@ -57,6 +59,7 @@ pub(crate) struct LaunchPlan {
     pub executable: PathBuf,
     pub spec: LaunchSpec,
     pub working_directory: PathBuf,
+    pub environment: Option<Vec<(String, OsString)>>,
 }
 
 impl std::fmt::Debug for LaunchPlan {
@@ -85,14 +88,37 @@ pub(crate) fn resolve_environment(
 }
 
 pub(crate) struct NativeProcess {
-    child: Child,
+    // Drop the group owner before Child can schedule asynchronous reaping.
     tree: ProcessTree,
+    child: Child,
     /// `None` once closed.
     pub stdin: Option<ChildStdin>,
-    pub stdout: ChildStdout,
+    pub stdout: Box<dyn AsyncRead + Unpin + Send>,
     stderr_bytes: Arc<AtomicU64>,
     stderr_flags: Arc<AtomicU32>,
     stderr_drain: JoinHandle<()>,
+}
+
+/// Local settlement evidence. On Windows this includes an observed empty Job;
+/// POSIX retains its signal-before-reap contract, not a tree-empty guarantee.
+pub(crate) struct NativeCompletion {
+    pub exit: ProcessExit,
+    pub stderr_bytes: u64,
+    pub settled: bool,
+    pub cancelled: bool,
+}
+
+/// Sticky interruption, including an unexpectedly dropped execution owner.
+pub(crate) fn cancellation_requested(cancel: &watch::Receiver<bool>) -> bool {
+    *cancel.borrow() || cancel.has_changed().is_err()
+}
+
+async fn await_cancellation(cancel: &mut watch::Receiver<bool>) {
+    loop {
+        if cancellation_requested(cancel) || cancel.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Allowlisted, content-free stderr observations. No vendor line, path,
@@ -126,6 +152,14 @@ impl NativeProcess {
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
         ProcessTree::prepare_command(command.as_std_mut());
+        #[cfg(windows)]
+        let spawned = vibemux_platform::process_stdio::spawn_with_async_output(&mut command)
+            .await
+            .map_err(|_| DispatchError::SpawnFailed)?;
+        #[cfg(windows)]
+        let (mut child, stdout, stderr) =
+            (spawned.child, spawned.output.stdout, spawned.output.stderr);
+        #[cfg(not(windows))]
         let mut child = command.spawn().map_err(|_| DispatchError::SpawnFailed)?;
         let Some(tree) = child
             .id()
@@ -136,9 +170,19 @@ impl NativeProcess {
             let _ = timeout(REAP_DEADLINE, child.wait()).await;
             return Err(DispatchError::ContainmentFailed);
         };
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
+        #[cfg(not(windows))]
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            let mut tree = tree;
+            let _ = tree.terminate();
+            let _ = timeout(REAP_DEADLINE, child.wait()).await;
+            return Err(DispatchError::PipeFailed);
+        };
+        #[cfg(not(windows))]
+        let (stdout, stderr): (
+            Box<dyn AsyncRead + Unpin + Send>,
+            Box<dyn AsyncRead + Unpin + Send>,
+        ) = (Box::new(stdout), Box::new(stderr));
+        let Some(stdin) = child.stdin.take() else {
             let mut tree = tree;
             let _ = tree.terminate();
             let _ = timeout(REAP_DEADLINE, child.wait()).await;
@@ -161,7 +205,7 @@ impl NativeProcess {
             stderr_drain,
         };
         if process.release().await.is_err() {
-            process.finish(true, Instant::now()).await;
+            process.finish(true, Instant::now(), None).await;
             return Err(DispatchError::PipeFailed);
         }
         Ok(process)
@@ -195,31 +239,67 @@ impl NativeProcess {
         }
     }
 
-    /// Ends the process and reports how. Unless `force` is set, the
-    /// trampoline may exit on its own until `exit_deadline`; after that, or
-    /// with `force`, the tree is killed. Either way the tree is terminated
-    /// before the trampoline is reaped, which removes any member it left
-    /// behind. Returns the exit and the stderr byte count.
+    /// Retains ownership through natural shutdown and bounded cleanup. A
+    /// controller's root exit is not enough on Windows: its Job must be empty.
+    /// An unsettled result must not release a dispatch reservation.
     pub(crate) async fn finish(
         &mut self,
         force: bool,
         exit_deadline: Instant,
-    ) -> (ProcessExit, u64) {
+        mut cancel: Option<&mut watch::Receiver<bool>>,
+    ) -> NativeCompletion {
         self.close_stdin();
-        let exited_naturally = !force && self.await_natural_exit(exit_deadline).await;
-        let _ = self.tree.terminate();
-        let exit_code = self.reap().await;
-        if timeout(REAP_DEADLINE, &mut self.stderr_drain)
-            .await
-            .is_err()
-        {
-            self.stderr_drain.abort();
-        }
-        let exit = ProcessExit {
-            exit_code,
-            forced_termination: !exited_naturally,
+        let natural = if force {
+            false
+        } else if let Some(signal) = cancel.as_deref_mut() {
+            tokio::select! {
+                biased;
+                () = await_cancellation(signal) => false,
+                exited = self.await_natural_exit(exit_deadline) => exited,
+            }
+        } else {
+            self.await_natural_exit(exit_deadline).await
         };
-        (exit, self.stderr_diagnostic().bytes)
+        let cancelled = cancel.as_deref().is_some_and(cancellation_requested);
+        let natural = natural && !cancelled;
+        // One shared bound for termination, reaping, Job accounting and I/O
+        // joining. Never start a new grace period for a descendant or poll.
+        let cleanup_deadline = Instant::now() + CLEANUP_DEADLINE;
+        #[cfg(windows)]
+        let terminated = natural || self.tree.terminate().is_ok();
+        #[cfg(unix)]
+        let terminated = self.tree.terminate().is_ok();
+        // POSIX must retain the un-reaped leader if group signalling failed:
+        // a retryable PGID owner must never outlive its identity reservation.
+        let reaped = if terminated {
+            self.reap(cleanup_deadline).await
+        } else {
+            None
+        };
+        #[cfg(windows)]
+        let tree_settled = self.await_empty_job(cleanup_deadline).await;
+        #[cfg(unix)]
+        let tree_settled = terminated;
+        let drain_deadline = cleanup_deadline - DRAIN_JOIN_RESERVE;
+        let mut joined = timeout_at(drain_deadline, &mut self.stderr_drain)
+            .await
+            .is_ok();
+        if !joined {
+            self.stderr_drain.abort();
+            joined = timeout_at(cleanup_deadline, &mut self.stderr_drain)
+                .await
+                .is_ok();
+        }
+        let cancelled = cancelled || cancel.as_deref().is_some_and(cancellation_requested);
+        NativeCompletion {
+            exit: ProcessExit {
+                exit_code: reaped.and_then(|status| status.code()),
+                forced_termination: !natural,
+            },
+            stderr_bytes: self.stderr_diagnostic().bytes,
+            settled: terminated && reaped.is_some() && tree_settled && joined,
+            cancelled,
+        }
     }
 
     /// Windows: the job holds its members by handle, so the trampoline may
@@ -227,10 +307,13 @@ impl NativeProcess {
     /// for [`NativeProcess::reap`].
     #[cfg(windows)]
     async fn await_natural_exit(&mut self, exit_deadline: Instant) -> bool {
-        matches!(
-            tokio::time::timeout_at(exit_deadline, self.child.wait()).await,
+        if !matches!(
+            timeout_at(exit_deadline, self.child.wait()).await,
             Ok(Ok(_))
-        )
+        ) {
+            return false;
+        }
+        self.await_empty_job(exit_deadline).await
     }
 
     /// POSIX: observes the exit without reaping, so the group id stays
@@ -248,13 +331,23 @@ impl NativeProcess {
         }
     }
 
-    async fn reap(&mut self) -> Option<i32> {
-        if let Ok(Ok(status)) = timeout(REAP_DEADLINE, self.child.wait()).await {
-            return status.code();
+    #[cfg(windows)]
+    async fn await_empty_job(&mut self, deadline: Instant) -> bool {
+        loop {
+            match self.tree.active_process_count() {
+                Ok(0) => return true,
+                Ok(_) if Instant::now() < deadline => {
+                    tokio::time::sleep_until(deadline.min(Instant::now() + EXIT_POLL_INTERVAL))
+                        .await;
+                }
+                _ => return false,
+            }
         }
-        let _ = self.child.start_kill();
-        match timeout(REAP_DEADLINE, self.child.wait()).await {
-            Ok(Ok(status)) => status.code(),
+    }
+
+    async fn reap(&mut self, deadline: Instant) -> Option<std::process::ExitStatus> {
+        match timeout_at(deadline, self.child.wait()).await {
+            Ok(Ok(status)) => Some(status),
             _ => None,
         }
     }
@@ -268,7 +361,11 @@ impl Drop for NativeProcess {
     }
 }
 
-async fn drain_stderr(mut stderr: ChildStderr, counter: Arc<AtomicU64>, flags: Arc<AtomicU32>) {
+async fn drain_stderr(
+    mut stderr: Box<dyn AsyncRead + Unpin + Send>,
+    counter: Arc<AtomicU64>,
+    flags: Arc<AtomicU32>,
+) {
     let mut buffer = vec![0_u8; STDERR_CHUNK_BYTES];
     let mut scanned = 0_usize;
     let mut tail = String::new();
@@ -390,6 +487,7 @@ pub async fn run_browser_lifecycle_probe(
     environment.push(("TEMP".to_string(), plan.scratch.as_os_str().to_os_string()));
     environment.push(("TMP".to_string(), plan.scratch.as_os_str().to_os_string()));
     let launch = LaunchPlan {
+        environment: None,
         trampoline: plan.trampoline,
         executable: PathBuf::from(node),
         spec: LaunchSpec {
@@ -445,8 +543,10 @@ pub async fn run_browser_lifecycle_probe(
         }
     }
     let force = held || !eof || result.output_truncated;
-    let (exit, _) = process.finish(force, Instant::now() + REAP_DEADLINE).await;
-    result.exit = exit;
+    let completion = process
+        .finish(force, Instant::now() + REAP_DEADLINE, None)
+        .await;
+    result.exit = completion.exit;
     result.native_stderr = process.stderr_diagnostic();
     #[cfg(windows)]
     {

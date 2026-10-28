@@ -1183,7 +1183,18 @@ impl SqliteStore {
         {
             return Err(workflow_error("store_workflow_launch_grant_mismatch"));
         }
-        if expected_profile != Some(admission.execution.harness_profile.as_str()) {
+        let broker_profile = match expected_profile {
+            Some("codex_fixture_writable_v1") => Some("codex_fixture_broker_v1"),
+            Some("claude_fixture_writable_v1") => Some("claude_fixture_broker_v1"),
+            _ => None,
+        };
+        let selected_profile = Some(admission.execution.harness_profile.as_str());
+        let installed_qualification = expected_profile == Some("claude_fixture_writable_v1")
+            && selected_profile == Some("claude_broker_qualification_v1");
+        if expected_profile != selected_profile
+            && broker_profile != selected_profile
+            && !installed_qualification
+        {
             return Err(workflow_error("store_workflow_launch_profile_mismatch"));
         }
         if let Some(existing) = previous_attempt {

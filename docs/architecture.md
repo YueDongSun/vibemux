@@ -147,6 +147,22 @@ its multi-producer view. See [ADR 035](adr/035_native_mcp_read_host.md) and the
 
 ### Dependency direction
 
+The separate `vibemux_worker_tools` component owns closed text-file operations in
+a fresh private snapshot. It reuses workflow path patterns, harness grants and
+platform private-directory checks, but never accesses the daemon database.
+Its MCP entry point is for explicit component use and qualification; it does not
+extend the read-only frontend's permissions. Owner-only candidate/recovery output
+feeds a future daemon integration. Its separate `vibemux_dev_test` owner command
+requires read and execution grants, runs a disposable copy under an offline MXC
+profile and owned Job, and discards all test mutations. Execution reports remain
+untrusted assertion evidence. An explicit version-2 owner bootstrap adds serialized
+MCP test dispatch, immutable suites, snapshot/revision binding, cancellation and
+private receipts. Daemon lease admission and live slot promotion remain separate.
+See [ADR 044](adr/044_closed_worker_tools.md),
+[ADR 045](adr/045_disposable_development_tests.md),
+[ADR 046](adr/046_broker_development_tests.md), the
+[component guide](worker_tools.md) and [broker test guide](broker_development_tests.md).
+
 Domain crates must not depend on platform, database, terminal, or network implementations (ADR 013). `vibemux_harness` is pure logic (no I/O); detection inputs are injected by the daemon, which reads the trusted `vibemux_probe` cache. The agent/launcher/probe-state vocabulary lives in `vibemux_harness` and is re-exported by `vibemux_probe`, which depends on it. The harness dispatch request, route config, launch argv, protocol session machines, framer, capture budget, and attempt phases are also pure `vibemux_harness` logic; `vibemuxd` performs every effect (ADR 029). The dual-track workflow contracts in `vibemux_workflow` depend only on `vibemux_harness`; `vibemux_store` applies them inside writer transactions, and `vibemuxd` performs every effect (ADR 031). The decision port in `vibemux_decision` depends only on `vibemux_types`, `vibemux_events`, and `vibemux_harness`; `vibemux_store`, `vibemuxd`, and `vibemux_decision_peer` depend on it, and `vibemuxd` does not depend on the peer crate (ADR 034). The normative layering from `AGENTS.md` §4.2:
 
 ```text
@@ -366,6 +382,36 @@ Each launch derives independent read, search, edit, write, and development-test 
 
 The native-controller runtime sends literal input only through an explicitly owned adapter. The writer commits a reservation and lets one outbox claimant submit it; uncertain delivery is not replayed. This increment supplies no production native terminal backend and exposes no native controller mutation over Control v10. Affirmative approval transport, standalone review mode, semantic prompt editing, and full active workflow recovery remain unimplemented. Checkpoint projection refuses missing attempt/controller joins, participant cursors, unsettled effects, or artifact ownership. It never modifies global context or compaction settings. Current evidence and limits are recorded in the [runtime enhancement evidence](evidence/runtime_enhancement_increment.md); inherited acceptance remains separate.
 
+Workflow heartbeat holders signal rejected renewal or owner loss to the exact
+registered dispatch. The dispatch forwards interruption independently of writer
+availability, joins its executor, and leaves durable completion and reservation
+release to the existing writer fences. A lost-lease worker or reviewer turn
+returns workflow_lease_lost before its result is used. This is not a separate
+clock-based expiry watchdog. See [ADR 049](adr/049_workflow_lease_loss.md).
+
+Windows dispatch completion joins the root and confirms an empty owned Job,
+independently of protocol completion or EOF. Unconfirmed cleanup retains the
+exact process owner, stops admission, and leaves durable dispatch nonterminal.
+Trusted verifier uncertainty stops before result consumption or another suite;
+workflow cleanup retains its worktrees. See
+[ADR 050](adr/050_native_completion_barrier.md). This process barrier does not
+validate broker output or qualify a native execution profile.
+
+The file-broker fixture profiles in ADR 051 run the actual closed MCP broker as a
+contained controller child over a private current-turn snapshot. The daemon
+validates the strict owner publication after process settlement, rechecks and
+imports into the reserved worktree before fenced completion, and retains recovery
+evidence until that finish is confirmed. Import remains owned through shutdown
+and directly observes heartbeat loss. These profiles refuse command grants and
+do not qualify native controllers or sandbox isolation.
+
+ADR 052 adds a distinct installed-Claude qualification guard behind test_helpers.
+Its typed controller choice supplies a fixed per-attempt environment and private
+strict MCP/settings files, while preserving original worktree ownership and the
+existing process/import fences. Only Fixture evidence accepts its exact profile.
+Installed worker/reviewer tests use synthetic inference and independent fixture
+roles; Live routing and OS isolation remain separately unqualified.
+
 ## Model workflow supervisor (ADR 037)
 
 The operator selects the model driver explicitly with `workflow_supervisor_start`; ordinary `workflow_start` retains the deterministic coordinator. Both share the same supervised run registry, cancellation path and single writer. Configuration of a supervisor alias alone does not change the driver. Control v9 adds the start operation and bounded, content-free `workflow_supervisor_status`; existing DSH operations retain their v7 minimum.
@@ -386,7 +432,14 @@ The acceptance CLI and owned command/version-probe helpers check `TokenRestricte
 
 ## Probe and unified frontend boundary
 
-`vibemux_probe` only produces versioned, content-free, read-only diagnostics: launcher/version, explicit provider endpoint, CC Switch health/aggregate telemetry, and the A2A self-test. Launcher verification is not the same as authentication/inference verification.
+The ordinary `vibemux_probe` command produces versioned, content-free, read-only diagnostics: launcher/version, explicit provider endpoint, CC Switch health/aggregate telemetry, and the A2A self-test. Launcher verification is not the same as authentication/inference verification.
+
+The separate explicit `vibemux_sandbox_probe` command (ADR 043) owns disposable
+offline OS tests through `vibemux_platform::sandbox_mxc`. Its closed evidence
+validator combines a fixed native workload with parent-observed file effects,
+loopback activity and cleanup. It writes no canonical state or probe cache and
+does not provide reusable workflow qualification. See the
+[offline sandbox guide](offline_sandbox_probe.md).
 
 `vibemux_probe::snapshot` loads either a bounded, validated, redacted saved report or the fixed local probe, and the `vibemux_frontend::dashboard` module renders it (with an optional read-only local Git inventory from `vibemuxctl workspace status`) as a navigable dashboard behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It starts no daemon, harness, or model turn. See [ADR 041](adr/041_unified_cli_and_workspace_layout.md). ADR 042 makes it a multi-pane console: `dashboard::daemon_feed` owns one background thread that polls the running daemon's content-free reads (health, plugins, dispatch catalog, task list and detail, DSH status, workflow slots, decisions) through the `daemon_session` connection cache it shares with the GUI client, and publishes an immutable `DaemonView`; `daemon_model` projects and sanitizes, `daemon_render`, `panes`, and `filter` are pure presentation. The diagnostic TUI re-runs the probe on a worker thread (`tui::reprobe`), the DSH surface searches its in-memory transcript (`dsh_tui::search`), and the GUI's shortcut table and quick switcher are `gui::shortcuts`, `gui::quick_switcher`, and the egui-free `quick_search`.
 
@@ -416,3 +469,13 @@ The Python package (`src/vibemux/`) is the behavior reference and complete proto
 - A2A supervisor protocol: [docs/a2a_supervisor_protocol.md](a2a_supervisor_protocol.md)
 - A2A conformance procedure: [docs/a2a_conformance_validation.md](a2a_conformance_validation.md)
 - User entry / quick start: [README.md](../README.md)
+
+
+### Owner planning profiles
+
+Control v12 consumes the pure `workflow/planning_profile.rs` DTOs. The service-child
+`planning.rs` owns one-shot profile admission and observation, `planning_state.rs`
+owns immutable private claims, and `model_compiler.rs` shares the existing durable
+one-call compiler. `settings.rs` pins profiles with owner configuration; model text
+cannot supply policy, slots or verifiers. The bounded store compiler-owner getter
+is read-only. See [ADR 055](adr/055_owner_planning_profiles.md).

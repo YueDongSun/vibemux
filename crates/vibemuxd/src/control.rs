@@ -69,12 +69,17 @@ use vibemux_types::{
     },
 };
 pub use workflow_ops::{
-    WORKFLOW_SLOW_DEADLINE, WorkflowEvaluateArgument, WorkflowExportQuery, WorkflowLookup,
+    MAX_PLANNING_ARGUMENT_BYTES, MAX_PLANNING_QUERY_BYTES, WORKFLOW_SLOW_DEADLINE,
+    WorkflowCancelStartArgument, WorkflowEvaluateArgument, WorkflowExportQuery, WorkflowLookup,
     WorkflowPrepareArgument, WorkflowPromptQuery, WorkflowSessionLookup, WorkflowShareArgument,
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V10;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V12;
+/// V12 adds profile-bound planning, profile discovery, and planning observation.
+pub const CONTROL_PROTOCOL_V12: u32 = 12;
+/// V11 adds latest start-admission observation and generation-fenced cancellation.
+pub const CONTROL_PROTOCOL_V11: u32 = 11;
 /// V10 adds explicit operator contract-edit successor admission.
 pub const CONTROL_PROTOCOL_V10: u32 = 10;
 /// V9 adds explicit model-supervisor start and bounded supervisor status.
@@ -131,8 +136,13 @@ pub enum ControlOperation {
     DshSessionStatus,
     DshSessionCancel,
     DshSessionClose,
+    WorkflowPlanningProfiles,
+    WorkflowPlanRequest,
+    WorkflowPlanningObservation,
     WorkflowPrepare,
     WorkflowStart,
+    WorkflowStartObservation,
+    WorkflowCancelStart,
     WorkflowSupervisorStart,
     WorkflowSupervisorStatus,
     WorkflowContractEdit,
@@ -188,6 +198,10 @@ impl ControlOperation {
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V9,
             Self::WorkflowContractEdit => CONTROL_PROTOCOL_V10,
+            Self::WorkflowStartObservation | Self::WorkflowCancelStart => CONTROL_PROTOCOL_V11,
+            Self::WorkflowPlanningProfiles
+            | Self::WorkflowPlanRequest
+            | Self::WorkflowPlanningObservation => CONTROL_PROTOCOL_V12,
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -665,6 +679,10 @@ pub struct DaemonControlServer {
     stop: tokio::sync::watch::Sender<bool>,
     a2a_base_url: Option<String>,
     a2a_grpc_base_url: Option<String>,
+    #[cfg(feature = "test_helpers")]
+    fixture_writer: Option<crate::WriterHandle>,
+    #[cfg(feature = "test_helpers")]
+    fixture_dispatch: Option<HarnessDispatchService>,
 }
 
 impl DaemonControlServer {
@@ -871,7 +889,40 @@ impl DaemonControlServer {
             Some(settings),
             None,
             Some(FixtureExecution {
-                guard,
+                guard: crate::harness_dispatch::FixtureExecutionGuard::Synthetic(guard),
+                models: None,
+            }),
+        )
+        .await
+    }
+
+    /// Explicit installed-controller qualification; ordinary daemon startup cannot supply this guard.
+    #[cfg(feature = "test_helpers")]
+    pub async fn start_with_installed_controller_qualification(
+        database_path: &Path,
+        runtime_dir: &Path,
+        settings: ExecutionSettings,
+        guard: vibemux_harness::dispatch::installed_controller_guard::InstalledClaudeGuard,
+        synthetic: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+    ) -> Result<Self, ControlError> {
+        let state_dir = database_path
+            .parent()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        Self::start_with_writer_locks(
+            database_path,
+            runtime_dir,
+            &crate::writer_lock_path_for_database(database_path),
+            None,
+            PluginStartup::default(),
+            None,
+            crate::process::probe_cache_path_for_state_dir(state_dir),
+            Some(settings),
+            None,
+            Some(FixtureExecution {
+                guard: crate::harness_dispatch::FixtureExecutionGuard::InstalledClaude {
+                    controller: guard,
+                    synthetic: Box::new(synthetic),
+                },
                 models: None,
             }),
         )
@@ -900,7 +951,7 @@ impl DaemonControlServer {
             Some(settings),
             None,
             Some(FixtureExecution {
-                guard,
+                guard: crate::harness_dispatch::FixtureExecutionGuard::Synthetic(guard),
                 models: Some(models),
             }),
         )
@@ -981,7 +1032,7 @@ pub struct ExecutionSettings {
 
 #[cfg(feature = "test_helpers")]
 struct FixtureExecution {
-    guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
+    guard: crate::harness_dispatch::FixtureExecutionGuard,
     models:
         Option<std::sync::Arc<dyn crate::workflow::model_compiler::WorkflowModelGatewayFactory>>,
 }
@@ -1263,6 +1314,10 @@ impl DaemonControlServer {
         })
         .await
         .map_err(|_| ControlError::ServerTerminated)??;
+        #[cfg(feature = "test_helpers")]
+        let fixture_writer = fixture_execution
+            .as_ref()
+            .and_then(|_| writer.handle().ok());
         let writer_lock_path = writer.lock_path().to_path_buf();
         let descriptor = ControlDescriptor {
             version: CONTROL_PROTOCOL_VERSION,
@@ -1394,6 +1449,8 @@ impl DaemonControlServer {
             // nothing and every DSH operation fails closed.
             let dsh_service = DshSessionService::new(&project_root, &state_dir);
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
+            #[cfg(feature = "test_helpers")]
+            let fixture_dispatch = fixture_writer.as_ref().map(|_| services.dispatch.clone());
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
                 dispatch: services.dispatch,
@@ -1442,6 +1499,10 @@ impl DaemonControlServer {
                 stop,
                 a2a_base_url,
                 a2a_grpc_base_url,
+                #[cfg(feature = "test_helpers")]
+                fixture_writer,
+                #[cfg(feature = "test_helpers")]
+                fixture_dispatch,
             });
         }
 
@@ -1517,6 +1578,8 @@ impl DaemonControlServer {
             // nothing and every DSH operation fails closed.
             let dsh_service = DshSessionService::new(&project_root, &state_dir);
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
+            #[cfg(feature = "test_helpers")]
+            let fixture_dispatch = fixture_writer.as_ref().map(|_| services.dispatch.clone());
             let state = Arc::new(ServerState {
                 terminal: TerminalObserver::new(registry.request_client()),
                 dispatch: services.dispatch,
@@ -1550,6 +1613,10 @@ impl DaemonControlServer {
                 stop,
                 a2a_base_url,
                 a2a_grpc_base_url,
+                #[cfg(feature = "test_helpers")]
+                fixture_writer,
+                #[cfg(feature = "test_helpers")]
+                fixture_dispatch,
             });
         }
 
@@ -1565,6 +1632,53 @@ impl DaemonControlServer {
     #[must_use]
     pub fn a2a_grpc_base_url(&self) -> Option<&str> {
         self.a2a_grpc_base_url.as_deref()
+    }
+
+    /// Fixture-only loss of a cleanup receipt; no Control wire operation.
+    #[cfg(feature = "test_helpers")]
+    pub fn lose_next_fixture_cleanup(&self, verifier: bool) -> Result<(), ControlError> {
+        self.fixture_dispatch
+            .as_ref()
+            .ok_or(ControlError::EndpointUnavailable)?
+            .lose_next_fixture_cleanup(verifier)
+            .map_err(|_| ControlError::EndpointUnavailable)
+    }
+
+    #[cfg(feature = "test_helpers")]
+    pub fn fixture_retained_process_count(&self) -> Result<usize, ControlError> {
+        Ok(self
+            .fixture_dispatch
+            .as_ref()
+            .ok_or(ControlError::EndpointUnavailable)?
+            .fixture_retained_process_count())
+    }
+
+    /// Injects a missed heartbeat only into a registered synthetic execution.
+    /// It uses the live single writer and exposes no Control wire operation.
+    #[cfg(feature = "test_helpers")]
+    pub async fn quarantine_fixture_lease(&self, lease_id: uuid::Uuid) -> Result<(), ControlError> {
+        let writer = self
+            .fixture_writer
+            .clone()
+            .ok_or(ControlError::EndpointUnavailable)?;
+        tokio::task::spawn_blocking(move || {
+            let lease = writer
+                .workflow_lease(lease_id)?
+                .ok_or(crate::WriterError::ThreadTerminated)?;
+            writer.change_workflow_lease(
+                lease_id,
+                vibemux_workflow::leases::LeaseEvent::HeartbeatMissed {
+                    now_ms: lease.heartbeat_deadline_ms.saturating_add(60_000),
+                },
+                1_000,
+                "fixture_heartbeat_missed".to_string(),
+                time::OffsetDateTime::now_utc(),
+            )?;
+            Ok::<(), crate::WriterError>(())
+        })
+        .await
+        .map_err(|_| ControlError::ServerTerminated)??;
+        Ok(())
     }
 
     pub fn descriptor_path(&self) -> &Path {
@@ -1959,8 +2073,13 @@ where
                 false,
             )
         }
-        operation @ (ControlOperation::WorkflowPrepare
+        operation @ (ControlOperation::WorkflowPlanningProfiles
+        | ControlOperation::WorkflowPlanRequest
+        | ControlOperation::WorkflowPlanningObservation
+        | ControlOperation::WorkflowPrepare
         | ControlOperation::WorkflowStart
+        | ControlOperation::WorkflowStartObservation
+        | ControlOperation::WorkflowCancelStart
         | ControlOperation::WorkflowSupervisorStart
         | ControlOperation::WorkflowSupervisorStatus
         | ControlOperation::WorkflowContractEdit
@@ -2556,6 +2675,8 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V8
             | CONTROL_PROTOCOL_V9
             | CONTROL_PROTOCOL_V10
+            | CONTROL_PROTOCOL_V11
+            | CONTROL_PROTOCOL_V12
     )
 }
 
@@ -3054,7 +3175,103 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_through_v8() {
+    fn planning_operations_have_stable_names_and_require_v12() {
+        for (operation, name) in [
+            (
+                ControlOperation::WorkflowPlanningProfiles,
+                "workflow_planning_profiles",
+            ),
+            (
+                ControlOperation::WorkflowPlanRequest,
+                "workflow_plan_request",
+            ),
+            (
+                ControlOperation::WorkflowPlanningObservation,
+                "workflow_planning_observation",
+            ),
+        ] {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V12);
+            assert_eq!(
+                serde_json::to_value(&operation).expect("wire operation"),
+                name
+            );
+            assert_eq!(
+                serde_json::from_value::<ControlOperation>(serde_json::json!(name)).expect("parse"),
+                operation
+            );
+        }
+        assert!(supported_control_version(CONTROL_PROTOCOL_V12));
+        assert_eq!(
+            ControlOperation::WorkflowStartObservation.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V11
+        );
+        assert_eq!(
+            ControlOperation::WorkflowStart.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V6
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn planning_operations_refuse_v11_owners_and_echo_older_request_versions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        let mut older = client.clone();
+        older.descriptor.version = CONTROL_PROTOCOL_V11;
+        let request: crate::workflow::planning_profile::PlanningRequest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version":1,"profile_id":"research","profile_digest":"a".repeat(64),
+                "request_id":Uuid::new_v4(),"request_text":"Inspect.","execute":false
+            }))
+            .expect("request");
+        let query = request.query().expect("query");
+        assert_eq!(
+            older.workflow_planning_profiles().await,
+            Err(ControlError::UnsupportedVersion)
+        );
+        assert_eq!(
+            older.workflow_plan_request(request).await,
+            Err(ControlError::UnsupportedVersion)
+        );
+        assert_eq!(
+            older.workflow_planning_observation(query).await,
+            Err(ControlError::UnsupportedVersion)
+        );
+        for operation in [
+            ControlOperation::WorkflowPlanningProfiles,
+            ControlOperation::WorkflowPlanRequest,
+            ControlOperation::WorkflowPlanningObservation,
+        ] {
+            let request = ControlRequest {
+                version: CONTROL_PROTOCOL_V11,
+                request_id: Uuid::new_v4().to_string(),
+                token: client.descriptor.token.clone(),
+                operation,
+                argument: None,
+            };
+            let response = request_over_local_transport(
+                &client.descriptor.endpoint,
+                &request,
+                CONTROL_DEADLINE,
+            )
+            .await
+            .expect("older request response");
+            assert_eq!(response.version, CONTROL_PROTOCOL_V11);
+            assert_eq!(response.request_id, request.request_id);
+            assert_eq!(
+                response.error_code.as_deref(),
+                Some("control_unsupported_version")
+            );
+            assert!(response.payload.is_none());
+        }
+        assert!(older.health().await.expect("v11 health unchanged").healthy);
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[test]
+    fn control_contract_accepts_v1_through_v12() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
@@ -3066,7 +3283,16 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
         assert!(supported_control_version(CONTROL_PROTOCOL_V8));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V10);
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V12);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V11));
+        assert_eq!(
+            ControlOperation::WorkflowStartObservation.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V11
+        );
+        assert_eq!(
+            ControlOperation::WorkflowCancelStart.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V11
+        );
         assert!(supported_control_version(CONTROL_PROTOCOL_V9));
         assert!(supported_control_version(CONTROL_PROTOCOL_V10));
         assert_eq!(
@@ -3184,6 +3410,11 @@ mod tests {
             ControlOperation::WorkflowSupervisorStart,
             ControlOperation::WorkflowSupervisorStatus,
             ControlOperation::WorkflowContractEdit,
+            ControlOperation::WorkflowStartObservation,
+            ControlOperation::WorkflowCancelStart,
+            ControlOperation::WorkflowPlanningProfiles,
+            ControlOperation::WorkflowPlanRequest,
+            ControlOperation::WorkflowPlanningObservation,
         ] {
             assert!(operation.minimum_protocol_version() > CONTROL_PROTOCOL_V6);
             let name = serde_json::to_value(&operation).expect("encode operation");

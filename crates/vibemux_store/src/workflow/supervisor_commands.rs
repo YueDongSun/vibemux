@@ -867,6 +867,14 @@ impl SqliteStore {
         Ok(action)
     }
 
+    /// Read only the latest execution row, without materializing rounds or actions.
+    pub fn supervisor_execution(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<Option<SupervisorExecution>, StoreError> {
+        load_execution(&self.connection, workflow_id)
+    }
+
     pub fn supervisor_status(
         &self,
         workflow_id: Uuid,

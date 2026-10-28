@@ -40,6 +40,7 @@ pub struct FixtureLaunchGuard {
     source_digest: [u8; 32],
     copies: BTreeMap<AgentKind, PathBuf>,
     development_runtime: Option<(PathBuf, [u8; 32])>,
+    file_broker: Option<(PathBuf, [u8; 32])>,
 }
 
 impl fmt::Debug for FixtureLaunchGuard {
@@ -93,6 +94,7 @@ impl FixtureLaunchGuard {
             source_digest,
             copies,
             development_runtime: None,
+            file_broker: None,
         })
     }
 
@@ -103,9 +105,36 @@ impl FixtureLaunchGuard {
         Ok(self)
     }
 
+    /// Pin the actual file broker used by the synthetic controller.
+    /// This profile requires the Windows Job completion barrier.
+    pub fn with_file_broker(mut self, executable: &Path) -> Result<Self, DispatchError> {
+        if !cfg!(windows) {
+            return Err(DispatchError::ExecutionDisabled);
+        }
+        let executable = regular_canonical(executable)?;
+        self.file_broker = Some((executable.clone(), image_digest(&executable)?));
+        Ok(self)
+    }
+
+    pub fn file_broker_enabled(&self) -> bool {
+        self.file_broker.is_some()
+    }
+
+    pub fn profile_id(&self, alias: AgentKind) -> Result<&'static str, DispatchError> {
+        if self.file_broker.is_some() {
+            match alias {
+                AgentKind::Codex => Ok("codex_fixture_broker_v1"),
+                AgentKind::Claude => Ok("claude_fixture_broker_v1"),
+                _ => Err(DispatchError::ExecutionDisabled),
+            }
+        } else {
+            fixture_profile_id(alias)
+        }
+    }
+
     fn validate_route(&self, route: &DispatchRoute) -> Result<&'static str, DispatchError> {
         let invalid = DispatchError::ConfigExecutableInvalid;
-        let profile = fixture_profile_id(route.harness)?;
+        let profile = self.profile_id(route.harness)?;
         if !route.enabled || !route.allow_execution || !route.protocol.accepts(route.harness) {
             return Err(DispatchError::ExecutionDisabled);
         }
@@ -144,6 +173,9 @@ pub fn build_writable_fixture_launch_spec(
     guard: &FixtureLaunchGuard,
 ) -> Result<LaunchSpec, DispatchError> {
     let profile = guard.validate_route(route)?;
+    if guard.file_broker.is_some() && grant.run_dev_tests {
+        return Err(DispatchError::ExecutionDisabled);
+    }
     let grant_json = serde_json::to_string(&grant).map_err(|_| DispatchError::ConfigInvalid)?;
     let mut arguments = match route.protocol {
         NativeProtocol::CodexExec => vec!["exec".to_string(), "--json".to_string()],
@@ -161,6 +193,15 @@ pub fn build_writable_fixture_launch_spec(
         "--fixture_grant_json".to_string(),
         grant_json,
     ]);
+    if let Some((broker, digest)) = &guard.file_broker {
+        if regular_canonical(broker)? != *broker || image_digest(broker)? != *digest {
+            return Err(DispatchError::ConfigExecutableInvalid);
+        }
+        arguments.extend([
+            "--fixture_broker".to_string(),
+            broker.to_string_lossy().into_owned(),
+        ]);
+    }
     if let Some((runtime, digest)) = &guard.development_runtime {
         if regular_canonical(runtime)? != *runtime || image_digest(runtime)? != *digest {
             return Err(DispatchError::ConfigExecutableInvalid);
@@ -191,7 +232,7 @@ fn directory_canonical(path: &Path) -> Result<PathBuf, DispatchError> {
     Ok(canonical)
 }
 
-fn regular_canonical(path: &Path) -> Result<PathBuf, DispatchError> {
+pub(crate) fn regular_canonical(path: &Path) -> Result<PathBuf, DispatchError> {
     let invalid = DispatchError::ConfigExecutableInvalid;
     reject_reparse_components(path)?;
     let canonical = fs::canonicalize(path).map_err(|_| invalid)?;
@@ -219,11 +260,15 @@ fn reject_reparse_components(path: &Path) -> Result<(), DispatchError> {
     Ok(())
 }
 
-fn image_digest(path: &Path) -> Result<[u8; 32], DispatchError> {
+pub(crate) fn image_digest(path: &Path) -> Result<[u8; 32], DispatchError> {
+    image_digest_bounded(path, MAX_FIXTURE_IMAGE_BYTES)
+}
+
+pub(crate) fn image_digest_bounded(path: &Path, maximum: u64) -> Result<[u8; 32], DispatchError> {
     let invalid = DispatchError::ConfigExecutableInvalid;
     let mut file = File::open(path).map_err(|_| invalid)?;
     let metadata = file.metadata().map_err(|_| invalid)?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FIXTURE_IMAGE_BYTES {
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
         return Err(invalid);
     }
     let mut hasher = Sha256::new();
@@ -235,7 +280,7 @@ fn image_digest(path: &Path) -> Result<[u8; 32], DispatchError> {
             break;
         }
         total = total.checked_add(read as u64).ok_or(invalid)?;
-        if total > MAX_FIXTURE_IMAGE_BYTES {
+        if total > maximum {
             return Err(invalid);
         }
         hasher.update(&buffer[..read]);
@@ -492,5 +537,44 @@ mod tests {
             "unit tests run in the package root"
         );
         assert_eq!(regular_canonical(&drive_relative), Err(INVALID));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn file_broker_is_pinned_and_command_grants_are_refused() {
+        let fixture = fixture(b"synthetic built worker");
+        let broker = fixture.scratch.0.join(format!("broker{EXE_SUFFIX}"));
+        fs::write(&broker, b"synthetic broker image").unwrap();
+        let guard = register(&fixture, &[AgentKind::Codex])
+            .unwrap()
+            .with_file_broker(&broker)
+            .unwrap();
+        let route = route(
+            AgentKind::Codex,
+            &copy_path(&fixture.vendor, AgentKind::Codex),
+        );
+        let spec = build_writable_fixture_launch_spec(&route, WritableGrant::NONE, &guard).unwrap();
+        assert!(
+            spec.arguments
+                .iter()
+                .any(|value| value == "codex_fixture_broker_v1")
+        );
+        assert!(
+            spec.arguments
+                .iter()
+                .any(|value| value == "--fixture_broker")
+        );
+        let grant = WritableGrant {
+            run_dev_tests: true,
+            ..WritableGrant::NONE
+        };
+        assert_eq!(
+            build_writable_fixture_launch_spec(&route, grant, &guard),
+            Err(DispatchError::ExecutionDisabled)
+        );
+        fs::write(&broker, b"replaced image").unwrap();
+        assert_eq!(
+            build_writable_fixture_launch_spec(&route, WritableGrant::NONE, &guard),
+            Err(INVALID)
+        );
     }
 }

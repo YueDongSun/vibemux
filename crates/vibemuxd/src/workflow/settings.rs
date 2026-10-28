@@ -68,6 +68,9 @@ pub struct WorkflowConfig {
     pub verifier: VerifierConfig,
     #[serde(default)]
     pub gateway: Option<GatewayConfig>,
+    /// Explicit owner profiles; absent legacy configuration grants no planning entrypoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planning_profiles: Vec<super::planning_profile::PlanningProfile>,
     pub heartbeat_ms: u64,
     pub candidate_limits: CandidateLimits,
     /// Opt-in private content retention; `None` keeps no content.
@@ -230,6 +233,16 @@ fn validate(config: &WorkflowConfig) -> Result<(), WorkflowError> {
     // AAG route; only fixture workers may run without a gateway.
     if config.evidence_class == EvidenceClass::Live && config.gateway.is_none() {
         return Err(invalid());
+    }
+    if config.planning_profiles.len() > 16 {
+        return Err(invalid());
+    }
+    let mut profile_ids = std::collections::BTreeSet::new();
+    for profile in &config.planning_profiles {
+        if !profile_ids.insert(&profile.profile_id) {
+            return Err(invalid());
+        }
+        profile.validate(config)?;
     }
     let limits = config.candidate_limits;
     if limits.max_files == 0

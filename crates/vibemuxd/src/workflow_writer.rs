@@ -127,6 +127,25 @@ impl WriterHandle {
     ) -> Result<vibemux_workflow::supervisor::SupervisorAction, WriterError> {
         self.with_store(move |store| store.finish_supervisor_action(&finish))
     }
+    /// Both observations run in one serialized writer callback; no state is changed.
+    pub fn workflow_start_snapshot(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<
+        (
+            Option<WorkflowRecord>,
+            Option<vibemux_workflow::supervisor::SupervisorExecution>,
+        ),
+        WriterError,
+    > {
+        self.with_store(move |store| {
+            Ok((
+                store.workflow_record(workflow_id)?,
+                store.supervisor_execution(workflow_id)?,
+            ))
+        })
+    }
+
     pub fn supervisor_status(
         &self,
         workflow_id: Uuid,
@@ -258,6 +277,13 @@ impl WriterHandle {
     ) -> Result<vibemux_workflow::model_call::ModelCallRecord, WriterError> {
         self.with_store(move |store| store.finish_model_call(call_id, receipt, error_code))
     }
+    pub fn compiler_model_call(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<Option<vibemux_workflow::model_call::ModelCallRecord>, WriterError> {
+        self.with_store(move |store| store.compiler_model_call(workflow_id))
+    }
+
     pub fn model_call(
         &self,
         call_id: Uuid,

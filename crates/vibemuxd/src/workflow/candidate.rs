@@ -33,7 +33,7 @@ use super::{
     broker::{Delivery, acknowledge, store_content},
     collector::{Collection, CollectionScope, apply_manifests, collect},
     error::WorkflowError,
-    runtime::{RunContext, TurnPlan, TurnResult, TurnSpec, Unit},
+    runtime::{HeartbeatGuard, RunContext, TurnPlan, TurnResult, TurnSpec, Unit},
     turns::review_session_id,
     verifier_runner::run_suites,
 };
@@ -154,7 +154,7 @@ pub(crate) async fn worker_step(
         )
         .await?;
     let heartbeat = context.heartbeat(&lease);
-    let result = step_under_lease(context, state, &lease, input).await;
+    let result = step_under_lease(context, state, &lease, &heartbeat, input).await;
     drop(heartbeat);
     let settled = context.settle_lease(&lease, "worker_step_settled").await;
     let outcome = result?;
@@ -166,6 +166,7 @@ async fn step_under_lease(
     context: &RunContext,
     state: &mut UnitState,
     lease: &LeaseRecord,
+    heartbeat: &HeartbeatGuard,
     input: StepInput,
 ) -> Result<StepOutcome, WorkflowError> {
     let unit = state.unit.clone();
@@ -194,7 +195,9 @@ async fn step_under_lease(
     }
     let plan = context.render_plan(spec, &identity)?;
     retain_prompt(context, &plan).await?;
-    let turn = context.run_turn(&plan, &planned_deliveries).await?;
+    let turn = context
+        .run_turn(&plan, &planned_deliveries, heartbeat)
+        .await?;
     let delivered = if turn.delivery_applied {
         planned_deliveries
     } else {
@@ -410,7 +413,7 @@ pub(crate) async fn review_candidate(
             })
             .await?;
         retain_prompt(context, &plan).await?;
-        context.run_turn(&plan, &[]).await
+        context.run_turn(&plan, &[], &heartbeat).await
     }
     .await;
     drop(heartbeat);
@@ -495,6 +498,7 @@ pub(crate) async fn verify_subject(
         .ok_or(WorkflowError::Verifier)?;
     let scratch = context.setup.state.scratch(context.workflow_id);
     let suites = run_suites(
+        &context.dispatch,
         &context.setup.config,
         &trampoline,
         subject.suites,

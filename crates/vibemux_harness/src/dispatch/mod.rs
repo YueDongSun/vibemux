@@ -29,6 +29,8 @@ pub mod events;
 pub mod final_text;
 #[cfg(feature = "test_helpers")]
 pub mod fixture_guard;
+#[cfg(feature = "test_helpers")]
+pub mod installed_controller_guard;
 pub mod json_line_framer;
 pub mod launch_spec;
 pub mod observation;

@@ -105,6 +105,10 @@ impl StateFiles {
             .map_err(|_| WorkflowError::Internal)
     }
 
+    pub(crate) fn planning_root(&self) -> PathBuf {
+        self.root.join("planning")
+    }
+
     pub fn blobs(&self) -> BlobStore {
         BlobStore::new(self.root.join("blobs"))
     }

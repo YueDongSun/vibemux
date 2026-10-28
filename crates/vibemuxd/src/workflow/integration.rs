@@ -172,6 +172,14 @@ pub(crate) async fn clean_up_workspaces(
         .collect();
     let mut entries = Vec::new();
     for (key, workspace) in workspaces {
+        if context.dispatch.process_cleanup_pending() {
+            entries.push(CleanupEntry {
+                key,
+                removed: false,
+                reason_code: Some(WorkflowError::ProcessCleanupPending.code().to_string()),
+            });
+            continue;
+        }
         if !PathBuf::from(&workspace.path).exists() {
             entries.push(CleanupEntry {
                 key,
