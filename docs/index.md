@@ -1,5 +1,7 @@
 # Documentation Map
 
+- [Conversational web UI](conversational_web_ui.md), [ADR 056](adr/056_browser_local_chat.md), and [validation](conversational_web_ui_validation.md): optional browser-local Claude/Codex views and local startup.
+
 - [Unified CLI guide](guides/unified_cli_guide.md): common commands, output, and dashboard.
 - [Harness core guide](guides/harness_core_guide.md): bounded native requests and capture.
 - [Branch workflow](workflow/branch_workflow.md): branch roles, worktree layout, and Git boundaries.

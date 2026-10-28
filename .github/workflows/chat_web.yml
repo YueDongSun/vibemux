@@ -1,0 +1,27 @@
+name: Conversational web UI
+on:
+  push:
+    paths: ["crates/vibemux_chat/web/**", ".github/workflows/chat_web.yml"]
+  pull_request:
+    paths: ["crates/vibemux_chat/web/**", ".github/workflows/chat_web.yml"]
+permissions:
+  contents: read
+jobs:
+  web:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: crates/vibemux_chat/web/package-lock.json
+      - run: npm ci
+        working-directory: crates/vibemux_chat/web
+      - run: npm test
+        working-directory: crates/vibemux_chat/web
+      - run: npm run build
+        working-directory: crates/vibemux_chat/web

@@ -1,0 +1,27 @@
+{
+  "name": "vibemux_chat_web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5182 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5182 --strictPort",
+    "test": "node --test",
+    "dev_qa": "vite --host 127.0.0.1 --port 5182 --strictPort --mode qa"
+  },
+  "dependencies": {
+    "@lucide/svelte": "1.61.0",
+    "dompurify": "^3.2.7",
+    "highlight.js": "^11.11.1",
+    "marked": "^17.0.0",
+    "svelte": "5.57.2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "vite": "8.3.3"
+  }
+}

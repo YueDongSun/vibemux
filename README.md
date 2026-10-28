@@ -639,3 +639,7 @@ that cannot compose; pass `-SkipTui` to ignore it.
 - [docs/index.md](docs/index.md) — documentation map; [guides](docs/guides/), [branch workflow](docs/workflow/branch_workflow.md), and dated [reports](docs/reports/)
 - [docs/adr/040_native_harness_request_dispatch.md](docs/adr/040_native_harness_request_dispatch.md) and [docs/adr/041_unified_cli_and_workspace_layout.md](docs/adr/041_unified_cli_and_workspace_layout.md) — standalone native dispatch and the unified CLI
 - [PROGRESS.md](PROGRESS.md) — milestones, evidence, and release plan
+
+### Optional conversational web workspace
+
+The standalone Svelte chat UI in `crates/vibemux_chat/web` supports browser-local history, streaming Anthropic responses, attachments, Markdown and isolated artifact previews. Claude-inspired and Codex-inspired views share the same conversations; switch in the header or open `/?view=codex`. It is separate from the read-only VibeMux Monitor and does not execute harness tools or mutate daemon state. See [setup and behavior](docs/conversational_web_ui.md) and [validation evidence](docs/conversational_web_ui_validation.md).

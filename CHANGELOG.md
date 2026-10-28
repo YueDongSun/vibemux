@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the optional browser-local conversational workspace (ADR 056), with switchable Claude and Codex presentations, persistent history, streaming Anthropic chat, attachments, a context inspector and artifact previews. It remains separate from the monitor, native desktop and daemon state.
+
 - Add `vibemux_harness_native` (ADR 040): bounded native harness request dispatch for Codex app-server, Claude stream-json, and ACP (OpenCode, Copilot, Grok) with private full JSON capture, safe public summaries, process-tree containment through `vibemux_platform::ProcessTree` (the crate forbids unsafe code), configuration SHA-256 pinning, and the standalone `vibemux_harness_native`, `vibemux_harness_native_plugin`, and (test-only) `vibemux_harness_native_fixture` binaries. It coexists with the daemon-owned dispatch (ADR 029) and never writes canonical state.
 - Unify the daemon-free commands under `vibemuxctl` (ADR 041): `status`, `workspace status`, `probe`, `ui`, and `harness catalog|replay|probe|dispatch`, with `--format auto|text|json` (terminal text, JSON when redirected). The daemon lifecycle and the daemon-backed verbs (`harnesses`, `switch`, `dispatch`, `decide`, `decisions`, `workflow`, `slots`, `context`, `session`, `prompt`, `dsh`) are routed through the same command tree and keep their JSON contract; `daemon` now prints text in a terminal.
 - Add `vibemux_frontend::dashboard` and the `vibemux_dashboard` binary: a navigable, responsive read-only dashboard with deterministic offline snapshots (`vibemuxctl ui --once`), backed by `vibemux_probe::snapshot` (saved report or fixed local probe). The egui console stays `vibemux_frontend`.

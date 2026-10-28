@@ -422,3 +422,14 @@ The Python package (`src/vibemux/`) is the behavior reference and complete proto
 - A2A supervisor protocol: [docs/a2a_supervisor_protocol.md](a2a_supervisor_protocol.md)
 - A2A conformance procedure: [docs/a2a_conformance_validation.md](a2a_conformance_validation.md)
 - User entry / quick start: [README.md](../README.md)
+
+## Optional browser-local conversational workspace
+
+`crates/vibemux_chat/web` is an independent static Svelte app with Claude and
+Codex presentations. It stores versioned conversation records in its own browser
+namespace and sends explicit chat/API-validation requests directly to the fixed
+Anthropic HTTPS origin. Provider keys remain only in page memory. It has no
+control descriptor, database writer, canonical Run state or harness execution.
+The read-only monitor and native desktop retain their existing boundaries.
+[ADR 056](adr/056_browser_local_chat.md) records storage, preview and provider
+limits; [the guide](conversational_web_ui.md) gives startup commands.

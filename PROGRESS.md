@@ -7319,3 +7319,65 @@ the changes. The compile/test gates still run in CI only, for the same
 machine-local `cl.exe` reason recorded above; the next CI round is their
 first run against the fixed crate.
 
+
+### 2026-10-25 — Optional conversational web UI, local candidate
+
+**Status:** `PARTIAL` — the standalone browser-local frontend in
+`crates/vibemux_chat/web` is implemented and locally verified; live API
+access, hosted CI, integration and publication remain separate gates.
+It does not modify the ADR 033 read-only monitor, daemon state, Control
+protocol, SQLite schema or externally owned desktop workstream.
+
+The UI implements persistent/searchable conversations and management/undo,
+model/mode controls, streaming/cancellation/retry/edit/regenerate, attachment
+preparation, sanitized highlighted Markdown, sandboxed artifacts, themes,
+settings and keyboard controls. API keys remain in page memory only.
+
+A Codex-inspired sibling presentation now shares the same conversation store,
+draft, attachments, provider connection and streaming lifecycle. Manual interface
+selection persists without a page reload; a valid `?view=codex|claude` override
+is transient. Its context inspector shows recorded usage, sent files and the
+saved artifact, with a desktop aside and a smaller-screen dialog. This adds no
+Codex harness, Git operation or OpenAI provider integration.
+
+**Validation:** Windows 11 / Node 22.22.2; 58 focused checks passed; production
+build succeeded; npm audit reported 0 vulnerabilities; 30 light/dark semantic
+contrast pairs passed AA. Controlled browser flows passed at desktop,
+tablet and mobile sizes, with 300-message paging bounded to 40/80 rendered
+messages and no page-level horizontal overflow. The fresh production preview
+captured zero browser errors/warnings. Independent scoped source review
+passed after the reproduced duplication/export and welcome-draft attachment
+reset issues were fixed. No real provider key or inference was used.
+
+**Codex presentation follow-up:** 67 focused checks passed, including legacy
+settings compatibility, URL precedence and context derivation; 60 semantic
+contrast pairs passed AA across both presentations and themes. The production
+build succeeded. Controlled browser checks verified switching with a draft,
+attachment and active stream, model/mode controls, stop/retry/edit/resend,
+artifact download/context reopening, history actions/search/export, persisted
+appearance and 320px/390px mobile plus 1024px tablet layouts. The sibling source
+review passed after menu anchoring and tablet context-access fixes. Captured
+browser errors/warnings: zero. The provider and release limitations above remain.
+
+See `docs/conversational_web_ui.md`, ADR 056 (originally proposed as ADR 044), and
+`docs/conversational_web_ui_validation.md` for precise behavior and limits.
+
+### 2026-10-29 - Conversational UI integrated for source delivery
+
+The optional `crates/vibemux_chat/web` package now includes both the Claude and
+Codex presentations from the complete design worktree. Integration is based on
+the current remote-main tree, including the existing desktop skeleton. ADR 056
+records the independent browser-local boundary; no daemon, native desktop,
+Control, store schema or harness implementation changes are included.
+
+Fresh native Windows / Node 24.19.0 verification passed all 67 UI tests and the
+production build. The built preview serves on loopback port 5182; development
+fixture markers are absent from the bundle. The dependency audit passed the
+moderate threshold with two low-severity development-tool advisories and no
+available fix. Current source review found a documentation overclaim about
+artifact networking; the guide and ADR now distinguish resource restrictions
+from frame self-navigation. Earlier visual/interaction evidence remains dated
+2026-10-25. Current browser automation timed out during startup, so no fresh
+visual walkthrough, live API inference, Linux run or hosted CI is claimed.
+
+See `docs/conversational_web_ui_validation.md` for current checks and limits.
