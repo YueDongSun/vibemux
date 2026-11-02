@@ -1,0 +1,9 @@
+{
+  "name": "@vibemux/deep_merge_compat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Locally maintained deepmerge 4 API compatibility with prototype-poisoning defenses",
+  "main": "index.cjs",
+  "license": "MIT",
+  "files": ["index.cjs", "license", "readme.md"]
+}

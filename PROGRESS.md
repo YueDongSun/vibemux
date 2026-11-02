@@ -25,6 +25,7 @@
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 | Development container | Optional [frontend profile](.devcontainer/vibemux_frontend/readme.md) configured for Node 22.22.0 and both npm lockfiles; container-build and native-platform acceptance remain unverified |
+| Dependency audit remediation | Both frontend trees use the reviewed [deep-merge compatibility patch](tools/deep_merge_compat/readme.md) and scoped Workbox dependency updates; regression tests run in both frontend test commands, with existing audit thresholds preserved |
 
 ### Status vocabulary
 

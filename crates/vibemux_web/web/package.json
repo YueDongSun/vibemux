@@ -10,7 +10,7 @@
     "dev": "vite --config vite_config.ts",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "build": "vite build --config vite_config.ts",
-    "test": "node --experimental-strip-types --test tests/presentation_policy_test.ts tests/cache_policy_test.ts tests/console_policy_test.ts",
+    "test": "node --test ../../../tools/deep_merge_compat/tests/security_test.cjs && node --experimental-strip-types --test tests/presentation_policy_test.ts tests/cache_policy_test.ts tests/console_policy_test.ts",
     "audit": "npm audit --audit-level=moderate"
   },
   "dependencies": {
@@ -19,9 +19,17 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@types/node": "26.6.4",
+    "deepmerge": "file:../../../tools/deep_merge_compat",
     "svelte-check": "4.7.6",
     "typescript": "5.9.3",
     "vite": "8.3.3",
     "vite-plugin-pwa": "2.0.0"
+  },
+  "overrides": {
+    "deepmerge": "$deepmerge",
+    "workbox-build": {
+      "glob": "14.0.2",
+      "@trickfilm400/rollup-plugin-off-main-thread": "4.0.0"
+    }
   }
 }
