@@ -24,6 +24,7 @@
 | Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
+| Development container | Optional [frontend profile](.devcontainer/vibemux_frontend/readme.md) configured for Node 22.22.0 and both npm lockfiles; container-build and native-platform acceptance remain unverified |
 
 ### Status vocabulary
 
