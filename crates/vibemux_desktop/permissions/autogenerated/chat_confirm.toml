@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-confirm"
+description = "Enables the chat_confirm command without any pre-configured scope."
+commands.allow = ["chat_confirm"]
+
+[[permission]]
+identifier = "deny-chat-confirm"
+description = "Denies the chat_confirm command without any pre-configured scope."
+commands.deny = ["chat_confirm"]

@@ -4,25 +4,13 @@
 //! been delivered. The daemon owns the attempt; this only observes it, and a
 //! cancel is a request the daemon commits.
 
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
-};
-
+use std::time::Duration;
 use uuid::Uuid;
-use vibemux_harness::dispatch::{DispatchError, DispatchPhase, DispatchRequest, NativeProtocol};
-use vibemuxd::{
-    control::HarnessDispatchOutputQuery,
-    harness_dispatch::{DispatchOutputPage, OutputReassembler},
-};
-
-use super::reply_text::ReplyText;
+use vibemux_harness::dispatch::DispatchPhase;
 
 /// How long the GUI waits on one Ask before giving up on it. The daemon's
 /// own route deadline (600 s by default) normally ends it first.
 pub const ASK_DEADLINE: Duration = Duration::from_secs(15 * 60);
-/// Output pages read per poll, so a burst cannot starve status reads.
-const MAX_PAGES_PER_TICK: usize = 32;
 
 /// Where an Ask stands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,17 +49,6 @@ pub struct AttemptStatus {
     pub error_code: Option<String>,
 }
 
-/// The daemon operations one Ask uses. Errors are stable codes.
-pub(crate) trait DispatchPort {
-    async fn submit(&mut self, request: &DispatchRequest) -> Result<NativeProtocol, String>;
-    async fn status(&mut self, request_id: Uuid) -> Result<AttemptStatus, String>;
-    async fn output(
-        &mut self,
-        query: HarnessDispatchOutputQuery,
-    ) -> Result<DispatchOutputPage, String>;
-    async fn cancel(&mut self, request_id: Uuid) -> Result<(), String>;
-}
-
 /// The end an attempt in `status` has reached, if any.
 #[must_use]
 pub fn attempt_end(status: &AttemptStatus) -> Option<AskEnd> {
@@ -86,179 +63,54 @@ pub fn attempt_end(status: &AttemptStatus) -> Option<AskEnd> {
                 .clone()
                 .unwrap_or_else(|| "dispatch_failed".to_string()),
         )),
-        // The daemon restarted mid-run; an operator must cancel it.
-        DispatchPhase::RecoveryPending => {
-            Some(AskEnd::Failed("dispatch_recovery_pending".to_string()))
-        }
+        // A recovery reservation remains active until an operator decides.
+        DispatchPhase::RecoveryPending => None,
     }
 }
 
-/// Runs one Ask to its end, reporting every observation to `sink`. Setting
-/// `cancel` asks the daemon to cancel; the Ask still ends only when the
-/// daemon reports the attempt settled.
-pub(crate) async fn drive<P: DispatchPort>(
+/// Legacy presentation adapter over the same canonical observation driver.
+#[cfg(test)]
+pub(crate) async fn drive<P: super::driver::DispatchPort>(
     port: &mut P,
-    request: DispatchRequest,
-    cancel: &AtomicBool,
+    request: vibemux_harness::dispatch::DispatchRequest,
+    cancel: &std::sync::atomic::AtomicBool,
     poll_interval: Duration,
     deadline: Duration,
     mut sink: impl FnMut(AskUpdate),
 ) {
-    let request_id = request.request_id;
-    let mut report = |phase, reply: &ReplyText, end: Option<AskEnd>| {
-        sink(AskUpdate {
-            request_id,
-            phase,
-            reply: reply.text(),
-            truncated: reply.truncated(),
-            end,
-        });
-    };
-    let mut reply = ReplyText::default();
-    report(AskPhase::Submitting, &reply, None);
-    let protocol = match port.submit(&request).await {
-        Ok(protocol) => protocol,
-        Err(code) => {
-            report(AskPhase::Finished, &reply, Some(AskEnd::Failed(code)));
-            return;
-        }
-    };
-    let started = Instant::now();
-    let mut reassembler = OutputReassembler::starting_after(0);
-    let mut cancel_sent = false;
-    loop {
-        if cancel.load(Ordering::Acquire) && !cancel_sent {
-            cancel_sent = true;
-            if let Err(code) = port.cancel(request_id).await {
-                report(AskPhase::Finished, &reply, Some(AskEnd::Failed(code)));
-                return;
-            }
-        }
-        let output =
-            match read_output(port, request_id, protocol, &mut reassembler, &mut reply).await {
-                Ok(output) => output,
-                Err(code) => {
-                    abandon(port, request_id, cancel_sent).await;
-                    report(AskPhase::Finished, &reply, Some(AskEnd::Failed(code)));
-                    return;
-                }
-            };
-        let status = match port.status(request_id).await {
-            Ok(status) => status,
-            Err(code) => {
-                abandon(port, request_id, cancel_sent).await;
-                report(AskPhase::Finished, &reply, Some(AskEnd::Failed(code)));
-                return;
-            }
-        };
-        if let Some(end) = attempt_end(&status) {
-            match output {
-                OutputState::Delivered => {
-                    report(AskPhase::Finished, &reply, Some(end));
-                    return;
-                }
-                // A settled attempt without a transcript either never
-                // launched, and its own end says why, or its reply was
-                // evicted from daemon memory.
-                OutputState::Missing => {
-                    let end = match end {
-                        AskEnd::Completed | AskEnd::Unverified => {
-                            AskEnd::Failed(DispatchError::OutputUnavailable.code().to_string())
-                        }
-                        other => other,
-                    };
-                    report(AskPhase::Finished, &reply, Some(end));
-                    return;
-                }
-                // Read the rest on the next pass.
-                OutputState::Partial => {}
-            }
-        }
-        if started.elapsed() >= deadline {
-            abandon(port, request_id, cancel_sent).await;
-            let end = AskEnd::Failed("ask_timeout".to_string());
-            report(AskPhase::Finished, &reply, Some(end));
-            return;
-        }
-        let phase = if cancel_sent {
-            AskPhase::Cancelling
-        } else {
-            AskPhase::Running
-        };
-        report(phase, &reply, None);
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
-/// How much of an attempt's output this pass read.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OutputState {
-    /// More records may follow.
-    Partial,
-    /// The attempt finished and every record was read.
-    Delivered,
-    /// No transcript: the attempt has not launched yet, never launched, or
-    /// its output was evicted.
-    Missing,
-}
-
-/// Reads up to [`MAX_PAGES_PER_TICK`] output pages into `reply`.
-async fn read_output<P: DispatchPort>(
-    port: &mut P,
-    request_id: Uuid,
-    protocol: NativeProtocol,
-    reassembler: &mut OutputReassembler,
-    reply: &mut ReplyText,
-) -> Result<OutputState, String> {
-    for _ in 0..MAX_PAGES_PER_TICK {
-        let query = HarnessDispatchOutputQuery {
-            request_id,
-            cursor: reassembler.cursor(),
-        };
-        let page = match port.output(query).await {
-            Ok(page) => page,
-            Err(code) if code == DispatchError::OutputUnavailable.code() => {
-                return Ok(OutputState::Missing);
-            }
-            Err(code) => return Err(code),
-        };
-        let more = !page.fragments.is_empty();
-        let complete = page.complete;
-        let records = reassembler
-            .accept(page)
-            .map_err(|_| "dispatch_output_inconsistent".to_string())?;
-        for record in records {
-            if let Ok(value) = serde_json::from_str(&record.raw_json) {
-                reply.absorb(protocol, &value);
-            }
-        }
-        if complete {
-            return Ok(OutputState::Delivered);
-        }
-        if !more {
-            break;
-        }
-    }
-    Ok(OutputState::Partial)
-}
-
-/// Best effort: asks the daemon to cancel an attempt this Ask stops
-/// following, so it does not hold the folder's one dispatch slot.
-async fn abandon<P: DispatchPort>(port: &mut P, request_id: Uuid, cancel_sent: bool) {
-    if !cancel_sent {
-        let _ = port.cancel(request_id).await;
-    }
+    use super::driver::{self, AskOperation, DriverControl, DriverTiming};
+    use std::sync::atomic::AtomicBool;
+    driver::drive_observed(
+        port,
+        AskOperation::Submit(request),
+        DriverControl {
+            cancel,
+            stop: &AtomicBool::new(false),
+        },
+        DriverTiming {
+            poll_interval,
+            deadline,
+        },
+        |observation| sink(observation.update),
+    )
+    .await;
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::driver::DispatchPort;
+    use super::super::observation::{AskAdmission, AskCanonicalStatus, SubmitError};
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use vibemux_harness::dispatch::{DispatchRequest, NativeProtocol};
     use vibemux_harness::{
         AgentKind,
         dispatch::{ObservationKind, request::DISPATCH_REQUEST_SCHEMA_VERSION},
     };
+    use vibemux_types::{RunId, TaskId};
     use vibemuxd::harness_dispatch::{DispatchOutputFragment, OutputCursor};
+    use vibemuxd::{control::HarnessDispatchOutputQuery, harness_dispatch::DispatchOutputPage};
 
     /// Scripted daemon: each output call takes the next page, each status
     /// call the next phase (the last one repeats).
@@ -272,16 +124,48 @@ mod tests {
     }
 
     impl DispatchPort for FakePort {
-        async fn submit(&mut self, _: &DispatchRequest) -> Result<NativeProtocol, String> {
-            self.submit.clone()
+        async fn submit(&mut self, request: &DispatchRequest) -> Result<AskAdmission, SubmitError> {
+            self.submit
+                .clone()
+                .map(|protocol| AskAdmission {
+                    request_id: request.request_id,
+                    task_id: TaskId::from_uuid(Uuid::from_u128(1)).expect("task"),
+                    run_id: RunId::from_uuid(Uuid::from_u128(2)).expect("run"),
+                    harness: request.harness,
+                    protocol,
+                    phase: DispatchPhase::Admitted,
+                    duplicate: false,
+                    sequence: 1,
+                })
+                .map_err(|code| SubmitError {
+                    code,
+                    uncertain: false,
+                })
         }
-        async fn status(&mut self, _: Uuid) -> Result<AttemptStatus, String> {
+        async fn status(&mut self, request_id: Uuid) -> Result<AskCanonicalStatus, String> {
             let phase = if self.phases.len() > 1 {
                 self.phases.pop_front().expect("phase")
             } else {
                 *self.phases.front().expect("phase")
             };
-            Ok(AttemptStatus {
+            let protocol = *self.submit.as_ref().expect("protocol");
+            Ok(AskCanonicalStatus {
+                request_id,
+                task_id: TaskId::from_uuid(Uuid::from_u128(1)).expect("task"),
+                run_id: RunId::from_uuid(Uuid::from_u128(2)).expect("run"),
+                harness: if protocol == NativeProtocol::ClaudeStreamJson {
+                    AgentKind::Claude
+                } else {
+                    AgentKind::Codex
+                },
+                protocol,
+                version: match phase {
+                    DispatchPhase::Admitted => 1,
+                    DispatchPhase::Running => 2,
+                    DispatchPhase::CancelRequested => 3,
+                    _ => 4,
+                },
+                outcome: None,
                 phase,
                 error_code: (phase == DispatchPhase::Failed)
                     .then(|| "dispatch_vendor_failed".into()),
@@ -350,14 +234,27 @@ mod tests {
 
     async fn run(port: &mut FakePort, cancel: bool) -> Vec<AskUpdate> {
         let mut updates = Vec::new();
-        let flag = AtomicBool::new(cancel);
+        let flag = AtomicBool::new(false);
+        let mut request = request();
+        if port
+            .submit
+            .as_ref()
+            .is_ok_and(|protocol| *protocol != NativeProtocol::ClaudeStreamJson)
+        {
+            request.harness = AgentKind::Codex;
+        }
         drive(
             port,
-            request(),
+            request,
             &flag,
             Duration::from_millis(1),
             Duration::from_secs(5),
-            |update| updates.push(update),
+            |update| {
+                if cancel && update.phase == AskPhase::Running {
+                    flag.store(true, Ordering::Release);
+                }
+                updates.push(update);
+            },
         )
         .await;
         updates
@@ -523,7 +420,7 @@ mod tests {
             cancels: 0,
         };
         let last = run(&mut evicted, false).await.pop().expect("final");
-        assert_eq!(last.end, Some(AskEnd::Failed(UNAVAILABLE.into())));
+        assert_eq!(last.end, Some(AskEnd::Completed));
     }
 
     #[tokio::test]
@@ -540,7 +437,10 @@ mod tests {
             last.end,
             Some(AskEnd::Failed("control_connection_failed".into()))
         );
-        assert_eq!(lost.cancels, 1, "the daemon is asked to stop the attempt");
+        assert_eq!(
+            lost.cancels, 1,
+            "the owning submitter requests best-effort cancellation"
+        );
 
         let mut slow = FakePort {
             submit: Ok(NativeProtocol::ClaudeStreamJson),
@@ -578,9 +478,6 @@ mod tests {
             attempt_end(&status(DispatchPhase::Unverified)),
             Some(AskEnd::Unverified)
         );
-        assert_eq!(
-            attempt_end(&status(DispatchPhase::RecoveryPending)),
-            Some(AskEnd::Failed("dispatch_recovery_pending".into()))
-        );
+        assert_eq!(attempt_end(&status(DispatchPhase::RecoveryPending)), None);
     }
 }

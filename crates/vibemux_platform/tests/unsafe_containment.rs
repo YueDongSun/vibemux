@@ -1,7 +1,7 @@
 //! Mechanical enforcement of the workspace `unsafe` containment policy
-//! (ADR 020/025/029): `vibemux_platform` denies unsafe at the crate root and
-//! allows it in exactly two reviewed modules (`windows_acl_native`, ADR 025;
-//! `process_tree/windows_job_object`, ADR 029), and every other workspace
+//! (ADR 020/025/029/068): `vibemux_platform` denies unsafe at the crate root and
+//! allows it in exactly three reviewed modules (`windows_acl_native`, ADR 025;
+//! `process_tree/windows_job_object`, ADR 029; `windows_file_identity`, ADR 068), and every other workspace
 //! library crate keeps `#![forbid(unsafe_code)]`. Review code alone drifts
 //! (code-review V13 finding on issue #8); these tests fail the moment
 //! another module opts into unsafe or a crate root loses its lint.
@@ -72,12 +72,13 @@ fn unsafe_allow_is_confined_to_the_reviewed_modules() {
             1,
         ),
         (crate_root().join("src/windows_acl_native.rs"), 1),
+        (crate_root().join("src/windows_file_identity.rs"), 1),
     ];
     reviewed.sort();
     assert_eq!(
         allow_sites, reviewed,
         "`#![allow(unsafe_code)]` must appear exactly once in each module \
-         ADR 025 and ADR 029 reviewed; any other site widens the unsafe \
+         ADR 025, ADR 029 and ADR 068 reviewed; any other site widens the unsafe \
          surface without an accepted ADR"
     );
 }

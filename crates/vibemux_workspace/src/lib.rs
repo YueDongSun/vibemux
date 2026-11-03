@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
+    fmt,
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
@@ -31,6 +33,7 @@ const REAP_DEADLINE: Duration = Duration::from_secs(2);
 const MAX_ARTIFACT_BYTES: usize = 32 * 1024;
 const MAX_OWNER_RECEIPT_BYTES: usize = 16 * 1024;
 const OWNER_RECEIPT_NAME: &str = "vibemux_owner.json";
+const MAX_INVENTORY_RECORD_ATTRIBUTES: usize = 5;
 
 #[derive(Clone)]
 pub struct WorkspaceManager {
@@ -39,6 +42,21 @@ pub struct WorkspaceManager {
     managed: PathBuf,
     common_git_dir: PathBuf,
     base_commit: String,
+}
+
+/// Inert cleanup observations. Callers retain OS identity pins, canonical
+/// ownership, execution authority and their resource gate independently.
+#[derive(Clone)]
+pub struct CleanupObservation {
+    pub repository_root: PathBuf,
+    pub common_git_dir: PathBuf,
+    pub head_commit: String,
+}
+
+impl fmt::Debug for CleanupObservation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CleanupObservation(<redacted>)")
+    }
 }
 
 #[derive(Debug, Error)]
@@ -95,6 +113,24 @@ impl WorkspaceManager {
         repo: PathBuf,
         base_commit: String,
     ) -> Result<Self, WorkspaceError> {
+        Self::open(git, repo, base_commit, true).await
+    }
+
+    /// Opens existing managed metadata without creating a missing namespace.
+    pub async fn open_existing(
+        git: PathBuf,
+        repo: PathBuf,
+        base_commit: String,
+    ) -> Result<Self, WorkspaceError> {
+        Self::open(git, repo, base_commit, false).await
+    }
+
+    async fn open(
+        git: PathBuf,
+        repo: PathBuf,
+        base_commit: String,
+        create_managed: bool,
+    ) -> Result<Self, WorkspaceError> {
         if !matches!(base_commit.len(), 40 | 64)
             || !base_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
@@ -148,9 +184,14 @@ impl WorkspaceManager {
             let common_git_dir = canonical_output_path(&owned, &common)?;
             require_plain_directory(&common_git_dir)?;
             let state = owned.join(".vibemux");
-            ensure_plain_directory(&state)?;
             let managed = state.join("worktrees");
-            ensure_plain_directory(&managed)?;
+            if create_managed {
+                ensure_plain_directory(&state)?;
+                ensure_plain_directory(&managed)?;
+            } else {
+                require_plain_directory(&state)?;
+                require_plain_directory(&managed)?;
+            }
             let managed =
                 std::fs::canonicalize(managed).map_err(|_| WorkspaceError::InvalidPath)?;
             if managed.parent().and_then(Path::parent) != Some(owned.as_path()) {
@@ -172,8 +213,36 @@ impl WorkspaceManager {
         &self.base_commit
     }
 
+    /// The deterministic record for a planned worktree creation: the managed
+    /// `<run_id>` path, the `codex/run_<uuid>` branch, this manager's base
+    /// commit, and a fresh ownership token. Planning has no Git or filesystem
+    /// effect; the caller persists the plan, then `create_planned` executes
+    /// exactly that record.
+    pub fn plan(&self, run_id: RunId) -> Result<RunWorkspace, WorkspaceError> {
+        Ok(RunWorkspace {
+            path: path_text(&self.managed.join(run_id.to_string()))?,
+            branch: format!("codex/run_{}", run_id.as_uuid().simple()),
+            base_commit: self.base_commit.clone(),
+            ownership_token: uuid::Uuid::new_v4().simple().to_string(),
+        })
+    }
+
     pub async fn create(&self, run_id: RunId) -> Result<RunWorkspace, WorkspaceError> {
-        let path = self.managed.join(run_id.to_string());
+        let record = self.plan(run_id)?;
+        self.create_planned(run_id, &record).await
+    }
+
+    /// Executes a persisted plan. The record must bind exactly to this
+    /// manager and `run_id` (path, branch, base commit) before any effect; the
+    /// supplied ownership token is the one written into the receipt. Any
+    /// existing destination — including one matching the plan — is refused.
+    pub async fn create_planned(
+        &self,
+        run_id: RunId,
+        record: &RunWorkspace,
+    ) -> Result<RunWorkspace, WorkspaceError> {
+        self.validate_plan_binding(run_id, record)?;
+        let path = PathBuf::from(&record.path);
         let manager = self.clone();
         let prospective = path.clone();
         blocking(move || {
@@ -184,26 +253,19 @@ impl WorkspaceManager {
             }
         })
         .await?;
-        let branch = format!("codex/run_{}", run_id.as_uuid().simple());
         self.git(
             &self.repo,
             &[
                 "worktree".into(),
                 "add".into(),
                 "-b".into(),
-                branch.clone().into(),
+                record.branch.clone().into(),
                 git_path(&path)?,
                 self.base_commit.clone().into(),
             ],
         )
         .await?;
-        let record = RunWorkspace {
-            path: path_text(&path)?,
-            branch,
-            base_commit: self.base_commit.clone(),
-            ownership_token: uuid::Uuid::new_v4().simple().to_string(),
-        };
-        let paths = self.resolve_owned_paths(&record).await?;
+        let paths = self.resolve_owned_paths(record).await?;
         let manager = self.clone();
         blocking(move || {
             manager.validate_owned_paths(&paths.path, &paths.git_dir)?;
@@ -219,8 +281,26 @@ impl WorkspaceManager {
                 .map_err(|_| WorkspaceError::InvalidPath)
         })
         .await?;
-        self.inspect(&record).await?;
-        Ok(record)
+        self.inspect(record).await?;
+        Ok(record.clone())
+    }
+
+    /// Exact binding of a planned record to this manager and `run_id`, before
+    /// any effect. The ownership token is not manager-bound: it is persisted
+    /// by the caller and used verbatim in the receipt.
+    fn validate_plan_binding(
+        &self,
+        run_id: RunId,
+        record: &RunWorkspace,
+    ) -> Result<(), WorkspaceError> {
+        record.validate().map_err(|_| WorkspaceError::InvalidPath)?;
+        if record.path != path_text(&self.managed.join(run_id.to_string()))?
+            || record.branch != format!("codex/run_{}", run_id.as_uuid().simple())
+            || record.base_commit != self.base_commit
+        {
+            return Err(WorkspaceError::InvalidPath);
+        }
+        Ok(())
     }
 
     pub async fn inspect(&self, record: &RunWorkspace) -> Result<(), WorkspaceError> {
@@ -370,6 +450,126 @@ impl WorkspaceManager {
             return Err(WorkspaceError::UnsafeCleanup);
         }
         Ok(())
+    }
+
+    /// Reads an exact owned, fully clean worktree without deleting or reserving
+    /// it. A clean committed HEAD may differ from the original base commit.
+    pub async fn observe_cleanup(
+        &self,
+        record: &RunWorkspace,
+    ) -> Result<CleanupObservation, WorkspaceError> {
+        self.plan_cleanup(record).await?;
+        let head_commit = self.head_commit(record).await?;
+        if !valid_commit_id(&head_commit) {
+            return Err(WorkspaceError::Git);
+        }
+        Ok(CleanupObservation {
+            repository_root: self.repo.clone(),
+            common_git_dir: self.common_git_dir.clone(),
+            head_commit,
+        })
+    }
+
+    /// Constructor-validated canonical repository/common-directory binding.
+    /// A cleanup caller compares and pins these even when the target is absent;
+    /// `observe_removed` then rechecks Git's live binding against this manager.
+    pub fn cleanup_repository_paths(&self) -> (&Path, &Path) {
+        (&self.repo, &self.common_git_dir)
+    }
+
+    /// Observes postconditions without removal, pruning or branch mutation.
+    /// The recorded branch must be unattached at every listed worktree path.
+    /// A positive result is not executor quiescence or OS identity authority.
+    pub async fn observe_removed(
+        &self,
+        record: &RunWorkspace,
+        approved_head: &str,
+    ) -> Result<bool, WorkspaceError> {
+        if !valid_commit_id(approved_head) {
+            return Err(WorkspaceError::InvalidPath);
+        }
+        let manager = self.clone();
+        let binding = record.clone();
+        if !blocking(move || manager.absent_cleanup_slot(&binding)).await? {
+            return Ok(false);
+        }
+
+        let root = self
+            .git(&self.repo, &["rev-parse".into(), "--show-toplevel".into()])
+            .await?;
+        let common = self
+            .git(&self.repo, &["rev-parse".into(), "--git-common-dir".into()])
+            .await?;
+        let manager = self.clone();
+        blocking(move || {
+            manager.validate_ancestry()?;
+            if canonical_output_path(&manager.repo, &root)? != manager.repo
+                || canonical_output_path(&manager.repo, &common)? != manager.common_git_dir
+            {
+                return Err(WorkspaceError::InvalidPath);
+            }
+            Ok(())
+        })
+        .await?;
+
+        // Keep Git 2.34-compatible line mode. Parsing validates the complete
+        // bounded source before absence is considered, including foreign rows.
+        let inventory = self
+            .git(
+                &self.repo,
+                &["worktree".into(), "list".into(), "--porcelain".into()],
+            )
+            .await?;
+        let entries = parse_inventory(&inventory)?;
+        let target = path_key(&record.path);
+        let target_branch = format!("refs/heads/{}", record.branch);
+        if entries.iter().any(|entry| {
+            entry.path == target
+                || entry.branch.as_ref().is_some_and(|branch| {
+                    if cfg!(windows) {
+                        branch.eq_ignore_ascii_case(&target_branch)
+                    } else {
+                        branch == &target_branch
+                    }
+                })
+        }) {
+            return Ok(false);
+        }
+        let retained_head = self
+            .git(
+                &self.repo,
+                &[
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    format!("refs/heads/{}^{{commit}}", record.branch).into(),
+                ],
+            )
+            .await?;
+        let retained_head = retained_head.trim();
+        if !valid_commit_id(retained_head) {
+            return Err(WorkspaceError::Git);
+        }
+        if !retained_head.eq_ignore_ascii_case(approved_head) {
+            return Ok(false);
+        }
+        let manager = self.clone();
+        let binding = record.clone();
+        blocking(move || manager.absent_cleanup_slot(&binding)).await
+    }
+
+    fn absent_cleanup_slot(&self, record: &RunWorkspace) -> Result<bool, WorkspaceError> {
+        self.validate_ancestry()?;
+        let run_id = Path::new(&record.path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.parse::<RunId>().ok())
+            .ok_or(WorkspaceError::InvalidPath)?;
+        self.validate_plan_binding(run_id, record)?;
+        match std::fs::symlink_metadata(&record.path) {
+            Ok(_) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(_) => Err(WorkspaceError::InvalidPath),
+        }
     }
 
     /// The commit an owned worktree's `HEAD` points at. A candidate is
@@ -721,39 +921,152 @@ fn inventory_matches(inventory: &str, path: &str, branch: &str) -> bool {
     // containing '\n' could otherwise forge field lines inside the inventory.
     // Owned worktree paths are generated (UUID-suffixed) and never contain a
     // newline, so the fail-closed arm is unreachable for legitimate records.
-    if path.contains('\n') || branch.contains('\n') {
+    if path.chars().any(char::is_control) || branch.chars().any(char::is_control) {
         return false;
     }
     let expected = path_key(path);
     let expected_branch = format!("refs/heads/{branch}");
-    let mut listed_path = None;
-    let mut listed_branch = None;
-    let mut matches = 0;
-    let mut unsafe_entry = false;
-    for line in inventory.split('\n').chain(std::iter::once("")) {
+    parse_inventory(inventory).is_ok_and(|entries| {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.path == expected
+                    && entry.branch.as_deref() == Some(expected_branch.as_str())
+                    && !entry.unsafe_entry
+            })
+            .count()
+            == 1
+    })
+}
+
+struct InventoryEntry {
+    path: String,
+    branch: Option<String>,
+    unsafe_entry: bool,
+}
+
+fn valid_commit_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn parse_inventory(inventory: &str) -> Result<Vec<InventoryEntry>, WorkspaceError> {
+    if inventory.len() > MAX_GIT_OUTPUT {
+        return Err(WorkspaceError::OutputLimit);
+    }
+    let mut entries = Vec::new();
+    let mut paths = BTreeSet::new();
+    let mut branches = BTreeSet::new();
+    let mut record = Vec::new();
+    for line in inventory.lines().chain(std::iter::once("")) {
         if line.is_empty() {
-            if listed_path.as_deref() == Some(expected.as_str())
-                && listed_branch == Some(expected_branch.as_str())
-                && !unsafe_entry
-            {
-                matches += 1;
+            if record.is_empty() {
+                continue;
             }
-            listed_path = None;
-            listed_branch = None;
-            unsafe_entry = false;
-        } else if let Some(value) = line.strip_prefix("worktree ") {
-            listed_path = Some(path_key(value));
-        } else if let Some(value) = line.strip_prefix("branch ") {
-            listed_branch = Some(value);
-        } else if line == "bare"
-            || line == "detached"
-            || line.starts_with("locked")
-            || line.starts_with("prunable")
-        {
-            unsafe_entry = true;
+            let entry = parse_inventory_entry(&record)?;
+            if !paths.insert(entry.path.clone()) {
+                return Err(WorkspaceError::Git);
+            }
+            if let Some(branch) = &entry.branch {
+                let key = if cfg!(windows) {
+                    branch.to_ascii_lowercase()
+                } else {
+                    branch.clone()
+                };
+                if !branches.insert(key) {
+                    return Err(WorkspaceError::Git);
+                }
+            }
+            entries.push(entry);
+            record.clear();
+        } else {
+            if record.len() == MAX_INVENTORY_RECORD_ATTRIBUTES || line.chars().any(char::is_control)
+            {
+                return Err(WorkspaceError::Git);
+            }
+            record.push(line);
         }
     }
-    matches == 1
+    if entries.is_empty() {
+        return Err(WorkspaceError::Git);
+    }
+    Ok(entries)
+}
+
+fn parse_inventory_entry(record: &[&str]) -> Result<InventoryEntry, WorkspaceError> {
+    let path = record
+        .first()
+        .and_then(|line| line.strip_prefix("worktree "))
+        .filter(|value| valid_inventory_path(value))
+        .ok_or(WorkspaceError::Git)?;
+    let mut head = None;
+    let mut branch = None;
+    let mut bare = false;
+    let mut detached = false;
+    let mut locked = false;
+    let mut prunable = false;
+    for line in &record[1..] {
+        if let Some(value) = line.strip_prefix("HEAD ") {
+            if head.replace(value).is_some() || !valid_commit_id(value) {
+                return Err(WorkspaceError::Git);
+            }
+        } else if let Some(value) = line.strip_prefix("branch ") {
+            if branch.replace(value).is_some()
+                || !value
+                    .strip_prefix("refs/heads/")
+                    .is_some_and(|name| !name.is_empty() && !name.chars().any(char::is_whitespace))
+            {
+                return Err(WorkspaceError::Git);
+            }
+        } else if *line == "bare" && !bare {
+            bare = true;
+        } else if *line == "detached" && !detached {
+            detached = true;
+        } else if (*line == "locked"
+            || line
+                .strip_prefix("locked ")
+                .is_some_and(|reason| !reason.is_empty()))
+            && !locked
+        {
+            locked = true;
+        } else if (*line == "prunable"
+            || line
+                .strip_prefix("prunable ")
+                .is_some_and(|reason| !reason.is_empty()))
+            && !prunable
+        {
+            prunable = true;
+        } else {
+            return Err(WorkspaceError::Git);
+        }
+    }
+    if (bare && (head.is_some() || branch.is_some() || detached))
+        || (!bare && (head.is_none() || (branch.is_some() == detached)))
+    {
+        return Err(WorkspaceError::Git);
+    }
+    Ok(InventoryEntry {
+        path: path_key(path),
+        branch: branch.map(str::to_owned),
+        unsafe_entry: bare || detached || locked || prunable,
+    })
+}
+
+fn valid_inventory_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let absolute = value.starts_with('/')
+        || value.starts_with("\\\\")
+        || (bytes.first().is_some_and(u8::is_ascii_alphabetic)
+            && bytes.get(1) == Some(&b':')
+            && bytes
+                .get(2)
+                .is_some_and(|byte| matches!(byte, b'/' | b'\\')));
+    absolute
+        && !value.starts_with('"')
+        && !value.chars().any(char::is_control)
+        && !value
+            .replace('\\', "/")
+            .split('/')
+            .any(|part| matches!(part, "." | ".."))
 }
 
 struct BoundedJson {
@@ -915,5 +1228,65 @@ mod tests {
             "codex/run_one"
         ));
         assert!(!inventory_matches(&entry, path, "codex/run_one\n"));
+    }
+
+    #[test]
+    fn strict_inventory_preserves_valid_git_line_records_and_final_record() {
+        let head = "a".repeat(40);
+        let inventory = format!(
+            "worktree /repo\nHEAD {head}\nbranch refs/heads/main\n\nworktree /bare\nbare\n\nworktree /detached\nHEAD {head}\ndetached\nlocked owned reason\n\nworktree /missing\nHEAD {head}\nbranch refs/heads/old\nprunable gitdir missing"
+        );
+        let entries = parse_inventory(&inventory).expect("complete line inventory");
+        assert_eq!(entries.len(), 4);
+        assert!(!entries[0].unsafe_entry);
+        assert!(entries[1].unsafe_entry);
+        assert!(entries[2].unsafe_entry);
+        assert!(entries[3].unsafe_entry);
+        assert_eq!(
+            parse_inventory(&inventory.replace('\n', "\r\n"))
+                .expect("CRLF inventory")
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn strict_inventory_refuses_malformed_ambiguous_and_duplicate_source_records() {
+        let head = "a".repeat(40);
+        let entry = format!("worktree /repo\nHEAD {head}\nbranch refs/heads/main\n\n");
+        let malformed = [
+            String::new(),
+            entry.replace("worktree /repo", "worktree \"/repo\""),
+            entry.replace("worktree /repo", "worktree /repo\nworktree /second"),
+            entry.replace(
+                &format!("HEAD {head}"),
+                &format!("HEAD {head}\nHEAD {head}"),
+            ),
+            entry.replace(
+                "branch refs/heads/main",
+                "branch refs/heads/main\nbranch refs/heads/other",
+            ),
+            entry.replace(&format!("HEAD {head}\n"), ""),
+            entry.replace(&format!("HEAD {head}"), "HEAD invalid"),
+            entry.replace("branch refs/heads/main\n", ""),
+            entry.replace("branch refs/heads/main", "branch refs/heads/main\ndetached"),
+            entry.replace(
+                "branch refs/heads/main",
+                "branch refs/heads/main\nunknown field",
+            ),
+            format!("{entry}{entry}"),
+            format!(
+                "{entry}{}",
+                entry.replace("worktree /repo", "worktree /other")
+            ),
+            format!("HEAD {head}\n{entry}"),
+            "x".repeat(MAX_GIT_OUTPUT + 1),
+        ];
+        for inventory in malformed {
+            assert!(
+                parse_inventory(&inventory).is_err(),
+                "malformed inventory must not establish absence"
+            );
+        }
     }
 }

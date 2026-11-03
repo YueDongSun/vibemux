@@ -7,7 +7,7 @@
 
 /// A `static`, not a `const`: `tauri_build::AppManifest::commands` takes a
 /// `&'static [&'static str]`.
-pub static COMMAND_NAMES: [&str; 23] = [
+pub static COMMAND_NAMES: [&str; 32] = [
     "projects_list",
     "project_pick",
     "project_select",
@@ -24,10 +24,19 @@ pub static COMMAND_NAMES: [&str; 23] = [
     "ask_cancel",
     "ask_status",
     "ask_reply",
+    "chat_confirm",
+    "chat_pick_files",
+    "chat_request",
+    "chat_owner_request",
+    "chat_execution_request",
+    "chat_approval_request",
+    "chat_export_request",
+    "chat_search_request",
     "console_section",
     "probe_rerun",
     "quick_search",
     "open_link",
+    "workspace_cleanup_request",
     "settings_get",
     "settings_set",
     "about_info",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chat-pick-files"
+description = "Enables the chat_pick_files command without any pre-configured scope."
+commands.allow = ["chat_pick_files"]
+
+[[permission]]
+identifier = "deny-chat-pick-files"
+description = "Denies the chat_pick_files command without any pre-configured scope."
+commands.deny = ["chat_pick_files"]

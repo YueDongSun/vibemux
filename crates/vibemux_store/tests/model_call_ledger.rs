@@ -393,12 +393,22 @@ fn a_v6_marker_without_ledger_tables_migrates_forward_when_reopened() {
     drop(open_store(database.path()));
 
     // Model the old schema only while the store is closed. The workflow
-    // objects added from v7 on are removed with no rows, then their markers
+    // objects added from v7 on, including empty v10 chat tables, are removed,
+    // then their markers
     // are deleted to represent v6 (the decision records stay in place).
     let connection = Connection::open(database.path()).expect("open closed v6 fixture");
     connection
         .execute_batch(
-            "DROP TABLE workflow_contract_edits; \
+            "DROP TABLE workspace_cleanup_commands; DROP TABLE workspace_cleanups; DROP TABLE chat_approvals; \
+             DROP TABLE chat_execution_records; \
+             DROP TABLE chat_execution_attempts; \
+             DROP TABLE chat_execution_owners; \
+             DROP TABLE chat_operations; \
+             DROP TABLE chat_records; \
+             DROP TABLE chat_content; \
+             DROP TABLE chat_turns; \
+             DROP TABLE chat_sessions; \
+             DROP TABLE workflow_contract_edits; \
              DROP TABLE workflow_supervisor_actions; \
              DROP TABLE workflow_supervisor_rounds; \
              DROP TABLE workflow_supervisors; \

@@ -1,11 +1,12 @@
-import type { CommandName, UiEventName } from './ui_contract';
+import type { CommandMap, CommandName, EventMap, UiEventName } from './ui_contract';
 
 /// The only channel the UI has to the Rust side. The production backend
 /// calls the fixed Tauri command list; the fixture backend serves demo
 /// data and is loaded only in fixture mode.
 export interface Backend {
-  invoke<T>(command: CommandName, args?: Record<string, unknown>): Promise<T>;
-  listen(event: UiEventName, handler: (payload: unknown) => void): Promise<() => void>;
+  readonly mode: 'native' | 'fixture';
+  invoke<C extends CommandName>(command: C, args: CommandMap[C]['args']): Promise<CommandMap[C]['result']>;
+  listen<E extends UiEventName>(event: E, handler: (payload: EventMap[E]) => void): Promise<() => void>;
 }
 
 /// Returns the backend for the current build. The fixture backend is

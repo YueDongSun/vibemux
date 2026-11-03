@@ -12,6 +12,7 @@
 //! runs at a time; probes are separately limited to one at a time and write
 //! nothing.
 
+pub(crate) mod chat_launch;
 mod config_loader;
 mod executor;
 pub(crate) mod git_head;
@@ -232,6 +233,7 @@ impl std::fmt::Debug for HarnessDispatchService {
 
 struct ServiceInner {
     writer: WriterHandle,
+    project_root: Option<PathBuf>,
     setup: Result<DispatchSetup, DispatchError>,
     transcripts: Arc<TranscriptStore>,
     registry: Mutex<AttemptRegistry>,
@@ -272,10 +274,11 @@ impl HarnessDispatchService {
     /// config leaves dispatch unavailable with that code, while status and
     /// cancel (for example, acknowledging a recovered attempt) still work.
     pub async fn start(writer: WriterHandle, settings: DispatchServiceSettings) -> Self {
+        let project_root = Some(settings.project_root.clone());
         let setup = tokio::task::spawn_blocking(move || prepare(&settings))
             .await
             .unwrap_or(Err(DispatchError::Internal));
-        Self::with_setup(writer, setup)
+        Self::with_setup(writer, setup, project_root)
     }
 
     #[cfg(feature = "test_helpers")]
@@ -284,6 +287,7 @@ impl HarnessDispatchService {
         settings: DispatchServiceSettings,
         guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,
     ) -> Self {
+        let project_root = Some(settings.project_root.clone());
         let setup = tokio::task::spawn_blocking(move || {
             let mut setup = prepare(&settings)?;
             setup.fixture_guard = Some(guard);
@@ -291,20 +295,25 @@ impl HarnessDispatchService {
         })
         .await
         .unwrap_or(Err(DispatchError::Internal));
-        Self::with_setup(writer, setup)
+        Self::with_setup(writer, setup, project_root)
     }
 
     /// A service without a config, for daemons started without project
     /// paths.
     #[must_use]
     pub fn unconfigured(writer: WriterHandle) -> Self {
-        Self::with_setup(writer, Err(DispatchError::Unconfigured))
+        Self::with_setup(writer, Err(DispatchError::Unconfigured), None)
     }
 
-    fn with_setup(writer: WriterHandle, setup: Result<DispatchSetup, DispatchError>) -> Self {
+    fn with_setup(
+        writer: WriterHandle,
+        setup: Result<DispatchSetup, DispatchError>,
+        project_root: Option<PathBuf>,
+    ) -> Self {
         Self {
             inner: Arc::new(ServiceInner {
                 writer,
+                project_root,
                 setup,
                 transcripts: Arc::default(),
                 registry: Mutex::new(AttemptRegistry {
@@ -315,6 +324,10 @@ impl HarnessDispatchService {
                 }),
             }),
         }
+    }
+
+    pub(crate) fn project_root(&self) -> Option<&Path> {
+        self.inner.project_root.as_deref()
     }
 
     /// Content-free projection of the pinned routes.

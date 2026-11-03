@@ -8,7 +8,17 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod a2a;
+pub mod chat;
+pub mod chat_approval;
+pub mod chat_attempt;
+pub mod chat_command_progress;
+pub mod chat_file_tool;
+pub mod chat_owner;
+pub mod chat_tool;
 pub mod frontend;
+pub mod tool_grant;
+pub mod workspace_cleanup;
+pub use tool_grant::ToolName;
 mod restore;
 
 const MAX_TITLE_BYTES: usize = 512;
@@ -125,6 +135,11 @@ define_id!(RunId, "run");
 define_id!(EventId, "event");
 define_id!(PluginId, "plugin");
 define_id!(ArtifactId, "artifact");
+define_id!(ChatId, "chat");
+define_id!(ChatTurnId, "chat_turn");
+define_id!(ChatAttemptId, "chat_attempt");
+define_id!(ChatApprovalId, "chat_approval");
+define_id!(WorkspaceCleanupId, "workspace_cleanup");
 
 /// Canonical task states retained from the Python behavior reference.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

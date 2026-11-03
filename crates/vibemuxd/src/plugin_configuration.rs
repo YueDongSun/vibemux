@@ -16,7 +16,10 @@ use vibemux_plugin_protocol::{
     frame::FrameCodecConfig,
     manifest::{ManifestPluginKind, PluginManifest, SupportedPlatform},
     negotiation::CorePluginPolicy,
-    terminal::{FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD, OBSERVE_PERMISSION},
+    terminal::{
+        CLEANUP_INVENTORY_METHOD, FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD,
+        OBSERVE_PERMISSION,
+    },
 };
 use vibemux_plugin_supervisor::{PluginSupervisorConfig, ResolvedPluginLaunch};
 
@@ -31,6 +34,23 @@ pub struct PluginStartup {
 }
 
 impl PluginStartup {
+    /// Candidates come only from explicit terminal registrations. Availability
+    /// and negotiated observe/process grants are still checked on every query.
+    #[cfg(windows)]
+    pub(crate) fn cleanup_candidates(&self) -> Vec<String> {
+        self.registrations
+            .iter()
+            .filter(|(config, _)| {
+                config.manifest.kind == ManifestPluginKind::Terminal
+                    && config
+                        .manifest
+                        .capabilities
+                        .iter()
+                        .any(|name| name == CLEANUP_INVENTORY_METHOD)
+            })
+            .map(|(config, _)| config.manifest.plugin_id.clone())
+            .collect()
+    }
     pub fn validate(&self) -> Result<(), PluginRegistryError> {
         self.registry_config.validate()?;
         if self.registrations.len() > self.registry_config.max_plugins {
@@ -94,19 +114,19 @@ impl PluginStartup {
                 return Err(invalid);
             }
             let manifest = PluginManifest::from_path(&entry.manifest_path).map_err(|_| invalid)?;
-            if entry
-                .granted_capabilities
-                .iter()
-                .any(|name| !matches!(name.as_str(), INVENTORY_METHOD | FOCUS_METHOD))
-                || entry.granted_permissions.iter().any(|name| {
-                    !matches!(
-                        name.as_str(),
-                        OBSERVE_PERMISSION | FOCUS_PERMISSION | "process:execute"
-                    )
-                })
-                || ((!entry.granted_capabilities.is_empty()
-                    || !entry.granted_permissions.is_empty())
-                    && manifest.kind != ManifestPluginKind::Terminal)
+            if entry.granted_capabilities.iter().any(|name| {
+                !matches!(
+                    name.as_str(),
+                    INVENTORY_METHOD | CLEANUP_INVENTORY_METHOD | FOCUS_METHOD
+                )
+            }) || entry.granted_permissions.iter().any(|name| {
+                !matches!(
+                    name.as_str(),
+                    OBSERVE_PERMISSION | FOCUS_PERMISSION | "process:execute"
+                )
+            }) || ((!entry.granted_capabilities.is_empty()
+                || !entry.granted_permissions.is_empty())
+                && manifest.kind != ManifestPluginKind::Terminal)
             {
                 return Err(invalid);
             }
@@ -197,6 +217,58 @@ struct RestartConfiguration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_inventory_requires_an_explicit_version_two_grant() {
+        let temp = tempfile::tempdir().expect("owned config fixture");
+        let manifest_path = temp.path().join("observer.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"schema_version=1
+plugin_id="cleanup_observer"
+plugin_version="1.1.0"
+kind="terminal"
+entry_point=["observer"]
+capabilities=["terminal:cleanup_inventory_v1"]
+requested_permissions=["terminal:observe","process:execute"]
+supported_platforms=["windows","linux","macos"]
+protocol_major=1
+minimum_protocol_minor=0
+maximum_protocol_minor=0
+"#,
+        )
+        .expect("manifest");
+        let path = temp.path().join("plugins.json");
+        let mut value = serde_json::json!({"schema_version":2,"plugins":[{
+            "manifest_path":manifest_path,"executable":std::env::current_exe().expect("existing test image"),
+            "working_directory":temp.path(),"granted_capabilities":["terminal:cleanup_inventory_v1"],
+            "granted_permissions":["terminal:observe","process:execute"]}]});
+        std::fs::write(&path, serde_json::to_vec(&value).expect("config")).expect("write");
+        let explicit = PluginStartup::from_path(&path).expect("explicit opt-in cleanup method");
+        assert_eq!(explicit.registrations.len(), 1);
+        value["schema_version"] = serde_json::json!(1);
+        std::fs::write(&path, serde_json::to_vec(&value).expect("config")).expect("write");
+        assert!(
+            PluginStartup::from_path(&path).is_err(),
+            "v1 never acquires grants"
+        );
+        value["schema_version"] = serde_json::json!(2);
+        value["plugins"][0]["granted_capabilities"] = serde_json::json!([]);
+        value["plugins"][0]["granted_permissions"] = serde_json::json!([]);
+        std::fs::write(&path, serde_json::to_vec(&value).expect("config")).expect("write");
+        let ungranted = PluginStartup::from_path(&path).expect("ungranted configured plugin");
+        assert_ne!(
+            ungranted.registrations[0].0.policy,
+            explicit.registrations[0].0.policy
+        );
+        value["plugins"][0]["granted_capabilities"] =
+            serde_json::json!(["terminal:cleanup_inventory_v2"]);
+        std::fs::write(&path, serde_json::to_vec(&value).expect("config")).expect("write");
+        assert!(
+            PluginStartup::from_path(&path).is_err(),
+            "unknown method remains refused"
+        );
+    }
 
     #[test]
     fn configuration_is_explicit_bounded_and_fail_closed() {

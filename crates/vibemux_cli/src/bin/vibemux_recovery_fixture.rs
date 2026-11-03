@@ -16,6 +16,20 @@ async fn main() {
         .await
         .expect("recovery fixture control server");
     server.wait().await.expect("recovery fixture wait");
+    if paths.state_dir().join("fixture_gate_shutdown").is_file() {
+        std::fs::write(
+            paths.state_dir().join("fixture_shutdown_drained"),
+            std::process::id().to_string(),
+        )
+        .expect("drained marker");
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while !paths.state_dir().join("fixture_release_shutdown").is_file() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("fixture release deadline");
+    }
 }
 
 fn project_root(arguments: Vec<OsString>) -> Option<PathBuf> {

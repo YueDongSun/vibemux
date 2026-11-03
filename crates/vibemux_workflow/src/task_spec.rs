@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+pub use vibemux_types::ToolName;
 
 use crate::{
     PathPattern, Sha256Digest, SpecIdentifier,
@@ -165,31 +166,6 @@ pub struct ArtifactRef {
     pub sha256: Sha256Digest,
     pub byte_count: u64,
     pub media_type: MediaType,
-}
-
-/// Abstract tool grants; the harness adapter maps them to vendor flags.
-/// There is deliberately no unrestricted shell grant.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolName {
-    ReadFiles,
-    SearchFiles,
-    EditFiles,
-    WriteFiles,
-    RunDevTests,
-}
-
-impl ToolName {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadFiles => "read_files",
-            Self::SearchFiles => "search_files",
-            Self::EditFiles => "edit_files",
-            Self::WriteFiles => "write_files",
-            Self::RunDevTests => "run_dev_tests",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ask-targets"
+description = "Enables the ask_targets command without any pre-configured scope."
+commands.allow = ["ask_targets"]
+
+[[permission]]
+identifier = "deny-ask-targets"
+description = "Denies the ask_targets command without any pre-configured scope."
+commands.deny = ["ask_targets"]

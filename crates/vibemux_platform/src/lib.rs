@@ -1,11 +1,12 @@
 #![deny(unsafe_code)]
 //! Reviewed platform boundaries that remain independent from domain and storage types.
 //!
-//! `unsafe` is denied at this crate root and allowed in exactly two narrow
+//! `unsafe` is denied at this crate root and allowed in exactly three narrow
 //! modules: `windows_acl_native`, the read-only Win32 ACL verification
 //! surface reviewed and recorded by ADR 025 (amending ADR 020's read path),
 //! and `process_tree::windows_job_object`, the Job Object containment
-//! surface recorded by ADR 029. ACL writes stay on the fixed, reviewed
+//! surface recorded by ADR 029, and `windows_file_identity`, the read-only
+//! full-width handle query recorded by ADR 068. ACL writes stay on the fixed, reviewed
 //! PowerShell companion in `windows_security`; POSIX process-tree
 //! containment is safe code. Every other workspace crate keeps
 //! `#![forbid(unsafe_code)]`.
@@ -15,6 +16,8 @@ mod process_tree;
 #[cfg(windows)]
 mod windows_acl_native;
 #[cfg(windows)]
+mod windows_file_identity;
+#[cfg(windows)]
 mod windows_security;
 
 #[cfg(any(windows, unix))]
@@ -23,6 +26,8 @@ pub use process_tree::{
     TRAMPOLINE_EXIT_NOT_RELEASED, TRAMPOLINE_EXIT_SPAWN_FAILED, TRAMPOLINE_EXIT_USAGE,
     run_launch_trampoline,
 };
+#[cfg(windows)]
+pub use windows_file_identity::{WindowsFileIdentity, query_windows_file_identity};
 #[cfg(windows)]
 pub use windows_security::{
     WindowsAclSummary, secure_user_directory, verify_restricted_path_acl,
@@ -41,6 +46,12 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlatformError {
+    #[cfg(windows)]
+    #[error("full-width file identity is unsupported")]
+    FileIdentityUnsupported { os_code: Option<i32> },
+    #[cfg(windows)]
+    #[error("full-width file identity query failed")]
+    FileIdentityQuery { os_code: Option<i32> },
     #[error("system platform helper is unavailable")]
     HelperUnavailable,
     #[error("system platform helper exceeded its deadline")]
@@ -69,6 +80,10 @@ impl PlatformError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            #[cfg(windows)]
+            Self::FileIdentityUnsupported { .. } => "platform_file_identity_unsupported",
+            #[cfg(windows)]
+            Self::FileIdentityQuery { .. } => "platform_file_identity_failed",
             Self::HelperUnavailable => "platform_helper_unavailable",
             Self::HelperTimeout => "platform_helper_timeout",
             Self::HelperRejected => "platform_helper_rejected",

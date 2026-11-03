@@ -16,6 +16,7 @@
 //! raw from untrusted text, for every crate that displays such text.
 
 pub mod agent;
+pub mod chat_session;
 pub mod dispatch;
 pub mod dsh;
 pub mod terminal_text;

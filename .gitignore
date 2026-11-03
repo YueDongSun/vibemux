@@ -26,6 +26,7 @@ build/
 *.writer.lock
 
 # Local agent and provider configuration
+/.serena/
 /.claude/
 /.codex/
 /.weave/
@@ -64,6 +65,9 @@ build/
 *.har
 *.cast
 *.ansi
+
+# Native QA proof containing a machine-specific checkout path; retain locally.
+/docs/frontend_previews/native_surfaces_workspace_command.png
 
 # Logs and crash output
 *.log

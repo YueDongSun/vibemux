@@ -15,7 +15,7 @@ use std::{
     io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -33,6 +33,7 @@ const OVERSIZED_PADDING_BYTES: usize = 128 * 1024 + 256;
 /// Long enough to outlive every test deadline; the tree kills it first.
 const SLEEP_LIMIT: Duration = Duration::from_secs(30);
 const EXIT_CODE_MODE_CODE: i32 = 7;
+const PROBE_OVERFLOW_BYTES: u64 = 512 * 1024;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -76,6 +77,9 @@ fn run() -> Result<i32> {
     match settings.mode.as_str() {
         // Holds stdin unread, so a prompt write can fill the pipe.
         "silent_input" => {
+            if let Some(ready) = &settings.ready_path {
+                write_ready(ready, &std::process::id().to_string())?;
+            }
             std::thread::sleep(SLEEP_LIMIT);
             return Ok(0);
         }
@@ -84,6 +88,39 @@ fn run() -> Result<i32> {
             return Ok(0);
         }
         "exit_code" => return Ok(EXIT_CODE_MODE_CODE),
+        "probe_host" => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let (_sender, cancel) = tokio::sync::watch::channel(false);
+            let completion = runtime.block_on(vibemuxd::local_probe::run(cancel));
+            let view = json!({"report": completion.report(), "error_code": completion.error_code(),
+                "quiescent": completion.is_quiescent()});
+            serde_json::to_writer(io::stdout().lock(), &view)?;
+            io::stdout().flush()?;
+            return Ok(0);
+        }
+        "probe_report" | "probe_claimed_inference" | "probe_stderr_overflow" => {
+            if settings.mode == "probe_stderr_overflow" {
+                io::copy(
+                    &mut io::repeat(b'x').take(PROBE_OVERFLOW_BYTES),
+                    &mut io::stderr().lock(),
+                )?;
+            }
+            write_probe_report(settings.mode == "probe_claimed_inference")?;
+            return Ok(0);
+        }
+        "probe_invalid_json" => {
+            io::stdout().write_all(b"{PRIVATE_INVALID_REPORT")?;
+            return Ok(0);
+        }
+        "probe_overflow" => {
+            io::copy(
+                &mut io::repeat(b'x').take(PROBE_OVERFLOW_BYTES),
+                &mut io::stdout().lock(),
+            )?;
+            return Ok(0);
+        }
         // Starts a descendant before reading any input, then echoes stdin.
         "early_descendant" => {
             let ready_path = settings.ready_path.ok_or("fixture_ready_path_missing")?;
@@ -116,6 +153,29 @@ fn run() -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+fn write_probe_report(claimed_inference: bool) -> Result<()> {
+    let agents = vibemux_probe::AgentKind::all().into_iter().enumerate().map(|(index, agent)| json!({
+        "agent": agent, "launcher_state":"unavailable", "authentication_state":"not_run",
+        "inference_state": if claimed_inference && index == 0 { "verified" } else { "not_run" },
+        "launcher":"unavailable", "path":"PRIVATE_PROBE_PATH", "version":"PRIVATE_PROBE_VERSION",
+        "route":"unknown", "endpoints":[{"scheme":"https","host":"PRIVATE_PROBE_ENDPOINT","port":443,"path":"/PRIVATE_ROUTE"}],
+        "code":"PRIVATE_PROBE_CODE"
+    })).collect::<Vec<_>>();
+    let report = json!({
+        "schema_version":1,
+        "observed_at_epoch_seconds":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+        "platform":"windows", "agents": agents,
+        "gateway":{"state":"unavailable","host":"PRIVATE_PROBE_GATEWAY","port":15721,
+            "tcp_reachable":false,"health_status":null,"telemetry_state":"unavailable",
+            "telemetry":[{"app_type":"PRIVATE_PROBE_APPLICATION","requests":1,"failures":0,"latest_epoch_seconds":1}],
+            "code":"PRIVATE_PROBE_GATEWAY_CODE"},
+        "a2a":{"state":"not_run","correlation_preserved":false,"listener_closed":false,"code":"PRIVATE_PROBE_A2A_CODE"}
+    });
+    serde_json::to_writer(io::stdout().lock(), &report)?;
+    io::stdout().flush()?;
+    Ok(())
 }
 
 fn settings(arguments: &[String]) -> Result<ModeFile> {

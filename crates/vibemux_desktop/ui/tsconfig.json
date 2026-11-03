@@ -1,6 +1,13 @@
 {
   "compilerOptions": {
     "allowJs": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "paths": {
+      "marked": ["./node_modules/marked"],
+      "dompurify": ["./node_modules/dompurify"],
+      "highlight.js/*": ["./node_modules/highlight.js/*"]
+    },
     "checkJs": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

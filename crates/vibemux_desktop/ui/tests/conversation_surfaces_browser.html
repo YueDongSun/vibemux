@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DEMO conversation surfaces regression</title>
+  </head>
+  <body>
+    <div id="app"><p id="fixture_startup" role="status">Loading synthetic conversation surfaces…</p></div>
+    <script type="module">
+      import '../src/style.css';
+      import '../src/shell_parity.css';
+      import { mount } from 'svelte';
+      import ConversationSurfaceFixture from './conversation_surface_fixture.svelte';
+
+      // WorkspaceAccess also loads the production backend selector. Fixture
+      // mode keeps those descendant controls inert; never mount in native mode.
+      if (import.meta.env.MODE !== 'fixture') {
+        document.querySelector('#fixture_startup').textContent =
+          'Fixture mode required. Serve this page with npm run dev_fixture; no component was mounted.';
+      } else {
+        document.querySelector('#app').replaceChildren();
+        window.conversation_surfaces = mount(ConversationSurfaceFixture, {
+          target: document.querySelector('#app'),
+        });
+      }
+    </script>
+  </body>
+</html>

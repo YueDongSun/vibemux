@@ -30,6 +30,18 @@ use vibemux_probe::{ProbeReport, ProbeState};
 pub const DISPATCH_CONFIG_FILE_NAME: &str = "harness_dispatch.json";
 /// Environment variables a vendor CLI may need to find its login.
 pub const DEFAULT_ENVIRONMENT_NAMES: [&str; 3] = ["USERPROFILE", "APPDATA", "LOCALAPPDATA"];
+/// Only existing references are written. Values remain in the launcher's
+/// environment and are resolved by the daemon for this native harness.
+const CLAUDE_ENVIRONMENT_NAMES: [&str; 8] = [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+];
 /// The harnesses the setup offers, with their execution protocol.
 pub const ASK_HARNESSES: [(AgentKind, NativeProtocol); 2] = [
     (AgentKind::Claude, NativeProtocol::ClaudeStreamJson),
@@ -132,16 +144,33 @@ pub fn plan_routes(
 }
 
 /// The config document for `routes`: enabled, executing, read-only routes
-/// with the default environment names and no model override.
+/// with login-directory names and present Claude auth/provider references.
 pub fn render_config(routes: &[PlannedRoute]) -> Result<Vec<u8>, serde_json::Error> {
+    render_config_with_environment(routes, |name| {
+        std::env::var_os(name).is_some_and(|value| !value.is_empty())
+    })
+}
+
+fn render_config_with_environment(
+    routes: &[PlannedRoute],
+    present: impl Fn(&str) -> bool,
+) -> Result<Vec<u8>, serde_json::Error> {
     let routes = routes
         .iter()
         .map(|route| {
+            let mut environment_names = DEFAULT_ENVIRONMENT_NAMES.to_vec();
+            if route.harness == AgentKind::Claude {
+                environment_names.extend(
+                    CLAUDE_ENVIRONMENT_NAMES
+                        .into_iter()
+                        .filter(|name| present(name)),
+                );
+            }
             Ok(serde_json::json!({
                 "harness": serde_json::to_value(route.harness)?,
                 "protocol": serde_json::to_value(route.protocol)?,
                 "executable": route.executable,
-                "environment_names": DEFAULT_ENVIRONMENT_NAMES,
+                "environment_names": environment_names,
                 "enabled": true,
                 "allow_execution": true,
             }))
@@ -365,6 +394,47 @@ mod tests {
         assert_eq!(value["routes"][0]["protocol"], "claude_stream_json");
         assert_eq!(value["routes"][1]["protocol"], "codex_app_server");
         assert_eq!(value["routes"][1]["allow_execution"], true);
+    }
+
+    #[test]
+    fn setup_keeps_present_claude_auth_and_provider_references_harness_scoped() {
+        let tools = tempfile::tempdir().expect("tools");
+        let routes = ASK_HARNESSES.map(|(harness, protocol)| PlannedRoute {
+            harness,
+            protocol,
+            executable: native(tools.path(), harness.command_name()),
+        });
+        let bytes = render_config_with_environment(&routes, |name| {
+            matches!(
+                name,
+                "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_BASE_URL" | "ANTHROPIC_DEFAULT_OPUS_MODEL"
+            )
+        })
+        .expect("configured environment");
+        validate_config(&bytes, ExecutablePolicy::for_host()).expect("daemon contract");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("config");
+        assert_eq!(
+            value["routes"][0]["environment_names"],
+            serde_json::json!([
+                "USERPROFILE",
+                "APPDATA",
+                "LOCALAPPDATA",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL"
+            ])
+        );
+        assert_eq!(
+            value["routes"][1]["environment_names"],
+            serde_json::json!(DEFAULT_ENVIRONMENT_NAMES)
+        );
+        let absent =
+            render_config_with_environment(&routes, |_| false).expect("no configured environment");
+        let absent: serde_json::Value = serde_json::from_slice(&absent).expect("config");
+        assert_eq!(
+            absent["routes"][0]["environment_names"],
+            serde_json::json!(DEFAULT_ENVIRONMENT_NAMES)
+        );
     }
 
     #[test]

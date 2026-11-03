@@ -9,6 +9,7 @@
 
 use std::{
     ffi::OsString,
+    future::Future,
     path::PathBuf,
     process::Stdio,
     sync::{
@@ -20,7 +21,7 @@ use std::{
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
     time::{Instant, timeout},
 };
@@ -30,6 +31,11 @@ use vibemux_harness::dispatch::{
 };
 use vibemux_platform::{LAUNCH_GO_BYTE, ProcessTree};
 
+#[cfg(all(test, feature = "test_helpers", windows))]
+mod held_tests;
+#[cfg(test)]
+mod stderr_tests;
+
 /// Bound on reaping once the tree is terminated, on releasing the go byte,
 /// and on the stderr drain after the process ended.
 const REAP_DEADLINE: Duration = Duration::from_secs(2);
@@ -37,6 +43,7 @@ const REAP_DEADLINE: Duration = Duration::from_secs(2);
 #[cfg(unix)]
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STDERR_CHUNK_BYTES: usize = 8 * 1024;
+const STDOUT_DRAIN_CHUNK_BYTES: usize = 8 * 1024;
 /// Scan only this many stderr bytes for fixed diagnostic categories. Raw
 /// stderr is neither retained nor logged; the byte count remains uncapped.
 const STDERR_DIAGNOSTIC_SCAN_BYTES: usize = 16 * 1024;
@@ -85,14 +92,15 @@ pub(crate) fn resolve_environment(
 }
 
 pub(crate) struct NativeProcess {
-    child: Child,
+    // Drop the exact tree before Tokio may release/reap the child identity.
     tree: ProcessTree,
+    child: Child,
     /// `None` once closed.
     pub stdin: Option<ChildStdin>,
     pub stdout: ChildStdout,
     stderr_bytes: Arc<AtomicU64>,
     stderr_flags: Arc<AtomicU32>,
-    stderr_drain: JoinHandle<()>,
+    stderr_drain: JoinHandle<bool>,
 }
 
 /// Allowlisted, content-free stderr observations. No vendor line, path,
@@ -106,12 +114,146 @@ pub struct StderrDiagnostic {
     pub crashpad: bool,
 }
 
+/// Persistent owners release their durable fence only with positive cleanup
+/// evidence. This is independent of turn completion and stdout delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SessionProcessExit {
+    pub exit: ProcessExit,
+    pub termination_succeeded: bool,
+    pub root_reaped: bool,
+    pub tree_empty: bool,
+    pub stderr_drained: bool,
+    /// `finish_session` leaves stdout with its caller; failed-release joined
+    /// cleanup drains it internally and records its actual EOF observation.
+    pub stdout_drained: Option<bool>,
+    pub cleanup_verified: bool,
+    pub stderr_bytes: u64,
+}
+
+/// Contained but unreleased. No pipe is available to a caller in this state.
+pub(crate) struct HeldNativeProcess {
+    process_id: u32,
+    process: NativeProcess,
+}
+
+pub(crate) enum ReleaseFailureCause<E> {
+    Authorization(E),
+    Transport(DispatchError),
+}
+
+/// A failed release keeps ownership, but exposes no path back to release/pipes.
+pub(crate) struct ReleaseFailure<E> {
+    cause: ReleaseFailureCause<E>,
+    release_attempted: bool,
+    process: NativeProcess,
+}
+
+impl<E> std::fmt::Debug for ReleaseFailure<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match &self.cause {
+            ReleaseFailureCause::Authorization(_) => "authorization",
+            ReleaseFailureCause::Transport(_) => "transport",
+        };
+        formatter
+            .debug_struct("ReleaseFailure")
+            .field("kind", &kind)
+            .field("release_attempted", &self.release_attempted)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HeldNativeProcess {
+    /// The PID is held for this callback; it is not durable process identity.
+    /// A cleanup caller must record stronger identity and release authority
+    /// before returning Ok. Dropping this future supplies no joined receipt.
+    pub(crate) async fn release_after<E, F, A>(
+        mut self,
+        authorize: F,
+    ) -> Result<NativeProcess, ReleaseFailure<E>>
+    where
+        F: FnOnce(u32) -> A,
+        A: Future<Output = Result<(), E>>,
+    {
+        if let Err(error) = authorize(self.process_id).await {
+            return Err(ReleaseFailure {
+                cause: ReleaseFailureCause::Authorization(error),
+                release_attempted: false,
+                process: self.process,
+            });
+        }
+        // A failed write/flush can follow delivery of go. Never call that
+        // outcome "not started" or offer this owner another release attempt.
+        let release_attempted = true;
+        if let Err(error) = self.process.release().await {
+            return Err(ReleaseFailure {
+                cause: ReleaseFailureCause::Transport(error),
+                release_attempted,
+                process: self.process,
+            });
+        }
+        Ok(self.process)
+    }
+}
+
+impl<E> ReleaseFailure<E> {
+    pub(crate) const fn release_attempted(&self) -> bool {
+        self.release_attempted
+    }
+
+    /// Explicitly joins the failed owner. Authorization denial closes stdin so
+    /// the unreleased trampoline can exit on EOF; uncertain transport kills its
+    /// tree. The receipt also requires stdout EOF, unlike finish_session alone.
+    pub(crate) async fn finish(mut self) -> (ReleaseFailureCause<E>, SessionProcessExit) {
+        let mut receipt = self
+            .process
+            .finish_session(self.release_attempted(), Instant::now() + REAP_DEADLINE)
+            .await;
+        let stdout_drained = timeout(REAP_DEADLINE, async {
+            let mut buffer = [0_u8; STDOUT_DRAIN_CHUNK_BYTES];
+            loop {
+                match self.process.stdout.read(&mut buffer).await {
+                    Ok(0) => break true,
+                    Ok(_) => {}
+                    Err(_) => break false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        receipt.cleanup_verified &= stdout_drained;
+        receipt.stdout_drained = Some(stdout_drained);
+        (self.cause, receipt)
+    }
+}
+
 impl NativeProcess {
     /// Spawns and contains the trampoline, then releases the vendor.
     pub(crate) async fn spawn(
         plan: &LaunchPlan,
         environment: Vec<(String, OsString)>,
     ) -> Result<Self, DispatchError> {
+        // Existing callers have already crossed their admission boundary.
+        match Self::spawn_held(plan, environment)
+            .await?
+            .release_after(|_| async { Ok::<(), DispatchError>(()) })
+            .await
+        {
+            Ok(process) => Ok(process),
+            Err(failure) => {
+                let (cause, _cleanup) = failure.finish().await;
+                Err(match cause {
+                    ReleaseFailureCause::Authorization(error)
+                    | ReleaseFailureCause::Transport(error) => error,
+                })
+            }
+        }
+    }
+
+    /// Spawns/contains the trampoline and pipes without releasing its program.
+    pub(crate) async fn spawn_held(
+        plan: &LaunchPlan,
+        environment: Vec<(String, OsString)>,
+    ) -> Result<HeldNativeProcess, DispatchError> {
         let mut command = Command::new(&plan.trampoline);
         command
             .arg(&plan.executable)
@@ -127,10 +269,11 @@ impl NativeProcess {
         command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
         ProcessTree::prepare_command(command.as_std_mut());
         let mut child = command.spawn().map_err(|_| DispatchError::SpawnFailed)?;
-        let Some(tree) = child
-            .id()
-            .and_then(|process_id| ProcessTree::contain(process_id).ok())
-        else {
+        let Some((process_id, tree)) = child.id().and_then(|process_id| {
+            ProcessTree::contain(process_id)
+                .ok()
+                .map(|tree| (process_id, tree))
+        }) else {
             // The trampoline has not been released, so it started nothing.
             let _ = child.start_kill();
             let _ = timeout(REAP_DEADLINE, child.wait()).await;
@@ -151,7 +294,7 @@ impl NativeProcess {
             Arc::clone(&stderr_bytes),
             Arc::clone(&stderr_flags),
         ));
-        let mut process = Self {
+        let process = Self {
             child,
             tree,
             stdin: Some(stdin),
@@ -160,11 +303,10 @@ impl NativeProcess {
             stderr_flags,
             stderr_drain,
         };
-        if process.release().await.is_err() {
-            process.finish(true, Instant::now()).await;
-            return Err(DispatchError::PipeFailed);
-        }
-        Ok(process)
+        Ok(HeldNativeProcess {
+            process_id,
+            process,
+        })
     }
 
     async fn release(&mut self) -> Result<(), DispatchError> {
@@ -182,6 +324,25 @@ impl NativeProcess {
 
     pub(crate) fn close_stdin(&mut self) {
         self.stdin = None;
+    }
+
+    /// A persistent owner observes root death even when a descendant still
+    /// holds stdout open. Windows Job handles preserve tree identity after root
+    /// reaping; POSIX observes without reaping until group termination.
+    pub(crate) fn root_exited(&mut self) -> Result<bool, DispatchError> {
+        #[cfg(windows)]
+        {
+            self.child
+                .try_wait()
+                .map(|status| status.is_some())
+                .map_err(|_| DispatchError::ProcessFailed)
+        }
+        #[cfg(unix)]
+        {
+            self.tree
+                .leader_exited()
+                .map_err(|_| DispatchError::ProcessFailed)
+        }
     }
 
     pub(crate) fn stderr_diagnostic(&self) -> StderrDiagnostic {
@@ -220,6 +381,71 @@ impl NativeProcess {
             forced_termination: !exited_naturally,
         };
         (exit, self.stderr_diagnostic().bytes)
+    }
+
+    /// Closes exactly this contained owner. The old one-shot `finish` API keeps
+    /// its existing semantics; persistent generation release needs this stronger
+    /// receipt. Unsupported tree-emptiness evidence fails closed.
+    pub(crate) async fn finish_session(
+        &mut self,
+        force: bool,
+        exit_deadline: Instant,
+    ) -> SessionProcessExit {
+        self.close_stdin();
+        let natural = !force && self.await_natural_exit(exit_deadline).await;
+        let terminated = self.tree.terminate().is_ok();
+        // POSIX must not reap a leader after a failed group signal: keeping its
+        // PID reserved avoids signalling a recycled group during owner Drop.
+        #[cfg(unix)]
+        let may_reap = terminated;
+        #[cfg(windows)]
+        let may_reap = true;
+        let status = if may_reap {
+            match timeout(REAP_DEADLINE, self.child.wait()).await {
+                Ok(Ok(status)) => Some(status),
+                _ => {
+                    let _ = self.child.start_kill();
+                    timeout(REAP_DEADLINE, self.child.wait())
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                }
+            }
+        } else {
+            None
+        };
+        let root_reaped = status.is_some();
+        #[cfg(windows)]
+        let tree_empty = {
+            let deadline = Instant::now() + REAP_DEADLINE;
+            loop {
+                match self.tree.active_process_count() {
+                    Ok(0) => break true,
+                    Ok(_) if Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(10)).await
+                    }
+                    _ => break false,
+                }
+            }
+        };
+        // The current POSIX owner exposes leader exit, but no bounded proof of
+        // group emptiness. Do not upgrade a successful signal into that proof.
+        #[cfg(unix)]
+        let tree_empty = false;
+        let stderr_drained = join_stderr_drain(&mut self.stderr_drain).await;
+        SessionProcessExit {
+            exit: ProcessExit {
+                exit_code: status.and_then(|status| status.code()),
+                forced_termination: !natural,
+            },
+            root_reaped,
+            tree_empty,
+            termination_succeeded: terminated,
+            stderr_drained,
+            stdout_drained: None,
+            cleanup_verified: terminated && root_reaped && tree_empty && stderr_drained,
+            stderr_bytes: self.stderr_diagnostic().bytes,
+        }
     }
 
     /// Windows: the job holds its members by handle, so the trampoline may
@@ -268,13 +494,30 @@ impl Drop for NativeProcess {
     }
 }
 
-async fn drain_stderr(mut stderr: ChildStderr, counter: Arc<AtomicU64>, flags: Arc<AtomicU32>) {
+async fn join_stderr_drain(drain: &mut JoinHandle<bool>) -> bool {
+    match timeout(REAP_DEADLINE, &mut *drain).await {
+        Ok(Ok(eof)) => eof,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            drain.abort();
+            let _ = drain.await;
+            false
+        }
+    }
+}
+
+async fn drain_stderr(
+    mut stderr: impl tokio::io::AsyncRead + Unpin,
+    counter: Arc<AtomicU64>,
+    flags: Arc<AtomicU32>,
+) -> bool {
     let mut buffer = vec![0_u8; STDERR_CHUNK_BYTES];
     let mut scanned = 0_usize;
     let mut tail = String::new();
     loop {
         match stderr.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => return true,
+            Err(_) => return false,
             Ok(count) => {
                 counter.fetch_add(count as u64, Ordering::Relaxed);
                 if scanned < STDERR_DIAGNOSTIC_SCAN_BYTES {

@@ -13,11 +13,26 @@ use vibemux_harness::{
 use vibemux_types::{ProjectId, Run, Task};
 
 mod a2a;
+mod chat;
 mod decision;
 mod frontend;
 mod harness_dispatch;
 mod workflow;
 pub use a2a::A2aCommitOutcome;
+pub use chat::{
+    ChatApprovalAdmission, ChatApprovalCommit, ChatApprovalDecisionInput,
+    ChatApprovalDecisionLookup, ChatApprovalDeliveryClaim, ChatExecutionAttemptAdmission,
+    ChatExecutionAttemptCommit, ChatExecutionOwnerCommit, ChatExecutionOwnerOpen,
+    ChatExecutionProcessChange, ChatExecutionRecordCommit, ChatExecutionRecovery,
+    ChatExecutionSessionCommit, ChatExecutionStart, ChatMutation, ChatOpen, ChatOwnerChange,
+    ChatOwnerClaim, ChatOwnerFence, ChatOwnerMutation, ChatRecordAppend, ChatRecordCommit,
+    ChatRecovery, ChatSessionCommit, ChatTurnAdmission, ChatTurnCommit, ChatTurnFinish,
+    CleanupArmClaim, CleanupCompletionClaim, CleanupEvidenceFailure, CleanupExecutionClaim,
+    CleanupNeverSpawnedClaim, CleanupRegistrationClaim, CleanupReleasePermit, QuarantinedChat,
+    WorkspaceCleanupArmCommit, WorkspaceCleanupCommit, WorkspaceCleanupConfirmation,
+    WorkspaceCleanupExecutorCommit, WorkspaceCleanupMutation, WorkspaceCleanupPlan,
+    WorkspaceCleanupSettlement,
+};
 pub use decision::{DecidedDispatchCommit, DecisionCommit, MAX_DECISION_PAGE, StoredDecision};
 pub use harness_dispatch::{
     ClaimFence, HARNESS_DISPATCH_RECORD_SCHEMA_VERSION, HarnessDispatchAdmission,
@@ -37,7 +52,7 @@ pub use workflow::{
     WorkflowSnapshot,
 };
 
-pub const STORE_SCHEMA_VERSION: u32 = 9;
+pub const STORE_SCHEMA_VERSION: u32 = 14;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -77,6 +92,12 @@ VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("workspace cleanup operation was rejected")]
+    WorkspaceCleanup(&'static str),
+    #[error("chat operation was rejected")]
+    Chat(#[source] vibemux_types::chat::ChatError),
+    #[error("chat-owned entities require the chat writer API")]
+    ChatBoundProjection,
     #[error("A2A state validation failed")]
     A2aState(#[source] vibemux_types::a2a::A2aStateError),
     #[error("A2A run was not found")]
@@ -139,6 +160,9 @@ impl StoreError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::WorkspaceCleanup(code) => code,
+            Self::Chat(error) => error.code(),
+            Self::ChatBoundProjection => "store_chat_bound_projection",
             Self::A2aState(_) => "store_a2a_invalid_input",
             Self::A2aNotFound => "store_a2a_not_found",
             Self::A2aVersionConflict => "store_a2a_version_conflict",
@@ -746,6 +770,41 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V9)?;
             transaction.commit()?;
         }
+        if found < 10 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat::MIGRATION_V10)?;
+            transaction.commit()?;
+        }
+        if found < 11 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat::MIGRATION_V11)?;
+            transaction.commit()?;
+        }
+        if found < 12 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat::MIGRATION_V12)?;
+            transaction.commit()?;
+        }
+        if found < 13 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat::MIGRATION_V13)?;
+            transaction.commit()?;
+        }
+        if found < 14 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat::MIGRATION_V14)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -782,7 +841,7 @@ impl SqliteStore {
         if a2a_owned {
             return Err(StoreError::A2aBoundProjection);
         }
-        let dispatch_owned = owned_by("harness_dispatches", owner_column, owner_id)?
+        let dispatch_owned = owned_by("harness_dispatches", owner_column, owner_id.clone())?
             || match &projection {
                 // A new Run under a dispatch-owned Task would attach foreign
                 // work to the dispatch.
@@ -793,6 +852,22 @@ impl SqliteStore {
             };
         if dispatch_owned {
             return Err(StoreError::HarnessDispatchBoundProjection);
+        }
+        let chat_owned = owned_by("chat_turns", owner_column, owner_id.clone())?
+            || owned_by("chat_execution_owners", owner_column, owner_id)?
+            || match &projection {
+                Projection::Run(run) => {
+                    owned_by("chat_turns", "task_id", run.task_id().to_string())?
+                        || owned_by(
+                            "chat_execution_owners",
+                            "task_id",
+                            run.task_id().to_string(),
+                        )?
+                }
+                Projection::Task(_) => false,
+            };
+        if chat_owned {
+            return Err(StoreError::ChatBoundProjection);
         }
         let idempotency_key = draft
             .idempotency_key

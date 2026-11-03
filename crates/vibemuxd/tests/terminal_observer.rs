@@ -25,7 +25,7 @@ use vibemuxd::{
 };
 
 async fn registry(root: &Path, mode: &str, grants: bool) -> PluginRegistry {
-    let manifest = PluginManifest {
+    let mut manifest = PluginManifest {
         schema_version: 1,
         plugin_id: "wezterm_observer".into(),
         plugin_version: "1.0.0".into(),
@@ -46,6 +46,11 @@ async fn registry(root: &Path, mode: &str, grants: bool) -> PluginRegistry {
         minimum_protocol_minor: 0,
         maximum_protocol_minor: 0,
     };
+    if mode == "terminal_cleanup_normal" {
+        manifest
+            .capabilities
+            .push(vibemux_plugin_protocol::terminal::CLEANUP_INVENTORY_METHOD.into());
+    }
     let launch = ResolvedPluginLaunch::new(
         &manifest,
         PathBuf::from(env!("CARGO_BIN_EXE_vibemux_registry_mock")),
@@ -153,7 +158,7 @@ async fn native_surface_observation_never_changes_execution_and_requires_identit
     let query = start(&writer, temp.path());
     let handle = writer.handle().unwrap();
     let before = handle.a2a_run(query.run_id).unwrap().unwrap();
-    let observer = TerminalObserver::new(registry.request_client());
+    let observer = TerminalObserver::new(registry.request_client(), temp.path().to_path_buf());
     let snapshot = observer
         .inspect(handle.clone(), query.clone())
         .await
@@ -243,6 +248,65 @@ async fn permissions_and_response_correlation_fail_closed() {
                 .is_err()
         );
         registry.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cleanup_inventory_uses_its_negotiated_method_and_never_falls_back_to_exact_inventory() {
+    use vibemux_plugin_protocol::{terminal::CLEANUP_INVENTORY_METHOD, wire::TerminalInventory};
+    for (enabled, grants) in [(false, true), (true, false), (true, true)] {
+        let temp = tempfile::tempdir().expect("owned mock root");
+        let mode = if enabled {
+            "terminal_cleanup_normal"
+        } else {
+            "terminal_normal"
+        };
+        let mut registry = registry(temp.path(), mode, grants).await;
+        let client = registry.request_client();
+        let payload = TerminalInventoryRequest {
+            expected_cwd: temp.path().to_string_lossy().into_owned(),
+        }
+        .encode_to_vec();
+        let result = client
+            .request(
+                "wezterm_observer",
+                CLEANUP_INVENTORY_METHOD,
+                payload.clone(),
+            )
+            .await;
+        if enabled && grants {
+            let reply = result.expect("declared and granted cleanup observation");
+            let inventory =
+                TerminalInventory::decode(reply.payload.as_slice()).expect("typed cleanup reply");
+            assert_eq!(inventory.instance_id, "fixture_cleanup_instance");
+            assert!(inventory.panes.is_empty());
+            assert_eq!(
+                client.active_session("wezterm_observer").as_deref(),
+                Some(reply.session_id.as_str())
+            );
+        } else {
+            assert_eq!(result.err(), Some("terminal_permission_denied"));
+        }
+        let exact = client
+            .request("wezterm_observer", INVENTORY_METHOD, payload)
+            .await;
+        if grants {
+            assert_eq!(
+                TerminalInventory::decode(
+                    exact
+                        .expect("legacy exact method still works")
+                        .payload
+                        .as_slice()
+                )
+                .expect("legacy reply")
+                .panes
+                .len(),
+                1
+            );
+        } else {
+            assert_eq!(exact.err(), Some("terminal_permission_denied"));
+        }
+        registry.shutdown().await.expect("owned mock joined");
     }
 }
 

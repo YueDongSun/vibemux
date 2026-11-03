@@ -253,6 +253,10 @@ impl SqliteStore {
             let a2a: Option<A2aRunRecord> = encoded_a2a
                 .map(|encoded| serde_json::from_str(&encoded))
                 .transpose()?;
+            let owner = self.chat_execution_owner_for_run(run.run_id())?;
+            if a2a.is_some() && owner.is_some() {
+                return Err(StoreError::FrontendProjectionMismatch);
+            }
             if let Some(record) = &a2a {
                 if record.binding.project_id != project_id || record.run.run_id() != run.run_id() {
                     return Err(StoreError::FrontendProjectionMismatch);
@@ -271,19 +275,24 @@ impl SqliteStore {
                     });
                 }
             }
+            // Recorded metadata is not physical-workspace authority. Terminal
+            // effects independently validate the managed receipt and identity.
+            let workspace = a2a.as_ref().map(|record| &record.workspace).or_else(|| {
+                owner
+                    .as_ref()
+                    .and_then(|stored| stored.owner.workspace.as_ref())
+            });
             runs.push(FrontendRunSummary {
                 run_id: run.run_id(),
                 task_id,
                 harness: run.harness().to_string(),
                 role: run.role().to_string(),
                 status: run.status(),
-                worktree_path: a2a
-                    .as_ref()
-                    .map(|record| bounded_utf8(&record.workspace.path, MAX_FRONTEND_PATH_BYTES)),
-                worktree_path_truncated: a2a
-                    .as_ref()
-                    .is_some_and(|record| record.workspace.path.len() > MAX_FRONTEND_PATH_BYTES),
-                branch: a2a.as_ref().map(|record| record.workspace.branch.clone()),
+                worktree_path: workspace
+                    .map(|workspace| bounded_utf8(&workspace.path, MAX_FRONTEND_PATH_BYTES)),
+                worktree_path_truncated: workspace
+                    .is_some_and(|workspace| workspace.path.len() > MAX_FRONTEND_PATH_BYTES),
+                branch: workspace.map(|workspace| workspace.branch.clone()),
             });
         }
         let mut statement = self.connection.prepare(

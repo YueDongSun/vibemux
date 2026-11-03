@@ -1,7 +1,10 @@
 use prost::Message;
 use std::time::Duration;
 use vibemux_plugin_protocol::{
-    terminal::{FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD, OBSERVE_PERMISSION},
+    terminal::{
+        CLEANUP_INVENTORY_METHOD, FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD,
+        OBSERVE_PERMISSION,
+    },
     wire::{TerminalFocusResult, TerminalInventory, TerminalInventoryRequest, TerminalPane},
 };
 
@@ -51,7 +54,11 @@ async fn main() {
                 PluginKind::Harness.into()
             },
             capabilities: if mode.starts_with("terminal_") {
-                vec![INVENTORY_METHOD.into(), FOCUS_METHOD.into()]
+                let mut capabilities = vec![INVENTORY_METHOD.into(), FOCUS_METHOD.into()];
+                if mode == "terminal_cleanup_normal" {
+                    capabilities.push(CLEANUP_INVENTORY_METHOD.into());
+                }
+                capabilities
             } else {
                 vec!["mock:cancel".to_string(), "mock:echo".to_string()]
             },
@@ -188,8 +195,18 @@ async fn main() {
                 if mode == "terminal_timeout" {
                     continue;
                 }
-                let payload = if mode.starts_with("terminal_") && request.method == INVENTORY_METHOD
+                let payload = if mode == "terminal_cleanup_normal"
+                    && request.method == CLEANUP_INVENTORY_METHOD
                 {
+                    if TerminalInventoryRequest::decode(request.payload.as_slice()).is_err() {
+                        return;
+                    }
+                    TerminalInventory {
+                        instance_id: "fixture_cleanup_instance".into(),
+                        panes: vec![],
+                    }
+                    .encode_to_vec()
+                } else if mode.starts_with("terminal_") && request.method == INVENTORY_METHOD {
                     let Ok(request) = TerminalInventoryRequest::decode(request.payload.as_slice())
                     else {
                         return;

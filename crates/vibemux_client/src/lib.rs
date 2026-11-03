@@ -10,6 +10,9 @@
 
 pub mod ask;
 pub mod change_notifier;
+pub mod chat_export;
+pub mod chat_history;
+pub mod chat_search;
 pub(crate) mod cli_runner;
 pub mod daemon_control;
 pub mod daemon_feed;
@@ -21,6 +24,10 @@ pub mod project_folder;
 pub mod quick_search;
 pub mod supervisor_client;
 pub(crate) mod supervisor_mapping;
+pub use supervisor_mapping::{
+    binding_view as terminal_binding_view, terminal_snapshot as terminal_snapshot_view,
+};
 pub mod supervisor_model;
+pub mod text_attachment;
 pub mod view_model;
 pub mod workspace_inventory;

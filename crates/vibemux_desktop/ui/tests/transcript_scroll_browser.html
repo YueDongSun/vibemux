@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DEMO transcript scroll regression</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; font: 14px system-ui; background: #faf9f5; }
+  .controls { position: fixed; top: 16px; right: 16px; width: 340px; padding: 16px; background: white; border: 1px solid #ccc; z-index: 2; }
+  button { padding: 8px; margin: 4px; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #shell { width: calc(100% - 400px); min-width: 400px; height: 600px; overflow: hidden; border: 1px solid #888; }
+  #header { height: 64px; background: #f0ddd2; padding: 20px; }
+  .consent { height: 260px; padding: 24px; background: #f2f1ea; }
+  #transcript { height: 100px; overflow: auto; border-top: 3px solid #999; }
+  .spacer { height: 900px; }
+  #target { height: 40px; background: #d7ead2; padding: 10px; }
+  .tail { height: 500px; }
+  .composer { height: 260px; padding: 24px; background: #fff; }
+</style>
+<aside class="controls">
+  <h1>DEMO scroll regression</h1>
+  <p>Engineering fixture for nested transcript scrolling.</p>
+  <button id="legacy">Legacy reveal</button>
+  <button id="scoped">Scoped reveal</button>
+  <pre id="result" role="status">Ready</pre>
+</aside>
+<section id="shell">
+  <header id="header">Conversation header must remain visible</header>
+  <div class="consent">Fixed conversation controls</div>
+  <div id="transcript" data-transcript-scroll>
+    <div class="spacer"></div>
+    <article id="target">DEMO matching retained record</article>
+    <div class="tail"></div>
+  </div>
+  <footer class="composer">Fixed composer</footer>
+</section>
+<script type="module">
+  const shell = document.querySelector('#shell');
+  const transcript = document.querySelector('#transcript');
+  const header = document.querySelector('#header');
+  const target = document.querySelector('#target');
+  const result = document.querySelector('#result');
+  async function run(mode) {
+    shell.scrollTop = 0;
+    transcript.scrollTop = 0;
+    const before = header.getBoundingClientRect().top;
+    if (mode === 'legacy') target.scrollIntoView({ block: 'center', behavior: 'instant' });
+    else {
+      const { reveal_transcript_element } = await import('./transcript_scroll.js');
+      reveal_transcript_element(target);
+    }
+    const after = header.getBoundingClientRect().top;
+    result.textContent = JSON.stringify({
+      mode, header_before: before, header_after: after,
+      outer_scroll: shell.scrollTop, transcript_scroll: transcript.scrollTop,
+      document_scroll: document.scrollingElement.scrollTop,
+      header_preserved: Math.abs(before - after) < 0.5 && shell.scrollTop === 0,
+    }, null, 2);
+  }
+  document.querySelector('#legacy').addEventListener('click', () => run('legacy'));
+  document.querySelector('#scoped').addEventListener('click', () => run('scoped'));
+</script>

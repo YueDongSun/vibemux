@@ -31,7 +31,7 @@ const METADATA_INTERVAL_TICKS: u32 = 12;
 const ACTION_CAPACITY: usize = 16;
 const MAX_LOADED_TASKS: usize = 256;
 const MAX_OBSERVED_TERMINALS: usize = 16;
-const TERMINAL_PLUGIN_ID: &str = "wezterm_observer";
+pub const TERMINAL_PLUGIN_ID: &str = "wezterm_observer";
 /// Upper bound on in-flight detail reads. The daemon serializes every read
 /// behind its single writer, so a small window keeps the pipe busy without
 /// queueing work that would only add latency.

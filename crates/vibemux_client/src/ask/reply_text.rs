@@ -15,6 +15,9 @@ use vibemux_harness::dispatch::NativeProtocol;
 
 /// The reply never grows past this many bytes; later text is dropped.
 pub const MAX_REPLY_BYTES: usize = 256 * 1024;
+/// Bound metadata even when a vendor emits many empty message items.
+const MAX_REPLY_ITEMS: usize = 1024;
+const MAX_ITEM_ID_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ReplyText {
@@ -93,7 +96,8 @@ impl ReplyText {
                         && let Some(text) = block["text"].as_str()
                     {
                         if !self.assistant.is_empty() {
-                            self.assistant.push_str("\n\n");
+                            let separator = self.clip(self.assistant.len(), "\n\n");
+                            self.assistant.push_str(&separator);
                         }
                         let used = self.assistant.len();
                         let text = self.clip(used, text);
@@ -143,7 +147,11 @@ impl ReplyText {
     }
 
     fn append_item(&mut self, id: &str, delta: &str) {
-        let used = self.used_bytes();
+        if !self.accept_item(id) {
+            return;
+        }
+        let is_new = !self.items.iter().any(|(known, _)| known == id);
+        let used = self.used_bytes() + usize::from(is_new && !self.items.is_empty()) * 2;
         let delta = self.clip(used, delta);
         match self.items.iter_mut().find(|(known, _)| known == id) {
             Some((_, text)) => text.push_str(&delta),
@@ -152,13 +160,17 @@ impl ReplyText {
     }
 
     fn replace_item(&mut self, id: &str, text: &str) {
+        if !self.accept_item(id) {
+            return;
+        }
         let others: usize = self
             .items
             .iter()
             .filter(|(known, _)| known != id)
             .map(|(_, text)| text.len())
             .sum();
-        let text = self.clip(others, text);
+        let other_count = self.items.iter().filter(|(known, _)| known != id).count();
+        let text = self.clip(others + other_count * 2, text);
         match self.items.iter_mut().find(|(known, _)| known == id) {
             Some((_, existing)) => *existing = text,
             None => self.items.push((id.to_string(), text)),
@@ -166,7 +178,19 @@ impl ReplyText {
     }
 
     fn used_bytes(&self) -> usize {
-        self.items.iter().map(|(_, text)| text.len()).sum()
+        self.items.iter().map(|(_, text)| text.len()).sum::<usize>()
+            + self.items.len().saturating_sub(1) * 2
+    }
+
+    fn accept_item(&mut self, id: &str) -> bool {
+        if id.len() > MAX_ITEM_ID_BYTES
+            || (self.items.len() >= MAX_REPLY_ITEMS
+                && !self.items.iter().any(|(known, _)| known == id))
+        {
+            self.truncated = true;
+            return false;
+        }
+        true
     }
 
     fn bounded(&mut self, text: &str) -> String {
@@ -291,5 +315,33 @@ mod tests {
         assert!(reply.truncated());
         assert!(reply.text().len() <= MAX_REPLY_BYTES);
         assert!(reply.text().chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn separators_count_toward_the_display_limit() {
+        let mut reply = ReplyText::default();
+        for id in ["first", "second"] {
+            reply.absorb(NativeProtocol::CodexExec, &json!({
+                "type":"item.completed", "item":{"id":id,"type":"agent_message","text":"x".repeat(MAX_REPLY_BYTES / 2)}
+            }));
+        }
+        assert!(reply.text().len() <= MAX_REPLY_BYTES);
+        assert!(reply.truncated());
+    }
+
+    #[test]
+    fn empty_message_item_metadata_is_bounded() {
+        let mut reply = ReplyText::default();
+        for index in 0..=MAX_REPLY_ITEMS {
+            reply.absorb(NativeProtocol::CodexExec, &json!({
+                "type":"item.completed", "item":{"id":index.to_string(),"type":"agent_message","text":""}
+            }));
+        }
+        assert!(reply.truncated());
+        assert_eq!(reply.text(), "");
+        reply.absorb(NativeProtocol::CodexExec, &json!({
+            "type":"item.completed", "item":{"id":"0","type":"agent_message","text":"first item can still complete"}
+        }));
+        assert_eq!(reply.text(), "first item can still complete");
     }
 }

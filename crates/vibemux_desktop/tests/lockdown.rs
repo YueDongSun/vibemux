@@ -116,7 +116,7 @@ fn the_capability_grants_exactly_the_command_list() {
 }
 
 #[test]
-fn the_capability_covers_the_main_and_task_windows() {
+fn task_windows_have_only_bound_reads_and_scoped_presentation_actions() {
     let capability = read_json("capabilities/main_window.json");
     let windows: Vec<&str> = capability["windows"]
         .as_array()
@@ -124,8 +124,24 @@ fn the_capability_covers_the_main_and_task_windows() {
         .iter()
         .map(|value| value.as_str().expect("window is not a string"))
         .collect();
-    assert!(windows.contains(&"main"));
-    assert!(windows.contains(&"task_*"));
+    assert_eq!(windows, ["main"]);
+    let task = read_json("capabilities/task_window.json");
+    assert_eq!(task["windows"], serde_json::json!(["task_*"]));
+    let permissions: BTreeSet<_> = task["permissions"]
+        .as_array()
+        .expect("task permissions")
+        .iter()
+        .map(|value| value.as_str().expect("permission"))
+        .collect();
+    assert_eq!(
+        permissions,
+        BTreeSet::from([
+            "allow-tasks-snapshot",
+            "allow-settings-get",
+            "allow-supervisor-action",
+            "allow-open-link"
+        ])
+    );
 }
 
 #[test]

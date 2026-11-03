@@ -986,6 +986,7 @@ impl SqliteStore {
         }
         if workflow_rows::holder(&transaction, "worktree_key", &request.worktree_key.to_hex())?
             .is_some()
+            || crate::chat::cleanup_is_reserved(&transaction, &request.worktree_key.to_hex())?
         {
             return Err(workflow_error("store_workflow_worktree_reserved"));
         }

@@ -52,6 +52,16 @@ pub struct Snapshot {
     pub source: &'static str,
 }
 
+/// Validate a completed local report and project metadata without reading files
+/// or starting a probe. Raw paths, endpoints and arbitrary CLI text stay private.
+pub fn project_report(report: ProbeReport) -> Result<Value, Error> {
+    Ok(Snapshot {
+        report: sanitize(report)?,
+        source: "local_probe",
+    }
+    .public_json())
+}
+
 impl Snapshot {
     pub fn public_json(&self) -> Value {
         let report = &self.report;
@@ -222,6 +232,30 @@ mod tests {
         assert!(!encoded.contains("127.0.0.1"));
         assert!(!encoded.contains("\\u001b"));
         assert_eq!(snapshot.public_json()["source"], "saved_report");
+    }
+
+    #[test]
+    fn owned_report_projection_validates_and_withholds_private_metadata_without_file_io() {
+        let mut report = fixture();
+        report.platform = "PRIVATE_PLATFORM".into();
+        report.agents[0].path = Some("PRIVATE_LAUNCHER_PATH".into());
+        report.agents[0].version = Some("PRIVATE_VERSION".into());
+        report.agents[0].code = "PRIVATE_AGENT_CODE".into();
+        report.agents[0].endpoints[0].host = "PRIVATE_ENDPOINT".into();
+        report.gateway.host = "PRIVATE_GATEWAY".into();
+        report.gateway.telemetry[0].app_type = "PRIVATE_APPLICATION".into();
+        let projected = project_report(report).expect("bounded metadata projection");
+        assert!(!projected.to_string().contains("PRIVATE_"));
+        assert!(!projected.to_string().contains("15721"));
+        assert_eq!(projected["source"], "local_probe");
+        assert_eq!(projected["agents"][0]["version"], Value::Null);
+        assert_eq!(projected["agents"][0]["authentication_state"], "not_run");
+        let mut invalid = fixture();
+        invalid.schema_version = 999;
+        assert_eq!(
+            project_report(invalid).expect_err("version refused").code(),
+            "probe_report_version_unsupported"
+        );
     }
 
     #[test]

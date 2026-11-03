@@ -8,8 +8,13 @@ use std::{ffi::OsString, path::Path, time::Duration};
 
 use crate::cli_runner;
 
-/// How long one start or stop may take, including the daemon's health wait.
+/// Start's outer deadline, including the daemon's health wait.
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Stop includes the daemon's completion window plus health/IPC overhead.
+pub const STOP_TIMEOUT: Duration =
+    vibemuxd::DEFAULT_SHUTDOWN_OBSERVATION_TIMEOUT.saturating_add(CONTROL_TIMEOUT);
+const _: () =
+    assert!(STOP_TIMEOUT.as_secs() > vibemuxd::DEFAULT_SHUTDOWN_OBSERVATION_TIMEOUT.as_secs());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DaemonCommand {
@@ -93,10 +98,15 @@ pub fn parse_outcome(exit_success: bool, stdout: &[u8], stderr: &[u8]) -> Daemon
 }
 
 /// Runs one command for `project_root` and waits for it, bounded by
-/// [`CONTROL_TIMEOUT`]. Blocking: call it off the UI thread.
+/// [`CONTROL_TIMEOUT`] for Start and [`STOP_TIMEOUT`] for Stop.
+/// Blocking: call it off the UI thread.
 #[must_use]
 pub fn run(command: DaemonCommand, project_root: &Path) -> DaemonControlResult {
-    match cli_runner::run(&command_arguments(command, project_root), CONTROL_TIMEOUT) {
+    let timeout = match command {
+        DaemonCommand::Start => CONTROL_TIMEOUT,
+        DaemonCommand::Stop => STOP_TIMEOUT,
+    };
+    match cli_runner::run(&command_arguments(command, project_root), timeout) {
         Ok(output) => parse_outcome(output.success, &output.stdout, &output.stderr),
         Err(failure) => DaemonControlResult::failed(failure.code(), failure.message()),
     }

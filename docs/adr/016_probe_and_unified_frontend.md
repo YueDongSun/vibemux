@@ -57,3 +57,25 @@ Decision: `vibemux_frontend` now ships three binaries — an egui/eframe GUI (`v
 Consequences: the audited named-color theme system belongs to the TUI shell and grows a fourth theme, `light` (dark variants tuned for white backgrounds), beyond the three listed in the 2026-09-12 amendment; selection stays `--theme` / `VIBEMUX_FRONTEND_THEME` with `t` cycling in place and the full WCAG AA (4.5:1) audit preserved per background. The GUI owns separate persisted hex palettes (`claude`/`github`/`vscode`); the TUI no longer mirrors the GUI theme file — it is a debug view, the GUI is the human surface. `NativeTuiSlot` reservations become GUI workbench seats showing per-harness stub transcripts covering all ten harnesses; the TUI table renders ten agent rows without slots. Real PTY/ConPTY attach remains unimplemented in both shells, and the no-terminal-text-parsing rule is unchanged.
 
 Alternatives: a single shell with the GUI mirroring the TUI theme enum — rejected because forcing four terminal themes into the 20-field hex `ThemePalette` would require inventing egui palettes for Mono/Light that were never designed and would churn GUI `UserConfig` persistence.
+
+## Amendment (2026-11-03): loopback health request boundary
+
+New gateway health observations use a direct request to the configured loopback
+port with proxies and redirects disabled. A 2xx response verifies health; a
+redirect or other non-2xx response preserves the original status and reports
+Failed. TCP reachability alone does not verify health. Existing saved reports
+remain historical observations and are not rewritten.
+
+Threat note: a service on the loopback health port can return an arbitrary
+Location header. Following it would grant that response authority to choose
+another network destination, including a non-loopback endpoint. The diagnostic
+grants only the fixed local health request, so it never follows Location.
+Provider endpoint fields remain metadata and receive no inference requests.
+
+A public `run_probe` regression with an empty launcher path, temporary home and
+two owned loopback listeners reproduced contact with the redirect destination.
+The corrected implementation reports the original 302 without contacting that
+destination. Separate 200/204/403 cases preserve success/failure classification.
+These tests and the 26-case probe package passed on Windows 11; other-platform
+runtime qualification remains separate. The native Console rerun action is
+still unimplemented and gains no execution authority from this amendment.

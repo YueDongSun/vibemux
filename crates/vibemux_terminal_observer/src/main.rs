@@ -14,17 +14,20 @@ use vibemux_plugin_protocol::{
     PROTOCOL_MAJOR, PROTOCOL_MINOR,
     frame::{FrameCodecConfig, read_envelope, write_envelope},
     terminal::{
-        FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD, MAX_TERMINAL_PAYLOAD_BYTES,
-        OBSERVE_PERMISSION,
+        CLEANUP_INVENTORY_METHOD, FOCUS_METHOD, FOCUS_PERMISSION, INVENTORY_METHOD,
+        MAX_TERMINAL_PAYLOAD_BYTES, OBSERVE_PERMISSION,
     },
     wire::{
         self, Envelope, Heartbeat, Hello, Ready, Response, ResponseStatus, Shutdown,
         TerminalFocusRequest, TerminalFocusResult, TerminalInventoryRequest, envelope,
     },
 };
-use vibemux_terminal_observer::{backend, config::ObserverConfig};
+use vibemux_terminal_observer::{
+    backend, config::ObserverConfig, observation_worker::ObservationWorker,
+};
 
 const PLUGIN_ID: &str = "wezterm_observer";
+const BLOCKING_DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 type PendingResponse = (String, Option<String>, Result<Vec<u8>, &'static str>);
 
 #[tokio::main]
@@ -48,19 +51,7 @@ async fn run() -> Result<(), &'static str> {
     let hello = message(
         &mut counter,
         None,
-        envelope::Body::Hello(Hello {
-            plugin_id: PLUGIN_ID.into(),
-            plugin_version: "1.0.0".into(),
-            kind: wire::PluginKind::Terminal.into(),
-            capabilities: vec![INVENTORY_METHOD.into(), FOCUS_METHOD.into()],
-            requested_permissions: vec![
-                OBSERVE_PERMISSION.into(),
-                FOCUS_PERMISSION.into(),
-                "process:execute".into(),
-            ],
-            minimum_protocol_minor: 0,
-            maximum_protocol_minor: 0,
-        }),
+        envelope::Body::Hello(observer_hello(config.cleanup_inventory_enabled)),
     );
     write_envelope(&mut output, &hello, codec)
         .await
@@ -88,6 +79,7 @@ async fn run() -> Result<(), &'static str> {
     let mut heartbeat = interval(Duration::from_millis(core.heartbeat_interval_ms));
     let mut heartbeat_sequence = 0_u64;
     let mut tasks: JoinSet<PendingResponse> = JoinSet::new();
+    let observation = ObservationWorker::default();
     let mut draining = false;
     loop {
         // Keep the frame future alive across heartbeats and request completions.
@@ -114,7 +106,7 @@ async fn run() -> Result<(), &'static str> {
         match incoming.body {
             Some(envelope::Body::Request(request)) => {
                 let permission = match request.method.as_str() {
-                    INVENTORY_METHOD => OBSERVE_PERMISSION,
+                    INVENTORY_METHOD | CLEANUP_INVENTORY_METHOD => OBSERVE_PERMISSION,
                     FOCUS_METHOD => FOCUS_PERMISSION,
                     _ => "",
                 };
@@ -144,7 +136,20 @@ async fn run() -> Result<(), &'static str> {
                         .map_err(|_| "terminal_protocol_error")?;
                     continue;
                 }
+                if observation.is_busy() {
+                    let reply = response(
+                        &mut counter,
+                        request.request_id,
+                        incoming.correlation_id,
+                        Err("terminal_cleanup_busy"),
+                    );
+                    write_envelope(&mut output, &reply, codec)
+                        .await
+                        .map_err(|_| "terminal_protocol_error")?;
+                    continue;
+                }
                 let config = config.clone();
+                let observation = observation.clone();
                 tasks.spawn(async move {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -156,9 +161,12 @@ async fn run() -> Result<(), &'static str> {
                     let result = if remaining == 0 {
                         Err("terminal_request_timeout")
                     } else {
-                        timeout(Duration::from_millis(remaining), execute(&config, &request))
-                            .await
-                            .unwrap_or(Err("terminal_request_timeout"))
+                        timeout(
+                            Duration::from_millis(remaining),
+                            execute(&config, &request, &observation),
+                        )
+                        .await
+                        .unwrap_or(Err("terminal_request_timeout"))
                     };
                     (request.request_id, incoming.correlation_id, result)
                 });
@@ -171,6 +179,7 @@ async fn run() -> Result<(), &'static str> {
             Some(envelope::Body::Shutdown(_)) => {
                 tasks.abort_all();
                 while tasks.join_next().await.is_some() {}
+                observation.wait_idle(BLOCKING_DRAIN_DEADLINE).await?;
                 let ack = message(
                     &mut counter,
                     incoming.correlation_id,
@@ -191,8 +200,18 @@ async fn run() -> Result<(), &'static str> {
 async fn execute(
     config: &ObserverConfig,
     request: &wire::Request,
+    observation: &ObservationWorker,
 ) -> Result<Vec<u8>, &'static str> {
     match request.method.as_str() {
+        CLEANUP_INVENTORY_METHOD => {
+            let request = TerminalInventoryRequest::decode(request.payload.as_slice())
+                .map_err(|_| "terminal_invalid_request")?;
+            Ok(
+                backend::cleanup_inventory(config, &request.expected_cwd, observation)
+                    .await?
+                    .encode_to_vec(),
+            )
+        }
         INVENTORY_METHOD => {
             let request = TerminalInventoryRequest::decode(request.payload.as_slice())
                 .map_err(|_| "terminal_invalid_request")?;
@@ -207,6 +226,26 @@ async fn execute(
             Ok(TerminalFocusResult { focused: true }.encode_to_vec())
         }
         _ => Err("terminal_invalid_request"),
+    }
+}
+
+fn observer_hello(cleanup_inventory_enabled: bool) -> Hello {
+    let mut capabilities = vec![INVENTORY_METHOD.into(), FOCUS_METHOD.into()];
+    if cleanup_inventory_enabled {
+        capabilities.push(CLEANUP_INVENTORY_METHOD.into());
+    }
+    Hello {
+        plugin_id: PLUGIN_ID.into(),
+        plugin_version: "1.0.0".into(),
+        kind: wire::PluginKind::Terminal.into(),
+        capabilities,
+        requested_permissions: vec![
+            OBSERVE_PERMISSION.into(),
+            FOCUS_PERMISSION.into(),
+            "process:execute".into(),
+        ],
+        minimum_protocol_minor: 0,
+        maximum_protocol_minor: 0,
     }
 }
 
@@ -241,5 +280,148 @@ fn message(counter: &mut u64, correlation_id: Option<String>, body: envelope::Bo
         correlation_id,
         causation_id: None,
         body: Some(body),
+    }
+}
+
+#[cfg(test)]
+mod cleanup_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_and_cleanup_hellos_obey_real_manifest_and_policy_negotiation() {
+        use vibemux_plugin_protocol::{
+            manifest::{ManifestPluginKind, PluginManifest, SupportedPlatform},
+            negotiation::{CorePluginPolicy, negotiate_hello},
+        };
+        let mut manifest = PluginManifest {
+            schema_version: 1,
+            plugin_id: "wezterm_observer".into(),
+            plugin_version: "1.0.0".into(),
+            kind: ManifestPluginKind::Terminal,
+            entry_point: vec!["vibemux_terminal_observer".into()],
+            capabilities: vec!["terminal:inventory_v1".into(), "terminal:focus_v1".into()],
+            requested_permissions: vec![
+                "terminal:observe".into(),
+                "terminal:focus".into(),
+                "process:execute".into(),
+            ],
+            supported_platforms: vec![SupportedPlatform::Windows],
+            protocol_major: 1,
+            minimum_protocol_minor: 0,
+            maximum_protocol_minor: 0,
+        };
+        let all_capabilities = vec![
+            "terminal:inventory_v1".into(),
+            "terminal:focus_v1".into(),
+            "terminal:cleanup_inventory_v1".into(),
+        ];
+        let policy = CorePluginPolicy::new(
+            all_capabilities,
+            manifest.requested_permissions.clone(),
+            FrameCodecConfig::default(),
+            8,
+            1000,
+            SupportedPlatform::Windows,
+        )
+        .expect("policy");
+        let legacy = negotiate_hello(&manifest, &observer_hello(false), "legacy_session", &policy)
+            .expect("old manifest remains usable");
+        assert_eq!(legacy.granted_capabilities.len(), 2);
+        assert!(
+            !legacy
+                .granted_capabilities
+                .iter()
+                .any(|capability| capability == "terminal:cleanup_inventory_v1")
+        );
+        assert!(
+            negotiate_hello(
+                &manifest,
+                &observer_hello(true),
+                "missing_declaration",
+                &policy
+            )
+            .is_err()
+        );
+        manifest
+            .capabilities
+            .push("terminal:cleanup_inventory_v1".into());
+        let enabled = negotiate_hello(&manifest, &observer_hello(true), "enabled_session", &policy)
+            .expect("updated declaration and grants");
+        assert!(
+            enabled
+                .granted_capabilities
+                .iter()
+                .any(|capability| capability == "terminal:cleanup_inventory_v1")
+        );
+        let limited = CorePluginPolicy::new(
+            vec!["terminal:inventory_v1".into(), "terminal:focus_v1".into()],
+            manifest.requested_permissions.clone(),
+            FrameCodecConfig::default(),
+            8,
+            1000,
+            SupportedPlatform::Windows,
+        )
+        .expect("limited policy");
+        let denied = negotiate_hello(
+            &manifest,
+            &observer_hello(true),
+            "ungranted_session",
+            &limited,
+        )
+        .expect("policy intersection");
+        assert!(
+            !denied
+                .granted_capabilities
+                .iter()
+                .any(|capability| capability == "terminal:cleanup_inventory_v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_dispatch_is_distinct_and_refuses_bad_payload_or_root_before_backend_io() {
+        let observation = ObservationWorker::default();
+        let config: ObserverConfig = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"cleanup_inventory_enabled":true,"wezterm_executable":"unavailable","backend_executable":"unavailable",
+            "socket_path":"unavailable","backend_process_id":1,"backend_started_at":1
+        })).expect("synthetic configuration cannot pass instance verification");
+        let request = |payload| wire::Request {
+            request_id: "cleanup-read".into(),
+            method: "terminal:cleanup_inventory_v1".into(),
+            payload,
+            ..Default::default()
+        };
+        assert_eq!(
+            execute(&config, &request(vec![0xff]), &observation)
+                .await
+                .expect_err("closed payload"),
+            "terminal_invalid_request"
+        );
+        let relative = TerminalInventoryRequest {
+            expected_cwd: "relative/worktree".into(),
+        }
+        .encode_to_vec();
+        assert_eq!(
+            execute(&config, &request(relative), &observation)
+                .await
+                .expect_err("new method reaches root validation"),
+            "terminal_invalid_cwd"
+        );
+        let mut disabled = config;
+        disabled.cleanup_inventory_enabled = false;
+        assert_eq!(
+            execute(
+                &disabled,
+                &request(
+                    TerminalInventoryRequest {
+                        expected_cwd: "relative/worktree".into()
+                    }
+                    .encode_to_vec()
+                ),
+                &observation,
+            )
+            .await
+            .expect_err("disabled capability"),
+            "terminal_permission_denied"
+        );
     }
 }
