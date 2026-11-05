@@ -2,6 +2,13 @@
 use super::*;
 use crate::terminal_observer::{TerminalLinkRequest, TerminalQuery};
 
+enum TerminalAction {
+    Inspect(TerminalQuery),
+    Link(TerminalLinkRequest),
+    Focus(String),
+    Unlink(String),
+}
+
 impl ControlClient {
     pub async fn terminal_inspect(
         &self,
@@ -73,44 +80,44 @@ pub(super) async fn dispatch(
         .as_ref()
         .ok_or(ControlError::ServerTerminated)?
         .handle()?;
-    let result = match operation {
-        ControlOperation::TerminalInspect => {
-            let query: TerminalQuery =
-                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
-            state
-                .terminal
-                .inspect(writer, query)
-                .await
-                .map(ControlPayload::TerminalSnapshot)
-        }
-        ControlOperation::TerminalLink => {
-            let request: TerminalLinkRequest =
-                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
-            state
-                .terminal
-                .link(writer, request)
-                .await
-                .map(ControlPayload::TerminalBinding)
-        }
-        ControlOperation::TerminalFocus => {
-            let binding_id: String =
-                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
-            state
-                .terminal
-                .focus(writer, &binding_id)
-                .await
-                .map(|()| ControlPayload::TerminalFocused)
-        }
-        ControlOperation::TerminalUnlink => {
-            let binding_id: String =
-                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
-            state
-                .terminal
-                .unlink(&binding_id)
-                .map(|()| ControlPayload::TerminalUnlinked)
-        }
+    let action = match operation {
+        ControlOperation::TerminalInspect => TerminalAction::Inspect(
+            serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?,
+        ),
+        ControlOperation::TerminalLink => TerminalAction::Link(
+            serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?,
+        ),
+        ControlOperation::TerminalFocus => TerminalAction::Focus(
+            serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?,
+        ),
+        ControlOperation::TerminalUnlink => TerminalAction::Unlink(
+            serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?,
+        ),
         _ => return Err(ControlError::InvalidRequest),
     };
+    let terminal = Arc::clone(&state.terminal);
+    let result = state
+        .workspace_jobs
+        .execute(async move {
+            match action {
+                TerminalAction::Inspect(query) => terminal
+                    .inspect(writer, query)
+                    .await
+                    .map(ControlPayload::TerminalSnapshot),
+                TerminalAction::Link(request) => terminal
+                    .link(writer, request)
+                    .await
+                    .map(ControlPayload::TerminalBinding),
+                TerminalAction::Focus(id) => terminal
+                    .focus(writer, &id)
+                    .await
+                    .map(|()| ControlPayload::TerminalFocused),
+                TerminalAction::Unlink(id) => terminal
+                    .unlink(&id)
+                    .map(|()| ControlPayload::TerminalUnlinked),
+            }
+        })
+        .await;
     let payload = result.map_err(|code| ControlError::Remote {
         code: code.to_string(),
     })?;

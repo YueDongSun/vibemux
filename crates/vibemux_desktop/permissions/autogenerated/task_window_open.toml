@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-task-window-open"
+description = "Enables the task_window_open command without any pre-configured scope."
+commands.allow = ["task_window_open"]
+
+[[permission]]
+identifier = "deny-task-window-open"
+description = "Denies the task_window_open command without any pre-configured scope."
+commands.deny = ["task_window_open"]

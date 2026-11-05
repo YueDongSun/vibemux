@@ -71,6 +71,14 @@ impl SqliteStore {
         if dispatch_owned {
             return Err(StoreError::A2aBindingConflict);
         }
+        let chat_owned: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM chat_turns WHERE task_id=?1 UNION ALL SELECT 1 FROM chat_execution_owners WHERE task_id=?1)",
+            [task_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if chat_owned {
+            return Err(StoreError::A2aBindingConflict);
+        }
         let current = load_task(&transaction, task_id)?;
         let task = match current {
             Some(task) => {
@@ -97,7 +105,14 @@ impl SqliteStore {
             [start.run.run_id().to_string()],
             |row| row.get(0),
         )?;
-        if conflict || existing_run {
+        if conflict
+            || existing_run
+            || crate::chat::cleanup_path_is_reserved(
+                &transaction,
+                &start.workspace.path_key(),
+                &start.workspace.branch.to_ascii_lowercase(),
+            )?
+        {
             return Err(StoreError::A2aBindingConflict);
         }
         let record = A2aRunRecord {

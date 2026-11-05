@@ -128,11 +128,12 @@ and is not stable. It is out of scope.
 `cargo deny` is expected to need per-crate MPL-2.0 exceptions like the existing
 `ece` entry. PR 3 (§10) records the exact list.
 
-DOMPurify is not used: markdown-it with `html: false` escapes all raw HTML, a
-custom `validateLink` accepts only `https:`, `http:`, and `mailto:` links (the
-default would still allow `data:image` URLs), the image rule is off, and the
-CSP forbids inline script. Tests pin each of these (§8). Clicking a link calls
-`open_link`, which opens only `https://` URLs.
+The current native transcript uses the shared Marked renderer with raw HTML
+escaped and images rendered as text, followed by DOMPurify sanitization. Native
+link clicks prevent WebView navigation and call the closed `open_link` HTTPS
+variant; non-HTTPS, credential-bearing and malformed URLs are refused before
+OS handoff. The standalone browser surface retains its own navigation behavior.
+See [ADR 065](adr/065_native_links_and_worktree_access.md).
 
 ## 5. Phase 1 architecture
 
@@ -189,16 +190,17 @@ project list.
 | `projects_list`, `project_pick()`, `project_select(project_key)`, `project_forget(project_key)` | project rows with daemon state; `project_pick` runs the native folder dialog |
 | `daemon_start(project_key)`, `daemon_stop(project_key)` | job state; one job per project at a time |
 | `tasks_snapshot(project_key)` | the existing `SupervisorSnapshot`: Control v4 bounded summaries |
-| `supervisor_action(project_key, action)` | the existing `SupervisorAction`: refresh, load more, load task, and the ADR 028 WezTerm inspect, link, focus, and unlink actions |
+| `supervisor_action(project_key, task_id, run_id, request)` | closed terminal Inspect/Link/Focus/Unlink requests with per-native-view observation tokens; see ADR 064 |
 | `task_window_open(project_key, task_id)` | opens a task window |
 | `ask_targets(project_key)` | Claude Code and Codex availability with reasons |
 | `ask_setup(project_key)` | writes default routes on this explicit call only, as today |
 | `ask_confirm(project_key)` | records the once-per-folder paid-inference consent |
 | `ask_submit(project_key, harness, prompt)`, `ask_cancel(ask_id)`, `ask_status(ask_id)` | Ask ID, phase, and end state, without content |
 | `ask_reply(ask_id)` | the reply text; the only phase 1 command that returns vendor text |
-| `console_section(project_key, section)`, `probe_rerun()` | content-free console data |
+| `console_section(project_key, query)` | fixed recorded-data Console section |
+| `probe_rerun(project_key, request)` | Main-only closed start/status/cancel; schema-1 metadata snapshot, retained receipts and explicit uncertainty (ADR 069) |
 | `quick_search(query)` | at most 8 ranked entries |
-| `open_link(url)` | opens an `https://` URL in the default browser; anything else is refused |
+| `open_link(request)` | closed HTTPS or canonical Task/Run worktree presentation request; private paths and copied text remain native-owned (ADR 065) |
 | `settings_get`, `settings_set(patch)` | settings |
 | `about_info` | app and WebView2 versions |
 
@@ -246,12 +248,19 @@ This depends on `fix/web_design_tokens` reaching `main` first.
   the string against Tauri 2.12's own CSP injection.
 - `withGlobalTauri` is off; `freezePrototype` is on.
 - Every app command is declared in the `tauri_build` app manifest, so it is
-  denied unless a capability grants it. One capability file,
-  `capabilities/main_window.json`, grants exactly the command list in §5.3 plus
-  event listening, for the main window and windows labeled `task_*`.
+  denied unless a capability grants it. `capabilities/main_window.json` grants
+  the main command list and event listening only to `main`.
+  `capabilities/task_window.json` grants `task_*` windows only bound task-detail
+  reads, public settings reads, closed terminal-only `supervisor_action` and
+  bound worktree `open_link` actions.
+  Rust binds each native label to its exact registration, canonical ProjectId
+  and TaskId, then validates the selected Run and per-view observation token
+  ([ADR 063](adr/063_read_only_task_windows.md), [ADR 064](adr/064_task_terminal_observation.md), [ADR 065](adr/065_native_links_and_worktree_access.md)).
 - No Tauri plugin is registered, so none is exposed to the webview. `open_link`
-  checks the scheme and opens the default browser from Rust with the `open`
-  crate (5.4.5, MIT).
+  validates its closed variant and uses `open` 5.4.5 for default-application
+  handoff. Worktree folder/path actions require fresh Core authority and native
+  directory pins; `arboard` 3.6.1 owns the text-only clipboard. HTTPS is main-only;
+  Task children receive only their bound worktree actions.
 - Navigation away from the app origin is refused.
 
 ### 5.6 Screens
@@ -293,7 +302,11 @@ This depends on `fix/web_design_tokens` reaching `main` first.
 - **Settings.** General (start page), Appearance (Light, Dark, Match system,
   text size, density, Reduce motion; the OS reduced-motion setting is
   honored), Connection, Shortcuts, About.
-- **Everywhere.** `Ctrl+K` switcher over projects, chats, tasks, and actions;
+- **Everywhere.** `Ctrl+K` switcher over projects, loaded Saved/Workspace
+  conversations, retained Asks, tasks, and actions. Titles and IDs use cached
+  metadata; **Search conversation history** opens the explicit project search
+  for other records. Conversation selection revalidates its project and target,
+  preserves current input and issues no execution action;
   `Ctrl+/` shortcut overlay; `Ctrl+,` Settings; a top bar with breadcrumbs and
   a connection dot; toasts that always show the error code.
 
@@ -417,6 +430,24 @@ vendor flags against the installed versions.
 - The chat menu has Rename, Archive, Open worktree folder, Copy branch, and
   Remove worktree (with confirmation). There is no merge button.
 
+The current [ADR 070](adr/070_private_command_tool_records.md) and
+[ADR 071](adr/071_private_file_change_records.md) increments render completed
+Codex command and file-change observations in Saved and Workspace transcripts
+through the existing private content channel. Literal collapsed cards show
+reported status, command/output or ordered paths/kinds/moves/diff text, with
+explicit truncation. Find opens disclosures and reveals the selected text range.
+Assistant aggregation and read-only profiles stay unchanged. Synthetic native
+Saved/Workspace cards, Saved Find and palette navigation were observed. The
+subsequent Workspace Find and retained-layout repairs have component browser
+evidence and await their native retest. Live tool progress and installed
+writable-profile qualification remain unfinished parts of this design.
+
+The existing assistant stream now hands over only to a successfully read,
+complete assistant body for the matching canonical turn/attempt. Completed tools
+and failed reads preserve the good tail; a stale Live response cannot duplicate
+the loaded assistant. This renderer repair changes no turn outcome or wire
+shape. See the [handoff evidence](evidence/native_harness_m1.md#live-assistant-handoff-repair).
+
 ### 6.8 Questions for the phase 2 ADR
 
 - Exact Codex approval and sandbox policy values, and Claude's permission
@@ -450,9 +481,9 @@ vendor flags against the installed versions.
   against a real test daemon, without a webview. A lockdown test parses
   `tauri.conf.json` and the capability files and fails on a remote URL, an
   extra plugin, a capability broader than the command list, or a weakened CSP.
-- **UI:** `svelte-check`; `node --test` for the markdown renderer (raw HTML
-  escaped, links other than `https:`, `http:`, and `mailto:` dropped, images
-  off), key bindings, formatting, and the phase 2 record reducer.
+- **UI:** `svelte-check`; `node --test` for the shared Markdown renderer
+  (escaped raw HTML, text-only images, inert links when disabled), native HTTPS
+  dispatch/refusal/disposal, key bindings, formatting, and the phase 2 reducer.
 - **Fixture build guard:** a test fails if the production `dist` contains the
   fixture backend's marker string.
 - **Design review loop:** `vite dev` in a normal browser with the fixture

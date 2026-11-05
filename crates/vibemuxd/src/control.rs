@@ -23,6 +23,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use tokio::time::{Instant, sleep};
 
+use crate::chat_session::ChatService;
 use crate::decision::{DecisionService, DecisionServiceSettings};
 use crate::dsh_session::DshSessionService;
 use crate::harness_dispatch::{
@@ -39,17 +40,43 @@ use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapsh
 use crate::workflow::{WorkflowService, WorkflowServiceSettings};
 use crate::{CompatibilityLock, WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
+#[path = "control_chat_command_progress.rs"]
+mod chat_command_progress_ops;
+pub use chat_command_progress_ops::{ChatCommandProgressRequest, ChatCommandProgressResponse};
+#[path = "control_chat_approval.rs"]
+mod chat_approval_ops;
+#[path = "control_chat_execution.rs"]
+mod chat_execution_ops;
+#[path = "control_chat.rs"]
+mod chat_ops;
+#[path = "control_chat_owner.rs"]
+mod chat_owner_ops;
 #[path = "control_decision.rs"]
 mod decision_ops;
 #[path = "control_dsh_session.rs"]
 mod dsh_session_ops;
+pub use crate::chat_session::api::{ChatRequest, ChatResponse};
+pub use crate::chat_session::approval_api::{ChatApprovalRequest, ChatApprovalResponse};
+pub use crate::chat_session::execution_api::{ChatExecutionRequest, ChatExecutionResponse};
+pub use crate::chat_session::owner_api::{ChatOwnerRequest, ChatOwnerResponse, ChatOwnerStatus};
 #[path = "control_harness_dispatch.rs"]
 mod harness_dispatch_ops;
 #[path = "control_terminal.rs"]
 mod terminal;
+#[path = "control_workspace_cleanup.rs"]
+mod workspace_cleanup_ops;
+#[path = "control_workspace.rs"]
+mod workspace_ops;
 pub use crate::dsh_session::{
     DshSessionOpenRequest, DshSessionPollPage, DshSessionPollQuery, DshSessionPromptRequest,
     DshSessionRecord, DshSessionStatus,
+};
+pub use crate::workspace_cleanup_contract::{
+    WorkspaceCleanupRequest, WorkspaceCleanupScope, WorkspaceCleanupView,
+};
+pub use workspace_ops::{
+    WORKSPACE_READ_DEADLINE, WorkspaceDirectory, WorkspaceReadMode, WorkspaceReadQuery,
+    WorkspaceReadView,
 };
 #[path = "control_workflow.rs"]
 mod workflow_ops;
@@ -74,7 +101,21 @@ pub use workflow_ops::{
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V10;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V17;
+/// V17 adds an explicit private live command-progress read.
+pub const CONTROL_PROTOCOL_V17: u32 = 17;
+/// V16 adds explicit owner cleanup plan/confirm/status/reconciliation.
+pub const CONTROL_PROTOCOL_V16: u32 = 16;
+/// V15 adds checked workspace metadata and directory presentation reads.
+pub const CONTROL_PROTOCOL_V15: u32 = 15;
+/// V14 adds closed interactive approval reads, decisions and receipt recovery.
+pub const CONTROL_PROTOCOL_V14: u32 = 14;
+/// V13 adds consented owner execution and bounded private transcript reads.
+pub const CONTROL_PROTOCOL_V13: u32 = 13;
+/// V12 adds lifetime conversation ownership and workspace provisioning.
+pub const CONTROL_PROTOCOL_V12: u32 = 12;
+/// V11 adds daemon-owned persistent conversation operations.
+pub const CONTROL_PROTOCOL_V11: u32 = 11;
 /// V10 adds explicit operator contract-edit successor admission.
 pub const CONTROL_PROTOCOL_V10: u32 = 10;
 /// V9 adds explicit model-supervisor start and bounded supervisor status.
@@ -115,6 +156,8 @@ pub enum ControlOperation {
     HarnessSwitch,
     FrontendTasks,
     FrontendTask,
+    WorkspaceRead,
+    WorkspaceCleanup,
     TerminalInspect,
     TerminalLink,
     TerminalFocus,
@@ -131,6 +174,11 @@ pub enum ControlOperation {
     DshSessionStatus,
     DshSessionCancel,
     DshSessionClose,
+    Chat,
+    ChatOwner,
+    ChatExecution,
+    ChatApproval,
+    ChatCommandProgress,
     WorkflowPrepare,
     WorkflowStart,
     WorkflowSupervisorStart,
@@ -174,6 +222,9 @@ impl ControlOperation {
                 CONTROL_PROTOCOL_V3
             }
             Self::FrontendTasks | Self::FrontendTask => CONTROL_PROTOCOL_V4,
+            Self::WorkspaceRead => CONTROL_PROTOCOL_V15,
+            Self::WorkspaceCleanup => CONTROL_PROTOCOL_V16,
+            Self::ChatCommandProgress => CONTROL_PROTOCOL_V17,
             Self::HarnessDispatchCatalog
             | Self::HarnessDispatchProbe
             | Self::HarnessDispatchSubmit
@@ -188,6 +239,10 @@ impl ControlOperation {
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V9,
             Self::WorkflowContractEdit => CONTROL_PROTOCOL_V10,
+            Self::Chat => CONTROL_PROTOCOL_V11,
+            Self::ChatOwner => CONTROL_PROTOCOL_V12,
+            Self::ChatExecution => CONTROL_PROTOCOL_V13,
+            Self::ChatApproval => CONTROL_PROTOCOL_V14,
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -283,6 +338,8 @@ pub enum ControlPayload {
     },
     FrontendTasks(FrontendTasksPage),
     FrontendTask(Option<FrontendTaskDetail>),
+    WorkspaceRead(WorkspaceReadView),
+    WorkspaceCleanup(Option<WorkspaceCleanupView>),
     HarnessDispatchCatalog(Vec<DispatchCatalogEntry>),
     HarnessDispatchProbe(ProbeReport),
     HarnessDispatchReceipt(HarnessDispatchReceipt),
@@ -294,6 +351,11 @@ pub enum ControlPayload {
     /// carries runtime content.
     DshSessionStatus(Box<DshSessionStatus>),
     DshSessionPoll(DshSessionPollPage),
+    Chat(Box<ChatResponse>),
+    ChatOwner(Box<ChatOwnerResponse>),
+    ChatExecution(Box<ChatExecutionResponse>),
+    ChatApproval(Box<ChatApprovalResponse>),
+    ChatCommandProgress(Box<ChatCommandProgressResponse>),
     /// Answer to every workflow operation: the service's serialized view.
     Workflow(Box<serde_json::Value>),
     /// Answer to advise and show: the allowlisted decision view. A decided
@@ -637,7 +699,11 @@ impl Drop for SocketPathGuard {
 }
 
 struct ServerState {
-    terminal: TerminalObserver,
+    terminal: Arc<TerminalObserver>,
+    workspace_jobs: crate::workspace_jobs::WorkspaceJobs,
+    #[cfg(windows)]
+    workspace_cleanup: crate::workspace_cleanup::WorkspaceCleanupService,
+    project_root: PathBuf,
     /// Harness dispatch (ADR 029), reached by the Control v5 operations;
     /// its attempts are joined at shutdown.
     dispatch: HarnessDispatchService,
@@ -645,6 +711,7 @@ struct ServerState {
     /// one live session per project; joined at shutdown so no vendor process
     /// outlives the daemon.
     dsh: DshSessionService,
+    chats: ChatService,
     /// The dual-track workflow service (ADR 031), reached by the Control
     /// v6 operations; its coordinators stop before dispatch shuts down.
     workflow: WorkflowService,
@@ -659,6 +726,8 @@ struct ServerState {
 }
 
 pub struct DaemonControlServer {
+    #[cfg(feature = "test_helpers")]
+    fixture_state: Arc<ServerState>,
     descriptor_path: PathBuf,
     writer_lock_path: PathBuf,
     task: Option<JoinHandle<Result<(), ControlError>>>,
@@ -1201,6 +1270,8 @@ impl DaemonControlServer {
         #[cfg(feature = "test_helpers")] fixture_execution: Option<FixtureExecution>,
     ) -> Result<Self, ControlError> {
         plugins.validate()?;
+        #[cfg(windows)]
+        let cleanup_candidates = plugins.cleanup_candidates();
         // `.vibemux/` is the project state dir; its parent is the project
         // root. The trusted constructors hand the real `DaemonPaths` in, so
         // the derivation only affects raw-path constructors (tests), where DSH
@@ -1393,11 +1464,34 @@ impl DaemonControlServer {
             // when an operation asks for it, so an unconfigured project pays
             // nothing and every DSH operation fails closed.
             let dsh_service = DshSessionService::new(&project_root, &state_dir);
+            let chat_service = ChatService::new(
+                writer.handle()?,
+                services.dispatch.clone(),
+                state_dir.clone(),
+            );
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
+            let workspace_jobs = crate::workspace_jobs::WorkspaceJobs::new();
+            let terminal = Arc::new(TerminalObserver::with_workspace_jobs(
+                registry.request_client(),
+                project_root.clone(),
+                workspace_jobs.clone(),
+            ));
+            let workspace_cleanup = crate::workspace_cleanup::WorkspaceCleanupService::new(
+                writer.handle()?,
+                project_root.clone(),
+                Arc::clone(&terminal),
+                workspace_jobs.clone(),
+                cleanup_candidates,
+            );
+            workspace_cleanup.recover().await;
             let state = Arc::new(ServerState {
-                terminal: TerminalObserver::new(registry.request_client()),
+                terminal,
+                workspace_jobs,
+                workspace_cleanup,
+                project_root: project_root.clone(),
                 dispatch: services.dispatch,
                 dsh: dsh_service,
+                chats: chat_service,
                 workflow: services.workflow,
                 decision: services.decision,
                 writer: Mutex::new(Some(writer)),
@@ -1409,6 +1503,8 @@ impl DaemonControlServer {
             // Only a trusted start owns the protected per-project leaf;
             // raw-path constructors run in arbitrary directories.
             let runtime_owner = security.cloned();
+            #[cfg(feature = "test_helpers")]
+            let fixture_state = Arc::clone(&state);
             let task = tokio::spawn(async move {
                 let result = serve_owned(
                     run_server(listener, endpoint, state.clone()),
@@ -1442,6 +1538,8 @@ impl DaemonControlServer {
                 stop,
                 a2a_base_url,
                 a2a_grpc_base_url,
+                #[cfg(feature = "test_helpers")]
+                fixture_state,
             });
         }
 
@@ -1516,11 +1614,24 @@ impl DaemonControlServer {
             // when an operation asks for it, so an unconfigured project pays
             // nothing and every DSH operation fails closed.
             let dsh_service = DshSessionService::new(&project_root, &state_dir);
+            let chat_service = ChatService::new(
+                writer.handle()?,
+                services.dispatch.clone(),
+                state_dir.clone(),
+            );
             let (stop, stop_receiver) = tokio::sync::watch::channel(false);
+            let workspace_jobs = crate::workspace_jobs::WorkspaceJobs::new();
             let state = Arc::new(ServerState {
-                terminal: TerminalObserver::new(registry.request_client()),
+                terminal: Arc::new(TerminalObserver::with_workspace_jobs(
+                    registry.request_client(),
+                    project_root.clone(),
+                    workspace_jobs.clone(),
+                )),
+                workspace_jobs,
+                project_root: project_root.clone(),
                 dispatch: services.dispatch,
                 dsh: dsh_service,
+                chats: chat_service,
                 workflow: services.workflow,
                 decision: services.decision,
                 writer: Mutex::new(Some(writer)),
@@ -1529,6 +1640,8 @@ impl DaemonControlServer {
                 token: descriptor.token,
                 probe_cache_path: probe_cache_path.clone(),
             });
+            #[cfg(feature = "test_helpers")]
+            let fixture_state = Arc::clone(&state);
             let task = tokio::spawn(async move {
                 // Declared first, so it is dropped last.
                 let _compatibility_lock = compatibility_lock;
@@ -1550,6 +1663,8 @@ impl DaemonControlServer {
                 stop,
                 a2a_base_url,
                 a2a_grpc_base_url,
+                #[cfg(feature = "test_helpers")]
+                fixture_state,
             });
         }
 
@@ -1569,6 +1684,23 @@ impl DaemonControlServer {
 
     pub fn descriptor_path(&self) -> &Path {
         &self.descriptor_path
+    }
+
+    /// Fixture tests share this daemon's sole writer and serialized chat owner.
+    /// This Rust-only helper is absent from default builds and all IPC schemas.
+    #[cfg(feature = "test_helpers")]
+    pub fn fixture_chat_context(&self) -> Result<(crate::WriterHandle, ChatService), ControlError> {
+        let writer = self
+            .fixture_state
+            .writer
+            .lock()
+            .map_err(|_| ControlError::EndpointUnavailable)?;
+        let handle = writer
+            .as_ref()
+            .ok_or(ControlError::EndpointUnavailable)?
+            .handle()
+            .map_err(|_| ControlError::EndpointUnavailable)?;
+        Ok((handle, self.fixture_state.chats.clone()))
     }
 
     #[must_use]
@@ -1618,6 +1750,10 @@ async fn serve_owned(
     // An external decision peer is killed and reaped while the connection
     // task that started it still runs; dropping the server afterwards aborts
     // the remaining connection tasks.
+    let workspace_admission_result = state
+        .workspace_jobs
+        .begin_shutdown()
+        .map_err(|code| ControlError::Remote { code: code.into() });
     state.decision.shutdown().await;
     drop(server);
     // Workflow coordinators stop first, then dispatch attempts end: both
@@ -1625,11 +1761,26 @@ async fn serve_owned(
     // before the coordinators are awaited so none waits out a long turn.
     state.workflow.begin_shutdown();
     state.dispatch.begin_shutdown();
+    state.chats.begin_shutdown();
     state.workflow.shutdown().await;
     state.dispatch.shutdown().await;
     // Then the DSH runtime, so no vendor process outlives the daemon and its
     // exit is observed before the writer's state is finalized.
     state.dsh.shutdown().await;
+    let chats_result = state
+        .chats
+        .shutdown()
+        .await
+        .map_err(|error| ControlError::Plugin {
+            code: error.code().to_owned(),
+        });
+    // Connection waiters may be gone; their accepted workspace/terminal work is
+    // still owned and must finish before its plugin/writer dependencies close.
+    let workspace_result = state
+        .workspace_jobs
+        .shutdown()
+        .await
+        .map_err(|code| ControlError::Remote { code: code.into() });
     // Signal all plugins together, join their cleanup, then release the one writer.
     let supervisor_result = match supervisor {
         Some(service) => service
@@ -1641,10 +1792,22 @@ async fn serve_owned(
         None => Ok(()),
     };
     let plugins_result = registry.shutdown().await.map_err(ControlError::from);
+    #[cfg(windows)]
+    let evidence_result = state
+        .workspace_cleanup
+        .flush_pending_evidence()
+        .await
+        .map_err(|code| ControlError::Remote { code: code.into() });
+    #[cfg(not(windows))]
+    let evidence_result: Result<(), ControlError> = Ok(());
     let writer_result = shutdown_writer(state).await;
     result
+        .and(workspace_admission_result)
+        .and(workspace_result)
+        .and(chats_result)
         .and(supervisor_result)
         .and(plugins_result)
+        .and(evidence_result)
         .and(writer_result)
 }
 
@@ -1916,6 +2079,26 @@ where
 
     let request_id = request.request_id;
     let (mut response, should_shutdown) = match request.operation {
+        ControlOperation::WorkspaceCleanup => {
+            let result = workspace_cleanup_ops::dispatch(state, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        ControlOperation::WorkspaceRead => {
+            let result = workspace_ops::dispatch(state, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
         operation @ (ControlOperation::TerminalInspect
         | ControlOperation::TerminalLink
         | ControlOperation::TerminalFocus
@@ -1991,6 +2174,56 @@ where
         | ControlOperation::DecisionShow
         | ControlOperation::DecisionDispatchSubmit) => {
             let result = decision_ops::dispatch(&state.decision, operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        ControlOperation::ChatCommandProgress => {
+            let result = chat_command_progress_ops::dispatch(&state.chats, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        ControlOperation::Chat => {
+            let result = chat_ops::dispatch(&state.chats, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        ControlOperation::ChatOwner => {
+            let result = chat_owner_ops::dispatch(&state.chats, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        ControlOperation::ChatExecution => {
+            let result = chat_execution_ops::dispatch(&state.chats, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
+        ControlOperation::ChatApproval => {
+            let result = chat_approval_ops::dispatch(&state.chats, request.argument).await;
             (
                 match result {
                     Ok(payload) => ControlResponse::success(request_id, payload),
@@ -2088,9 +2321,11 @@ where
         // waiting on a probe or an external decision ends before the server
         // drains connections.
         ControlOperation::Shutdown => {
+            let _ = state.workspace_jobs.begin_shutdown();
             state.workflow.begin_shutdown();
             state.dispatch.begin_shutdown();
             state.decision.begin_shutdown();
+            state.chats.begin_shutdown();
             (
                 ControlResponse::success(request_id, ControlPayload::ShutdownAccepted),
                 true,
@@ -2556,6 +2791,13 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V8
             | CONTROL_PROTOCOL_V9
             | CONTROL_PROTOCOL_V10
+            | CONTROL_PROTOCOL_V11
+            | CONTROL_PROTOCOL_V12
+            | CONTROL_PROTOCOL_V13
+            | CONTROL_PROTOCOL_V14
+            | CONTROL_PROTOCOL_V15
+            | CONTROL_PROTOCOL_V16
+            | CONTROL_PROTOCOL_V17
     )
 }
 
@@ -2612,6 +2854,7 @@ fn endpoint_name(runtime_dir: &Path) -> String {
 /// (`writer_`, `workflow_`, `optimizer_`, `store_`, `harness_`, `control_`,
 /// `a2a_`, `plugin_`) round-trip as `Remote { code }` so the CLI can
 /// distinguish actionable failure modes.
+/// Terminal, chat and workspace codes also require a bounded lowercase token.
 /// The five canonical frame errors (`control_frame_too_large`,
 /// `control_invalid_frame`, `control_invalid_request`, `control_unauthorized`,
 /// `control_unsupported_version`) still map to their typed variants first, so
@@ -2628,7 +2871,9 @@ fn remote_error(code: String) -> ControlError {
         "control_invalid_request" => ControlError::InvalidRequest,
         "control_unauthorized" => ControlError::Unauthorized,
         "control_unsupported_version" => ControlError::UnsupportedVersion,
-        _ if code.starts_with("terminal_")
+        _ if (code.starts_with("terminal_")
+            || code.starts_with("chat_")
+            || code.starts_with("workspace_"))
             && code.len() <= 80
             && code
                 .bytes()
@@ -3054,7 +3299,17 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_through_v8() {
+    fn owner_execution_has_its_own_v13_control_operation() {
+        let operation: ControlOperation =
+            serde_json::from_str("\"chat_execution\"").expect("closed owner-execution operation");
+        assert_eq!(operation.minimum_protocol_version(), 13);
+        assert!(supported_control_version(13));
+        assert_eq!(ControlOperation::ChatOwner.minimum_protocol_version(), 12);
+        assert_eq!(ControlOperation::Chat.minimum_protocol_version(), 11);
+    }
+
+    #[test]
+    fn control_contract_accepts_v1_through_v15() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
@@ -3066,9 +3321,40 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
         assert!(supported_control_version(CONTROL_PROTOCOL_V8));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V10);
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V17);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V17));
+        assert_eq!(
+            ControlOperation::ChatCommandProgress.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V17
+        );
+        assert!(supported_control_version(CONTROL_PROTOCOL_V16));
+        assert_eq!(
+            ControlOperation::WorkspaceCleanup.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V16
+        );
+        assert!(supported_control_version(CONTROL_PROTOCOL_V15));
+        assert_eq!(
+            ControlOperation::WorkspaceRead.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V15
+        );
         assert!(supported_control_version(CONTROL_PROTOCOL_V9));
         assert!(supported_control_version(CONTROL_PROTOCOL_V10));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V11));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V12));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V13));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V14));
+        assert_eq!(
+            ControlOperation::ChatApproval.minimum_protocol_version(),
+            14
+        );
+        assert_eq!(
+            ControlOperation::ChatOwner.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V12
+        );
+        assert_eq!(
+            ControlOperation::Chat.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V11
+        );
         assert_eq!(
             ControlOperation::WorkflowContractEdit.minimum_protocol_version(),
             CONTROL_PROTOCOL_V10
@@ -3776,5 +4062,23 @@ mod tests {
                 code: "control_remote_error".to_string()
             }
         );
+    }
+
+    #[test]
+    fn chat_and_workspace_error_codes_round_trip_without_arbitrary_text() {
+        for code in [
+            "chat_owner_control_required",
+            "chat_busy",
+            "workspace_process_cleanup_failed",
+        ] {
+            assert_eq!(remote_error(code.to_owned()).code(), code);
+        }
+        for code in [
+            "chat_private content".to_owned(),
+            "workspace_C:/private".to_owned(),
+            format!("chat_{}", "a".repeat(80)),
+        ] {
+            assert_eq!(remote_error(code).code(), "control_remote_error");
+        }
     }
 }

@@ -4,6 +4,7 @@ use crate::wire::{TerminalInventory, TerminalPane};
 impl Eq for TerminalInventory {}
 
 pub const INVENTORY_METHOD: &str = "terminal:inventory_v1";
+pub const CLEANUP_INVENTORY_METHOD: &str = "terminal:cleanup_inventory_v1";
 pub const FOCUS_METHOD: &str = "terminal:focus_v1";
 pub const OBSERVE_PERMISSION: &str = "terminal:observe";
 pub const FOCUS_PERMISSION: &str = "terminal:focus";

@@ -527,7 +527,7 @@ async fn monitor_session(
             request = requests.recv(), if pending.len() < REQUEST_CAPACITY => {
                 if let Some(request) = request {
                     let permission = match request.method.as_str() {
-                        INVENTORY_METHOD => OBSERVE_PERMISSION,
+                        INVENTORY_METHOD | vibemux_plugin_protocol::terminal::CLEANUP_INVENTORY_METHOD => OBSERVE_PERMISSION,
                         FOCUS_METHOD => FOCUS_PERMISSION,
                         _ => "",
                     };

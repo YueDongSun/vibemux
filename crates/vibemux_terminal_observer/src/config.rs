@@ -15,6 +15,8 @@ const MAX_CONFIG_BYTES: u64 = 16 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct ObserverConfig {
     pub schema_version: u32,
+    #[serde(default)]
+    pub cleanup_inventory_enabled: bool,
     pub wezterm_executable: PathBuf,
     pub backend_executable: PathBuf,
     pub socket_path: PathBuf,
@@ -155,6 +157,31 @@ fn socket_identity(path: &Path, process_id: u32) -> Result<SocketIdentity, &'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cleanup_observation_is_default_off_and_requires_a_boolean() {
+        let legacy = serde_json::json!({"schema_version":1,"wezterm_executable":"unavailable","backend_executable":"unavailable","socket_path":"unavailable","backend_process_id":1,"backend_started_at":1});
+        assert!(
+            !serde_json::from_value::<ObserverConfig>(legacy.clone())
+                .expect("legacy config")
+                .cleanup_inventory_enabled
+        );
+        for enabled in [false, true] {
+            let mut config = legacy.clone();
+            config["cleanup_inventory_enabled"] = serde_json::json!(enabled);
+            assert_eq!(
+                serde_json::from_value::<ObserverConfig>(config)
+                    .expect("explicit boolean")
+                    .cleanup_inventory_enabled,
+                enabled
+            );
+        }
+        let mut invalid = legacy.clone();
+        invalid["cleanup_inventory_enabled"] = serde_json::json!("true");
+        assert!(serde_json::from_value::<ObserverConfig>(invalid).is_err());
+        let mut invalid = legacy;
+        invalid["force_cleanup"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ObserverConfig>(invalid).is_err());
+    }
     #[test]
     fn socket_identity_is_bound_to_the_backend_pid_and_generation() {
         let temp = tempfile::tempdir().unwrap();

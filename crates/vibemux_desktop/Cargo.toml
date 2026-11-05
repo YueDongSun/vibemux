@@ -5,7 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tauri desktop app for VibeMux: projects, one-shot Asks, tasks, console, and settings"
+description = "Tauri desktop app for VibeMux: projects, saved chats, workspaces, Asks, tasks, console, and settings"
+default-run = "vibemux_desktop"
 
 [lib]
 name = "vibemux_desktop"
@@ -17,25 +18,39 @@ path = "src/lib.rs"
 # (as `tauri dev` does), which selects the configured dev server instead.
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# Explicit developer-only native acceptance runner; never a renderer selector.
+native_qa = ["custom-protocol", "vibemuxd/test_helpers"]
 
 [[bin]]
 name = "vibemux_desktop"
 path = "src/main.rs"
 
+[[bin]]
+name = "vibemux_desktop_qa"
+path = "src/bin/vibemux_desktop_qa.rs"
+required-features = ["native_qa"]
+
 [build-dependencies]
 tauri-build.workspace = true
 
 [dependencies]
+arboard.workspace = true
+open.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+same-file.workspace = true
+tokio.workspace = true
 url.workspace = true
 uuid.workspace = true
 tauri.workspace = true
 vibemux_client = { path = "../vibemux_client", features = ["folder_dialog"] }
 vibemux_types = { path = "../vibemux_types" }
+vibemux_harness = { path = "../vibemux_harness" }
 vibemuxd = { path = "../vibemuxd" }
 
 [dev-dependencies]
+tauri = { workspace = true, features = ["test"] }
+vibemux_client = { path = "../vibemux_client", features = ["test_support"] }
 tempfile.workspace = true
 vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }

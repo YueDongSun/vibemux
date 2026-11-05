@@ -56,7 +56,7 @@ const _: () = assert!(
 );
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 pub const DEFAULT_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DEFAULT_SHUTDOWN_TIMEOUT: Duration = vibemuxd::DEFAULT_SHUTDOWN_OBSERVATION_TIMEOUT;
 
 #[derive(Clone, Debug)]
 pub struct DaemonBootstrapConfig {

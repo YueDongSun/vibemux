@@ -40,6 +40,10 @@ pub const DEFAULT_WRITER_QUEUE_CAPACITY: usize = 64;
 /// surface the error instead of blind retry. Startup readiness has its own
 /// bound, `DEFAULT_WRITER_STARTUP_TIMEOUT`.
 pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Client observation window after ShutdownAccepted. This covers the 600s
+/// chat workspace drain plus the other sequential service drains and margin.
+/// Expiry means shutdown is still unconfirmed. It does not authorize a kill.
+pub const DEFAULT_SHUTDOWN_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(900);
 /// Writer startup readiness deadline. The writer opens the store, runs its
 /// migrations, and recovers harness dispatches before it reports ready. That
 /// takes milliseconds on a local disk, but shared CI runners have stalled it
@@ -55,11 +59,22 @@ pub const WRITER_LOCK_SUFFIX: &str = "writer.lock";
 const MAX_LOCK_FILE_BYTES: u64 = 256;
 
 pub(crate) mod bounded_file;
+pub(crate) mod chat_private;
+pub mod chat_session;
+pub(crate) mod chat_workspace;
+pub mod chat_writer;
+#[cfg(windows)]
+mod cleanup_executable;
+#[cfg(windows)]
+mod cleanup_paths;
+#[cfg(windows)]
+mod cleanup_process;
 pub mod control;
 pub mod decision;
 pub mod decision_writer;
 pub mod dsh_session;
 pub mod harness_dispatch;
+pub mod local_probe;
 pub mod model_peer_process;
 pub mod plugin_configuration;
 pub mod plugin_registry;
@@ -71,6 +86,11 @@ pub mod supervisor_workflow;
 pub mod terminal_observer;
 pub mod workflow;
 pub mod workflow_writer;
+mod workspace_access;
+#[cfg(windows)]
+mod workspace_cleanup;
+mod workspace_cleanup_contract;
+mod workspace_jobs;
 
 static LOCK_NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -579,6 +599,23 @@ impl WriterHandle {
         receive(receiver, self.response_timeout)
     }
 
+    /// Transfers completion of an accepted store operation to its supervising
+    /// actor, which retains the dependent effect when its client stops waiting.
+    pub(crate) fn enqueue_store<T, F>(
+        &self,
+        operation: F,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<T, WriterError>>, WriterError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut SqliteStore) -> Result<T, StoreError> + Send + 'static,
+    {
+        let (response, receiver) = tokio::sync::oneshot::channel();
+        self.enqueue(WriterRequest::Store(Box::new(move |store| {
+            let _ = response.send(operation(store).map_err(|error| store_error(error.code())));
+        })))?;
+        Ok(receiver)
+    }
+
     fn enqueue(&self, request: WriterRequest) -> Result<(), WriterError> {
         let sender = self.sender.upgrade().ok_or(WriterError::WorkerStopped)?;
         // Count before publishing: a fast worker may dequeue and process the
@@ -872,6 +909,15 @@ fn writer_loop(
             return;
         }
     };
+    // Session generations are fenced before any new owner can be admitted.
+    if let Err(error) = store.recover_chats(OffsetDateTime::now_utc()) {
+        let _ = ready_sender.send(Err(store_error(error.code())));
+        return;
+    }
+    if let Err(error) = store.recover_chat_execution_processes(OffsetDateTime::now_utc()) {
+        let _ = ready_sender.send(Err(store_error(error.code())));
+        return;
+    }
     if ready_sender.send(Ok(())).is_err() {
         return;
     }

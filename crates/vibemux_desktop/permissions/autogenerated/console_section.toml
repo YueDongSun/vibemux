@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-console-section"
+description = "Enables the console_section command without any pre-configured scope."
+commands.allow = ["console_section"]
+
+[[permission]]
+identifier = "deny-console-section"
+description = "Denies the console_section command without any pre-configured scope."
+commands.deny = ["console_section"]

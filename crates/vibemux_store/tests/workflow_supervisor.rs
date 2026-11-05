@@ -775,7 +775,13 @@ fn schema_eight_adds_owned_tables_and_survives_reopen() {
     let path = fixture.file.path().to_path_buf();
     drop(fixture.store);
     let store = SqliteStore::open(&path).expect("reopen schema eight");
-    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 9);
+    let migrated_version: u32 = rusqlite::Connection::open(&path)
+        .expect("inspect owned migration fixture")
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .expect("persisted schema version");
+    assert_eq!(migrated_version, vibemux_store::STORE_SCHEMA_VERSION);
     assert_eq!(
         store
             .supervisor_status(workflow_id)

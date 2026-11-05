@@ -2,7 +2,7 @@
 
 VibeMux is a Windows-first, local-first, terminal-native collaboration environment for multiple coding harnesses. The official target is Windows 10/11 + PowerShell; WSL2/Linux is for development and the optional tmux backend. Windows Terminal is only the entry point; WezTerm is the first programmable terminal backend.
 
-> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, a local stateful A2A gateway and bounded supervisor workflow, opt-in one-shot harness dispatch whose live vendor validation so far covers only initialize-only probes, and a dual-track coding workflow verified offline with fixture workers only. VibeMux is not yet a functional multi-harness alpha.
+> **Current status: pre-alpha.** The Python CLI remains the behavior reference for the complete prototype workflow. Rust implements the M3 daemon/store/local-IPC scope, M4 plugin foundations and registry, a local stateful A2A gateway and bounded supervisor workflow, opt-in one-shot harness dispatch whose live vendor validation so far covers only initialize-only probes, a dual-track coding workflow verified offline with fixture workers only, and read-only persistent native conversations with contained fixture coverage and bounded Windows follow-up/resume checks. VibeMux is not yet a functional multi-harness alpha.
 
 ## Current status
 
@@ -18,7 +18,10 @@ VibeMux is a Windows-first, local-first, terminal-native collaboration environme
 | Dual-track workflow (ADR 031) | `PARTIAL — OFFLINE ONLY` | Daemon-owned `cooperate`/`compare` workflows over two owned worktrees, TaskSpec source validation, fenced leases, context broker and shares, independent review, trusted verifier and integration gates, bounded prompt-policy optimizer, schema-5 records, Control v6, `vibemuxctl workflow`, and an offline acceptance runner; verified with fixture workers on native Windows | AAG gateway client, live supervisor/compiler/workers, native TUI sessions and handoff, paused-prompt editing, and any live acceptance |
 | Probe / frontend | `PARTIAL` | Read-only launcher/gateway/A2A probes, a Ratatui diagnostic dashboard, and the egui Supervisor Chat workspace over Control v4 | Real PTY/ConPTY attach and native-TUI ownership/input/focus/resize/teardown |
 | Native MCP frontend (ADR 035) | `PARTIAL — PRE-ALPHA` | Rust stdio metadata tools over the existing daemon client, explicit default-denied grant, bounded projections and contained reader lifecycle; native Windows fixture coverage | Live deployment, Linux qualification and operator acceptance |
-| Desktop app (ADR 043) | `PARTIAL — SKELETON` | Tauri 2 shell with a Svelte 5 UI, the fixed 23-command list, the app's own settings file, the navigation guard, and the lockdown tests | The project, Ask, task, console, and settings screens; the egui GUI is still the shipped frontend |
+| Desktop app (ADR 043) | `PARTIAL` | Tauri 2 shell with a Svelte 5 UI, the fixed 32-command list, the app's own settings file, the navigation guard, the lockdown tests, the one-turn Claude Code/Codex Ask, the persistent chat surface, and the mounted Tasks and Console read surfaces with settings, search, and shortcuts | bounded native navigation, settings and draft checks passed. Claude 2.1.304 and Codex 0.166.0 passed bounded follow-up and restart-resume checks. Native Saved, archived and Workspace history navigation, Workspace JSON save and Task-window lifecycle now have bounded Windows 11 fixture evidence. The egui GUI is still the shipped frontend |
+| Persistent native conversations (ADR 057) | `PARTIAL — WINDOWS LIVE CHECKED` | Daemon-owned Claude and Codex chat sessions: durable session/turn/record metadata, protected immutable private bodies, a canonical Task/Run per turn, exact vendor session/thread resume, idempotent replay across restart and purge, bounded chunk reads, store schema 10, and Control v11; read-only scope | Writable chat execution, tool calls, in-chat approvals, image/PDF inputs, and complete live persistent certification |
+| Lifetime chat ownership (ADR 058) | `PARTIAL — WINDOWS FIXTURE CHECKED` | Schema-11 lifetime Task/Run binding, independently owned Git worktree and branch, durable provisioning/recovery, Control v12 owner API and native Workspaces controls | Writable profiles, production approval-transport qualification, success finalization and complete native create/recovery qualification |
+| Owner-backed submissions (ADR 058) | `PARTIAL — WINDOWS FIXTURE CHECKED` | Schema-12 attempt/record tables, one lifetime Run, owner runtime service/sink, Control v13, native Workspaces conversation controls and immutable private history | Live owner execution, writable profiles and installed-vendor approval qualification |
 
 Authoritative milestones, evidence, and release plan: [PROGRESS.md](PROGRESS.md).
 
@@ -479,21 +482,209 @@ Golden render fixtures per theme (80x24 and 120x32) live in `crates/vibemux_fron
 
 ## Desktop app (ADR 043, pre-alpha)
 
-The desktop app is a Tauri 2 shell around the GUI-neutral `vibemux_client`, with a Svelte 5 UI. Its webview holds no daemon credential and no filesystem path: it calls a fixed list of typed commands, and `ask_reply` is the only one that returns vendor text. No Tauri plugin is registered, `withGlobalTauri` is off, the prototype is frozen, and navigation away from the app origin is refused.
+The desktop app is a Tauri 2 shell around the GUI-neutral `vibemux_client`, with a Svelte 5 UI. The webview calls a fixed list of typed commands; Rust keeps daemon credentials and native filesystem authority. Explicit conversation reads return bounded private text. No Tauri plugin is registered, `withGlobalTauri` is off, the prototype is frozen, and navigation away from the app origin is refused.
+
+Console → Harnesses has explicit **Run local checks**, **Cancel** and **Check
+status** controls on native Windows. They report local tool versions, gateway
+health and the A2A self-test; authentication and model responses remain unchecked.
+The previous completed report keeps its own timestamp after a failed or cancelled
+check. Ordinary Refresh reads recorded data. Local checks require the matching
+`vibemux_probe.exe` and `vibemux_launch_trampoline.exe` beside the desktop binary;
+missing helpers refuse without installation. Host/renderer checks and native
+Console interaction with fixed mock results passed; installed-tool qualification
+remains open. See the
+[local checks guide](docs/native_harness_conversations.md#console-local-checks).
+
+The optional developer QA runner can prepare a synthetic Surfaces dataset for
+native tool-card, long-diff Find, palette and Console checks. Its Console runner
+uses fixed in-process results with all checks marked NotRun. Native palette,
+cards, Saved Find and Console completion/cancellation were observed. Workspace
+Find and compact-history repairs passed component browser checks; their native
+retest remains pending. See the
+[QA guide](docs/native_harness_conversations.md#native-gui-qa-runner).
+
+**Ctrl+F** searches the selected Saved, Workspace or retained Ask transcript.
+Find opens matching tool disclosures and scrolls within the transcript. Closed
+history keeps an empty composer behind **Draft message**; existing local text
+and attachments remain available when returning to that chat. See the
+[retained Find guide](docs/native_harness_conversations.md#find-in-retained-conversations).
+
+Tool-record updates leave ongoing assistant text intact. Saved and Workspace
+streams hand over to a matching complete private assistant record, and a stale
+Live reply cannot restore a duplicate. See the
+[streaming guide](docs/native_harness_conversations.md#streaming-assistant-text).
+
+Task Overview and the Workspace view provide **Open worktree folder**, **Copy
+worktree path** and **Copy branch**. The native host resolves canonical Task/Run
+ownership; folder/path actions require fresh managed-directory checks, including
+retained finalized workspaces. Transcript HTTPS links open through the native
+host in the default browser. Other URL schemes are refused. These actions use
+Control v15 for presentation and v16 for explicit cleanup, with 32 native commands.
+The current private store schema is 14.
+Folder/path actions also refuse active cleanup and a historical Removed binding;
+recorded branch metadata remains available. These presentation actions remain
+separate from execution and worktree removal. Automated Windows tests use fake
+OS effects. A bounded Windows 11 synthetic check verified clipboard values,
+the exact folder window and HTTPS browser handoff; browser page-content
+inspection and broader platform acceptance remain open. See
+the [worktree and link guide](docs/native_harness_conversations.md#worktree-actions-and-https-links).
+
+Finalized workspaces also provide explicit removal review. A bounded Windows 11
+synthetic check verified Review removal, Keep worktree, reopening the review,
+the Task child's absence of removal controls and joined shutdown. Actual native
+removal remains unverified. See the
+[cleanup guide](docs/native_harness_conversations.md#explicit-worktree-removal).
+
+Task details and independent Task windows share a Terminal tab with explicit
+Find, Link, Focus and Unlink through the configured WezTerm observation plugin.
+Native per-view tokens bind actions to the reviewed Task/Run and preserve exact
+link cleanup after lost replies. A2A Runs and verified Open Workspace owners are
+supported by local tests. The tab sends no terminal input and starts no backend;
+Native docked/child Find and unavailable-plugin handling passed a bounded Windows 11 check; real WezTerm Link/Focus/Unlink remains unverified. See the
+[Task Terminal guide](docs/native_harness_conversations.md#task-terminal-observation).
+
+`Ctrl+K` also opens loaded Saved and Workspace conversations by cached title or
+identity. **Search conversation history** reaches records outside those loaded
+lists. Selection uses existing reads, preserves current drafts and attachments,
+and sends no turn. See the
+[palette guide](docs/native_harness_conversations.md#command-palette-conversations).
+
+Saved and Workspace conversations display completed Codex command and file-change
+observations as collapsed tool cards. Command cards show reported status, output,
+exit code and duration; file cards show ordered paths, change kinds, move paths
+and literal diff text. Truncation and omitted details remain visible. Find opens
+the card and reveals the selected text, including matches inside long diffs.
+The card adds no execution or approval action; existing read-only profiles stay
+unchanged. See the [tool-card guide](docs/native_harness_conversations.md#command-tool-cards).
 
 ```powershell
 # The UI is built first: the crate embeds crates/vibemux_desktop/ui/dist.
 cd crates/vibemux_desktop/ui
-npm install
+npm ci
+npm run typecheck
 npm run build
-cd ../..
+npm test
+cd ../../..
 
+cargo build -p vibemux_desktop -p vibemux_cli -p vibemuxd -p vibemux_probe
 cargo run -p vibemux_desktop
 ```
 
-For hot reload, run `npm run dev` in the UI directory and `cargo run --no-default-features -p vibemux_desktop` in another terminal: without the default `custom-protocol` feature the window loads the dev server on `http://localhost:5180`, and a plain `cargo run` always loads the bundled `ui/dist` assets. The app keeps its own `desktop_settings.json` in the Tauri app config directory and never reads the egui GUI's settings. This step ships the shell, the settings file, the navigation guard, and the lockdown tests; the screens arrive in later steps. See [ADR 043](docs/adr/043_tauri_desktop_app.md) and [docs/desktop_app_design.md](docs/desktop_app_design.md).
+For hot reload, run `npm run dev` in the UI directory and `cargo run --no-default-features -p vibemux_desktop` in another terminal: without the default `custom-protocol` feature the window loads the dev server on `http://localhost:5180`, and a plain `cargo run` always loads the bundled `ui/dist` assets. The app keeps its own `desktop_settings.json` in the Tauri app config directory and never reads the egui GUI's settings. Native conversation M1 adds project selection, explicit daemon/route setup, consent, and one-turn Claude Code or Codex Ask through authenticated daemon dispatch. Both visual presentations share the same execution ownership. See [the native setup and use guide](docs/native_harness_conversations.md) and [the exact acceptance record](docs/evidence/native_harness_m1.md) for build instructions, capability/retention limits and verification status. Full desktop screen parity and egui removal remain separate gates; persistent multi-turn sessions are [accepted for a read-only scope](docs/adr/057_persistent_harness_sessions.md) whose daemon backend and desktop chat surface are implemented and locally tested, while bounded native navigation, settings and draft checks passed. Claude 2.1.304 and Codex 0.166.0 passed bounded follow-up and restart-resume checks. Bounded native checks verified Saved, archived and Workspace navigation, Task-window lifecycle and Workspace JSON save; a later Terminal check verified docked/child Find, unavailable-plugin handling and owned shutdown. The boundary is recorded in [ADR 043](docs/adr/043_tauri_desktop_app.md).
+
+## Persistent native conversations (pre-alpha, ADR 057, read-only scope)
+
+A running daemon can own a persistent Claude Code or Codex chat: a session that survives a daemon restart, keeps private history, and admits one canonical Task/Run per turn. The one-turn Ask above is unchanged.
+
+- **Control v11** adds one persistent-chat operation carrying a fixed request enum (`list`, `open`, `lookup_open`, `status`, `submission`, `send`, `cancel`, `turns`, `title`, `content`, `live`, `rename`, `close`, `archive`, `resume`, `purge`). **Store schema 10** adds the chat metadata tables. Both are forward-only, so the daemon and the desktop app upgrade together.
+- A chat is a separate aggregate from `Task`/`Run`. It has its own states and never becomes completed because one turn finished; each admitted turn carries its own `TaskId` and `RunId` plus the Git HEAD observed at admission.
+- Opening a chat needs an explicit private-storage consent. That grant is separate from the one-turn Ask consent; project registration is an identity boundary and carries no consent grant of its own. Daemon startup, listing, and status are read-only: they create no private storage, launch no vendor process, and return no text. Only explicit title, content, and live reads return private text.
+- Private text is stored as immutable private bodies behind an opaque blob id, a digest, and a byte count — never a path — and a body is published before the reference naming it commits. Reads are bounded to 8,192-byte chunks with revision-bound live cursors.
+- Resume is exact: Claude by its stored vendor session id, Codex by its stored thread id. A resume is refused when the route profile or workspace resource key changed since the chat was opened.
+- A repeated send after a restart, or after the chat's private content was purged, returns the original receipt instead of starting a second attempt.
+- **Not included in Saved chats:** writable chats, chat-owned worktrees, writable tool execution, affirmative approvals, and image/PDF inputs. The chat profile keeps the read-only posture; completed Codex command observations are display-only.
+
+The separate [lifetime owner foundation](docs/native_harness_conversations.md#lifetime-owner-workspace-foundation)
+provisions and recovers chat-owned Git worktrees through the typed Control v12
+API. Its grants are empty. The current source requires a coordinated daemon/client
+upgrade for Control v17 and store schema 14 in this draft. Existing operations
+retain their version minima; the new private command-progress read remains under
+acceptance testing. The native **Workspaces** tab provides
+creation, saved-owner inspection, reconciliation and file-retaining Stop. Select
+a prepared workspace, explicitly Start or Resume its read-only execution session,
+and then Send a message. Its private transcript, attachments, cancellation and
+process closure use a separate typed Control v13 operation. Close retains the
+lifetime Task/Run and worktree. Writable profiles, affirmative approvals and
+success finalization remain open. The proposed approval contract and verified
+private I/O/peer groundwork, durable ledger and protected evidence writer are tracked in
+[ADR 059](docs/adr/059_interactive_chat_approvals.md). A guarded test-only runtime
+now exercises one-use approval delivery through the real writer and a contained
+fixture process; its ten native Windows cases include the resulting file effect,
+cancellation, expiry and delivery uncertainty. This fixture path is absent from
+the production Control and desktop surfaces. See the [workspace conversation guide](docs/native_harness_conversations.md#workspace-conversations)
+and [fixture runtime evidence](docs/evidence/native_harness_m1.md#guarded-fixture-approval-runtime).
+The test-only qualification machinery also includes a fixed deny-only diagnostic.
+Its normal tests use the built synthetic process; installed-vendor execution is
+an explicit ignored case with a separate allowance and policy review. Reports
+remain observational and do not enable app approvals. See the
+[diagnostic record](docs/evidence/native_harness_m1.md#deny-only-approval-diagnostic).
+Two separately authorized installed-Claude 2.1.304 diagnostics stopped at
+`init_mismatch`, with input written, no observed permission request or synthetic
+artifact, and verified process cleanup. The second, v2 report isolated the
+permission-mode comparison; working directory and tools matched. The actual
+mode value was discarded. Current test-only report v3 recognizes canonical SDK
+`default` and the existing `manual` alias, with offline regression evidence only.
+The profile remains unqualified and no installed input allowance remains. See
+the [v2 observation](docs/evidence/native_harness_m1.md#installed-claude-report-v2-observation)
+and [canonical-mode repair](docs/evidence/native_harness_m1.md#canonical-manual-mode-diagnostic-repair).
+
+Use **Search history** to find retained titles and messages across the selected
+project’s Saved chats and Workspaces, then open the exact matching record.
+Search is explicit, paged and local to the authenticated daemon; it sends no
+model input. See the [search guide](docs/native_harness_conversations.md#project-conversation-search)
+and [ADR 061](docs/adr/061_native_history_search.md).
+
+Saved chats and Workspace history also expose an explicit Export action with
+Text or JSON selection and a native Windows Save dialog. Export reads a verified
+retained snapshot, marks incomplete content, and creates a new file without
+overwriting an existing destination. See the [export guide](docs/native_harness_conversations.md#conversation-export)
+and [ADR 060](docs/adr/060_native_conversation_export.md).
+
+Control v14 and the native `chat_approval_request` command now let the Workspace
+view review an existing tool request, record Allow once or Deny, and recover an
+uncertain decision through read-only receipts. Private JSON input loads after
+Review; default focus is Deny. These controls consume existing offers and do not
+enable an unqualified native profile. Production workspace submissions remain
+read-only. Upgrade the daemon, CLI and desktop together; the storage schema stays
+13. See the [approval surface evidence](docs/evidence/native_harness_m1.md#control-v14-and-desktop-tool-approvals).
+
+**Using a chat.** The Conversation view opens on Chats; Independent Ask is retained as a separate choice, and the chat route is chosen independently of the Ask picker.
+
+- **New chat** creates a local draft. The saved-chat consent dialog covers inference and private storage together, separately from Independent Ask consent. Send opens the vendor session and submits the draft.
+- **Send** waits for the chat to become ready — bounded at 30 seconds, polling status only — and then sends exactly one turn.
+- **Saved chats** are listed per project with rename, close, archive, resume, and purge, plus **Show archived** and **Load more chats**. **Resume** is always explicit; a reload never resumes a chat on its own.
+- **Archive** stops accepting turns and keeps the history and canonical metadata. **Purge** removes the chat's private bodies — titles, prompts, assistant output — while retaining its canonical metadata: identity, generations, turn and Task/Run links, and the receipts. Vendor-side session history is separate and is not erased by a purge.
+- **An uncertain operation** keeps its exact identifiers and offers a read-only lookup or an explicit same-action retry. Nothing is auto-replayed, and an unsent draft is retained while you recover.
+
+Tasks also has an **Open in window** action for a separate read-only view of
+Overview, Activity and Artifact metadata. The window stays bound to that task
+when the main window selects another project. Closing it leaves execution
+unchanged. See [ADR 063](docs/adr/063_read_only_task_windows.md) for its command
+permissions and current verification scope.
+
+The daemon backend and desktop chat surface are implemented. Native Windows
+checks verified navigation, settings, bilingual drafts and text-file attachments.
+Claude 2.1.304 and Codex 0.166.0 each completed a context-linked follow-up and
+restart-resume check through authenticated daemon Control. Claude uses its
+isolated v2 profile with a version-bound builtin-plugin allowlist. Retained
+Claude v1 chats stay readable and require a new chat to use v2.
+
+Bounded native search, Saved-history navigation and export cancellation were
+observed on Windows 11. That check exposed a header-scrolling defect, now repaired
+with browser/source regression evidence and a renewed native check across Saved,
+archived and Workspace records. The repaired icon also rendered natively.
+A later bounded check verified Workspace JSON save and Task-window open, reuse,
+close/reopen and child survival after the main window closed. Live cancellation,
+Windows 10 and broader release checks remain open. The execution record retains the initial
+failures and subsequent repairs. See [ADR 057](docs/adr/057_persistent_harness_sessions.md),
+[the native guide](docs/native_harness_conversations.md), and
+[PROGRESS.md](PROGRESS.md).
 
 ## Development commands
+
+Desktop builds create missing fallback PNG/ICO assets individually and repair
+only the exact malformed legacy fallback ICO. Existing custom assets are kept.
+The corrected icon is verified by Windows file/resource decoders; the build adds
+no image dependency. See the [native repair record](docs/evidence/native_harness_m1.md#native-gui-search-and-export-observation-and-scroll-repair).
+
+For native desktop acceptance with synthetic retained history, the nondefault
+`vibemux_desktop_qa` runner prepares a fresh trusted project and separate settings
+and WebView data while using the production UI. See the
+[QA developer guide](docs/native_harness_conversations.md#native-gui-qa-runner)
+for build, prepare/check, run/stop commands and ownership limits. Prepared
+fixtures and passing source checks do not establish live search or Save-dialog
+acceptance. The [execution record](docs/evidence/native_harness_m1.md#native-gui-qa-preparation)
+tracks those steps separately.
 
 ```powershell
 python -m ruff format --check .
@@ -511,6 +702,11 @@ cargo test --workspace --all-features
 The current GitHub Actions workflow runs Python pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests on Windows and Ubuntu. Ruff format, mypy, package build, coverage, `cargo nextest`, `cargo deny`, `cargo audit`, fuzzing, and live terminal-backend validation are not all enforced in CI yet.
 
 ## Local probe and unified frontend preview
+
+Gateway health observations stay on the configured loopback endpoint, with
+proxies and redirects disabled. Only a 2xx health response verifies that check;
+a redirect or other failure preserves its original status. Version and gateway
+checks do not verify authentication or inference.
 
 The following commands only execute launcher version checks, explicit endpoint parsing, CC Switch read-only telemetry, and a local A2A self-test; they do not send model prompts:
 

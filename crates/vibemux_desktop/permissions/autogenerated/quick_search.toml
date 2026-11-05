@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-quick-search"
+description = "Enables the quick_search command without any pre-configured scope."
+commands.allow = ["quick_search"]
+
+[[permission]]
+identifier = "deny-quick-search"
+description = "Denies the quick_search command without any pre-configured scope."
+commands.deny = ["quick_search"]

@@ -9,7 +9,7 @@
 //! absent. It writes plain PNG and ICO bytes and needs no image library.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 const SIZE: usize = 64;
@@ -28,12 +28,54 @@ const CHEVRON: [(f64, f64); 7] = [
     (29.0, 48.0),
 ];
 
-/// Writes `icon.png` and `icon.ico` into `directory`.
+/// Creates missing fallback assets and repairs only the exact legacy fallback ICO.
+/// Existing PNGs and all other ICO bytes remain untouched.
 pub fn write_icons(directory: &Path) -> io::Result<()> {
     fs::create_dir_all(directory)?;
     let pixels = render();
-    fs::write(directory.join("icon.png"), png_bytes(&pixels))?;
-    fs::write(directory.join("icon.ico"), ico_bytes(&pixels))?;
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(directory.join("icon.png"))
+    {
+        Ok(mut file) => file.write_all(&png_bytes(&pixels))?,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+
+    let corrected = ico_bytes(&pixels);
+    // The old encoder omitted biCompression at byte 16 of the DIB header.
+    let mut legacy = corrected.clone();
+    drop(legacy.drain(22 + 16..22 + 20));
+    let legacy_size = u32::try_from(legacy.len() - 22)
+        .map_err(|_| io::Error::other("generated ICO exceeds its format bound"))?;
+    legacy[14..18].copy_from_slice(&legacy_size.to_le_bytes());
+    let legacy_length = u64::from(legacy_size) + 22;
+    let ico_path = directory.join("icon.ico");
+    match fs::symlink_metadata(&ico_path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() == legacy_length => {
+            let mut existing = Vec::with_capacity(legacy.len());
+            fs::File::open(&ico_path)?
+                .take(legacy_length + 1)
+                .read_to_end(&mut existing)?;
+            if existing == legacy {
+                fs::write(&ico_path, &corrected)?;
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&ico_path)
+            {
+                Ok(mut file) => file.write_all(&corrected)?,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    }
     Ok(())
 }
 
@@ -173,6 +215,7 @@ fn ico_bytes(pixels: &[[u8; 4]]) -> Vec<u8> {
     info.extend_from_slice(&((SIZE * 2) as i32).to_le_bytes());
     info.extend_from_slice(&1u16.to_le_bytes());
     info.extend_from_slice(&32u16.to_le_bytes());
+    info.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
     info.extend_from_slice(&((xor.len() + and_mask.len()) as u32).to_le_bytes());
     info.extend_from_slice(&0u32.to_le_bytes());
     info.extend_from_slice(&0u32.to_le_bytes());

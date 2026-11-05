@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, time::Duration};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, timeout};
 use vibemux_plugin_protocol::terminal::{
-    FOCUS_METHOD, INVENTORY_METHOD, MAX_TERMINAL_PAYLOAD_BYTES,
+    CLEANUP_INVENTORY_METHOD, FOCUS_METHOD, INVENTORY_METHOD, MAX_TERMINAL_PAYLOAD_BYTES,
 };
 
 pub const REQUEST_CAPACITY: usize = 8;
@@ -50,8 +50,10 @@ impl PluginRequestClient {
         method: &str,
         payload: Vec<u8>,
     ) -> Result<PluginReply, &'static str> {
-        if !matches!(method, INVENTORY_METHOD | FOCUS_METHOD)
-            || payload.len() > MAX_TERMINAL_PAYLOAD_BYTES
+        if !matches!(
+            method,
+            INVENTORY_METHOD | CLEANUP_INVENTORY_METHOD | FOCUS_METHOD
+        ) || payload.len() > MAX_TERMINAL_PAYLOAD_BYTES
         {
             return Err("terminal_invalid_request");
         }

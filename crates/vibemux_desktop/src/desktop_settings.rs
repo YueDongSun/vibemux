@@ -62,6 +62,44 @@ pub struct DesktopSettings {
     pub start_page: StartPage,
     pub project_folders: Vec<PathBuf>,
     pub ask_confirmed_projects: Vec<PathBuf>,
+    /// Identity receipts are internal. Legacy path-only consent is reconfirmed.
+    #[serde(default)]
+    pub ask_consent_identities: Vec<ConsentIdentity>,
+    /// Explicit vendor-persistence and private-transcript consent.
+    #[serde(default)]
+    pub chat_consent_identities: Vec<ConsentIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsentIdentity {
+    pub project_root: PathBuf,
+    pub created_nanos: u128,
+}
+
+/// The complete settings projection permitted to cross the renderer boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PublicSettings {
+    pub schema_version: u16,
+    pub appearance: Appearance,
+    pub text_size: TextSize,
+    pub density: Density,
+    pub reduce_motion: bool,
+    pub sidebar_collapsed: bool,
+    pub start_page: StartPage,
+}
+
+impl From<&DesktopSettings> for PublicSettings {
+    fn from(settings: &DesktopSettings) -> Self {
+        Self {
+            schema_version: settings.schema_version,
+            appearance: settings.appearance,
+            text_size: settings.text_size,
+            density: settings.density,
+            reduce_motion: settings.reduce_motion,
+            sidebar_collapsed: settings.sidebar_collapsed,
+            start_page: settings.start_page,
+        }
+    }
 }
 
 impl Default for DesktopSettings {
@@ -76,6 +114,8 @@ impl Default for DesktopSettings {
             start_page: StartPage::default(),
             project_folders: Vec::new(),
             ask_confirmed_projects: Vec::new(),
+            ask_consent_identities: Vec::new(),
+            chat_consent_identities: Vec::new(),
         }
     }
 }
@@ -110,6 +150,10 @@ impl DesktopSettings {
         self.project_folders.truncate(MAX_PROJECT_FOLDERS);
         self.ask_confirmed_projects
             .truncate(MAX_ASK_CONFIRMED_PROJECTS);
+        self.ask_consent_identities
+            .truncate(MAX_ASK_CONFIRMED_PROJECTS);
+        self.chat_consent_identities
+            .truncate(MAX_ASK_CONFIRMED_PROJECTS);
         self
     }
 }
@@ -117,6 +161,7 @@ impl DesktopSettings {
 /// The fields a `settings_set` call may change. The folder lists are not
 /// part of a patch: they change through the project commands.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SettingsPatch {
     pub appearance: Option<Appearance>,
     pub text_size: Option<TextSize>,

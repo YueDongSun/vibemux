@@ -12,6 +12,7 @@ folder_dialog = ["dep:rfd"]
 test_support = []
 
 [dependencies]
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time = { workspace = true, features = ["local-offset"] }

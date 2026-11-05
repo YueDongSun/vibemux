@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tasks-snapshot"
+description = "Enables the tasks_snapshot command without any pre-configured scope."
+commands.allow = ["tasks_snapshot"]
+
+[[permission]]
+identifier = "deny-tasks-snapshot"
+description = "Denies the tasks_snapshot command without any pre-configured scope."
+commands.deny = ["tasks_snapshot"]

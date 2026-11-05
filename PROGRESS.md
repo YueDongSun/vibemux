@@ -14,14 +14,14 @@
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
 | Historical audited branch | `main` |
-| Current implementation branch | `codex/remaining_runtime` for the owned follow-up; local `main` remains at `a639ed5` (feature branches previously merged back via direct merge; PR #3 and the two-shell frontend branch land through `feat/3-two-shell-frontend-integration`); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
+| Current implementation branch | `codex/native_harness_conversations` for the current native desktop work; earlier `codex/remaining_runtime` and merged frontend/runtime audits remain recorded in their dated sections below |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041), plus daemon-owned persistent native conversations (ADR 057: read-only chat sessions with durable metadata, protected private bodies, per-turn Task/Run, exact vendor resume, store schema 10, Control v11, and an implemented desktop chat surface; Windows fixtures plus bounded Claude/Codex follow-up and restart-resume qualification), and lifetime chat ownership (ADR 058: schema-11 worktree provisioning, Control v12 owner lifecycle and native Workspaces controls, plus schema-12 attempt/private-record persistence, the owner runtime, closed Control v13 submission transport and mounted native conversation controls; live execution qualification, writable profiles, approvals and success finalization remain open); private write/flush receipts, a one-use peer effect fixture and the schema-13 durable approval ledger are verified under the proposed ADR 059; the protected private evidence writer, test-only diagnostic observer and guarded fixture approval runtime are verified; production writable profiles and installed-vendor qualification remain pending; the test-only deny-only qualification diagnostic is implemented with synthetic verification, and two separately authorized installed-Claude 2.1.304 inputs stopped at `init_mismatch`; v2 isolated the mode comparison while CWD/tools matched, while policy and production qualification remain pending; Control v14 now exposes the human approval consumer and the desktop review panel through command29, while production writable profiles and installed qualification remain pending; native conversation export now provides schema-1 JSON/readable text and Windows create-new Save through command30, with authenticated bounded snapshots and partial markers (ADR 060; Control14/store13 unchanged, live Save GUI unverified); project-wide retained-history search and read-only deep result navigation now run through command31 with option-bound pages, bounded previews and explicit gaps (ADR 061; shared authenticated reader preserves export1/Control14/store13, live GUI unverified); test-only native GUI QA has bounded Search/Saved-read/export-Cancel evidence (ADR 062; archived/Workspace/JSON and repaired-scroll retest pending); test-only diagnostic report v3 corrects canonical Manual mode with offline evidence (native replay unverified) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9), operator semantic contract edits (control protocol v10), the read-only persistent-chat operation (control protocol v11), and lifetime-owner provisioning/lifecycle (control protocol v12); the native desktop and typed Control client expose owner-attempt execution through protocol v13 |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -127,12 +127,15 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
 | Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard (with re-probe and harness selection), the read-only multi-pane console with content-free daemon views (ADR 042), DSH transcript search, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) with the ADR 030 shortcut table, quick switcher, project folders with daemon Start/Stop, a fixture-verified read-only harness Ask through ADR 029 dispatch, and a Console page over the probe, the Git inventory, and the content-free daemon feed exist; continuous coordinator chat, a live vendor Ask, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
-| Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
+| Rust workspace/worktree parity | `PARTIAL — WINDOWS FIXTURE CHECKED` | `vibemux_workspace`, canonical chat owners and `vibemuxd::workspace_cleanup` | Managed creation, physical ownership checks and bounded explicit Windows removal with retained branch/history are implemented. Control v16, schema 14 and Main-only native command 32 provide reviewed confirmation and evidence-only reconciliation. Native desktop cleanup, live terminal and broader platform acceptance remain open |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
-| Desktop app (ADR 043) | `PARTIAL — SKELETON` | `vibemux_desktop` (Tauri 2 shell), `crates/vibemux_desktop/ui` (Svelte 5 UI), the fixed 23-command list, `desktop_settings.json`, the navigation guard, and the lockdown tests | The project, Ask, task, console, and settings screens; no vendor text is fetched yet; the egui GUI is still the shipped frontend |
+| Desktop app (ADR 043) | `PARTIAL` | `vibemux_desktop` (Tauri 2 shell), `crates/vibemux_desktop/ui` (Svelte 5 UI), the fixed 32-command list, `desktop_settings.json`, the navigation guard, the lockdown tests, the persistent chat surface, and the mounted Tasks/Console read surfaces with settings, search, and shortcuts | bounded native navigation, settings and draft checks passed. The persistent chat surface has bounded Claude 2.1.304 and Codex 0.166.0 follow-up and restart-resume evidence, which is separate from certification. The 2026-11-02 native GUI observation covered a bounded search, a Saved deep open and an export cancellation; a renewed native batch verified Saved, archived and Workspace deep opens, the repaired header and icon. A subsequent bounded Windows 11 fixture batch verified Workspace JSON save and native task-window open/reuse, close/reopen and child survival after main closure, with clean owned shutdown (ADR 063). The egui GUI is still the shipped frontend |
+| Persistent native conversations (ADR 057) | `PARTIAL — WINDOWS LIVE CHECKED` | Daemon-owned chat service with durable session/turn/record metadata, protected immutable private bodies, per-turn canonical Task/Run, exact Claude session and Codex thread resume, idempotent replay across restart and purge, bounded 8,192-byte chunk reads, store schema 10, Control v11 (read-only scope), and an implemented desktop chat surface | bounded native navigation, settings and draft checks passed. Claude 2.1.304 and Codex 0.166.0 passed bounded follow-up and restart-resume checks. Bounded native Saved, archived and Workspace history interaction and a Workspace JSON save passed; Saved/chat JSON save remains separately unverified. Writable chats, chat-owned worktrees, tool calls, in-chat approvals, image/PDF inputs, and live qualification remain separate future work; no live persistent certification |
+| Writable chat ownership and public owner execution (ADR 058) | `PARTIAL — NATIVE FIXTURE VERIFIED` | `vibemuxd` owner service and private writer, store schema 11 and 12, Control v12 and v13, the desktop `chat_owner_request` and `chat_execution_request` commands, private transcripts and text attachments | One lifetime owner Task/Run per chat with separate attempts, exact Start and Send replay, immutable private bodies and a per-turn record ledger are implemented and covered by the store and daemon library suites, and Start and Send now await the accepted writer completion. The native execution matrix passed 4/4 across both synthetic vendors, and native desktop acceptance passed one case covering consent denial and acceptance, Start, Send, the correlated result, private content, replay, Close and the final Stop with file retention. Live vendor inference, whole-repository release checks, writable profiles, affirmative approvals and success finalization remain open; Linux/WSL and Windows 10 are unqualified |
+| Interactive chat approvals (ADR 059, proposed) | `PARTIAL — STORE AND RUNTIME FIXTURE VERIFIED` | `docs/adr/059_interactive_chat_approvals.md` (proposed), a private `InputReceipt` future in the daemon input path, a `test_helpers`-only `claude_approval` peer fixture, and a store schema 13 durable approval ledger | `send_tracked` queues a payload once and reports `Written` only after `write_all` and the flush; an error, an abort or a lost sender yields `Unknown`, and dropping the observer does not cancel accepted bytes. Legacy `send` keeps its queue-only semantics and drops the receipt. The peer fixture emits root assistant Write `tool_use` evidence and the matching `can_use_tool` request and writes a fixed artifact only on an exact request ID, unchanged `updatedInput`, absent `updatedPermissions` and an `allow` behavior, as a directly owned `kill_on_drop` subprocess. The store slice persists canonical `ChatApproval` metadata, private evidence references, one-use atomic `AllowOnce`/`Deny` decisions and an outbox claim; replay returns a receipt without a delivery capability and changed reuse conflicts, and the capability is private, nonserializable and not `Clone`. Cancellation before the claim invalidates `Pending` and keeps the decision after the claim; process release or restart invalidates `Pending` and converts an unobserved `Claimed` to `Unknown` without resending, and terminal success refuses `Pending`, `Claimed` and `Unknown`. Expiry is at most 120 seconds with an exact boundary and anti-backdating behavior, and the guarded fixture runtime applies the remaining-turn monotonic cap. One outstanding challenge per attempt and independent write/edit/read/search grants are enforced; `RunDevTests` and non-Claude requests are refused in this slice; private evidence reuses the existing byte quotas, the challenge count is bounded at 4096 per chat, and no raw vendor input enters events or `Debug`. The private approval writer now connects protected immutable private evidence bodies to the ledger on the single authoritative owned writer queue, and a guarded offline approval runtime behind the test helpers drives that path in a contained Claude fixture. The default constructor and the service stay read-only, so there is no production approval route. Production adapters still deny by default. Before the following consumer increment, there was no Control v14 or UI approval path. A deny-only approval qualification diagnostic under the test helpers never grants a capability and is not production authority. Control is now v14 with a partial approval consumer and a mounted desktop approval surface, while the default services and grants stay read-only and empty, and writable owner admission, narrowed Send, the production profile and native incarnation mapping, and installed qualification remain pending |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -1764,7 +1767,7 @@ Non-goals:
 
 **Validation executed**
 
-- Native Windows 11 Pro build 26200, x86_64, Rust 1.85.0: `cargo test --locked --offline --workspace --all-features -j 2` passed **184 tests**, with **0 failures and 1 ignored standalone child helper** across 49 test/doc-test groups. The parent invokes that helper explicitly.
+- Native Windows 11 Pro build 26200, x86_64, Rust 1.85.0: `cargo test --locked --offline --workspace --all-features -j 2` passed **185 tests**, with **0 failures and 1 ignored standalone child helper** across 49 test/doc-test groups. The parent invokes that helper explicitly.
 - `cargo fmt --all -- --check` and `cargo clippy --locked --offline --workspace --all-targets --all-features -j 2 -- -D warnings`: passed.
 - Task-isolated CPython 3.13.12: `python -m pytest` passed **27**; `python -m mypy .` passed **21 source files**; `python -m ruff check .` and `python -m ruff format --check .` passed, with **64 files formatted**. No ignores, exclusions or weakened assertions were introduced.
 - `cargo nextest run --workspace --all-features`, `cargo deny check`, and `cargo audit`: attempted, each exit 101 because its cargo subcommand is absent. These gates remain unverified.
@@ -1934,7 +1937,7 @@ Publication authorization does not resolve the documented Linux/WSL, full ITK, r
 ### 2026-09-12 (11) - Live daemon start benchmark on Windows
 
 **Measured**
-- `scripts/benchmark_daemon_start.ps1` with release binaries, 10 samples plus warmup, on Windows (I:/VibeMux): daemon start p50 473.23 ms, p95 550.99 ms, mean 476.14 ms, min 407.82 ms, max 550.99 ms; daemon stop p95 52.07 ms; all start/stop status checks passed.
+- `scripts/benchmark_daemon_start.ps1` with release binaries, 10 samples plus warmup, on Windows in the task checkout: daemon start p50 473.23 ms, p95 550.99 ms, mean 476.14 ms, min 407.82 ms, max 550.99 ms; daemon stop p95 52.07 ms; all start/stop status checks passed.
 - The workload covers process spawn, lifecycle locks, SQLite migration check, writer startup, named-pipe listener, and authenticated health. Values are first-party measurements on the developer machine, not performance targets.
 - Disk note: the workspace build cache had grown to 44 GB and filled the drive; it was removed and rebuilt cleanly (all 184 Rust tests still green). Drive I: remains at 82% occupancy from other data; large builds need headroom.
 
@@ -7381,3 +7384,1848 @@ from frame self-navigation. Earlier visual/interaction evidence remains dated
 visual walkthrough, live API inference, Linux run or hosted CI is claimed.
 
 See `docs/conversational_web_ui_validation.md` for current checks and limits.
+
+### 2026-10-31: native harness conversation M1 and persistent-session proposal
+
+**Scope:** the bounded native project → explicit lifecycle/setup → consent →
+Claude/Codex one-turn Ask journey, using existing authenticated daemon dispatch.
+The implementation candidate is based on main `617bb1f`; the initially active
+older runtime-owner branch is preserved. Both conversation presentations share
+one execution model. Full desktop parity, egui removal, writable coding and
+persistent-session implementation are outside M1.
+
+**Status: PARTIAL — implementation fixture-verified.** The authenticated native
+temporary-daemon path passed with synthetic Claude/Codex vendors, and the built
+Windows app created a `VibeMux` window. Native WebView2 interaction, Windows 10
+coverage and real vendor inference remain unverified. The
+[acceptance record](docs/evidence/native_harness_m1.md) contains exact commands,
+failure/repair history and the M1-01–M1-20 matrix. This is not an all-green
+release claim: npm audit retains two low baseline findings; Cargo deny/audit
+were unavailable. Affected Rust tests (147), desktop UI tests (16), browser
+tests (67), native dispatch/Control tests (26), store integration (18), Windows
+process-tree tests (7), Control unit tests (22), formatting, affected Clippy,
+frontend all-target compilation and the final production build passed.
+
+The M1 contract is recorded in the [ADR 043 amendment](docs/adr/043_tauri_desktop_app.md):
+opaque canonical project handles and identity-bound consent; public settings
+projection; caller-reserved dispatch identity and stable submission bindings;
+separate canonical/observer/output facts; continuously drained bounded display
+snapshots; explicit lifecycle/setup; presentation-independent ownership; bounded
+shutdown. No Control version, daemon listener or store migration is introduced.
+[The use guide](docs/native_harness_conversations.md) records the exact one-turn,
+capability, privacy and retention limits.
+
+[ADR 057](docs/adr/057_persistent_harness_sessions.md) is a **proposal only**,
+with staged acceptance for daemon-owned Claude/Codex sessions and private
+transcripts. It uses source-observed Control v10/store schema 9 and defers new
+number allocation. Native Codex 0.166.0 version/help/schema generation and
+Claude Code 2.1.304 version/help were inspected on Windows 11 build 26300 without
+inference. These observations do not qualify either persistent or writable
+runtime behavior. Existing raw-output capture remains memory-only.
+This entry records the state on 2026-10-31; the later acceptance is recorded in
+the 2026-11-01 entry below.
+
+### 2026-11-01: persistent native conversations (ADR 057, read-only scope)
+
+**Scope:** the daemon-owned persistent chat backend for Claude Code and Codex,
+plus the desktop Tasks/Console read surfaces, settings, search, and shortcuts.
+The one-shot Ask path is unchanged.
+
+**Status change**
+
+- ADR 057: `Proposed — not implemented` → **Accepted for the read-only
+  persistent-session scope**. The original proposal text is preserved as the
+  decision history; the accepted scope, allocated versions, and compatibility
+  boundary are added to the ADR.
+- Persistent native conversations: new status row — `PARTIAL — FIXTURE
+  VERIFIED` (ADR 057 was previously recorded only as a proposal).
+- Desktop app: `PARTIAL — SKELETON` → `PARTIAL`. The fixed webview command
+  list grew from 23 to 25 with the two chat commands, and the previously
+  stubbed `tasks_snapshot` and `console_section` now take the strict
+  `{ project_key, query }` shape.
+
+**Implemented**
+
+- **Daemon chat service.** One bounded command owner serializes open, send,
+  cancel, rename, close, archive, resume, purge, and private live-text reads.
+  A chat is a session aggregate with its own states (`opening`, `ready`,
+  `busy`, `suspended`, `recovery_required`, `closed`, `archived`) and never
+  becomes a completed Task because one turn finished.
+- **Fixed chat request contract.** One authenticated Control operation carries
+  a closed request enum tagged by `operation`: `list`, `open`, `lookup_open`,
+  `status`, `submission`, `send`, `cancel`, `turns`, `title`, `content`,
+  `live`, `rename`, `close`, `archive`, `resume`, `purge`. Unknown operations
+  and unknown fields are rejected.
+- **Durable metadata plus protected private bodies.** Session, turn, and
+  record metadata live in the single writer. Titles, prompts, and assistant
+  output are immutable private bodies referenced by an opaque blob id, a
+  SHA-256 digest, and a byte count — never a path. The writer publishes a
+  body before the reference naming it commits.
+- **Separate identity-bound consent.** Opening a chat requires an explicit
+  `consent_private_storage` grant, distinct from the one-turn Ask consent.
+  Project registration is an identity boundary rather than a consent of its
+  own: it binds the app to a directory and carries no separate consent
+  grant.
+- **Read-only startup, list, and status.** Daemon startup creates no private
+  storage and launches no vendor process; list and status read committed
+  metadata only; only explicit `title`, `content`, and `live` reads return
+  text.
+- **Exact resume.** Claude resumes by its exact stored vendor session id
+  (`--resume <session_id>`), never `--continue` or latest-session selection; a
+  new Claude chat uses `--session-id <session_id>` with
+  `--replay-user-messages` and drops `--no-session-persistence`, which the
+  one-shot profile keeps. Codex resumes the exact stored thread id through the
+  app-server protocol. A resume refuses when the route profile or workspace
+  resource key changed since the chat was opened.
+- **Per-turn canonical Task/Run.** Each admitted turn carries its own
+  `task_id` and `run_id` and the Git HEAD observed at admission.
+- **Idempotent replay across restart and purge.** Session operations bind to
+  an operation id and sends to a request id; the writer consults the durable
+  binding first. A repeated send after a restart, or after the chat's private
+  content was purged, returns the original receipt instead of a second effect,
+  and a purge never recreates removed text.
+- **Bounded private reads.** A content cursor names the record after
+  `after_sequence` plus a byte offset inside that record; a live cursor also
+  binds a replacement revision. Text is delivered in chunks of at most 8,192
+  bytes, and a chat response is size-checked before it leaves the daemon.
+- **Desktop read surfaces.** Tasks and Console mounts with fixed bounded
+  renderer contracts: 32 tasks per page, 64 console rows per section, 32
+  decisions per page, and an audit-sequence cursor accepted only by the
+  Decisions section. A console row may carry a task id for read-only
+  navigation.
+- **Desktop chat surface.** The Conversation view opens on Chats with the
+  one-turn Independent Ask retained as a separate choice. The chat route is
+  chosen independently of the Ask picker. Saved-chat consent covers inference
+  and private storage together, separately from Independent Ask consent.
+  A new send waits for readiness for at most 30 seconds, polling status with
+  a 250 ms yielded interval, and then sends exactly one
+  turn. Saved chats are listed per project with rename, close, archive,
+  resume, and purge, plus "Show archived" and "Load more chats"; history is
+  read by paging and live text arrives as bounded, revision-bound chunks.
+  An uncertain operation retains its exact identifiers and offers a read-only
+  lookup or an explicit same-action retry, and is never auto-replayed. A late
+  response preserves the selected chat's details and any retained draft.
+
+**Evidence**
+
+- Persistent service: **3 native service tests passed** against both
+  synthetic vendors — repeated turns inside one process, exact resume, history
+  reopened after a restart, and a cancelled turn with a shutdown observer.
+- **Authenticated Control integration passed.** Private history with escaped
+  Unicode reassembles from bounded chunks, and a duplicate send and a purge
+  replay both preserve the original canonical turn.
+- Session API/runtime/sink: **44 passed**, with 2 explicit native fixtures
+  ignored in that particular suite.
+- Store: **33 passed**. Private writer: 4 passed.
+- Control v11: **1 passed**, covering authentication, version, and strict
+  arguments.
+- Desktop `chat_bridge` unit acceptance passed **separately and explicitly**,
+  through an isolated secured runtime plus a synthetic vendor.
+- An independent scoped source review **passed** after the close repair.
+- Desktop crate: **64 passed, 2 ignored**. Final affected-package Clippy
+  **passed**.
+- Desktop UI: 38 tests passed. Native Rust groups: read 7, invoke 2,
+  project 10 — all passed.
+- Ask suite: **18 passed**. Store suite: **33 passed**. Private writer: 4
+  passed.
+- Integrated desktop UI: typecheck **0 errors, 0 warnings**; production build **passed**;
+  **53 tests passed**.
+- Full daemon library regression: **189 passed, 1 failed, 2 ignored**. The
+  sole failure was a stale v10 wording check in `docs/protocol_boundaries.md`;
+  the canonical IPC bullet has since been corrected to v11, and that
+  protocol-boundary documentation rerun **passed exactly**.
+- Privacy check: **0 findings across 769 publishable text files**.
+- Live vendor evidence: two authorized one-turn smokes only. The Codex smoke
+  returned the expected token success; the Claude smoke failed with
+  `harness_process_failed`. That failure is unexplained one-turn evidence and
+  was not measured on the persistent profile. Neither smoke exercised a
+  persistent session.
+
+**Remaining**
+
+- Native saved-history interaction against a running vendor remains unverified.
+  The rebuilt Windows app passed the bounded
+  navigation, appearance and draft-entry check.
+- Full native visual review, IME composition, Windows 10 coverage, Linux coverage, CI
+  execution, and the dependency audits remain outstanding.
+- Full ADR 057 S5 remains open. Both pinned vendors passed bounded follow-up and
+  restart-resume checks in the later continuation below.
+- The broader full-goal gaps remain open: writable chats, chat-owned
+  worktrees, tool calls, in-chat approvals, image/PDF inputs, and remaining live
+  qualification.
+
+**Compatibility / migration**
+
+- Control v11 and store schema 10 are allocated and forward-only. The daemon
+  and the desktop app upgrade together; an older daemon does not understand
+  the migrated database.
+- The one-shot Ask path keeps its Control minimum, its one-shot harness
+  profiles, and `--no-session-persistence`.
+- Existing chat metadata and records keep their meanings and stay readable
+  after the migration.
+- The desktop's `tasks_snapshot` and `console_section` were stubs and now take
+  the strict `{ project_key, query }` shape; the remaining existing commands
+  keep their names and arguments.
+
+**Known risks**
+
+- Native saved-history interaction against a running vendor remains unverified.
+  The Windows executable includes the tested UI repairs.
+- Bounded live persistent evidence now exists for the pinned Claude and Codex
+  profiles. The original one-turn failure remains recorded separately. Full
+  live cancellation and cross-platform qualification remain open.
+- Writable chats, chat-owned worktrees, tool calls, in-chat approvals,
+  image/PDF inputs, and remaining live qualification stay future work under a separate
+  accepted decision and the ADR 036 live qualification gate.
+
+### 2026-11-01 attachment and live-session follow-up
+
+The native desktop now imports bounded UTF-8 text/code files through
+`chat_pick_files`, with per-chat drafts, literal previews, removal, retained
+history rendering and exact-payload retries. UI typechecking/build and 64 tests
+passed. Four native reader tests, two Tauri invoke tests, formatting and focused
+Clippy passed. The approved Windows picker check verified a 64-byte bilingual
+fixture, literal script markup, retention across tabs and removal to an empty
+draft. See the [native guide](docs/native_harness_conversations.md#native-text-attachments)
+and [execution record](docs/evidence/native_harness_m1.md#text-attachments-and-persistent-vendor-qualification).
+
+Six authorized persistent turns were attempted. Codex 0.166.0 completed two
+context-linked turns and a third after restart. A live early status notification
+exposed a resume ordering bug, reproduced in a regression and repaired with
+38 protocol tests passing plus independent source review. The first Claude
+checks exposed missing authentication/provider references and a builtin-plugin
+classification mismatch. Four additional authorized attempts resolved those
+issues. Claude v2 adds `--safe-mode` and a version-bound builtin-source allowlist.
+Its next three turns completed, including follow-up and restart-resume. The final
+protocol suite passed 39 tests, and default-route setup passed six tests after
+repairing present authentication/provider environment references. All ten
+persistent attempts and their original failures remain in the execution record.
+
+[ADR 058](docs/adr/058_writable_chat_ownership.md) accepts one lifetime writable
+owner Run per chat with separate attempts. Its ownership/provisioning foundation
+is implemented in the continuation below.
+
+### 2026-11-01 lifetime owner workspace foundation
+
+Store schema 11 and Control v12 add lifetime Task/Run ownership, durable
+workspace plans and creation claims, independent Git worktree/branch
+provisioning, explicit reconciliation and Stop. Owner status keeps private
+paths and receipt tokens daemon-side. Empty tool grants bound this stage.
+Existing read-only chats retain their mapping and have separate discovery and
+control paths. Daemon and clients require coordinated upgrade.
+
+Eight owner-store tests and 33 historical chat tests passed. Four authenticated
+native Windows tests passed against real temporary Git worktrees, covering
+restart/file retention, interrupted creation, foreign-directory refusal and
+idempotent replay after cleanup failure. Independent scoped source review
+passed after correcting Reconcile replay ordering. Broader checks and exact
+commands are recorded in the
+[execution record](docs/evidence/native_harness_m1.md#lifetime-owner-workspace-foundation).
+
+Writable attempts, affirmative approvals, independent
+success finalization, image/PDF input and full cross-platform qualification
+remain open. The [native guide](docs/native_harness_conversations.md#lifetime-owner-workspace-foundation)
+describes the delivered backend scope.
+
+### 2026-11-01 native workspace controls
+
+The Workspaces tab now exposes owner creation, saved owner/title inspection,
+reconciliation and Stop through the 27th fixed desktop command,
+`chat_owner_request`. Creation consent and Stop confirmation bind to the visible
+project and owner. Pending operations retain their exact binding through project
+navigation, and refreshed pagination retains the loaded window and continuation.
+
+The parent-integrated UI passed 85 tests, typecheck with zero errors/warnings,
+and its production build under Node 22.22.2. The desktop Rust suite passed 64
+tests, with three native acceptance tests ignored in its default invocation.
+The new real-Git owner acceptance and existing saved-chat bridge acceptance
+were explicitly executed and passed. Independent Rust bridge review passed.
+The CLI lifecycle suite passed five tests, including a 601-second virtual-time
+shutdown observation. The original five-second budget reproduced the failure.
+The shared CLI observation budget is now 900 seconds, with a 960-second desktop
+Stop wrapper. The subsequent approved native check passed bilingual title entry,
+the two consent gates, Escape/Cancel reset, focus restoration and tab switching
+with the daemon stopped. Actual native creation/recovery interaction remains open.
+
+### 2026-11-01 owner-backed attempt persistence
+
+Schema 12 adds separate execution attempts and records under the existing
+lifetime owner. First admission moves that owner's Run to Running, and each
+attempt result leaves it nonterminal. Process-generation authority and workspace
+creation use separate claims. Atomic transactions cover replay, cancellation,
+input claiming, output references and cleanup/recovery observations. The private
+writer publishes immutable bodies before references and consults receipts before
+any replay publication.
+
+The final store suite passed 190 tests, including 10 attempt regressions. The
+daemon library suite passed 194 with two ignored. Six focused private-writer
+tests passed. Independent source review passed after correcting Claude's bounded
+first-input bootstrap and monotone event timestamps. The broad daemon command
+first produced five sink-fixture ACL setup timeouts. An unchanged isolated case
+passed, the correlation fixtures' setup budget was aligned to 30 seconds, and
+the original full command passed. Exact commands and failure evidence are in the
+[execution record](docs/evidence/native_harness_m1.md#owner-backed-attempt-persistence).
+
+The submission runtime sink, public Control operation and desktop conversation
+wiring remain open. Control is still v12. Owner grants remain empty. The launch
+binding helper has a separately checked CLI-worker candidate pending its real
+caller. The open native preview is the preceding verified Workspaces build.
+
+### 2026-11-01 owner runtime service
+
+The owner-specific service and sink now connect the attempt ledger to the
+supervised runtime actor. Receipt-first Start/Send retries, fresh workspace
+checks, exact attempt/prompt claims and one process-release path preserve the
+lifetime Task/Run. Claude exact resume permits one initial input in the new
+generation while retaining current root/profile proof for acknowledgement and
+completion. Empty grants, schema 12 and Control v12 remain unchanged.
+
+The parent ran 11 attempt-store tests and three native service tests using real
+temporary Git workspaces and contained synthetic vendors. The broader daemon
+run passed 203 library tests with two ignored, then failed two workflow compare
+snapshot cases. The unchanged compare target passed its targeted probe; that
+result does not establish a green full-package run. Independent scoped Sol
+source review passed. Clippy and the final native matrix passed; the latter covers both vendors
+through cancellation, crash and shutdown. The composed real-writer claim-response
+timeout case remains unexecuted. Exact outcomes and retained failures are in the
+[execution record](docs/evidence/native_harness_m1.md#owner-runtime-service).
+
+Public owner submission Control/Tauri and desktop transcript wiring, writable
+profiles, affirmative approval transport and success finalization remain open.
+
+### 2026-11-01 public owner execution
+
+Control v13 adds a separate closed owner-execution operation, with the original
+chat and owner operations retaining their v11/v12 minima. The native desktop's
+28th fixed command checks registered-project identity, execution consent and
+escaped frame bounds before using authenticated Control. Schema 12 is unchanged.
+Status exposes a coherent owner/session/process-claim observation. Historical
+Start/Send receipts confirm admission independently of current runtime readiness.
+
+The Workspaces detail now mounts a private transcript and manual Start/Resume,
+Send, Cancel and Close controls with text attachments. Project changes clear
+active private history, delayed replies stay with their original target, and
+uncertain writes retain exact payloads and IDs. Close ends a generation while
+retaining lifetime ownership and files. Polls and reloads only read.
+
+The parent UI run passes 99 tests, typecheck and production build under
+Node 22.22.2. Independent backend/native bridge source review passed; UI review
+found and reproduced a positive-Start-receipt recovery error when the process
+already exited, and that fix is covered by the current UI run. The corrected
+feature-enabled native Control fixture passes the native execution matrix
+recorded in the writer completion entry below. The preceding native command
+omitted `test_helpers` and ran zero tests; it supplies no execution evidence.
+The earlier full-daemon workflow snapshot failures are retained below alongside
+the subsequent complete package result.
+Exact checks and limitations are recorded in the
+[execution record](docs/evidence/native_harness_m1.md#public-owner-execution).
+
+### 2026-11-01 writer completion repair
+
+The private writer's synchronous `with_store` returned a five-second timeout
+while its queued callback could still commit, and the chat writer then
+abandoned the Start spawn and the Send queue continuation. The root added a
+crate-private `enqueue_store` that keeps the same bounded `try_send` and
+reports the actual result over a Tokio oneshot, and `ChatWriter.execute` now
+awaits that accepted completion from the authoritative writer thread. The synchronous
+`with_store`, the 30-second chat acknowledgement budget and the 35-second
+Control budget are unchanged. The runtime actor still checks release and
+cancellation after the commit and before any vendor effect. The repair adds no retry, duplicate dispatch or execution authority. The store
+schema and wire contract are unchanged.
+
+A typed admission test held the real writer behind a 100-millisecond barrier
+with a 5-millisecond handle deadline. It reproduced `WriterResponseTimeout`
+while the accepted callback was still queued. The two typed admission and Start-grant tests are
+green, and the full daemon library suite passed 211 tests with two ignored after
+the fix. Independent Sol/max source review passed. The desktop UI is untouched
+by this repair and still passes 99 tests, typecheck and a production build.
+
+Native qualification completed. The four-case native execution matrix passed
+4/4 across both synthetic vendors after the test-only refusal assertion was
+corrected to the existing client code contract, and native desktop acceptance
+passed one case covering consent denial and acceptance, Start, Send, the
+correlated result, private content, replay, Close and the final Stop with file
+retention. The daemon library suite passed 211 tests with two ignored, and
+Clippy over `vibemuxd`, `vibemux_store` and `vibemux_desktop` with all targets,
+all features and `-D warnings` passed, as did formatting and the diff check.
+Independent source review of the completion repair and of the final assertion
+delta passed.
+
+A subsequent complete `cargo test -p vibemuxd --all-features --locked --offline`
+passed: 363 tests passed and three were ignored. Both previously failing workflow
+compare cases passed inside that run. The original failures are retained; their
+cause remains unproven. Whole-repository and release checks remain separate. The matrix and the desktop acceptance use synthetic vendors and an
+automated native acceptance test, so this evidence does not qualify a live
+vendor, the whole repository or the interactive OS UI. Linux/WSL and Windows 10
+remain unqualified. Owner grants stay empty and profiles remain read-only; writable
+profiles, affirmative approvals and success finalization remain open.
+
+### 2026-11-02 interactive approval foundation
+
+ADR 059 is proposed, not accepted. It defines the first candidate Claude
+`manual` permission mode with `host` prompts and four independent file-tool grants, records that
+RunDevTests is unsupported, keeps Codex workspace-write uncertified per
+ADR 036, and defines schema 13 and the planned Control v14. The store schema is now 13
+through a forward-only migration; at this stage the Control protocol stayed at
+v13, and the durable approval ledger itself is recorded in the entry below.
+
+The implemented groundwork is a private `InputReceipt` future in the daemon
+input path. `send_tracked` queues a payload once and reports `Written` only
+after `write_all` and the flush complete; an error, an abort or a lost sender
+yields `Unknown`, and dropping the observer does not cancel bytes that were
+already accepted. Legacy `send` deliberately drops the receipt and keeps its
+queue-only semantics. No production tracked approval consumer exists. Four
+focused input/output tests passed.
+
+The test-only `claude_approval` peer in `test_helpers` emits a standard root
+assistant Write `tool_use` and matching `can_use_tool` request, then waits
+for the permission response. It writes a fixed artifact only when the request ID
+matches exactly, `updatedInput` is unchanged, `updatedPermissions` is absent
+and the behavior is `allow`, and it consumes the pending request first. A
+wrong, stale, duplicate, denied, changed-input, interrupted or EOF case does
+not execute. Three new peer integration tests passed. The fixture launches a
+directly owned `kill_on_drop` subprocess; it is neither the production
+contained runtime nor a live vendor. It invents no assistant user UUID, and
+native correlation and ordering stay unqualified.
+
+Regression after these changes passed: the daemon library suite ran 215 tests
+with two ignored, the owned execution cases ran four, the persistent chat cases
+ran three, Clippy over `vibemuxd` with all targets, all features and
+`-D warnings` passed, and formatting and the diff check passed. The complete
+`vibemuxd` package run of 363 passed and three ignored belongs to the previous
+repair artifact and is not a new whole-package result for this stage. The UI's
+99 tests, typecheck and production build are unchanged and were not rerun.
+
+Production approvals, writable profiles, the desktop surface and a daemon-side
+approval consumer are still not implemented; the store-side decision and outbox
+ledger is described in the entry below. The whole-repository and release
+checks remain separate.
+
+### 2026-11-02 durable chat approval ledger
+
+The store schema is now 13 through a forward-only migration, and the Control
+protocol stays at v13. ADR 059 remains proposed, and this is a partial store
+implementation of it.
+
+The store persists canonical `ChatApproval` metadata with private evidence
+references, one-use atomic `AllowOnce` and `Deny` decisions, and an outbox
+claim. Replay returns a receipt without a delivery capability, and changed
+reuse conflicts. The capability is private, nonserializable and not `Clone`.
+`Written` records all bytes written and flushed; it is not vendor acceptance
+and not vendor effect.
+
+Ordering is explicit. Cancellation before the claim invalidates a `Pending`
+challenge, and cancellation after the claim retains the recorded decision.
+Process release or restart invalidates a `Pending` challenge and converts an
+unobserved `Claimed` challenge to `Unknown`, and nothing is resent. Terminal
+success refuses a challenge in `Pending`, `Claimed` or `Unknown` state. Expiry
+is persisted at no more than 120 seconds with an exact boundary and
+anti-backdating behavior across successive tools and the chat lifecycle; the
+remaining-turn monotonic cap awaits the runtime implementation. Each attempt
+keeps a single outstanding challenge, including `Claimed` and `Unknown` ones,
+and the write, edit, read and search grants are independent. `RunDevTests` and
+non-Claude requests are refused in this store slice. Private evidence reuses
+the existing byte quotas, a chat holds at most 4096 challenges, and no raw
+vendor input reaches events or `Debug`.
+
+Eleven new store API tests passed: replay and changed reuse, cancellation
+ordering, exact expiry and backdating, concurrent same-operation and
+concurrent `AllowOnce`/`Deny` decisions, restart outcomes, narrowed grants, the
+stale fence, profile and commit limits and the private limits, `Deny`, retired
+IDs and operation collision, terminal settlement, the schema 12 to 13
+late-fault rollback with byte-identical owner, attempt and event history, and
+the clock watermark, plus corrupt and oversized persisted binding refusal.
+The final complete store suite passed 202 tests and the types suite passed 23,
+with no failures or ignored cases. Historical migration fixtures were updated
+to remove schema-13 tables when reconstructing older schemas; their version and
+history assertions were retained.
+
+Fresh native Windows checks passed the daemon library suite (215 passed, two
+existing ignores), all four contained owner-execution cases and Clippy for
+the daemon, store and types with all targets/features and warnings denied.
+The earlier three persistent-chat cases, seven I/O/peer foundation tests and
+363-test complete daemon package retain their original artifact scopes. There
+was no new native UI or live run.
+
+Production adapters still deny by default. At this stage there was no daemon
+approval consumer, no Control v14 and no UI approval path; the Control v14 human
+approval surface is recorded in a later entry. Native correlation and
+effective policy qualification and the remaining-turn clock are pending, and
+no new live allowance was granted. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#durable-chat-approval-ledger).
+
+### 2026-11-02 private approval writer and diagnostic observer
+
+Store schema 13 and Control v13 are unchanged. This entry records the verified
+private approval writer and the test-only diagnostic observer. No public
+approval surface exists.
+
+`chat_approval_writer.rs` connects protected immutable private evidence bodies
+to the ledger on the single authoritative owned writer queue. An exact read-only
+admission replay lookup runs before any private I/O, a fresh publication
+precedes its metadata, and a rejected admission removes only the owned
+unreferenced body.
+
+Typed evidence binds the actual attempt, chat, request and generation, the
+vendor session, the canonical tool and its native tool mapping, digests of the
+raw RPC and tool IDs against the ledger, and the exact original input. A fresh
+decision verifies the private body and that binding, captures one snapshot
+before the atomic claim, refreshes UTC immediately before the commit, and
+returns exactly one redacted dispatch payload that is not `Clone` and not
+serializable, carrying the only fresh capability. A historical decision replay
+reads no private body, recreates no body, produces no payload and grants no
+capability. Missing, tampered, wrong-scope, oversized and changed bindings all
+fail closed. Private evidence is readable only through an explicit content
+read; the default DTO, debug output and events stay content-free.
+`complete_approval_delivery` consumes the claim.
+
+Eight new writer boundary tests passed: private body with reopen and replay,
+missing and tampered evidence before the claim, missing evidence after a
+decision replay, cleanup of a rejected publication, concurrent decisions, a
+retained accepted completion beyond the five-millisecond synchronous deadline,
+a queued expiry checked at commit, and a corrupted raw private ID against the
+ledger key. The first full daemon library run passed 223 tests with two
+existing ignores, before the diagnostic observer was added, and the store
+approval tests passed eleven including the new read-only lookup assertion.
+
+The `approval_probe` observer is test-only and pure. It was supplied by an
+independent native worker and reviewed by the parent. Fifteen pure tests passed
+after origin, stream-confirmation, duplicate-block and omitted-tool snapshot
+repairs. The final complete daemon library run passed 238 tests with two
+existing ignores; affected-package Clippy and the source-matched native bundle
+build also passed.
+
+The observer emits only fixed booleans, counters and errors, keeps raw IDs and
+input private, and bounds the encoded JSON, the input and the pending bytes. A
+matched raw tool request without the user echo is observation only; proof
+requires that tool's own message to be bound to the exact user echo. An
+unrelated echo cannot bind an earlier unbound tool, and the proof snapshot
+freezes at the denial.
+
+At this stage no native runner existed, so no model or vendor call happened and
+nothing was qualified. The native paths added later are recorded in the
+entries below and carry no production authority. A local native CLI flag parse with no input and an invalid
+`--max-turns` value confirmed that the numeric option is recognized; that is
+option-parsing evidence only and does not qualify the native limit. A fresh single-input process is a proposed alternative for
+origin proof, with strict closure, no resume, single input and policy gates,
+and it still requires independent native qualification; the existing persistent
+parser is unchanged.
+
+At this stage the existing Control surface and the desktop app had no approvals,
+and production profiles still deny by default. The private writer API reaches the
+runtime actor only through the guarded test-only fixture runtime recorded in
+the next entry, and there was still no production approval consumer, no Control
+v14 and no UI approval path. The earlier schema 13 store 202 and types 23
+results, the four-case native matrix, the bundle check and the UI 99 tests
+keep their original scopes, and there is no new full-package, whole-workspace,
+UI or live claim. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#private-approval-writer-and-diagnostic-observer).
+
+### 2026-11-02 guarded offline approval runtime
+
+ADR 059 now has a guarded offline approval runtime, reachable only through the
+test helpers. At this stage the production boundary was unchanged: store schema
+13 and Control v13 stayed as they were, the default constructor and the service
+remained read-only, and there was no production approval route, no Control v14,
+no UI approval path and no writable native profile.
+
+The fixture protocol starts a fresh Claude session with exactly one user input
+and the `WriteFiles` grant, and there is no serialized opt-in. Request, tool and
+input correlation is exact for complete and for streamed responses. The actual
+input is flushed before the challenge becomes `Pending`, and the pure response
+is prepared once before the durable claim. Physical dispatch still requires the
+canonical one-use capability.
+
+The actor owns its callback futures through client observer loss. It continues output reading and turn
+cancellation while callbacks wait, defers the terminal state until the durable
+response is `Written`, never resends a response with `Unknown` delivery, and caps the
+120-second approval expiry by the original total turn deadline while pausing
+the idle clock during a human wait.
+
+The fixed fixture effect uses `create_new` on `approved_runtime.txt` and only
+after one matching `Allow`. A deny, a cancellation, an expiry or an identity
+failure creates no file. The factory binds the actual built vendor and
+trampoline, the configuration and working directory, the real managed worktree
+ownership and the pinned HEAD, and a pre-enqueue check catches a HEAD change
+after the claim.
+
+The Windows offline native ten-case matrix passed: allow and deny, cancellation,
+parked admission with continued output, a parked claim followed by cancellation,
+a delayed durable `Written`, a post-claim same-branch HEAD move, a no-dispatch
+`Unknown`, a lost client observer, an idle pause with absolute expiry, and a
+wrong vendor or trampoline. The full harness package passed 278 tests
+(217 + 12 + 22 + 8 + 15 + 4). The full daemon package passed 404 tests with three existing explicit ignores.
+After the lint-only condition/initializer and boxed-guard refinements, the
+current source passed the harness 278, daemon library 239 with two existing
+ignores, and all ten native approval cases. Affected-package Clippy with
+`-D warnings` and the desktop/CLI/daemon bundle build also passed.
+
+The separate pure `approval_probe` observer reports what a denial proved and
+has no native runner. The guarded runtime drives a contained fixture process.
+
+Nothing here qualifies an installed vendor version, an effective policy, a
+writable native profile, or a new vendor or model call, and no live vendor qualification is claimed. The earlier store 202 and types 23 results, the four-case native
+matrix, the 238-test daemon library run, the bundle check and the UI 99 tests
+keep their original scopes. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#guarded-fixture-approval-runtime).
+
+### 2026-11-02 deny-only approval qualification diagnostic
+
+ADR 059 now has a deny-only approval qualification diagnostic under the test
+helpers. It is separate from production authority: the diagnostic never grants
+a capability, the production services stay read-only, and store schema 13 is
+unchanged. At this stage Control was still v13 and there was no UI approval
+path.
+
+Preparing a `DiagnosticCandidate` starts no executable and reads no
+credentials. It creates a fresh empty namespace and pins the vendor, the built
+trampoline and a fixed configuration. The explicit native run is a separate
+step: it checks the exact `2.1.304 --version` in its own contained process
+before a sole fixed input.
+
+The candidate uses a manual/host Write-only ASK profile with restricted/safe
+settings and strict MCP configuration, no Chrome, no slash commands and no
+session persistence. The response is a fixed deny and never carries updated
+input or updated permissions.
+
+The driver uses the normal `SessionMachine` only for the exact initialize and
+generated user frame, and the observer takes over afterwards. It tracks the
+initialize, user and denial flush slots with output, cancellation, root and
+deadline handling; the terminal step waits for the receipts it needs; an abort
+joins stdin before the contained finish; and a closed false cancellation owner
+refuses startup.
+
+The limits are 15 seconds for initialization, 60 seconds for a turn and 3
+seconds for shutdown, with an 8 MiB stdout bound. A requested `max-turns` of 1
+is a request and is not proof of a single provider request.
+
+Reports carry fixed observations, receipt flags, counters and cleanup state.
+They contain no identifiers, paths, raw input or provider values, and
+`policy_sources_qualified` and `production_profile_qualified` are always
+false. Unknown files and cleanup retain the exact recovery namespace.
+
+The native test `installed_claude_deny_only_diagnostic` is ignored by default
+and requires a separate explicit allowance plus a surviving-policy review.
+Default test runs execute the guarded built fixture only.
+
+The parent executed eleven injected tests. The full daemon library passed 250
+tests with two existing ignores, and the synthetic integration run passed five
+with one explicit installed-case ignore, including the closed-owner and
+no-start-marker regression. The final driver eleven cases passed again after its lint-only condition
+refinement. All-target affected-package Clippy and the rebuilt
+desktop/CLI/daemon bundle passed.
+
+Read-only host metadata identifies 2.1.304.0. Managed local files and the four
+registry views were inspected and are absent, but the remote and runtime
+sources remain unqualified. At this stage no installed-Claude diagnostic process
+or qualification input was started; these checks used synthetic fixtures, and
+existing provider values were never
+recorded. No new live allowance was granted; the prior budgets stood at 0.
+
+The earlier 404-test daemon package, 278-test harness package, ten-case runtime
+matrix and UI 99 results keep their historical scopes, and there is no new
+whole-package, whole-workspace, UI or native-vendor claim. Exact commands are
+in the
+[execution record](docs/evidence/native_harness_m1.md#deny-only-approval-diagnostic).
+
+### 2026-11-02 Control v14 human approval surface
+
+Control is now v14. The legacy Chat, Owner and Execution operation shapes and
+their minima of 11, 12 and 13 are retained, and the new closed ChatApproval
+operation has a minimum of 14. Store schema 13 is unchanged, so this increment
+carries no storage migration.
+
+The typed requests are `Pending` for the chat, generation and request,
+`Metadata` for the chat and approval, an explicit private `Content` that
+returns the JSON input only in 8,192-byte UTF-8 chunks, `Decide` with the
+canonical identifiers, generation, request, expected version, one operation ID
+and either `AllowOnce` or `Deny`, and a read-only `Receipt` that carries the
+same original binding. A mutation supplies no path, vendor identifier, grant,
+profile or fence, and the metadata DTO omits the profile digest and the
+evidence reference.
+
+Receipt lookup performs metadata SELECTs only. Its tests enforce SQLite
+`query_only`, unchanged events/changes and no retained transaction. It reads no
+blob, advances no clock and returns the original decision-operation sequence
+with current delivery metadata and no claim. An exact
+historical `Decide` replay returns the receipt without a live actor and without
+resending, and changed reuse conflicts.
+
+A fresh decision awaits outside the serialized service queue, and the native
+bridge does not hold the exclusive project job during that wait, so Cancel
+stays responsive. The desktop registers the twenty-ninth native Tauri command,
+`chat_approval_request`, with an exact capability and closed arguments, and the
+daemon, client and desktop are upgraded together for the v14 descriptor.
+
+The default services and grants remain read-only and empty. Writable owner
+admission, narrowed Send, the production profile, native incarnation mapping
+and installed qualification are still pending, and exposing the existing offer
+consumer does not qualify its producer. The guarded test-helpers-only service
+fixture factory returns the same actual sink and owner and uses the daemon's
+sole writer; it has no IPC, configuration or UI selector.
+
+The mounted path is app to `workspace_chats` to `workspace_execution` to the
+WorkspaceApproval card and dialog. An explicit Review fetches the input
+plaintext into a read-only textarea. Allow once requires the complete current
+JSON plus a live, decidable and unexpired challenge, while an explicit Deny may
+be sent without the body, and the default focus is Deny. No selection, render,
+close, expiry or recovery automatically sends a choice. The pending payload is
+fixed once across uncertainty and navigation, and recovery only reads.
+
+A null receipt combined with a newer terminal state for the same approval
+proves that this operation did not commit, so the card clears as not
+recorded rather than as its own success and never resends; a pending or
+same-operation state stays uncertain. Selection and detail epochs protect the
+exact body, which is cleared on selection, close, error, expiry, refetch and
+submit. An ordinary poll pauses during an exact pending review, and a forced
+refresh clears the body and requires the review again. Metadata application
+compares the current row ID and version, so a stale A cannot roll back a newer
+`Written` or `Unknown`. A backward local clock before expiry clears the body and
+blocks choices and is labeled `time_unverified` rather than a fake canonical
+expiry; fresh server calibration is needed, and the server remains the final
+authority.
+
+The executed evidence: six store `query_only` tests, a daemon library run of
+253 passed with two existing ignores, all twelve contained approval runtime
+tests including two real authenticated Control end-to-end cases covering the
+actual fixed file effect and the retained Run with the historical receipt and
+replay, and a held committed decision cancelled within two seconds that left no
+file and an `Unknown` delivery; two actual Tauri invoke tests; all 113 UI tests
+including 14 new state tests with a typecheck of zero errors and zero warnings
+and a production UI build on an explicit Node 22.22.2 without a global NVM
+change; and Clippy with `-D warnings` over the three touched Rust packages. A
+broader run over the four packages (store, client, desktop and CLI) passed 454
+with three explicit native fixture ignores; all three synthetic native acceptance cases then passed when selected
+explicitly. The final default three-package bundle also passed.
+
+Two independent source gates passed, one of them Sol/max, and they found and
+repaired metadata and clock races with separate red and green logs. There is no
+claim of Pro review, native GUI, installed vendor qualification or a
+full-workspace release. The overall goal is still active: the native
+single-input allowance question is pending with a budget of 0, and no installed-Claude
+qualification process or input ran in this phase. The older 404-, 278-, 250-,
+112- and 99-test results keep their original scopes. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#control-v14-and-desktop-tool-approvals).
+
+### 2026-11-02 installed Claude diagnostic and redacted init checks
+
+The user explicitly confirmed the prior one-input question, and the parent ran
+the ignored `installed_claude_deny_only_diagnostic` exactly once through the
+existing provider. The actual installed Claude 2.1.304 version was verified.
+The report records `initialize_written` and `input_written` as true and
+`denial_written` as false. The observer saw 5 records and 6360 JSON bytes, and
+its root-init, input-echo, tool, request and terminal flags were all false with
+the error `init_mismatch`; stop = `protocol_rejected`. The process root was
+reaped, the tree was empty, cleanup was verified, forced termination was used,
+the exit code was 1 and stderr was empty. Workspace identity was verified, the
+fixed synthetic artifact was absent, the workspace was not retained, and the
+fresh root was removed.
+
+One passing test means the diagnostic completed and its owned cleanup was
+verified. It is not a native policy or profile qualification. The raw output
+was not logged, so the original report v1 cannot say which initialization field
+mismatched. One new input was spent for that run, and no retry was authorized
+at the time. A false `input_written` on its own cannot show that no input reached the
+vendor, and it does not authorize a retry; `input_queued` records queue
+acceptance, not delivery.
+
+Report v2 is implemented for diagnostics only. It adds `initialize_accepted`,
+`input_queued` and `denial_queued` as distinct from the write/flush receipts,
+and content-free `init_checks` for `permission_mode_matches`,
+`working_directory_matches` and `tools_match`. A serialized `init_checks` of
+`null` means no identity-qualified initialization reached the checks; an object
+carries all three booleans, and `false` means the field was compared and
+mismatched. The checks are populated after root identity and duplicate
+validation, and all three are computed before the strict mismatch rejection.
+The acceptance rules are not relaxed. The affected fourteen driver tests were
+run against v1 first, where six passed and eight failed, and then against v2,
+where all fourteen passed. The full daemon library passed 256 tests with two existing ignores; the
+synthetic process diagnostic passed five with the installed case left ignored.
+Affected-package Clippy, formatting and diff checks passed.
+
+Control v14, store schema 13 and the twenty-ninth native command are unchanged.
+Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#installed-claude-diagnostic-and-redacted-init-checks).
+
+### 2026-11-02 installed Claude report v2 result and native QA preparation
+
+The user separately approved one report-v2 input, and exactly one installed
+Claude 2.1.304 input executed through the same existing provider with
+`--permission-mode manual`, `--permission-prompts host` and `--tools=Write`,
+with its fixed input restricted to requesting the synthetic artifact; no artifact was created.
+
+The report v2 result: `init_checks` were
+`{ permission_mode_matches: false, working_directory_matches: true,
+tools_match: true }`, with stop `protocol_rejected` and the error
+`init_mismatch`. `initialize_accepted` and `initialize_written` are true,
+`input_queued` and `input_written` are true, and `denial_queued` and
+`denial_written` are false. `root_init_seen`, `current_input_echo`,
+`complete_tool`, `matching_request`, `denied` and `terminal` are all false.
+The observer saw 5 records, 6366 record bytes, 6371 stdout bytes and 297
+pending bytes. `root_reaped`, `tree_empty` and `cleanup_verified` are true,
+forced termination was used, the exit code was 1 and stderr was empty.
+Workspace identity was verified, the probe artifact was absent, the workspace
+was not retained, and the fresh namespace was removed.
+
+A test exit of 0 with one pass means the diagnostic cleanup succeeded. It is
+not a profile qualification. The candidate's maximum user inputs is 1, and
+`affirmative_response_available`, `policy_sources_qualified` and
+`production_profile_qualified` are all false. The strict parser is unchanged,
+and the actual mismatching permission-mode value was not logged, so it is not
+stated here.
+
+The total installed diagnostic inputs are now 2, covering the v1 and v2 runs.
+The newly granted input was spent and no installed input remains.
+
+The native QA runner recorded in the next entry is prepared and built, but no
+GUI launch, no operating-system input and no save operation were performed, so
+the live native acceptance path is still pending. No QA-ready, GUI or
+production qualification is claimed. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#installed-claude-diagnostic-and-redacted-init-checks).
+
+### 2026-11-02 native conversation export
+
+ADR 060 adds native conversation export. The thirtieth fixed native command is
+`chat_export_request`, with `{ project_key, request: { kind, format, chat_id,
+generation, expected_version } }`, and the receipt carries `status`, `kind`,
+`format`, `chat_id`, `generation`, `version`, `record_count`, `byte_count` and
+`partial`. No path, title, text, record or blob returns to the renderer. The
+export is native-only: the Windows save dialog runs first with a generic
+`conversation.json` or `conversation.txt` name, and cancelling reads no history
+and creates no file.
+
+The desktop mounts an explicit Export selector and button for saved chats and
+workspaces. The daemon must be connected and the session exactly quiescent in
+a Ready, Suspended, Closed or Archived state with no active request. The
+generation and version are pinned, and the full metadata equality is rechecked
+after collection and before writing. Only bounded authenticated Control reads
+are used; there is no database or private-store access. Every record's metadata
+is exact, and unavailable, purged, truncated or incomplete output is visibly
+marked partial.
+
+JSON export schema 1 preserves exact UTF-8 text plus the canonical Task, Run
+and correlation facts, and carries no vendor identifier, blob reference, digest
+or path. The text form is readable and makes terminal and bidirectional control
+characters visible, with no active markup. The file is a private copy, not
+importable or resumable state, and purging cannot erase a file that was already
+exported.
+
+The limits are 4096 records, 65536 turns, 256 KiB retained per record, 32 MiB
+retained in total, a 512-byte title and a 120-second collection timeout. The
+output cap of 343937024 bytes covers escaping and metadata and never clips.
+
+The native path must be an ordinary absolute path with the selected extension.
+Devices, alternate data streams, reparse points and existing files are refused.
+Ancestor handles are held with WRITE and DELETE sharing denied, and the file is
+created with `create_new` and then written and synced, so a shared writable
+handle can cause a refusal. Nothing is overwritten. A write or sync failure can
+leave a partial file, so the selected destination must be checked after an
+unconfirmed result and no retry happens automatically. The export mutex is
+independent of the project daemon job, so Cancel stays responsive.
+
+Control v14 and store schema 13 are unchanged and the native list is 30. The
+client export tests passed 25 (8 collector, 10 formatter, 7 Windows save), the
+UI passed 127 including 14 export state tests with a typecheck of zero errors
+and zero warnings and a passing production build, the desktop passed 18 with
+one synthetic ignore, and two actual Tauri invoke tests passed. The explicit
+built-synthetic saved bridge passed both formats with a readback and no chat
+mutation, and the explicit native owners fixture passed the Workspace JSON,
+title, prompt and lifetime Run. Two scoped independent source gates passed,
+one of them Sol/max, and the original size and ancestor-handle bugs have
+separate red and green logs. The related client/desktop package run passed 188
+tests with three explicit
+native fixture ignores. Affected-package Clippy and the matching default
+desktop/CLI/daemon bundle passed.
+
+No native save dialog operation, Linux, Windows 10, installed vendor, model
+call, Pro review or deployment is claimed. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#native-conversation-export).
+
+### 2026-11-02 project-wide conversation search
+
+ADR 061 adds project-wide retained conversation search. The thirty-first fixed
+native command is `chat_search_request`, with `{ project_key, request: { query,
+case_sensitive, scope, include_archived, limit, cursor } }`, where the scope is
+`all`, `saved` or `workspace` and the limit is at most 25. Control v14 and
+store schema 13 are unchanged.
+
+The desktop mounts a native-only, project-scoped search modal behind a
+**Search history** button. Opening it, typing and changing options perform no
+reads; only an explicit Search and an explicit Load more read anything. The
+query is literal text of at most 256 UTF-8 bytes, the scope defaults to all
+conversations, Match case and the include-archived/finalized checkbox are
+explicit options, and the pattern is an escaped literal regular expression
+using Unicode simple fold, with no normalization and no full-fold expansion.
+One hit is reported per matching title or message, with the occurrence count
+and the first bounded preview of 80 Unicode code points of context per side,
+using UTF-8 offsets.
+
+The API is read-only and authenticated, and it uses no database, index, model,
+vendor, configuration or route. A page is bounded to 25 hits, 4 MiB read, 256
+records, 128 visited chats, 30 seconds and a 256 KiB encoded response, with a
+display cap of 250 hits that then asks for a narrower query. Cursor schema 1
+binds the exact query, options, kind, generation, version, cut-off, counts and
+the after-sequence, and continues by whole record; a page is complete only when
+no next cursor is returned. A conversation that changed discards its new
+previews for that page and reports the gap, and purged chats, unavailable
+titles and missing records are counted.
+
+Search is a per-conversation, per-page observation and not an atomic
+whole-project snapshot, so earlier results can go stale and the search must be
+run again for a fresh view. The private query, titles, previews and cursors are
+cleared on close or project change, with no persistent storage and nothing in
+the default logs. One native atomic guard excludes a duplicate Search without
+blocking the daemon Cancel, and no mutex is held across async reads. The shared
+client history client normalizes saved chats and workspaces and preserves the
+export type aliases and artifact schema 1.
+
+Opening a result resolves the target conversation, revalidates its readonly
+status, generation and version, and selects unknown archived or unlisted saved
+targets. A deep record is addressed by its exact record ID and sequence with a
+cursor sequence of one less, and global sequence gaps are normal. Nothing
+sends, resumes, starts, cancels, consents or mutates the owner, and drafts,
+attachments and uncertain pending payloads are preserved. The deep view states
+that earlier history is not loaded, and the normal caps still apply. The
+archived search selection pin now survives polling and unpins on ordinary
+navigation.
+
+The evidence: the client passed 43 tests initially (25 export and 18 search),
+the dedicated 18 search tests are green, two Tauri invoke tests passed with
+closed unknown-field, path and provider rejection, and the UI passed 153 after
+an initial 152 with one archived-pin failure, with a typecheck of zero errors
+and zero warnings and a production build of 525.96 kB advisory. The actual
+built-synthetic saved and workspace search and export acceptance passed two
+cases, including limit-one paging, private debug output and no canonical
+mutation. The related client and desktop packages passed 206 with three
+explicit native ignores. The initial Clippy run found one collapsible `if`
+whose equivalent-predicate fix passed the final affected tests and Clippy;
+the matching default desktop/CLI/daemon bundle also passed. Both focused source gates passed,
+including Sol/max.
+
+No native GUI or OS save interaction, Linux, Windows 10, installed vendor,
+model input, Pro review, push or deployment is claimed. The v2 native
+diagnostic allowance question remains pending and is not an approval. Exact
+commands are in the
+[execution record](docs/evidence/native_harness_m1.md#project-conversation-search).
+
+### 2026-11-02 native GUI QA runner preparation
+
+ADR 062 adds a native GUI QA runner behind the nondefault `native_qa` feature,
+which also pulls in the bundled custom protocol handler and the daemon test
+helpers. It is built with
+`cargo build -p vibemuxd --features test_helpers --bin vibemux_chat_fixture --bin vibemux_launch_trampoline --locked --offline`
+and
+`cargo build -p vibemux_desktop --features native_qa --bin vibemux_desktop_qa --locked --offline`,
+and it is driven as
+`vibemux_desktop_qa <prepare|check|run|stop> --root <fresh absolute local directory>`.
+
+`prepare` claims an exclusive fresh root and builds a synthetic-only namespace
+with a real Git repository, a real daemon and three synthetic conversations;
+the baseline is 4 Saved, 2 archived Saved and 2 Workspace records, with no
+process claim. `check` starts its own daemon, reopens the production `AppState`,
+the settings and the descriptor, repeats the history read-only and joins the
+daemon before it exits. `run` starts the shared production Tauri builder and
+UI with all 31 fixed commands, the content security policy and the navigation
+guard, using a separate root, profile and `desktop_settings.json` plus a
+root-scoped webview, with the window titled `VibeMux · DEMO · isolated native
+QA`, and one namespace is run once. `stop` requests owned window exit by root and run
+nonce without killing a process by PID.
+
+Directory identities are retained and settings saves are atomic. Pins for the built
+fixture, the trampoline, the copy and the configuration are held for the
+lifetime of the run. This is an exclusive, trusted QA environment: external
+namespace mutation is unsupported, the checks detect an observed change, and
+they are neither a security sandbox nor a guarantee against a hostile
+concurrent writer. The monitor samples every 100 ms for up to 20 minutes and
+starts after the app is constructed, so it does not bound a hung native
+startup; cleanup joins the monitor and the daemon and records observed unresolved
+Asks if state reached Ready, with anything unknown retained. `gui_ready_observed`
+means the Tauri application signalled Ready, not that the DOM is present or
+that a scenario ran. Replay checks schema, fixture-only/qualification-false
+fields, exact identifiers, terminal phase and cleanup; altered fixed claims
+and unconfirmed cleanup are rejected.
+
+The final native Windows verification on Rust 1.92: the desktop library passed
+33 tests with two ignored, the explicit native fixture cases for prepare,
+check, reopen, failed start and the injected pre-Ready panic cleanup passed as
+one test in 9.55 seconds, the affected all-target all-feature Clippy run
+exited 0, the QA and the normal desktop, CLI and daemon builds exited 0, and
+all three executables report manifest 1 and CommonControls v6. The exact fresh
+QA acceptance root is already prepared and checked with the same 4/2/2
+record baseline, no process claim, and its daemon joined. No GUI was launched, no
+operating-system input was produced and no save operation was performed, so the
+live native acceptance path is pending. Operating-system input still needs an
+explicit, bounded consent before any click or keystroke, and no vendor input is
+allowed; the installed diagnostic allowance is separate, with one approved
+input spent and none remaining. The UI's 153 tests keep their previous scope
+and were not rerun. Control v14, store schema 13, export schema 1 and the 31
+native commands are unchanged. Both scoped source gates passed, including Sol
+and the final Ready-timing delta. Their reviews do not establish live GUI acceptance.
+
+The parent caught that the Tauri setup was deferred to Ready. It is now
+published through a `OnceLock` with `try_state`, the observer reports `None`
+before Ready, and the daemon owner catches a panic to keep the cleanup. Exact
+commands are in the
+[execution record](docs/evidence/native_harness_m1.md#native-gui-qa-preparation),
+and the decision is recorded in
+[ADR 062](docs/adr/062_native_gui_acceptance_fixture.md).
+
+### 2026-11-02 canonical manual-mode diagnostic repair
+
+The test-only diagnostic report is now version 3. It keeps the version 2 JSON
+fields, and `permission_mode_matches` now compares a closed set of spellings
+for the same semantic mode; the recorded version 2 booleans keep their
+meaning and are not reinterpreted.
+
+The primary sources, retrieved on 2026-11-02, are the vendor's public
+documentation: the CLI reference states that `--permission-mode manual` is an
+alias for `default`, introduced in 2.1.200, with the help text listing
+`manual` in place of `default`; the permission-modes page names the mode
+"Manual" for the user interface and the command line while the configuration
+and SDK value is `default`; and the agent SDK reference defines the
+permission-mode values as `default`, `acceptEdits`, `bypassPermissions`,
+`plan`, `dontAsk` and `auto`, with the system message permission mode typed
+by them. The exact installed 2.1.304 `--help` was inspected locally with stdin
+closed, an owned 15-second deadline, exit 0, empty stderr and no input.
+
+The observer previously accepted only the literal `manual`, in the test helpers
+only, and rejected the canonical `default` independently. A new pure
+canonical-mode regression failed with an initialization mismatch before the
+fix, with the red log recorded separately. The predicate now matches exactly
+`manual` or `default` and nothing else, without trimming, case folding or
+coercion. The identity, working-directory, sole Write tool, duplicate, proof and
+deny-guard checks are unchanged, the production session machine and its
+`dontAsk` mode and the fixture state machine are untouched, and the launch
+arguments still request `manual` with host prompts. The source was frozen by
+a single-file worker and then staged and integrated.
+
+With `init_checks` populated, false `permission_mode_matches` and false
+`root_init_seen` mean the
+initialization reached the comparison and was not accepted, not that no
+initialization was seen. The raw permission-mode value of the earlier live
+runs was discarded, so the canonical spelling is a plausible explanation for
+those mismatches rather than a recorded fact, and both earlier live reports
+are unchanged.
+
+The verification is offline. The native daemon library passed 259 tests with
+two ignored, the synthetic process diagnostic passed five with the installed
+case still ignored, and the affected daemon, harness and desktop packages
+passed Clippy with all targets and all features. A first broader approval
+subset run inside the sandbox passed 35 and failed eight Windows cases that
+depend on private blob handling; the native full suite then passed without
+weakening any test. Three new tests cover the alias with a full proof and a
+closed deny, the rejection of other and malformed modes, and a duplex driver
+run in the canonical default mode with one handshake, one input and one fixed
+denial. No installed run has been executed against version 3.
+
+The normal and QA dependency rebuilds and the independent Sol source gate
+passed; the unchanged harness protocol subset passed 52 tests. The native GUI
+acceptance observed on 2026-11-02 and its open items are recorded in the next
+entry: the renewed batch verified Saved, archived and Workspace deep opens and the
+transcript-scroll repair. The JSON file save remains incomplete; broader native
+retest. The prepared acceptance root is retained. No further installed input is available: the
+two earlier runs consumed both approved inputs, none remain and none is
+reserved. Exact commands are in the
+[execution record](docs/evidence/native_harness_m1.md#canonical-manual-mode-diagnostic-repair).
+
+### 2026-11-02 native GUI search and export observation with scroll repair
+
+The user explicitly approved one ten-minute DEMO native window with the Save
+dialogs, the search DEMO, opening a Saved chat, an archived chat and a
+Workspace, cancelling one export, saving one JSON file to an exact owned path,
+and closing the app. No send, start or resume was approved, and no provider
+setup was performed. The native QA session launched at 06:23:59.395Z and the
+allowed input window ended at 06:33:59.395Z, and binding the first window took
+110 seconds.
+
+Search DEMO reported two conversations, six records and 241 scanned bytes,
+with five hits: the Saved title, two user records, the Workspace title and
+its user record, with archived conversations excluded by default as intended. Opening
+the first Saved user record loaded four canonical records: two bilingual user
+messages and synthetic answers 1 and 2, with the deep-history notice. No
+conversation execution or canonical mutation was requested. The export opened the owned operating-system Save
+dialog; Escape cancelled it, the command returned `Export cancelled`, and no
+file was created.
+
+A defect was observed natively: after the deep record loaded, the header and
+the top navigation became clipped, and `Ctrl+Home`, the mouse wheel and a
+direct index attempt did not restore them. The cause was in the application
+code. The deep result in `app.svelte` and `TranscriptFind` both called
+`scrollIntoView(center, instant)`, which moved the outer container that hides
+its overflow. The browser DOM regression measured outer scroll 76 and header top 1 to -75
+with the old call. With the helper, outer scroll stays 0, header top stays 1,
+transcript scroll is 872 and document scroll stays 0.
+
+The repair adds a `reveal_transcript_element` helper that scrolls only the
+nearest marked `HTMLElement` ancestor with `scrollTo`, using the element
+rectangle, `clientTop`, the current scroll and the viewport centre together
+with the range bounds, with no outer or global fallback. It is applied to the
+three actual scroll roots, the Ask container in `app.svelte` rather than the
+inner NativeTranscript section, the Saved container and the Workspace
+container, and it has two consumers. Six new unit cases cover it. The UI then
+passed 159 tests with a typecheck of zero errors and zero warnings and a
+production build of 526.36 kB advisory, and both independent UI and source
+gates passed. The native retest of the repair is unverified because the
+approved input window had expired. The normal and QA builds containing the
+repair passed. The browser regression HTML at
+`ui/tests/transcript_scroll_browser.html` is an engineer fixture for the build
+and serve path, not native proof.
+
+The JSON save was not completed. The Text and JSON choices were shown, but the
+direct menu click was refused by the automation target guard because the
+webview is an msedgewebview2 Chrome Legacy child, which is a guard refusal and
+not a product save failure. The archived deep open and the Workspace deep open
+were not finished and remain unverified.
+
+The attempted post-deadline key action was refused before producing OS input.
+No native input was sent after the ten-minute deadline.
+The owned nonce stop at 06:35:02 returned runner exit 0, and the report showed
+the GUI exited, Ready, the event loop, the joined daemon, the joined monitor
+and zero unresolved asks. The stop replay reported `AlreadyStopped` and the
+root process was gone. The nonfatal default window icon resource warning and
+the WebView class unregister error 1412 are retained.
+
+The icon warning was independently traced to the generated ICO's missing BI_RGB
+DWORD. The corrected writer repairs only the exact known fallback and preserves
+custom assets. Five public-I/O tests, affected Clippy and both builds passed.
+Windows decoders loaded the ICO and both executable icon resources as data;
+native appearance confirmation was pending until the renewed batch below.
+
+Control v14, store schema 13, export schema 1, the 31 native commands and the
+profiles are unchanged. The TaskWindow feature stays design only and
+is deferred until the native defect is repaired, and the original parity gaps
+remain open. No new installed qualification input exists: the v1 and v2 runs
+consumed both approved inputs, none remain and none is reserved. Exact commands
+are in the
+[execution record](docs/evidence/native_harness_m1.md#native-gui-search-and-export-observation-and-scroll-repair).
+
+
+### Renewed native retest and interrupted final export
+
+The renewed ten-minute batch ran from 08:38:22.377Z to its input deadline at
+08:48:22.377Z on Windows 11 build 26300. Search with archived history included
+scanned three conversations, eight records and 324 bytes. Saved deep navigation
+loaded four records, archived navigation loaded two, and Workspace navigation
+loaded two retained records with its execution session Closed. The application
+header and Search control stayed visible after each deep open. The repaired
+application icon rendered in the title bar. No Send, Start, Resume, provider
+setup or installed-vendor inference was requested.
+
+JSON was selected with the native keyboard and the operating-system Save dialog
+showed `JSON conversation (*.json)`. Save was not confirmed before the input
+deadline; the exact approved destination remained absent. No post-deadline
+desktop input was sent. The owned nonce stop returned runner exit 0 with
+`gui_ready_observed=true`, `event_loop_returned=true`, `daemon_joined=true`,
+`monitor_joined=true` and zero unresolved Asks. The nonfatal WebView unregister
+diagnostic 1412 remains recorded separately from that successful lifecycle.
+
+A separately approved final five-minute export attempt launched at 08:53:02.676Z
+in a fresh synthetic namespace. The first Computer Use observation reported
+that the user pressed physical Escape and stopped Computer Use. No further
+Computer Use call or export interaction was made. The owner requested the
+root/run-bound stop. The runner exited with code 2 and retained an explicit
+`cleanup_unconfirmed` outcome: Ready and event-loop-returned true, daemon joined
+true, monitor joined false, unresolved Asks zero. This last attempt is not a
+successful cleanup acceptance result and does not replace the preceding batch's
+clean shutdown. The JSON destination is still absent. No automatic retry is
+authorized by this interrupted attempt.
+
+At this retest cutoff, TaskWindow remained design-only; its later implementation is recorded separately. Control v14, store schema 13,
+export schema 1, the 31-command boundary and production profiles are unchanged.
+The repaired native scroll and icon observations establish their bounded GUI
+result; JSON save, the interrupted monitor-join failure and broader parity and
+release acceptance remain open.
+
+### 2026-11-02 bound read-only task windows
+
+The existing `task_window_open` stub is implemented with strict
+`{project_key, task_id}` arguments and main-window-only admission. Rust performs
+an authenticated detail preflight, reserves at most 16 views and binds the native
+label to its original registration, ProjectId and TaskId. Duplicate completed
+views are shown/focused; opening duplicates return busy. Generation-aware close
+cleanup changes no task/run/terminal/daemon execution. The task capability has
+only `tasks_snapshot` and public `settings_get`, with no overlap from the broad
+main capability. Its read handler refuses lists, foreign tasks/projects and
+revoked or changed registrations.
+
+The separate frontend entry shares Overview, Activity and Artifact metadata
+presentation with the docked view, reads appearance once, polls details without
+overlap and disposes late/future observations on close. It initializes no main,
+chat, Ask or consent controller. Rust-owned QA profile context and the common
+navigation guard apply to every view.
+
+Local checks passed: 19 new parser/controller tests, all 178 UI tests,
+typecheck zero errors/warnings, production UI build, four registry tests,
+MockRuntime URL/reuse, actual generated-capability denial, closed invoke bodies,
+existing native invoke/lockdown checks and the authenticated daemon fixture
+under the normal Windows host token. Canonical task/run state and the descriptor
+were unchanged by the latter. The initial sandbox-token ACL failure is retained;
+the ACL check was not weakened. The affected Clippy check and normal
+desktop/CLI/daemon bundle passed. Native task-window rendering, focus and actual
+close/reopen remain unverified, and the full desktop parity goal is incomplete.
+
+OpenCode's configured MiniMax plan was exhausted before either assigned document
+changed; its owned session was stopped and Codex completed this documentation.
+No provider was switched. The earlier native GUI/export observations and failed
+final monitor result remain historical evidence. See
+[ADR 063](docs/adr/063_read_only_task_windows.md) and the
+[execution record](docs/evidence/native_harness_m1.md#bound-read-only-task-windows).
+
+### 2026-11-02 native QA atomic stop repair
+
+A non-GUI Windows reproduction showed that a matching stop record at its final
+pathname could be rejected while its exclusive writer was still open. The
+publisher now closes a complete bounded stage before atomic no-replace hard-link
+publication, preserves a matching concurrent winner and reports any retained
+owned staging link. The monitor's inner error code is retained in diagnostics.
+Directory pins permit compatible directory writes while continuing to deny
+delete sharing; reader/file-pin restrictions and nonce checks are unchanged.
+
+The first integrated candidate produced four Windows sharing-violation failures.
+The directory-sharing correction and a corrected cleanup-denial precondition
+were measured rather than bypassed. The full desktop library now passes 45
+tests with the same two explicit fixture-preparation ignores. Source review
+passed; the final QA build and native interaction remain separate checks.
+The historical third native failure's exact cause remains unknown. See
+[ADR 062](docs/adr/062_native_gui_acceptance_fixture.md) and the
+[execution record](docs/evidence/native_harness_m1.md#qa-stop-publication-and-monitor-diagnostics).
+
+### 2026-11-02 native Task-window and Workspace JSON acceptance
+
+The approved fifteen-minute batch ran from 10:24:52.621Z until its completed
+outcome at 10:34:03.324Z. Native Task Overview, Activity and Artifact metadata,
+existing-window reuse, close/reopen and the same binding after recreation were
+observed. The main window then closed while the child stayed live and Refresh
+continued observing revision 42. Closing the final child returned exit 0,
+Ready/event-loop/daemon/monitor true and zero unresolved Asks; owned-window
+inventory was empty. The Workspace JSON export saved through the native dialog
+and passed an independent schema/identity/completeness check: 2,065 bytes, one
+completed turn, two complete records, `partial=false`.
+
+The data and process were fixture-only, with production qualification false.
+No Send, Start, Resume, provider setup or installed-vendor inference occurred.
+The earlier interrupted outcomes remain preserved. Saved/chat JSON save,
+broader platform/appearance/IME checks, active-inference cancellation and full
+desktop parity remain open. Canonical documentation was closed by Codex because
+the configured OpenCode MiniMax plan remains exhausted; no provider was changed.
+See the [native execution evidence](docs/evidence/native_harness_m1.md#native-task-window-and-workspace-json-acceptance).
+
+### 2026-11-02 Task Terminal observation
+
+The shared docked/independent Task detail view now includes Terminal with Run
+selection and explicit Find, Link, Focus and Unlink. The existing
+`supervisor_action` has closed task/run/request arguments; native code fixes the
+plugin and validates the actual window, registration and canonical Run. Task
+children gain only this command alongside their two reads. Replies exclude cwd,
+terminal text and titles.
+
+Per-window current observations and one cleanup receipt preserve exact reviewed
+lease identity through failed effects and lost replies. Inspect echoes the last
+received token; unknown acknowledgements cannot promote an unreviewed successor.
+Link/Focus authority retires before submission, while explicit idempotent Unlink
+can clean up the known reviewed lease during plugin outage. Scope change,
+close and revocation clear cached authority without automatic terminal effects.
+
+Workspace chat-owner Runs now resolve through an indexed writer-owned lookup
+and complete owner validation. Shared physical checks use noncreating managed
+directory inspection and verify branch, Git inventory, receipt and resource
+identity. Dirty or advanced owned worktrees remain observable; fresh execution
+retains its empty-grant and base-HEAD checks. A2A resolution remains supported.
+
+Local checks passed: 12 bridge and 25 controller recovery cases within 57 desktop
+library tests (two explicit preparation cases ignored) and 203 UI tests; 21
+native API tests; the amended real Tauri-to-Control unavailable-plugin regression;
+265 daemon library tests (two explicit native cases ignored); 212 store tests;
+three terminal protocol fixtures; and nine workspace regressions. Formatting,
+five-crate Clippy, typechecking, production UI assets, the normal desktop/CLI/
+daemon bundle and the developer QA bundle passed. Independent native, UI and
+Core source gates passed. The initial cleanup, namespace creation and strict
+decoding failures remain preserved in their local logs.
+
+The fresh synthetic Terminal QA root prepared and checked with owned daemon
+shutdown before GUI launch. The later approved native batch below closes the
+unavailable-plugin UI scenario; real WezTerm actions remain unverified. No installed-vendor input or production-profile change
+occurred. OpenCode's configured MiniMax plan remains exhausted, so Codex closed
+the documentation. See [ADR 064](docs/adr/064_task_terminal_observation.md) and
+the [execution record](docs/evidence/native_harness_m1.md#task-terminal-observation).
+
+
+### 2026-11-02 native Terminal unavailable-plugin acceptance
+
+The approved ten-minute batch launched at 13:50:18.268Z and completed its final
+child interaction after the 13:59:03Z metadata observation, before the 14:00:18Z
+input deadline. Docked and independent Terminal views rendered the canonical
+Workspace Run and returned `terminal_plugin_unavailable` from explicit Find.
+After main close, window inventory contained only the child; another Find and
+manual metadata Refresh completed at the same task/project/run and revision 42.
+Final child close returned runner exit 0, Ready/event-loop/daemon/monitor true,
+zero unresolved Asks and no remaining owned windows. The batch used no installed
+vendor, live WezTerm, Send/Start/Resume, export or provider setup. This verifies
+the native unavailable-plugin path; actual WezTerm actions remain unverified.
+See the [Terminal acceptance record](docs/evidence/native_harness_m1.md#native-terminal-unavailable-plugin-acceptance).
+
+
+### 2026-11-02 Saved and Workspace command palette
+
+The local palette now includes loaded Saved and Workspace conversation targets
+across registered projects, using cached titles and canonical identity metadata.
+Full cached titles remain searchable behind shortened labels. An explicit
+**Search conversation history** action reaches the existing project search for
+other records. A copied Workspace catalogue performs no new content read.
+
+Activation rechecks registration, missing-folder state and loaded membership
+around project/controller selection, admits one navigation at a time and
+suppresses late presentation after disposal. Existing selectors preserve
+per-conversation input and issue no execution action. Review found a concrete
+Workspace input-loss defect: a late Send acknowledgement or positive read-only
+confirmation cleared changed attachments when the raw text stayed equal. Both
+consumption paths now require the complete current formatted payload to match
+the immutable submitted prompt. The app also disposes its Saved controller on
+teardown, preventing a deferred status response from continuing into history reads.
+
+The new catalogue, builder, navigation and input-consumption checks passed,
+including two reproducing attachment RED cases. All 217 UI tests passed, Svelte
+check reported zero errors/warnings and production assets built. The normal
+desktop/CLI/daemon and developer QA bundles rebuilt successfully with these
+assets. Independent
+source reviews passed after the title-index, disposal and attachment repairs.
+No new native command, Control/store schema, dependency or production profile
+was added. Native palette interaction remains unverified. See the
+[execution record](docs/evidence/native_harness_m1.md#saved-and-workspace-command-palette).
+
+### 2026-11-03 native worktree and HTTPS presentation
+
+Implemented the scoped [ADR 065](docs/adr/065_native_links_and_worktree_access.md)
+path: Control v15 `workspace_read`, closed native `open_link` variants, checked
+worktree folder/path actions and complete recorded-branch copying in Task and
+Workspace views. Verified retained Finalized owners remain browseable. Native
+transcripts route explicit HTTPS clicks through the host, and Task children
+retain only their bound worktree presentation authority. Store schema 13,
+export schema 1, 31 native commands and existing execution/terminal policies
+remain unchanged. Remove worktree remains separate unfinished lifecycle work.
+
+Two complete Core directory reads, current owner/session checks and retained
+native ancestry handles precede handoff. Windows pins deny namespace deletion
+through the effect while allowing compatible writes. Automated checks use fake
+OS effects. Related daemon/client/desktop/workspace libraries passed 482 tests
+with five ignored; the full desktop package passed 125 with four ignored. An
+explicit synthetic managed-owner acceptance passed, including actions before
+execution and after finalization with dirty retained files. All 234 UI tests
+passed, Svelte reported zero errors/warnings, assets built, and independent
+Core/native/UI source reviews passed.
+
+A bounded Windows 11 synthetic native batch verified copied values, the exact
+worktree folder, Task-child copy acknowledgements and HTTPS handoff. Browser
+page-content inspection and the manual close sequence remain unverified after
+tool waits exhausted consent; the root-bound stop command verified complete
+owned shutdown. Linux/WSL execution remains unverified. `cargo deny` and `cargo audit` are not installed;
+their checks remain unavailable. Codex closed documentation because the
+configured OpenCode plan remains unavailable. See the
+[execution record](docs/evidence/native_harness_m1.md#native-worktree-and-https-presentation).
+
+### 2026-11-03 complete terminal-subtree observation foundation
+
+Implemented [ADR 067](docs/adr/067_terminal_cleanup_inventory.md)'s distinct
+read-only `terminal:cleanup_inventory_v1` method. It validates the complete
+bounded configured-instance inventory before matching real directory ancestry,
+so descendant panes, aliases and unknown cwd cannot disappear from a successful
+empty result. Existing exact-directory inventory/focus remains unchanged. A
+default-false JSON opt-in, manifest declaration and Core policy/session grants
+preserve legacy configurations and prevent fallback to weaker evidence.
+
+Independent review found a request-cancellation ownership defect in the initial
+blocking adapter. An injected held-job regression reproduced a second job
+starting while the first still ran. The repaired per-observer slot lives in the
+actual blocking closure, refuses new work after request timeout/cancel and
+prevents a graceful shutdown acknowledgement before worker idleness.
+
+Final protocol/supervisor/observer tests passed 55 cases with no skips; daemon
+terminal integration passed four. Observer coverage includes 20 library and
+two binary tests, Windows symlinks/junctions, actual Hello negotiation and the
+timeout/cancel regression. Affected Clippy, workspace format check and daemon/
+observer binary builds passed. Source review passed after the lifecycle repair.
+No live WezTerm or Linux/WSL qualification was performed.
+
+Control v15, store schema 13 and the 31 native commands remain unchanged. The
+removal ledger, held executor, durable quiescence/recovery and native removal UI
+remain [proposed ADR 066](docs/adr/066_explicit_worktree_removal.md), not implemented.
+README's existing unfinished-removal statement remains accurate. Codex closed
+the affected docs using the recorded fallback for the ended OpenCode session.
+See the [execution record](docs/evidence/native_harness_m1.md#complete-terminal-subtree-observation).
+
+### 2026-11-03 held native-process release boundary
+
+Implemented a crate-private `HeldNativeProcess` under ADR 029's existing
+containment-before-go contract. `spawn_held` finishes containment/pipe setup
+without starting the program; consuming `release_after` awaits caller
+authorization before the one release attempt. Failures retain the owner and
+typed cause without a pipe or retry escape. Explicit cleanup joins the root/tree
+and bounded pipe drains. The PID is an observation aid, not durable identity;
+dropping a held owner or authorization future produces no joined receipt.
+
+Six explicit Windows synthetic cases passed: authorization denial with exit 121
+and no launch marker, Held Drop, byte-exact held/legacy echo, descendant cleanup,
+lost release pipe and pending-authorization abort. All 23 existing harness
+dispatch and six trampoline integration tests passed. Daemon library tests
+passed 275 with eight ignored; the six new ignored cases were explicitly run
+separately. The synthetic desktop-owner acceptance also passed. Clippy and
+format passed, and independent source review passed this seam.
+
+Normal spawn still auto-releases and returns its original errors. Its failed
+release path now waits for Job-emptiness and stdout completion, adding at most
+two extra two-second windows in the reviewed worst case. The legacy API discards
+that stronger receipt and gains no durable recovery guarantee. Control v15,
+store schema 13, 31 native commands and dependency/permission policy are
+unchanged. No installed provider, browser/desktop or real workspace removal ran.
+The remaining creation identity, durable arm/settlement and UI lifecycle stay
+[proposed ADR 066](docs/adr/066_explicit_worktree_removal.md). See the
+[execution record](docs/evidence/native_harness_m1.md#held-native-process-release-boundary).
+
+### 2026-11-03 private cleanup ledger and Windows object identity
+
+Implemented the accepted private foundation in
+[ADR 066](docs/adr/066_explicit_worktree_removal.md) and the narrow safe handle
+query in [ADR 068](docs/adr/068_windows_file_identity.md). Schema 14 migrates
+the cleanup ledger/command index atomically and preserves historical
+owner/session/Task/Run JSON and event history. Previews do not reserve. Only a
+fresh committed Confirm returns execution authority. Replay/reopen cannot
+reconstruct it. Registration/Arm/completion have separate linear authority;
+completion revokes pending release deliveries before persistence, and a definite
+write failure retains only its retired proof for retry. Unknown remains fenced
+unless a fresh sealed retirement or durable positive quiescence supports
+explicit settlement. Removed results retain their historical binding.
+
+Reciprocal admission checks cover dispatch, chat, owner execution, Active and
+Quarantined workflow leases, and A2A path/branch bindings. Cleanup also refuses
+idle read-only process claims. Directory presentation checks active cleanup and
+the old Run's Removed tombstone before and after physical inspection; recorded
+branch metadata stays available. Windows identity uses the full volume serial
+and 128-bit ID from an owned handle, without pathname or process effects.
+
+Twenty focused store cases passed, including concurrent confirmation, reply-loss
+lineage, retired-proof retry after stale versions/late SQL faults, positive-Unknown
+reconciliation, migration rollback, large bounded records and admission conflicts.
+The pure types suite passed 41 and platform suites passed 30. Related daemon,
+client, desktop and workspace libraries passed 483 with 11 explicitly ignored;
+the nine workspace-presentation cases passed separately. Independent source
+review passed both the identity adapter and repaired store/directory boundary.
+Original RED/failure outputs remain retained as evidence.
+
+Control v15 and 31 native commands remain current; schema 14 requires a
+coordinated binary upgrade. A production cleanup executor, immutable executable
+pins/actual evidence producer, resource-gate lifecycle and native confirmation UI
+are still unfinished. Tests used synthetic metadata and owned temporary fixtures;
+no real user workspace deletion, installed-provider input or desktop action ran.
+Windows 10, Linux/WSL and broader filesystem acceptance remain unverified. Codex
+closed canonical documentation using the recorded OpenCode-unavailable fallback.
+See the [execution record](docs/evidence/native_harness_m1.md#private-cleanup-store-foundation).
+
+The final combined types/platform/store run passed 303 with no ignored cases,
+including 232 store cases. Clippy passed with warnings denied across types,
+platform, store, daemon, client and desktop targets/features. Workspace formatting
+and `git diff --check` passed. `cargo nextest` is absent on this host; that gate
+was not run or replaced by an installation.
+The normal `vibemuxd` binary build completed with exit 0 after these checks.
+
+### 2026-11-03 supervised Windows cleanup service and native review
+
+The later [ADR 066](docs/adr/066_explicit_worktree_removal.md) increment connects
+the private ledger to a real owned Windows executor, Control v16 and Main-only
+native command 32. It supersedes the preceding foundation cutoff's unfinished
+service/UI status without changing those earlier observations. A verified,
+settled Finalized owner can request a five-minute removal preview, review the
+retained branch and explicitly confirm once. Task children retain their four
+existing permissions. Status is read-only; explicit outcome reconciliation
+consumes positive retained evidence without another removal attempt.
+
+The service owns accepted work beyond a dropped RPC/view. Shared workspace and
+terminal reads use the same per-resource gate as exclusive cleanup. Immutable
+Git/trampoline handles, complete configured terminal inventory, fresh clean
+HEAD/ownership checks and committed registration/Arm precede release. Joined
+termination, root/tree and both pipe drains precede settlement. Retired evidence
+stays in custody across full writer queues, rejected reads/writes and timed-out
+responses. The shutdown flush has an absolute waiting deadline; writer joining
+remains a separate obligation. Unknown without positive proof remains reserved.
+
+All ten explicit owned-repository service cases passed, including actual removal
+with retained branch/history, changed or dirty review refusal, concurrent replay,
+dropped confirmation waiters, SQL settlement failure/restart reconciliation,
+writer saturation/deadline and monotonic expiry at writer commit. Registered
+Main-to-Control Status forwarding passed through the actual Tauri invoke
+fixture. Both runtime and native/UI source gates passed. The affected six-package
+library regression passed 595 with 27 explicit ignores; all 250 UI tests passed,
+Svelte reported zero errors/warnings and production assets built.
+The full affected store/workspace/desktop package run passed 378 with five
+explicit ignores, including all 21 cleanup-store/reservation cases. The latest
+five-crate all-target/all-feature Clippy run passed with warnings denied;
+workspace formatting and `git diff --check` passed.
+All four synthetic terminal-plugin integration cases passed with the shared
+workspace gate, including negotiated cleanup capability and correlation checks.
+Matching normal desktop/CLI/daemon and developer-QA binaries built with exit 0.
+The 18-document check resolved 400 local targets and scanned 87 scoped files
+without broken links or secret-pattern findings.
+
+These are Windows 11 Pro Education build 26300 checks with Rust 1.92 and
+Node 22.22.2, real owned temporary Git repositories and synthetic terminal peers.
+Native cleanup-panel interaction, live WezTerm, Windows 10, Linux/WSL and
+additional filesystems remain unverified. No real user worktree was removed and
+no installed-provider input or desktop action was used in this increment.
+Coordinated daemon/client/assets are required for Control v16, schema 14 and
+the 32-command boundary. Codex closes the canonical docs because the earlier
+OpenCode session ended unavailable. See the
+[execution record](docs/evidence/native_harness_m1.md#supervised-windows-cleanup-service).
+
+### 2026-11-03 cleanup-ready native QA preparation
+
+The developer-only `prepare_cleanup` command now prepares a Finalized synthetic
+Workspace owner with the existing 4/2/2 retained history and no process claim.
+It sends one file-retaining owner Stop through Control and observes the same
+binding. A fixed copied terminal mock supplies the explicitly configured empty
+inventory needed to exercise removal review. Prepare/check/run use that exact
+pinned configuration and join the created daemon on readiness failure. No
+cleanup Plan, Confirm or Arm is seeded. Ordinary History keeps its Open-owner
+expectation and does not require the mock.
+
+Private plan schema 2 requires an explicit scenario; legacy schema-1 plans remain
+History. Root/run/stop/report schema 1 and the production Control v16, store 14
+and 32-command boundary are unchanged. Plan-independent nonce Stop remains
+available even when scenario metadata or sidecars are malformed.
+
+The new missing-command RED was reproduced. The first candidate exposed the
+existing manifest loader's TOML requirement; the fixed manifest now uses that
+format. All 25 focused QA unit cases passed, and all three explicitly selected
+non-GUI native cases passed, covering new preparation/actual fresh Control Plan,
+readiness failure/timeout teardown and original History/panic cleanup. The full
+desktop library run passed 72 with four explicit ignores; desktop Clippy passed
+for all targets/features with warnings denied. These checks used owned synthetic
+repositories and first-party binaries on Windows 11, with no desktop input,
+installed provider, confirmation or removal. Native panel interaction remains
+pending. See the [execution record](docs/evidence/native_harness_m1.md#cleanup-review-qa-scenario).
+
+The final scoped Sol source gate passed. The developer-QA binary built, and a
+fresh `target/native_cleanup_review_gui_qa` namespace passed actual
+`prepare_cleanup` and `check`: 4/2/2 records, no process claim, qualification false
+and joined daemon/plugin ownership. No GUI run has started. A new bounded
+desktop-input approval is pending for review/Keep/review and read-only Task-child
+inspection; that batch excludes Remove. The prior desktop grants remain spent.
+
+### 2026-11-03 native Console probe groundwork and loopback health repair
+
+The native Console rerun slot remains unimplemented. Source tracing confirmed
+that Refresh performs fixed recorded-data reads and never runs probes. The
+existing probe includes CLI version checks, bounded route metadata, a local
+gateway observation and a loopback self-test; it requires a distinct owned
+operation. Review identified the narrow reuse path: a fixed bundled probe CLI
+under the existing daemon-library trampoline/process-tree owner, with bounded
+output, explicit cancellation/status and joined cleanup before publication.
+That runner, native action and UI still require implementation.
+
+The prerequisite loopback health defect was reproduced with public `run_probe`
+and two owned listeners: a 302 response caused contact with its chosen target.
+The repaired client disables redirects and accepts only a 2xx health result,
+while retaining the original status for failures. The new redirect and
+200/204/403 cases passed; all 26 probe-package cases passed with no ignores,
+and probe Clippy passed with warnings denied. Tests used an empty launcher path
+and temporary home; no installed CLI, provider, desktop input or external
+endpoint participated. The prepared cleanup QA images remain unchanged and its
+desktop consent is still pending. See the
+[execution record](docs/evidence/native_harness_m1.md#local-probe-loopback-health-boundary).
+
+### 2026-11-03 fixed contained diagnostic I/O boundary
+
+Implemented the bounded Windows Rust I/O scope of
+[ADR 069](docs/adr/069_native_console_diagnostics.md). The public runner resolves
+fixed sibling probe/trampoline artifacts, holds immutable full-identity pins,
+uses empty argv and optional allowlisted environment, closes stdin, bounds
+capture and observes root exit independently of pipe EOF. A valid report is
+published only after root exit zero, positive joined cleanup and validated
+metadata projection. Authentication/inference claims outside NotRun are refused.
+The standalone in-process probe's lifetime limits remain unchanged.
+
+Review caught a synchronous final filesystem walk and a cancellation gap before
+release. A new RED observed root exit 1 after cancellation during verification,
+instead of the unreleased trampoline's 121. The repaired check runs through an
+owned blocking task with retained bundle pins and rechecks cancellation before
+Go. The regression now passes with actual no-release cleanup.
+
+All eight explicit fixed-process cases passed, including an isolated host that
+calls the actual public runner with fixed-name sibling copies and no arguments.
+Four ordinary pin/read-error cases passed. Related libraries passed 327 with 32
+explicit ignores; the existing held-process regression passed six separately.
+Final Clippy passed with warnings denied. These Windows 11 checks use synthetic
+children, not installed CLIs or providers. No GUI or pending QA image was run or
+rebuilt. Source review passed the bounded I/O and fixture-host delta.
+
+The app-owned global job registry, native start/status/cancel contract, Console
+controller/UI and joined application shutdown remain unfinished. The native
+command is still unsupported. Current Control v16/store 14/native 32 and Task
+permissions are unchanged. The pending cleanup review approval stays separate.
+See the [execution record](docs/evidence/native_harness_m1.md#fixed-contained-local-diagnostic-runner).
+
+### 2026-11-03 native Console local checks integration
+
+Integrated the fixed diagnostic runner through an app-owned global registry,
+the Main-only `probe_rerun` start/status/cancel contract and the Harnesses Local
+checks panel. One active job and 64 non-evicting operation bindings preserve
+deduplication across dropped waiters. Failed/cancelled work retains the previous
+report; uncertain admission remains tied to its original registration. Refresh,
+navigation and polling only read status. Late acknowledgements cannot replace
+newer Unconfirmed observations. Main close stops admission and cancels; repeated
+shutdown calls share one absolute 35-second join deadline.
+
+QA setup now captures the actual managed state before window creation. Explicit
+Ask/probe cleanup survives missing Ready and abnormal return. Unresolved probes
+take cleanup-failure precedence over startup/ownership/monitor errors and cannot
+be persisted as AlreadyStopped success. Ask counts retain their original meaning.
+
+Focused host tests passed 10. The desktop library passed 83 with four explicit
+ignores; Clippy passed all targets/features with warnings denied. Renderer tests
+passed 267 with zero skips, including 17 probe-controller cases; Svelte reported
+zero errors/warnings. Production assets, the fixed probe helper and normal
+desktop executable built successfully. Vite reports a 504.08 kB app chunk
+(155.60 kB gzip), exceeding its 500 kB warning threshold; no runtime performance
+claim is made. Independent bounded source gates passed host/QA and UI integration.
+Native Console interaction, installed diagnostics and Linux/WSL remain unverified.
+Control v16, store 14, native count 32 and Task-child grants are unchanged.
+See [ADR 069](docs/adr/069_native_console_diagnostics.md) and the
+[execution record](docs/evidence/native_harness_m1.md#native-console-local-checks-integration).
+
+### 2026-11-03 native cleanup-review acceptance
+
+The user-approved review-only batch completed on the preserved earlier QA image
+and prepared synthetic root. Finalized/Stopped Workspace review opened, Keep
+worktree returned to its entry point, and a second review opened for the same
+branch. The matching Task child exposed no removal controls. Remove worktree
+was never pressed. Normal child/Main close ended with runner exit 0, Ready and
+event-loop return observed, daemon/monitor joined and zero unresolved Asks.
+Stop returned AlreadyStopped for the same root/run; no QA windows remained.
+This validates synthetic native review/Keep and child presentation only. Actual
+removal, live WezTerm and the newer Console UI remain outside that acceptance.
+See the [native observation](docs/evidence/native_harness_m1.md#native-cleanup-review-observation).
+
+### 2026-11-03 private command tool records and cards
+
+Implemented [ADR 070](docs/adr/070_private_command_tool_records.md) from the
+correlated Codex command producer through the protected private writer to Saved
+and Workspace cards. Exact completed-item replay is inert, including hidden
+truncated tails. Projection/budget loss is sticky for the turn and independent
+of the vendor outcome. Sinks reserve immutable record identity/body before
+awaiting append; unknown writes cannot allocate a replacement. Cards are
+collapsed literal display, with reported status, output, exit code, duration
+and explicit truncation. They add no execution/approval capability.
+
+Review reproduced two behavioral gaps. A hidden Find hit did not open its
+card; the reveal helper now opens only selected disclosures within the nearest
+transcript before measuring and scrolling. An optional tool callback timeout
+could discard an already correlated vendor terminal. Its repair uses one
+absolute batch budget, retires further tool capture for that turn and resets on
+the next successful turn claim. The regression covers a 64-tool batch, one held
+callback, Completed with incomplete capture and a fresh complete next turn.
+
+Related all-feature libraries passed 660 with 36 explicit ignores. The real
+contained synthetic-service test passed normal capture, 65-item overflow and
+truncated output, including 8 KiB private paging, duplicate suppression,
+unchanged vendor outcomes and retained history after restart. The UI passed
+279 with no skips, including actual-component server rendering; Svelte reported
+zero errors/warnings. A test-only Clippy initialization diagnostic was fixed;
+the four affected packages then passed all-target/all-feature warnings-denied
+Clippy. Independent bounded backend and UI source gates passed.
+The normal desktop executable built successfully with the final assets.
+
+Control v16, store 14, native count 32 and profiles/permissions remain unchanged.
+No installed tool/model input or desktop control was used. Native card
+interaction, live tool progress, file-edit/diff cards, installed writable
+qualification and broader platform/release gates remain open. Vite's app chunk
+is 510.71 kB, 157.54 kB gzip, with its existing 500 kB warning. The full
+desktop-parity goal remains active. See the
+[execution record](docs/evidence/native_harness_m1.md#private-command-tool-records-and-cards).
+
+### 2026-11-03 private file-change observations and diff cards
+
+Implemented [ADR 071](docs/adr/071_private_file_change_records.md). Completed
+Codex file-change items now use the same private observation/writer/card path as
+commands, preserving command-v1 bodies. One ordered ledger and ID/count/byte
+budget covers both kinds. File cards show reported paths, kinds, move paths and
+opaque diff text, with explicit list omission and UTF-8 truncation. They read or
+apply no files. Saved and Workspace binding, immutable pending receipts and
+vendor-outcome separation remain intact. Consent copy now names retained tool
+activity; profiles, approval rules and canonical versions are unchanged.
+
+Long-diff verification exposed whole-block Find centering. The new regression
+failed with seven existing scroll cases passing; Find now measures the selected
+Range after opening disclosures. Internal vertical clipping was removed from
+bounded tool literals. An actual-component Chrome fixture reproduced an
+offscreen match with block centering, then verified selected-range visibility,
+no inner clipping, fixed header and zero page/outer scrolling. Its task tab and
+both owned preview-server attempts were closed/joined. This is browser-component
+acceptance, separate from native VibeMux app interaction.
+
+Related libraries passed 674 with 36 explicit ignores. Three contained native
+service tests passed, covering command compatibility, mixed file/command
+observations, overflow/truncation, private paging/restart and persistent resume.
+The new file test preserves guarded file and HEAD bytes despite reported
+updates, moves, additions and deletions. UI tests passed 289 with no skips;
+actual-component server rendering passed six and Svelte reported zero errors
+and warnings. Four-package all-target/all-feature Clippy, formatting, diff
+checks and the normal desktop build passed. Backend and UI source gates passed.
+
+Native app card/Console/palette interaction, live tool progress, image/PDF
+inputs, installed writable qualification and broader platform/release gates
+remain open. Vite reports a 515.03 kB app chunk, 158.69 kB gzip, with its existing
+500 kB warning. The full desktop-parity goal remains active. See the
+[execution record](docs/evidence/native_harness_m1.md#private-file-change-records-and-cards).
+
+### 2026-11-03 native Surfaces QA preparation
+
+The optional native QA runner now prepares a distinct Surfaces scenario while
+preserving History/CleanupReview and legacy-plan handling. It retains exactly
+8 Saved, 2 archived and 4 Workspace records. Actual authenticated private reads
+verify complete command/file bodies, canonical turn/attempt grouping, replay
+deduplication, reported failure/exit status, ordered changes and the 300-line
+diff marker. No reported file operation is applied.
+
+NativeQa composition supplies a fixed in-process Console diagnostic runner with
+all checks marked NotRun, bounded completion/cancellation and prior-result
+retention. Standard startup uses the ordinary runner. The QA runner invokes no
+installed tool, gateway, model or network request.
+
+Related libraries passed 685 with 37 explicit ignores; four explicitly selected
+non-GUI native QA cases and two fixture binary tests passed. Four-package
+all-target/all-feature Clippy, formatting, diff checks, normal desktop and QA
+helper builds passed. Independent source review passed. A fresh Surfaces root
+prepared and reopened with exact 8/2/4 counts, no process claim and joined daemon
+shutdown. No native window or desktop-control sequence was started for this
+scenario. Native card/Find/palette/Console interaction remains pending fresh
+bounded desktop consent; installed writable qualification and broader
+platform/release gates remain open. See the
+[execution record](docs/evidence/native_harness_m1.md#native-surfaces-qa-preparation).
+
+### 2026-11-03 native Surfaces observation and retained-history repair
+
+The approved Surfaces batch opened Saved and Workspace from the palette,
+expanded command/file cards, selected Saved late-diff Find, and completed then
+cancelled fixed mock Console jobs while retaining the prior report timestamp.
+Normal close returned exit 0 with daemon/monitor joined and zero unresolved
+Asks. This proves that synthetic native UI sequence, not installed diagnostic
+or writable-profile qualification. The batch and its desktop grant are spent.
+
+Native observation exposed disabled Workspace Find and a 32px Saved transcript.
+The repair shares current-target eligibility across header/shortcut/palette,
+forwards Find through the Workspace wrapper, bounds the real transcript and
+moves owner context/consent into history. Inactive drafts use an expandable
+composer with context-entry initialization and user-owned expansion. Drafts,
+files and consent/mutation gates remain with existing controllers.
+
+Actual production components/styles/export controls reproduced both failures.
+Final browser checks passed at CSS 1280×850 with 408/440 usable Saved/Workspace
+pixels, and at CSS 900×600 with 126/129 pixels. Selected late ranges were visible,
+headers stayed fixed, outer/page scroll stayed zero and mutation calls stayed
+zero. Review found and the parent repaired a residual palette gate and editor
+collapse on clearing text/removing the last file; all four component regressions
+passed. Synthetic drafts survived surface switching and old Find state cleared.
+
+All 291 frontend tests passed without skips; typecheck reported zero errors and
+warnings. Production assets and both normal/QA desktop images built. Rust used
+copy fallback after incremental hard-link warnings; builds exited 0. Vite's app
+chunk is 517.59 kB, 160.08 kB gzip, with the existing 500 kB warning. Source review
+passed. A fresh repaired Surfaces root prepared/reopened exact 8/2/4 with joined
+daemon shutdown and no process claim. Its GUI run has not started. The repaired
+native retest and full desktop-parity/platform/release gates remain open. See
+the [repair evidence](docs/evidence/native_harness_m1.md#retained-find-and-history-layout-repair).
+
+The subsequently approved repaired native attempt was stopped by the user's
+physical Escape during initial window discovery. No desktop input or scenario
+inspection ran. Exact nonce Stop returned the owned runner exit 0 with
+daemon/monitor joined and zero unresolved Asks. Repaired native acceptance
+remains open; that namespace and desktop grant are now spent.
+
+### 2026-11-03 assistant stream handoff repair
+
+Workspace history no longer clears a good assistant tail when a Tool, User,
+Notice or Approval record completes during the same Busy request. Saved and
+Workspace hand over only after a complete, error-free Assistant body for the
+same canonical turn/attempt has loaded. Their bounded record lists also prevent
+a stale successful Live reply from restoring the duplicate tail. Partial,
+unavailable and foreign-ID assistant records do not establish that handoff.
+Existing context, generation/request, empty-Live and purge resets are preserved.
+
+Eighteen public-controller cases keep status Busy and the active request fixed,
+observe every publication, cross a UTF-8 byte boundary, and exercise failed and
+successful-stale Live responses. Before repair 10 passed and 8 failed; all 18
+passed afterward. All 309 frontend tests passed without skips, typecheck reported
+zero errors/warnings, production assets built, and the normal desktop binary
+built in 12.57 seconds. Vite's app chunk is 518.01 kB, 160.18 kB gzip, with the
+existing 500 kB warning; Rust used incremental hard-link/copy fallback. Bounded
+source/test review passed with no remaining P1/P2.
+
+This increment used no desktop/browser control, daemon/vendor run, provider
+input or new consent. The stopped native retest remains unexecuted and its
+grants/namespaces remain spent. Control v16, store 14, native commands 32,
+profiles, private formats and canonical outcomes are unchanged. Live tool
+progress and the full desktop-parity/platform/release gates remain open. See
+the [handoff evidence](docs/evidence/native_harness_m1.md#live-assistant-handoff-repair).
+
+### 2026-11-03 live command progress (in progress)
+
+[ADR 072](docs/adr/072_private_live_command_progress.md) has passed bounded
+architecture review. The pure command-start/ordered-output projection and the
+separate nonblocking runtime ledger are integrated locally. Snapshot/types and
+harness suites passed 303 tests; the chat-session runtime selection passed 115
+with two explicit ignores under the normal Windows token. The original
+restricted-token permission/fixture-ownership failures remain recorded. The new
+Control v17 private read, legacy-route rejection and frontend code are integrated.
+Three Control formatting/frame tests passed, but dedicated authenticated routing,
+old-version refusal, raw legacy-route bypass rejection and producer-to-client
+acceptance remain incomplete. These intermediate checks do not prove end-to-end
+progress display. Desktop control stays stopped and installed provider/model
+allowances remain zero. The full desktop-parity goal is paused; the user separately
+authorized committing the current work and publishing a draft PR.
+
+Publication checks passed all 318 frontend tests without skips, Svelte typecheck
+with zero errors/warnings, and the production asset build. The latter retains the
+500 kB chunk warning (532.71 kB, 163.22 kB gzip). A missing initialization-status
+regression now verifies that the uncertain Open receipt and draft survive without
+Send. Current Control-version assertions and the protocol overview match v17.
+
+### 2026-11-03 draft publication checks
+
+The user requested committing and opening a PR for the accumulated native
+conversation work while the broader goal remains paused. Publication includes
+the source, tests, canonical docs and synthetic previews. Local Serena state,
+runtime/build output and the raw command screenshot containing a real checkout
+path are excluded; the original screenshot remains local evidence.
+
+Fresh checks on Windows with Rust 1.92.0, Node 22.22.2 and Python 3.12.10:
+
+- `cargo fmt --all -- --check`: passed.
+- Frontend `node --experimental-strip-types --test tests/*_test.ts`: 318 passed,
+  zero failed/skipped; Svelte typecheck: zero errors/warnings; Vite build passed
+  with the existing chunk-size warning.
+- `python -m ruff format --check --no-cache .` and
+  `python -m ruff check --no-cache .`: passed (166 formatted files).
+- `cargo clippy --workspace --all-targets --all-features --locked --offline --
+  -D warnings`: blocked building vendored OpenSSL because Perl is missing.
+- `cargo test --workspace --all-features --locked --offline`: blocked by the
+  missing `vibemux_web/web/dist` prerequisite; its dependencies are not installed.
+- The affected-crate test command selecting `vibemuxd`, `vibemux_client`,
+  `vibemux_desktop`, `vibemux_frontend`, `vibemux_harness_native`, `vibemux_store`
+  and `vibemux_workspace`, with `--all-features --locked --offline`, exhausted
+  disk space during compilation. It provides no fresh test-pass result. Six
+  exact generated incremental-cache directories from that run were removed
+  after compiler shutdown, reclaiming 1.76 GB of physical headroom. Source,
+  built app images and QA evidence were retained; no broad Cargo clean ran.
+- Mypy, pytest and the Python mock smoke command remain blocked by runtime
+  filesystem/temporary-directory errors, including after the headroom recovery
+  and an isolated task-owned temporary-directory retry. No Python test-pass
+  result is claimed.
+- `cargo-nextest`, `cargo-deny` and `cargo-audit` are unavailable on this host;
+  they were not installed or reported as passing.
+- Staged whitespace checks passed. Bounded Rust/private-contract review found
+  the stale current-version assertion, now corrected; publication privacy review
+  excluded the local artifacts above. These reviews do not establish a
+  comprehensive semantic PASS for the full accumulated change.
+
+The draft retains unfinished v17 authenticated-routing/bypass/end-to-end
+acceptance, the user-stopped repaired native retest, installed writable-profile
+qualification and Linux/WSL/live-backend/release gates. No provider request,
+desktop control, automatic merge or deployment is part of publication.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ask-status"
+description = "Enables the ask_status command without any pre-configured scope."
+commands.allow = ["ask_status"]
+
+[[permission]]
+identifier = "deny-ask-status"
+description = "Denies the ask_status command without any pre-configured scope."
+commands.deny = ["ask_status"]

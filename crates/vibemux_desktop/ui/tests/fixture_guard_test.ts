@@ -27,6 +27,10 @@ test('production build contains no fixture data', () => {
     'the production build has no JavaScript to check',
   );
   for (const file of files) {
-    assert.ok(!readFileSync(file, 'utf8').includes(FIXTURE_MARKER), file);
+    const content = readFileSync(file, 'utf8');
+    assert.ok(!content.includes(FIXTURE_MARKER), file);
+    assert.ok(!content.includes('api.anthropic.com'), 'native assets include the browser API provider: ' + file);
+    assert.ok(!content.includes('vibemux_chat_v1'), 'native assets include browser history storage: ' + file);
+    assert.ok(!content.includes('allow-scripts'), 'native assets include active artifact preview: ' + file);
   }
 });

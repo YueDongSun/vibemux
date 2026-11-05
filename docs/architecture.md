@@ -92,14 +92,14 @@ The root `Cargo.toml` is authoritative for workspace membership (`version = "0.2
 
 ```text
 crates/
-├── vibemux_types/              # opaque IDs, domain objects, state machines, frontend query types
+├── vibemux_types/              # opaque IDs, domain objects, state machines, frontend query types, persistent-chat metadata types
 ├── vibemux_events/             # canonical envelopes, idempotency, payload invariants
 ├── vibemux_harness/            # AgentKind/LauncherKind/ProbeState, harness registry/profiles/rows, dispatch + DSH session state machines (pure logic, no I/O)
 ├── vibemux_harness_native/     # standalone native vendor stream adapters and bounded request dispatcher over the plugin supervisor (ADR 040)
 ├── vibemux_workflow/           # dual-track workflow contracts, gates, broker rules, optimizer (pure logic, no I/O; ADR 031)
 ├── vibemux_decision/           # decision port: questions, facts, answer validation, local rules, fallback resolver, config, records, peer wire (pure logic, no I/O; ADR 034)
 ├── vibemux_decision_peer/      # one-shot out-of-process decision peer: the only decision-API network client (TypeSafe Jev; ADR 034)
-├── vibemux_store/              # SQLite migrations (schema 6) and repositories (bundled)
+├── vibemux_store/              # SQLite migrations (schema 14) and repositories (bundled)
 ├── vibemux_platform/           # Windows/POSIX process, IPC, process-tree containment, and launch trampoline primitives
 ├── vibemux_a2a/                # official A2A Rust SDK adapter (loopback verified)
 ├── vibemux_model_peer/         # optional, out-of-process model-provider peer
@@ -113,7 +113,7 @@ crates/
 ├── vibemux_frontend/           # egui Supervisor Chat GUI + Ratatui diagnostic TUI + navigable read-only dashboard + DSH terminal surface + ASCII dump
 ├── vibemux_desktop/           # ADR 043 Tauri 2 desktop shell; the Svelte 5 UI is crates/vibemux_desktop/ui
 ├── vibemux_mcp/                # first-party MCP stdio frontend + contained metadata reader (ADR 035)
-├── vibemuxd/                   # M3 daemon (writer worker + control IPC v10 + plugin registry + harness dispatch + workflow + DSH session + decision service)
+├── vibemuxd/                   # M3 daemon (writer worker + control IPC v17 + plugin registry + harness dispatch + persistent chat service + workflow + DSH session + decision service)
 └── vibemux_cli/                # pre-alpha vibemuxctl: unified command tree (status/workspace/probe/ui/harness, --format), daemon lifecycle, harnesses/switch + dispatch + workflow/DSH/decision client (ADR 041)
 ```
 
@@ -222,9 +222,39 @@ Future long-lived plugins may use Windows named pipes or Unix domain sockets. Lo
 
 `vibemuxd::WriterWorker` constructs and exclusively owns `SqliteStore` inside a dedicated blocking thread. Callers only hold a bounded queue handle; when the queue is full, an explicit backpressure error is returned. The nonce-bearing lock next to the database is established through an atomic `create_new`; a second writer fails closed. After shutdown, the holder verifies the nonce before deletion. That check reads at most 256 bytes of a regular file, so a link found at the path, an oversized file, or another nonce reads as not held and is left in place.
 
-`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v10 is current: v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 added the six `harness_dispatch_*` operations, v6 added the 15 `workflow_*` operations, v7 added the six `dsh_session_*` operations (see below), v8 added the four `decision_*` operations (ADR 034), v9 adds `workflow_supervisor_start`/`workflow_supervisor_status` (ADR 037), and v10 adds explicit operator `workflow_contract_edit` (ADR 039); v1 `health`/`shutdown` and v2–v9 requests remain accepted for their operations. A client that predates the daemon's version refuses its descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
+Schema 14 adds the private workspace-cleanup ledger and operation index
+([ADR 066](adr/066_explicit_worktree_removal.md)). Plan records a nonreserving,
+five-minute preview; fresh Confirm atomically validates the settled Finalized
+owner and reserves the resource/path/branch. Dispatch, chat, owner, workflow
+lease and A2A admission enforce reciprocal fences. Separate linear registration,
+Arm, release and completion tokens prevent replay from returning execution
+authority. Completion retires pending release deliveries before writing evidence,
+and definite storage errors retain only the retired proof for retry. Unknown
+reserves the resource until positive durable quiescence and explicit settlement;
+reconciliation performs no execution. Cleanup writes leave historical owner,
+session, Task and Run rows unchanged. Current directory presentation checks active
+cleanup and historical Removed tombstones, while metadata reads retain the branch.
+The 64 KiB private records and their indexed columns are validated together;
+events omit paths, tokens and object identities. The Windows service now uses
+retained immutable image/ancestor pins, live-held process audit, fixed no-force
+Git argv and joined root/tree/pipe evidence. A bounded evidence custodian keeps
+retired proof across writer queue/read failures; only the executing writer takes
+custody. Explicit reconciliation flushes that proof and observes postconditions
+without replaying deletion. Status remains read-only. Control v16 and Main-only
+native command 32 expose review/confirm/status/reconciliation; the native UI
+mount requires a verified Finalized Workspace. Local owned-Git and mock-native
+checks are separate from pending native desktop/live-terminal acceptance.
 
-DSH session operations require Control v7, decision operations require Control v8, model-supervisor start/status requires Control v9, operator contract edits require Control v10, and established workflow operations retain v6.
+The narrow Windows file-identity adapter ([ADR 068](adr/068_windows_file_identity.md))
+queries `FILE_ID_INFO` from an already-open borrowed handle. It preserves the
+full volume serial and 128-bit identifier, rejects unsupported/zero results and
+redacts diagnostics. It is the third reviewed unsafe module alongside ACL and
+Job containment. It opens or mutates no path and supplies no process/restart
+authority; callers still own immutable executable pins and physical validation.
+
+`vibemuxd::control` uses a per-instance named pipe on Windows and a randomized per-instance Unix-domain socket on POSIX. The listener is bound before the Git-ignored runtime descriptor containing the protocol version, endpoint, and OS-CSPRNG bearer token is published. The four-byte big-endian length prefix enforces a 64 KiB ceiling before the JSON payload is allocated, and connection reads/writes and peer-close have deadlines. The descriptor owner token also guards descriptor/socket cleanup; an old instance cannot delete the runtime artifact of a replacement. IPC v17 is current in this draft. v2 added read-only `plugin_status`, v3 added `harness_refresh`/`harness_snapshot`/`harness_switch`, v4 added bounded read-only `frontend_tasks`/`frontend_task` queries plus `terminal_inspect`/`terminal_link`/`terminal_focus`/`terminal_unlink` observation operations (see [terminal observation protocol](terminal_observer_protocol.md)), v5 added the six `harness_dispatch_*` operations, v6 added the 15 `workflow_*` operations, v7 added the six `dsh_session_*` operations (see below), v8 added the four `decision_*` operations (ADR 034), v9 adds `workflow_supervisor_start`/`workflow_supervisor_status` (ADR 037), v10 adds explicit operator `workflow_contract_edit` (ADR 039), v11 adds the persistent-chat operation (ADR 057), v12 adds lifetime chat ownership, and v13 adds owner execution (ADR 058), v14 adds interactive approval, v15 adds checked workspace presentation reads (ADR 065), v16 adds explicit owner cleanup (ADR 066), and v17 adds the private `chat_command_progress` read (ADR 072). The progress increment has incomplete authenticated-routing and end-to-end acceptance. Requests from v1 through v17 remain accepted at their operations' minimum versions. A client that predates the daemon's version refuses its descriptor, so `vibemuxctl` and `vibemuxd` are upgraded together. Shutdown acceptance signals in-flight harness dispatches and probes before the reply, then joins dispatch tasks and plugin cleanup before writer shutdown. Blocking writer calls are isolated through `spawn_blocking`; no async mutex guard is held across an await. There is no TCP fallback.
+
+DSH session operations require Control v7, decision operations require Control v8, model-supervisor start/status requires Control v9, operator contract edits require Control v10, the persistent-chat operation requires Control v11, lifetime chat ownership requires Control v12, owner execution requires Control v13, and established workflow operations retain v6.
 
 The `vibemuxd` binary is an unprivileged foreground process owner; `vibemuxctl daemon start|health|stop` is responsible for the on-demand lifecycle. Readiness must come from authenticated health; the PID is only used to compare this spawn's identity. Windows uses a fixed, non-user-code-interpolated system PowerShell companion that holds the exact process handle and severs captured-stdout inheritance; POSIX uses direct argv spawn with a separate process group. During migration the path layer is fixed to `.vibemux/vibemux_rust.sqlite3`, and runtime symlinks and symlink/hardlink aliases that point at the Python database are refused.
 
@@ -245,6 +275,138 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 
 `vibemux_terminal_observer` is a bounded WezTerm observer plugin. It uses an optional versioned terminal observation payload inside the unchanged v1.0 envelope; the daemon routes each request only after checking the plugin's effective terminal grant (startup configuration v2; v1 grants nothing), session, request/correlation identity, deadline, and response size. Run-scoped pane links are observation-only and never imply execution ownership or task completion. See the [terminal observation protocol](terminal_observer_protocol.md) and [ADR 028](adr/028_supervisor_chat_frontend.md).
 
+The optional `terminal:cleanup_inventory_v1` method separately validates the
+complete bounded configured-instance inventory and matches real directory
+ancestry, including descendants. It fails on unknown evidence and never falls
+back to exact-directory inventory. A default-false observer config flag, manifest
+declaration and Core policy/session grants preserve existing configurations.
+This read-only foundation ([ADR 067](adr/067_terminal_cleanup_inventory.md))
+changes no Control/store/native-command contract and grants no deletion
+authority. The separate Windows cleanup service consumes it under
+[ADR 066](adr/066_explicit_worktree_removal.md), together with canonical ownership,
+immutable executable pins and joined process evidence.
+
+## Project conversation search
+
+The native command palette builds a local catalogue from registered projects,
+loaded Saved sessions, loaded Workspace owners, cached titles, retained Asks and
+Task metadata. Workspace snapshots copy the bounded per-project owner/title
+catalogue without fetching content. Display labels are shortened while title
+matching uses the full cached title. The explicit history-search action handles
+records outside those loaded lists; the native `quick_search` stub is not used.
+
+`palette_navigation` rechecks registration, missing-folder state, cached target,
+project selection and caller lifetime around existing read selectors. App
+admission serializes navigation and suppresses late presentation. Existing
+read-only reconciliation may settle an uncertain operation from a positive
+receipt; it never resends. Workspace acknowledgement consumes current input only
+when both the raw draft and complete formatted attachment payload still match
+the immutable submitted prompt. See the
+[palette guide](native_harness_conversations.md#command-palette-conversations).
+
+`vibemux_client::chat_history::HistoryClient` owns authenticated normalization for
+Saved and owner-backed histories. Export and `chat_search` are its two consumers;
+each owns its snapshot or paging policy. Search composes existing list/status/
+title/content operations without an index or database reader. Bounded literal
+matching produces private previews, exact record targets and option-bound
+continuation. Source changes and unavailable content remain explicit gaps.
+
+The native `chat_search_request` command resolves the registered project and
+owns one scan with an atomic guard independently of daemon jobs. The renderer's
+modal reads only on Search/Load more and clears private results on close. Opening
+a retained result uses existing read-only controllers, exact generation/version
+and record identity, final status and selection epochs. It preserves drafts and
+pending mutations; it cannot start, resume or cancel execution. See
+[ADR 061](adr/061_native_history_search.md) and the
+[search evidence](evidence/native_harness_m1.md#project-conversation-search).
+
+Record reveal and transcript Find share `transcript_scroll::reveal_transcript_element`.
+Only the nearest marked Ask, Saved or Workspace scroll container moves; the
+application shell and header do not receive a scroll request. A real browser
+regression reproduces the former ancestor-scroll failure and checks the scoped
+replacement. A renewed native check also retained the header after Saved,
+archived and Workspace deep navigation; the browser fixture remains separate
+evidence.
+
+Header, shortcut and palette Find share one selected-transcript gate.
+Saved/Workspace eligibility checks registered project/chat/session identity and
+purge state. Closed or finalized
+Workspace history needs no live process. Workspace Find is keyed to its target;
+the owner context sits inside the bounded transcript, with a separately scrolling
+fallback when execution detail is unavailable. Saved consent copy shares its
+transcript scroller. Retained history puts inactive drafts behind a disclosure
+whose user state resets on context entry, independently of draft edits. Existing
+controllers retain the text/files and all consent/mutation authority.
+
+`task_windows` owns a process-local, bounded reservation registry for independent
+task views. `task_window_open` authenticates the task before creating a native
+label; reads check that label's registration, canonical project/task identity
+and generation. Only `main` retains the full command capability. Auxiliary
+`task_*` views receive Detail reads, public settings reads, the closed
+terminal-only `supervisor_action` and bound worktree `open_link` actions, load a separate frontend entry and share the
+docked detail presenter. Window construction uses
+the trusted launcher profile and navigation guard. Closing a view releases its
+reservation without execution changes. See [ADR 063](adr/063_read_only_task_windows.md).
+
+`terminal_bridge` owns bounded per-window observations for the shared Task
+Terminal tab. Native code fixes the WezTerm plugin identity, validates the actual
+caller, registration and canonical Task/Run, and composes existing Control v4
+Inspect/Link/Focus/Unlink operations. Replies use the path-free terminal
+projection. One current observation plus one cleanup receipt per view preserves
+explicit Unlink of the exact reviewed lease after failed effects or lost replies;
+Inspect echoes the last received token to acknowledge it. Link/Focus authority
+is retired before submission, and close/revocation clears cached authority.
+There is no automatic terminal input, pane creation or plugin startup.
+
+The observer resolves Workspace chat-owner Runs through the writer's indexed,
+fully validated owner read, or uses the existing A2A binding when no owner exists.
+The shared physical validator checks existing managed directories, Git inventory,
+branch, receipt and resource identity without creating a namespace. Observation
+permits dirty or advanced owned worktrees; execution keeps its empty-grant and
+base-HEAD admission checks. See [ADR 064](adr/064_task_terminal_observation.md).
+
+## Native worktree and HTTPS presentation
+
+Control v15 adds the authenticated `workspace_read` boundary. The single writer
+loads complete Workspace-owner or A2A authority and validates canonical
+Project/Task/Run agreement. Metadata mode returns a complete bounded recorded
+branch without filesystem access. Directory mode checks eligible ownership,
+noncreating managed-worktree inspection and the exact physical Run slot, then
+reloads current authority after I/O. Verified, settled Open and Finalized owners
+are browseable; recovery projections are refused. Terminal observation remains
+Open-only and execution keeps its separate admission policy.
+
+The existing native `open_link` command accepts a closed HTTPS/worktree enum.
+Tauri supplies the actual caller label. Main-only HTTPS uses a bounded parsed URL;
+Task children can request only their bound worktree presentation actions. Folder
+and path actions retain native directory/ancestry handles across a second
+complete Core read, compare its result and recheck file-object identity before
+the effect. Windows handles deny delete sharing through handoff. This does not
+freeze in-place filesystem or Git mutations and is not an OS sandbox.
+
+`link_effects` owns default-application handoff and one lazy, serialized text
+clipboard. Only the native host receives paths and complete branch values;
+renderer replies contain scope and acknowledgement. `WorkspaceAccessState`
+provides shared explicit controls in Task and Workspace views. `NativeLinks`
+routes transcript anchor clicks through the same closed command, prevents
+WebView navigation and suppresses queued/late work after disposal. Neither flow
+automatically retries an effect. Fixture mode is inert. See
+[ADR 065](adr/065_native_links_and_worktree_access.md).
+
+## Native private conversation export
+
+The desktop's `chat_export_request` command composes the existing authenticated
+Chat/Owner/Execution reads through `vibemux_client::chat_export`. Collection owns
+generation/version and full-session consistency checks, UTF-8 cursors, canonical
+metadata and private-content gaps. Separate pure formatters produce bounded
+schema-1 JSON or readable text. The native Save boundary owns the selected path,
+checked ancestor handles and exclusive file creation. The renderer receives only
+receipt metadata, and one export operation is independent of the project's
+daemon job. Cancellation of the Save dialog reads no history. This adds no
+daemon Control operation, database access or canonical event mutation; see
+[ADR 060](adr/060_native_conversation_export.md) and its
+[execution evidence](evidence/native_harness_m1.md#native-conversation-export).
+
 ## Harness dispatch (ADR 029)
 
 `vibemuxd` can run one structured vendor turn per request and record its outcome canonically. The pure protocol logic lives in `vibemux_harness::dispatch`; the daemon owns config loading, Git `HEAD` reads, process launch, pipe I/O, deadlines, cancellation, the in-memory transcript, and every writer call. Store schema 4 adds the versioned `harness_dispatches` record, written only by `WriterWorker` in the same transaction as its event.
@@ -253,11 +415,137 @@ Windows control metadata now lives under `%LOCALAPPDATA%\VibeMux\runtime\<domain
 - **Protocols.** Codex `exec --json` and `app-server`, and Claude stream-json, can execute. ACP (OpenCode, Copilot, Grok) is initialize-only probe support; the config, admission, and launch builder all refuse ACP execution.
 - **Gates.** A valid request, an enabled execution route, a harness `detected` in the persisted registry (ADR 013), and no other active reservation. At most one dispatch is active per project, and vendor processes run in the project root with read-only protocol profiles, which are not an OS sandbox.
 - **Process.** The executor spawns the first-party `vibemux_launch_trampoline` with a cleared environment, contains it with `vibemux_platform::ProcessTree` (a kill-on-close Job Object on Windows, a process group on POSIX), then releases it to start the vendor CLI, so the vendor and its descendants are members from their first instruction. Prompts reach the vendor only as JSON-string data or stdin, never argv or a shell.
+- **Held launch.** The private `spawn_held` / consuming `release_after` seam can
+  retain containment across an asynchronous authorization callback before go.
+  Its opaque failure retains the process for joined cleanup and offers no
+  release retry. Normal spawn still auto-releases. Failed release now performs
+  additional bounded Job/stdout checks before returning, with up to roughly
+  four seconds of extra failure-path latency; legacy callers discard the
+  stronger receipt. PID observation and Drop are not durable recovery authority.
+  The Windows cleanup service binds the live held trampoline to immutable image
+  handles, commits executor registration and Arm before consuming one release
+  permit, and persists the joined receipt through a bounded evidence custodian.
+  The custodian retains retired proof across definite queue/read/write failures;
+  explicit reconciliation never recreates execution authority. Its shutdown
+  flush deadline bounds waiting separately from the writer's owned join.
+  See [ADR 066](adr/066_explicit_worktree_removal.md).
 - **Outcome.** `RunStatus::Succeeded` requires a correlated structured terminal record and a clean exit (`StructuredAdapter` authority). Deadlines, cancellation, protocol violations, and capture overflow end the attempt with a fixed error code. Startup recovery moves interrupted attempts to a conservative state before the writer reports ready.
 - **Capture.** Raw vendor records are kept byte-exact in a bounded in-memory transcript and are returned only by `harness_dispatch_output`; events, logs, status, and errors stay content-free (prompt hash and size only). Transcripts are lost on daemon restart.
 - **Control.** `harness_dispatch_{catalog, probe, submit, status, output, cancel}` require Control v5; `vibemuxctl dispatch` is the thin client.
 
 Live vendor CLIs have been exercised only through initialize-only probes on native Windows ([Stage 7 evidence](evidence/harness_dispatch_validation.md)); no live execution turn has run. See [ADR 029](adr/029_daemon_harness_dispatch.md) and [PROGRESS.md](../PROGRESS.md) for the remaining gates.
+
+## Persistent native conversations (ADR 057)
+
+The daemon can own a persistent Claude or Codex chat: a session aggregate that
+survives a restart, keeps private history, and admits one canonical Task/Run
+per turn. This is the accepted **read-only** scope. It is separate from the
+one-shot Ask path, which is unchanged.
+
+`vibemux_types::chat` holds the chat metadata types and their bounds: a
+`ChatSession`, a `ChatTurn`, a `ChatRecord`, a `ContentRef`, the session and
+turn state machines, and the fixed error-code vocabulary. `vibemuxd::chat_session`
+holds the service; `vibemuxd::chat_writer` holds the metadata writer; and
+`vibemuxd::control_chat` is the authenticated Control v11 adapter.
+
+- **One bounded command owner.** The chat service serializes open, send,
+  cancel, rename, close, archive, resume, purge, and private live-text reads
+  through a bounded command queue with an explicit request deadline. A full
+  queue refuses work instead of accumulating it.
+- **Read-only startup.** Starting the chat service creates no private storage
+  and launches no vendor process. Listing and status read committed metadata
+  only.
+- **Separate consent.** Opening a chat requires an explicit
+  `consent_private_storage` grant on the request. It is distinct from the
+  one-shot Ask consent. Project registration is an identity boundary rather
+  than a consent of its own: it binds the app to a directory and carries no
+  separate consent grant.
+- **Private bodies.** Titles, prompts, and assistant output are stored as
+  immutable private bodies referenced by an opaque blob id, a SHA-256 digest,
+  and a byte count. A reference is never a path. The writer publishes a
+  private body before the reference naming it commits, so a reference never
+  points at missing content; a failed write keeps the body for a later
+  cleanup pass.
+- **Bounded reads.** Only explicit `title`, `content`, and `live` requests
+  return text. A content cursor names the record after `after_sequence` plus
+  a byte offset inside that record; a live cursor also binds a replacement
+  revision. Text is delivered in chunks of at most 8,192 bytes, and a chat
+  response is size-checked before it leaves the daemon.
+- **Exact resume.** A Claude chat resumes by its exact stored vendor session
+  id; a Codex chat resumes its exact stored thread id through the app-server
+  protocol. A resume refuses when the route profile or workspace resource key
+  changed since the chat was opened.
+- **Per-turn Task/Run.** Each admitted turn carries its own `task_id` and
+  `run_id` and the Git HEAD observed at admission. A chat never becomes a
+  completed Task because one turn finished.
+- **Replay safety.** Session operations bind to an operation id and sends bind
+  to a request id. The writer consults the durable binding first, so a
+  repeated send after a restart, or after a purge, returns the original
+  receipt rather than creating a second effect.
+- **Close and namespace ordering.** A close reserves its operation before it
+  stops the process owner, so an interrupted close cannot leave a session that
+  no operation id can address. Chat operation ids and one-shot Ask request ids
+  are checked against each other in both directions, so neither namespace can
+  be mistaken for the other.
+- **Control.** The chat surface is one authenticated Control v11 operation
+  carrying a fixed request enum; the `operation` tag selects `list`, `open`,
+  `lookup_open`, `status`, `submission`, `send`, `cancel`, `turns`, `title`,
+  `content`, `live`, `rename`, `close`, `archive`, `resume`, or `purge`.
+
+The desktop chat surface opens the Conversation view on Chats and keeps the
+one-turn Independent Ask as a separate, unchanged choice. The chat route is
+chosen independently of the Ask picker. The saved-chat consent dialog covers
+inference and private storage together, separately from Independent Ask consent.
+A new send waits for the chat to become ready — bounded at 30 seconds, polling
+status only with a 250 ms yielded interval — and then sends exactly one turn.
+Saved chats are listed per project with rename, close, archive, resume, and
+purge, plus **Show archived** and **Load more chats** for older pages;
+history is read by paging and live text arrives as bounded, revision-bound
+chunks. An uncertain operation retains its exact identifiers and offers a
+read-only lookup or an explicit same-action retry; the desktop never
+auto-replays. A late response preserves the selected chat's details and any
+retained draft.
+
+Saved and Workspace renderer controllers retire an assistant snapshot only
+after a complete, error-free Assistant body for its canonical turn/attempt is
+loaded. Other record kinds and incomplete/unavailable bodies do not establish
+that handoff. Their existing bounded record lists suppress a late same-ID Live
+response after handoff; no separate cache or wire field is added. Existing
+scope/generation/request and purge resets remain authoritative. See the
+[handoff evidence](evidence/native_harness_m1.md#live-assistant-handoff-repair).
+
+Not part of this scope: writable chats, chat-owned worktrees, affirmative tool execution, and
+in-chat approvals. See [ADR 057](adr/057_persistent_harness_sessions.md) for
+the accepted scope, the allocated versions, and the compatibility boundary.
+
+### Private command observations (ADR 070)
+
+The Codex session adapter maps correlated completed command and file-change
+items to private, bounded `ToolObservation` values. It deduplicates exact replay, retains
+full-tail replay identity and carries sticky projection loss independently of
+the vendor outcome. The actor forwards these observations before the terminal
+callback. Optional display callbacks share one absolute batch deadline; after
+uncertainty the actor retires tool capture for that turn and still forwards its
+correlated terminal.
+
+Saved and owner-backed sinks validate their actual generation/fence, durable
+turn/attempt and acknowledged Codex binding. They reserve a fixed record UUID
+and private body before append, then use the existing immutable private writer.
+An unknown append cannot mint a replacement or become complete capture. Tool
+bodies use a closed version-1 envelope under the existing Tool kind; no store,
+Control or public metadata change is required. The shared collapsed card reads
+only complete, untruncated Tool bodies and preserves literal legacy fallback.
+It adds no execution or approval capability. See
+[ADR 070](adr/070_private_command_tool_records.md).
+
+[ADR 071](adr/071_private_file_change_records.md) adds a distinct version-1
+file-change body while preserving command version 1. Both variants use the
+same ordered ledger, ID namespace, record/byte budgets, callback deadline and
+immutable writer reservation. Source file lists are validated before bounded
+prefix selection; replay identity includes omitted entries and discarded
+diff tails. File cards display opaque reported paths/kinds/moves/diffs and gain
+no filesystem or approval authority. Find reveals selected text ranges, with
+one transcript-owned vertical viewport for bounded literal content.
 
 ## Native harness request dispatch (ADR 040)
 
@@ -392,6 +680,23 @@ The acceptance CLI and owned command/version-probe helpers check `TokenRestricte
 
 ## Probe and unified frontend boundary
 
+The fixed Windows `vibemuxd::local_probe` boundary runs the bundled diagnostic
+CLI with empty argv through the existing held trampoline/tree owner. Immutable
+bundle handles survive final verification and cleanup. Bounded stdout/stderr,
+cancellation, root exit and actual EOF/Job-empty evidence precede publication.
+The pure `vibemux_probe::snapshot::project_report` entry validates completed
+metadata without file I/O and withholds paths/endpoints/arbitrary text. This
+Rust boundary is locally verified with fixed children. The desktop AppState
+owns one global job, 64 retained operation bindings and joined shutdown with one
+absolute deadline. Main-only `probe_rerun` accepts closed start/status/cancel
+requests and returns a schema-1 metadata snapshot. The Harnesses Local checks
+panel uses explicit start and status-only recovery, preserves previous results
+and fences uncertain work across project changes. Ordinary Refresh remains a
+recorded-data read. Host/renderer tests and source review passed. A native QA
+sequence observed completion, cancellation, status and prior-result retention
+using the fixed NotRun runner; installed-tool qualification remains open.
+See [ADR 069](adr/069_native_console_diagnostics.md).
+
 `vibemux_probe` only produces versioned, content-free, read-only diagnostics: launcher/version, explicit provider endpoint, CC Switch health/aggregate telemetry, and the A2A self-test. Launcher verification is not the same as authentication/inference verification.
 
 `vibemux_probe::snapshot` loads either a bounded, validated, redacted saved report or the fixed local probe, and the `vibemux_frontend::dashboard` module renders it (with an optional read-only local Git inventory from `vibemuxctl workspace status`) as a navigable dashboard behind `vibemuxctl ui` and the `vibemux_dashboard` binary. It starts no daemon, harness, or model turn. See [ADR 041](adr/041_unified_cli_and_workspace_layout.md). ADR 042 makes it a multi-pane console: `daemon_feed` owns one background thread that polls the running daemon's content-free reads (health, plugins, dispatch catalog, task list and detail, DSH status, workflow slots, decisions) through the `daemon_session` connection cache it shares with the GUI client, and publishes an immutable `DaemonView`; `daemon_model` projects and sanitizes. Both `daemon_feed` and `daemon_model` live in `vibemux_client` and are re-exported by `vibemux_frontend::dashboard`. `daemon_render`, `panes`, and `filter` are pure presentation. The diagnostic TUI re-runs the probe on a worker thread (`tui::reprobe`), the DSH surface searches its in-memory transcript (`dsh_tui::search`), and the GUI's shortcut table and quick switcher are `gui::shortcuts`, `gui::quick_switcher`, and the egui-free `quick_search`.
@@ -433,3 +738,203 @@ control descriptor, database writer, canonical Run state or harness execution.
 The read-only monitor and native desktop retain their existing boundaries.
 [ADR 056](adr/056_browser_local_chat.md) records storage, preview and provider
 limits; [the guide](conversational_web_ui.md) gives startup commands.
+
+## Native desktop one-turn Ask integration
+
+Native conversation M1 connects the fixed Tauri command boundary to
+`vibemux_client::ask` and authenticated daemon dispatch. Both visual
+presentations share project/route/Ask ownership. Desktop Rust owns registered
+opaque project handles, identity-bound consent, submission deduplication,
+continuously drained worker collectors and bounded display snapshots; the
+daemon remains the canonical Task/Run/Event and process owner.
+
+A local receipt is separate from canonical admission. Status, observer health,
+terminal evidence and output completeness are independent; lost observation
+cannot invent success or cancellation. Display retention is 32 Asks per project;
+only settled entries may be evicted, with active/uncertain ownership protected. The separate 1,024-key
+process-lifetime deduplication budget refuses new work when full. Renderer
+reload recovers Rust-held state without submitting again; desktop exit does
+not preserve native text or replay bindings. Daemon raw output remains bounded
+memory-only under ADR 029.
+
+The command path uses the existing Control protocol and no new listener or
+store migration. Claude stays tool-free/one-turn and Codex configured
+read-only/ephemeral/one-turn. The standalone browser API app and read-only
+mobile monitor retain their own boundaries; egui remains pending its separate
+parity/removal gate. Implementation and exact validation status are recorded
+in [native M1 evidence](evidence/native_harness_m1.md), the contract amendment
+in [ADR 043](adr/043_tauri_desktop_app.md), and setup/retention behavior in
+[the native guide](native_harness_conversations.md).
+
+The native desktop now also mounts **Tasks** and **Console** read surfaces, the
+settings page, search, and the shortcut set. Their renderer contracts are
+fixed and bounded in the desktop crate: a task page returns at most 32 tasks, a
+console section at most 64 rows, a decision page at most 32 entries, and only
+the Decisions section accepts an audit-sequence cursor. Task rows carry an
+optional task id so the console can offer read-only navigation to a task
+detail.
+
+Persistent Claude/Codex sessions are accepted for a **read-only** scope in
+[ADR 057](adr/057_persistent_harness_sessions.md), with Control v11 and store
+schema 10 allocated. The daemon backend and the desktop chat surface are
+implemented and locally tested. Bounded native navigation, settings and draft
+checks passed. Claude 2.1.304 and Codex 0.166.0 passed bounded follow-up and
+restart-resume checks. Bounded native Saved, archived and Workspace history
+interaction has also been observed. A bounded Workspace JSON save and native
+task-window lifecycle check passed in the isolated Windows fixture.
+The writable profile, affirmative tool/approval path, image/PDF inputs and
+remaining platform/live qualification are open. This remains a pre-release.
+
+The desktop imports bounded UTF-8 text/code snapshots through the native
+`chat_pick_files` command. The per-chat draft owns the selected contents and
+encodes them into the existing private prompt on Send. The command accepts
+an opaque project key and obtains file paths only from the native dialog.
+See the [attachment contract](native_harness_conversations.md#native-text-attachments).
+
+### Lifetime chat ownership
+
+`chat_session::owner_api` and `control_chat_owner` expose the Control v12
+ownership API. `owner_service` supervises provisioning through an actor-owned
+`JoinSet`. `ChatWriter` commits owner metadata through the authoritative writer.
+Schema 11 adds the lifetime Task/Run binding and workspace reservation.
+`WorkspaceManager::plan` and `create_planned` separate durable intent from Git
+effects, and restart recovery verifies the persisted ownership receipt.
+The owner API admits empty grants. The desktop's typed `chat_owner_request`
+bridge and Workspaces controller expose creation, bounded owner reads,
+reconciliation and Stop. Pending mutations retain their request binding across
+project navigation, and periodic refresh preserves the loaded pagination window.
+Public owner submission is described below. Writable profiles remain a subsequent stage. See [ADR 058](adr/058_writable_chat_ownership.md) and
+the [native guide](native_harness_conversations.md#lifetime-owner-workspace-foundation).
+
+The schema-12 increment adds `chat_execution_attempts` and
+`chat_execution_records` under that owner. `vibemux_store::chat` now has
+owner-specific admission, one-use input claim, result, record and process cleanup
+transactions. The private `attempt_rows` loader checks the immutable admission
+binding and owner identity independently of the lifetime Run's later state.
+The authoritative writer fences unfinished execution generations at startup.
+`chat_execution_writer` reuses the private-body store and publication ordering.
+`chat_session::execution_service` now serializes internal Start/Send/cancel/close
+operations around the existing runtime actor. `ChatExecutionSink` maps its facts
+to the owner-specific writer transactions, while `sink_state` shares bounded
+private output bookkeeping with the read-only sink. Workspace receipt, inventory,
+branch, resource and HEAD checks precede fresh effects. Receipt replay precedes
+those new-work checks. Native synthetic-vendor tests exercise repeated turns,
+exact resume and failure/shutdown paths without ending the lifetime Run.
+`chat_session::execution_api` and `control_chat_execution` expose closed Control
+v13 requests and allowlisted runtime, attempt and record metadata. Runtime status
+reads owner/session/process-claim state through one writer closure. Content and
+Live use bounded UTF-8 chunks without exposing private body references.
+The registered-project `chat_execution_request` native bridge checks consent and
+frame bounds before connecting. The mounted Workspaces controller retains one
+exact uncertain action per target, polls read-only, and requires explicit
+Start/Resume and Send. Process Close retains lifetime ownership; final Stop remains
+a separate owner operation.
+
+Accepted chat-writer callbacks now return their actual completion through a
+crate-private Tokio oneshot on the existing bounded writer queue. The supervising
+chat actor retains the dependent launch/input step when its client stops waiting.
+The synchronous writer API and external acknowledgement deadlines are unchanged.
+Post-commit shutdown checks release fresh process claims or cancel attempts before
+vendor effects. This preserves the admission-to-execution handoff without retries.
+
+### Interactive approval groundwork
+
+`chat_session::input_writer` has an owned per-frame `InputReceipt`. It reports
+`Written` after write/flush and `Unknown` after lost or interrupted completion;
+legacy `send` remains queue-only. No production approval consumer exists yet.
+The test-only Claude peer proves exact one-use response gating of its artifact
+through a directly owned subprocess. The proposed authority, correlation and
+durable-delivery contract is in [ADR 059](adr/059_interactive_chat_approvals.md).
+Schema 13 now adds `chat_approvals`, linked to the lifetime owner and attempt,
+with private evidence references, exact request/tool identity keys, decision
+receipts in `chat_operations`, and a one-use outbox claim. Decision, claim and
+audit event commit atomically. Only a fresh commit returns an opaque delivery
+capability; replay and restart cannot reconstruct one. Pending invalidation and
+claimed Unknown outcomes share cancellation/process transactions. Unresolved
+approvals block ordinary terminal completion. Production profiles stay read-only
+and Control now exposes the approval consumer at v14. `chat_approval_writer` publishes protected evidence
+before metadata, resolves replay without filesystem effects and verifies private
+identity/input snapshots before minting a fresh dispatch claim. It refreshes UTC
+at actual decision commit after file reads. The runtime actor now consumes these
+claims through a guarded `test_helpers` fixture factory. The closed Control
+approval operation and mounted desktop panel consume existing offers; qualified
+production writable profiles and their grant admission remain pending. A separate test-only field observer
+prepares a diagnostic without launching a vendor or qualifying a native profile.
+
+The fixture protocol is a fresh Claude session with one input and a fixed
+WriteFiles effect. The factory binds the built vendor and trampoline, fixed
+configuration, CWD, managed worktree receipt and pinned HEAD at launch and before
+dispatch. No serialized setting selects this mode. Actor-owned futures preserve
+admission, decision and delivery work after the client stops observing; a separate
+cancellation slot keeps output and interruption responsive. Input flush precedes
+the human offer, the one-use canonical claim precedes response enqueue, and
+durable Written precedes terminal release. A human wait pauses idle expiry while
+the original total-turn deadline remains active. Unknown delivery is never
+resent. See the [fixture runtime evidence](evidence/native_harness_m1.md#guarded-fixture-approval-runtime).
+`approval_diagnostic` is a separate `test_helpers` path. Candidate preparation
+starts no vendor; explicit execution pins the source/trampoline and fresh empty
+namespace, checks the installed version in its own contained process, and drives
+one fixed input with deny-only responses. The initialization/user/denial receipts
+remain owned while output, cancellation and deadlines progress. Reports expose
+fixed observations and cleanup evidence, with policy and production qualification
+false. Normal tests use guarded fixture copies; installed execution stays ignored
+until separately authorized and reviewed. This path opens no Control or UI route.
+Two separately authorized installed-Claude 2.1.304 inputs stopped at `init_mismatch`
+with verified process cleanup and no fixed test artifact. The v2 observation
+isolates the permission-mode mismatch; working directory and tools match.
+Qualification remains false. Diagnostic report v2 preserves queue acceptance separately from flush
+receipts and adds optional redacted initialization comparisons; strict mode,
+working-directory, tool and identity validation are unchanged. The original v1
+observation and subsequent synthetic repair have separate
+[evidence](evidence/native_harness_m1.md#installed-claude-diagnostic-and-redacted-init-checks).
+The later [v2 installed observation](evidence/native_harness_m1.md#installed-claude-report-v2-observation)
+records the separately approved input and spent allowance.
+
+The current test-only report is v3. Its observer recognizes only canonical SDK
+`default` and the CLI/fixture `manual` alias as Manual mode. The old literal-only
+predicate rejected the documented canonical value. Report fields, deny-only
+delivery and the production `dontAsk` parser are unchanged. Historical v2 checks
+cannot reveal the discarded native value. See the
+[source contract and offline repair](adr/059_interactive_chat_approvals.md#canonical-manual-mode-in-diagnostic-report-v3).
+
+### Test-only native GUI QA
+
+The nondefault `native_qa` feature adds the closed `vibemux_desktop_qa`
+developer binary. It prepares/checks synthetic history through the real daemon
+and launches the same production Tauri builder with separate owned settings and
+WebView data. A private Rust launch mode supplies the DEMO title; no renderer
+selector or additional command is exposed. Fixed fixture images/configuration
+remain pinned through daemon shutdown. Compatible directory handles and identity
+checks support production atomic settings saves within an exclusive trusted
+namespace. Observed external changes fail the run; this is not an OS sandbox.
+The owned monitor, nonce stop requests and explicit daemon/Ask reconciliation
+have separate report fields. Tauri Ready does not prove DOM/scenario readiness.
+The Surfaces scenario retains 8 Saved, 2 archived and 4 Workspace records and
+verifies complete private command/file bodies through the authenticated reader.
+NativeQa startup supplies a fixed in-process diagnostic runner: Console checks
+exercise progress, cancellation and retained results with every check marked
+NotRun. Standard startup retains its ordinary runner. The fixture does not
+launch installed diagnostics or qualify a production profile.
+See [ADR 062](adr/062_native_gui_acceptance_fixture.md), the
+[developer guide](native_harness_conversations.md#native-gui-qa-runner), and
+[executed evidence](evidence/native_harness_m1.md#native-gui-qa-preparation).
+
+### Public approval consumer and desktop review
+
+Control v14 adds `chat_approval` with mapped metadata, explicit input-only UTF-8
+chunks, human AllowOnce/Deny and read-only receipt recovery. Raw vendor identity,
+blob references, profile fingerprints and delivery capabilities stay core-owned.
+Historical replay reads the original operation binding and current delivery;
+it cannot dispatch again or require a live actor. The service waits outside its
+serialized command queue, and the native bridge avoids the exclusive project job
+during that wait. Cancel/close still reach the owned runtime.
+
+The desktop's 29th fixed command, `chat_approval_request`, reaches the mounted
+Workspace approval panel through the typed bridge. Private input loads after
+Review and clears on selection, close, expiry, error, forced refetch or decision.
+Scope/detail epochs and current-row version checks suppress stale responses.
+Clock rollback requires fresh calibration. The dialog focuses Deny and submits
+only explicit choices; recovery reads receipts/metadata without resending. A
+final canonical row can prove an uncertain operation was not recorded without
+being presented as a successful decision. See the
+[surface evidence](evidence/native_harness_m1.md#control-v14-and-desktop-tool-approvals).

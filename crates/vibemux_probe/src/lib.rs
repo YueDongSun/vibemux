@@ -6,6 +6,9 @@ pub mod cache;
 
 pub mod snapshot;
 
+#[cfg(test)]
+mod network_tests;
+
 use std::{
     collections::BTreeSet,
     env,
@@ -627,7 +630,11 @@ async fn probe_gateway(config: &ProbeConfig) -> GatewayProbe {
         .await
         .is_ok_and(|result| result.is_ok());
     let health_status = if tcp_reachable {
-        if let Ok(client) = reqwest::Client::builder().no_proxy().build() {
+        if let Ok(client) = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+        {
             timeout(
                 config.network_timeout,
                 client.get(format!("http://{address}/health")).send(),
@@ -653,7 +660,8 @@ async fn probe_gateway(config: &ProbeConfig) -> GatewayProbe {
     } else {
         ProbeState::Unavailable
     };
-    let state = if tcp_reachable && health_status.is_some_and(|status| status < 400) {
+    let state = if tcp_reachable && health_status.is_some_and(|status| (200..300).contains(&status))
+    {
         ProbeState::Verified
     } else if tcp_reachable {
         ProbeState::Failed

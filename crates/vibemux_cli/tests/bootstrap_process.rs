@@ -254,6 +254,62 @@ struct FixtureProcessGuard {
     process_id: Option<u32>,
 }
 
+#[tokio::test]
+async fn stop_waits_beyond_the_workspace_drain_before_reporting_process_exit() {
+    let temp = tempfile::tempdir().expect("temporary project");
+    let paths = DaemonPaths::from_project_root(temp.path()).expect("paths");
+    #[cfg(windows)]
+    let _control_cleanup = ControlRuntimeCleanup::new(&paths);
+    paths.ensure_runtime_dir().expect("runtime");
+    std::fs::write(paths.state_dir().join("fixture_gate_shutdown"), b"gate")
+        .expect("test-only gate");
+    let config = DaemonBootstrapConfig::new(
+        paths.clone(),
+        PathBuf::from(env!("CARGO_BIN_EXE_vibemux_recovery_fixture")),
+    );
+    let started = start_daemon(&config).await.expect("fixture start");
+    let process_id = started.health().process_id;
+    let mut process_guard = FixtureProcessGuard::new(process_id);
+    tokio::time::pause();
+    let (ready, observed) = tokio::sync::oneshot::channel();
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let marker = paths.state_dir().join("fixture_shutdown_drained");
+    // Hold automatic virtual-time advancement while real process I/O runs.
+    let blocking_gate = tokio::task::spawn_blocking(move || {
+        let _ = ready.send(wait_for_started_marker(&marker));
+        let _ = hold.recv_timeout(Duration::from_secs(20));
+    });
+    let stop_paths = paths.clone();
+    let stopping = tokio::spawn(async move { stop_daemon(&stop_paths).await });
+    assert!(observed.await.expect("drain observation"));
+    tokio::time::advance(Duration::from_secs(601)).await;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        process_is_present(process_id),
+        "fixture still awaits explicit release"
+    );
+    assert!(
+        !stopping.is_finished(),
+        "accepted shutdown must wait for owned process exit"
+    );
+    std::fs::write(
+        paths.state_dir().join("fixture_release_shutdown"),
+        b"release",
+    )
+    .expect("release fixture");
+    tokio::time::resume();
+    release.send(()).expect("release real-time gate");
+    blocking_gate.await.expect("join gate");
+    stopping
+        .await
+        .expect("join stop")
+        .expect("confirmed process exit");
+    assert!(!process_is_present(process_id));
+    process_guard.disarm();
+}
+
 impl FixtureProcessGuard {
     fn new(process_id: u32) -> Self {
         Self {

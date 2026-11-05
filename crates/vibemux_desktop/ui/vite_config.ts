@@ -3,6 +3,10 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [svelte()],
+  resolve: {
+    // Shared presentation components resolve through this consumer's lockfile.
+    dedupe: ['svelte', 'marked', 'dompurify', 'highlight.js'],
+  },
   server: {
     fs: {
       // Vite inlines a CSS `@import` from disk at transform time, so
@@ -12,7 +16,7 @@ export default defineConfig({
       // keeps `/@fs/` access to the repo-root `config/` directory open,
       // and `.` (resolved against the project root) keeps this package's
       // own files served.
-      allow: ['.', '../../../config'],
+      allow: ['.', '../../../config', '../../vibemux_chat/web/src'],
     },
   },
   build: {

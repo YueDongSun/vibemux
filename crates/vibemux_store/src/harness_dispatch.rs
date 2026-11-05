@@ -380,7 +380,17 @@ pub(crate) fn admit_dispatch_in(
     if !detected {
         return Err(StoreError::HarnessDispatch(DispatchError::NotDetected));
     }
-    if dispatch_rows::is_reserved(transaction, admission.resource_key)? {
+    let chat_conflict: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chat_turns WHERE request_id=?1 UNION ALL SELECT 1 FROM chat_operations WHERE operation_id=?1 UNION ALL SELECT 1 FROM chat_execution_attempts WHERE request_id=?1)",
+        [admission.request_id.to_string()],
+        |row| row.get(0),
+    )?;
+    if chat_conflict {
+        return Err(StoreError::HarnessDispatch(DispatchError::Conflict));
+    }
+    if dispatch_rows::is_reserved(transaction, admission.resource_key)?
+        || crate::chat::is_reserved(transaction, &admission.resource_key.to_hex())?
+    {
         return Err(StoreError::HarnessDispatch(DispatchError::Busy));
     }
     let (task, run) = admitted_entities(project_id, admission)?;

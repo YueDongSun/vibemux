@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ask-reply"
+description = "Enables the ask_reply command without any pre-configured scope."
+commands.allow = ["ask_reply"]
+
+[[permission]]
+identifier = "deny-ask-reply"
+description = "Denies the ask_reply command without any pre-configured scope."
+commands.deny = ["ask_reply"]
