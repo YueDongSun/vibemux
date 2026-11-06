@@ -200,3 +200,63 @@ replaces newer stored history. Browser suspension, process crashes, timer delays
 and storage failures can still lose changes since the last successful save.
 Windows/Linux/WSL, other browser engines, live inference, and an interrupted
 stream in the live browser were not newly exercised by this repair.
+
+## Regeneration history preservation — 2026-11-06
+
+Regeneration and confirmed edit/resend now stream into a temporary preview. The
+original transcript and artifact remain the saved/exported conversation until a
+complete, nonempty provider response succeeds. Missing or rejected credentials,
+network/protocol errors, token-limit truncation, cancellation, and reload during
+replacement preserve the originals. Failure and stop notices explain that the
+original conversation was kept. The existing saved artifact remains usable;
+opening newly extracted preview artifacts is deferred until completion, and
+feedback controls are disabled while the replacement preview is provisional.
+
+Regenerating an earlier answer requires the existing confirmation dialog to
+explain that success replaces that answer and all later messages. Cancelling the
+dialog sends no request. New messages retain immediate prompt persistence,
+bounded stream checkpoints, and saved partial replies on cancellation. The
+browser record remains version 1; there are no dependency, provider endpoint,
+credential-retention, daemon, or schema changes. A page reload discards an
+unfinished replacement preview while retaining the original saved conversation.
+
+Validation in an isolated worktree based on `4d4a784`, macOS arm64, Node 22.22.0,
+verified npm 10.9.9 (macOS 26.6.2):
+
+- `npm ci --offline --no-audit --no-fund --cache /private/tmp/vibemux-npm-cache`:
+  installed the unchanged lockfile successfully.
+- `node --test tests/app_persistence.test.mjs`: **19 passed**, including 17 new
+  orchestration regressions executing the actual app functions with the real
+  storage/autosave modules. Provider cases use the real parser with controlled
+  fetch fixtures; late-settlement and feedback cases inject a callback driver.
+  They cover missing/rejected keys, network failure, partial EOF, token limits,
+  empty completion, partial cancellation, late cancellation, lifecycle flushes,
+  successful latest/older replacement, older-turn confirmation cancellation,
+  edit/resend success/failure, offline behavior, feedback preservation and the
+  quoted-user-HTML preview artifact overwrite case.
+- `npm test`: **100 app/service tests + 3 dependency checks passed**, zero
+  failures or skips. Existing corrupt-storage, quota, blocked-storage, writer
+  lease and key-exclusion coverage remains enabled.
+- The missing-key preservation and older-turn confirmation tests were also run
+  against the original `4d4a784` app functions: both failed on the expected
+  history-loss/missing-confirmation assertions. This is regression evidence,
+  not a test of a reimplemented orchestration model.
+- `npm run build`: succeeded, 4254 modules transformed, no Svelte compilation
+  warnings. `git diff --check`: passed.
+- Controlled Chrome walkthrough on the separate loopback QA origin
+  `http://127.0.0.1:5197`: created two replies including an HTML artifact, opened
+  and cancelled earlier-turn confirmation, stopped a replacement, reloaded to
+  clear the memory-only fixture key, confirmed earlier-turn regeneration with
+  that missing key, then reloaded again. All four original messages and the
+  saved artifact remained. Replacement feedback controls were visibly disabled;
+  stop/failure notices were visible. Captured browser errors: **zero**. The test
+  tab and local server were closed afterward; no live provider or real key was
+  used.
+- Independent source review found no remaining blocking findings after the
+  ordinary-stream feedback and preview-artifact issues were fixed and covered.
+
+Windows/Linux/WSL, other browser engines, mobile layout, and live provider access
+were not newly exercised. The successful replacement paths have controlled
+orchestration coverage; this browser walkthrough focused on the reported
+history-loss and cancellation/confirmation paths. Incomplete replacement text
+is intentionally not durable; the original conversation is the recovery state.

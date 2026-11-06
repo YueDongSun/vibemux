@@ -17,6 +17,7 @@
   let {
     conversation,
     generating,
+    replacing = false,
     on_regenerate,
     on_edit,
     on_feedback,
@@ -222,6 +223,7 @@
                   >{:else}<button
                     class="icon-btn"
                     aria-label="Good response"
+                    disabled={replacing}
                     aria-pressed={message.feedback === "up"}
                     onclick={() =>
                       on_feedback(
@@ -231,6 +233,7 @@
                   ><button
                     class="icon-btn"
                     aria-label="Poor response"
+                    disabled={replacing}
                     aria-pressed={message.feedback === "down"}
                     onclick={() =>
                       on_feedback(
