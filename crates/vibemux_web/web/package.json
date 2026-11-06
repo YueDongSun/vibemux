@@ -10,7 +10,7 @@
     "dev": "vite --config vite_config.ts",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "build": "vite build --config vite_config.ts",
-    "test": "node --experimental-strip-types --test tests/presentation_policy_test.ts tests/cache_policy_test.ts tests/console_policy_test.ts && node --test ../../../scripts/test_frontend_dependencies.mjs",
+    "test": "node --experimental-strip-types --test tests/presentation_policy_test.ts tests/cache_policy_test.ts tests/console_policy_test.ts tests/monitor_session_test.ts && node --test ../../../scripts/test_frontend_dependencies.mjs",
     "audit": "npm audit --audit-level=moderate"
   },
   "dependencies": {
