@@ -8,6 +8,14 @@ The owner terminates remaining descendants even after successful Git exit.
 POSIX process groups do not contain code that deliberately escapes the group;
 see [ADR 029](docs/adr/029_daemon_harness_dispatch.md#workspace-git-process-ownership-2026-11-06).
 
+DSH uses the bundled launch gate before vendor execution and always terminates
+remaining contained descendants before reporting completed cleanup. Failed
+containment refuses startup; failed cleanup retains daemon ownership for retry
+and refuses session replacement. Blocked pipe writes have deadlines and cannot
+leave a partial frame reusable. These changes address leaking ordinary children,
+not deliberate process-group escape or hostile same-user interference; see
+[ADR 032](docs/adr/032_dsh_harness_adapter.md#cleanup-correction-2026-11-06).
+
 On macOS, an `EPERM` cleanup result is accepted only after a non-reaping check
 and kernel group enumeration prove the owned, exited leader is the sole member.
 Permission/query failures, additional members and incomplete observations remain
@@ -29,6 +37,14 @@ on every save/reset. This prevents cooperating tabs from overwriting stale
 history; older tabs must be reloaded after an upgrade. It does not isolate
 history from other same-origin scripts. API keys remain memory-only, and no
 browser record acquires daemon or canonical-state authority. See [ADR 056](docs/adr/056_browser_local_chat.md).
+
+Chat regeneration and edit/resend keep replacement previews outside saved
+history until a complete response succeeds. Failure or cancellation preserves
+the original transcript and artifact. Monitor callbacks capture authentication
+generation and token; sign-out or rotation invalidates pending requests before
+asynchronous cache clearing. Obsolete responses, errors and finalizers cannot
+change a new session. This is client-state integrity, not a change to server
+authorization or bearer-token storage.
 
 Frontend build dependencies use pinned, reviewed security overrides for
 deepmerge and Workbox's glob chain. These prevent returned-config prototype

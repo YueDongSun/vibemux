@@ -7614,3 +7614,76 @@ release target or claim native Windows/Linux or hosted CI success.
   documented compatibility and audit checks.
 - Native Windows/Linux/WSL and hosted CI were not run in this follow-up.
   Changes remain uncommitted in the review worktree.
+
+### 2026-11-06 — DSH cleanup, chat replacement, and monitor request fixes
+
+**Implemented scope**
+
+- The shared DSH driver requires the bundled launch gate before vendor execution,
+  refuses failed containment, bounds protocol writes, and terminates remaining
+  descendants even after a successful shutdown. POSIX keeps the leader unreaped
+  until termination succeeds; Windows checks the job's remaining active members.
+  Cleanup errors retain daemon session ownership and propagate through close,
+  replacement, and daemon/TUI shutdown. ADR 032 records the lifecycle correction.
+- Browser-local chat keeps regeneration/edit-resend previews outside saved
+  history until a complete nonempty response succeeds. Failure, cancellation,
+  and lifecycle flushes preserve the original transcript/artifact. Earlier-turn
+  regeneration explicitly confirms replacement of later messages.
+- Monitor requests capture an authentication generation and bearer, are aborted
+  on session changes, and reject obsolete results, errors, and finalizers.
+  Detail request identity handles A → B → A selection races; a failed current
+  detail refresh marks retained data stale. Enrollment and push callbacks use
+  the same ownership checks.
+
+**Compatibility and boundaries**
+
+- No database, event, browser record, configuration, or wire-schema migration.
+  The new internal driver cleanup error maps to existing Control v7 refusal;
+  DSH standalone installs must include `vibemux_launch_trampoline` beside the
+  executable, using the same build profile. No new dependency or lock change.
+- Process containment is lifetime ownership, not a hostile-code sandbox.
+  Provider credentials stay memory-only; frontend fixes add no daemon authority.
+- Regression evidence includes a failing pre-fix DSH descendant heartbeat test,
+  failing baseline chat/monitor preservation tests, and failure/cancellation
+  cases. Native Windows/Linux, a real DSH vendor turn, and live WezTerm remain
+  unverified for this patch.
+
+
+**Native macOS qualification for this patch**
+
+Environment: macOS 26.6.2 (25G83), arm64 Apple M3 Pro, Rust 1.92.0,
+Node 22.22.0/npm 10.9.9, Python 3.12.16. No source changes followed the
+successful Rust checks; the remaining edits record these results.
+
+- `cargo fmt --all -- --check` and `cargo clippy --locked --offline --workspace
+  --all-targets --all-features -- -D warnings`: passed.
+- `cargo test --locked --offline --workspace --all-features`: **1,702 passed,
+  zero failed, two existing ignored helper/generator tests**.
+- `cargo nextest run --locked --offline --workspace --all-features`: **1,702
+  passed, zero failed, two existing skipped helpers**, 136.685 seconds at default
+  concurrency. Both real-browser cooperation workflows passed in both runners.
+- `cargo deny check`: advisories, bans, licenses, sources passed. `cargo audit`:
+  exit zero with the existing three allowed warnings (glib 0.18.5 informational
+  unsoundness; clipboard-win 5.4.1 and crypto-bigint 0.7.6 yanked). No policy change.
+- In each UI root: clean locked `npm ci --offline`, `npm test`,
+  `npm audit --audit-level=low`, and `npm run build` passed. Monitor and desktop
+  `npm run typecheck` each reported zero errors/warnings. **148 frontend checks**
+  passed (monitor 34+7 dependency checks; desktop 1+3; chat 100+3), and each audit
+  reported **zero vulnerabilities**. The separate TaskBoard browser contract
+  command passed all 21 checks under Node 22.22.0.
+- `python -m ruff format --check .`, `python -m ruff check .`, `python -m mypy .`,
+  and `python -m mypy --platform win32 .`: passed. `python -m pytest -rs`:
+  **135 passed, 32 explicit PowerShell-unavailable skips**; smoke checks passed.
+- Controlled Chrome chat walkthrough: older-turn confirmation/cancel, stopped
+  replacement, missing-key failure, and reload preserved the original four
+  messages and artifact; zero browser console errors. Monitor regressions use
+  production functions with deferred browser/API doubles, not a live PWA claim.
+- Initial development failures remain auditable: the pre-fix descendant test
+  failed as expected; an unavailable diagnostic dependency and test-module
+  placement were corrected before the successful compilation/lint runs. No
+  blind retries, weakened assertions, or added skips were used.
+
+This qualification covers the integrated fixes on `codex/review-core-nov06`.
+These are local macOS results, not a hosted-CI result for the new patch. Exact commands,
+logs, source fingerprints, and the scope/platform/compatibility handoff are
+retained in the task's local validation artifact.

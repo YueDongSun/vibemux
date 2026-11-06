@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.
+- Preserve chat history and artifacts when regeneration or edit/resend fails or is stopped. Successful replacements alone update saved history; regenerating an older response requires confirmation before later messages can be replaced.
+- Bind monitor requests to their authentication session and detail selection. Late responses and errors cannot overwrite a new login or selection; failed current detail refreshes are marked stale.
+
 - Fix npm audit findings across all three UIs with a pinned, reviewed deepmerge security fork and a scoped Workbox glob/minimatch update. Add dependency regression checks to each UI test command and include browser-local chat's tests, audit and build in CI; see `docs/frontend_dependencies.md` for provenance and maintenance limits.
 
 - Fix macOS cleanup of a sole exited process-group leader using verified kernel membership, without suppressing permission failures for live or unknown members. Keep local control socket paths within Darwin's length limit even with long temporary directories.
