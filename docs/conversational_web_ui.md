@@ -36,6 +36,10 @@ Long fenced code and documents can open an artifact panel with code, supported p
 
 Settings persist theme, reading font size, density, Enter behavior, autoscroll, default model, and default thinking mode. Theme follows the system until manually changed. Long histories render a bounded page of messages with an explicit earlier-message control; scrolling up suspends autoscroll. Invalid browser records remain intact until the user downloads or explicitly resets them.
 
+Only one tab saves this workspace at a time. Saving uses the browser's Web Locks API, so open the app on localhost/loopback or HTTPS in a browser that supports Web Locks. Other tabs keep their current chats in memory and show a saving warning with **Export this tab's chats** and **Retry saving**. Close the saving tab before retrying. If saved history changed since this tab opened, export its unsaved chats and reload; the app does not replace the newer saved record or silently merge it. Reload older app tabs when upgrading so every tab follows this rule. Existing version-1 history needs no migration.
+
+The submitted turn is saved before the provider request when storage is available. Active streams use a one-second maximum wait for checkpoints during uninterrupted updates, with a 400 ms idle save; completion and cancellation save immediately. Hiding or leaving the page also flushes the latest state synchronously while its writer lock is held. Browser suspension, process crashes, unavailable storage, or storage quotas can still prevent a save; a partial response since the most recent checkpoint may be lost. Saving failures remain visible and do not remove the in-memory chats available for export.
+
 | Action                        | Shortcut                              |
 | ----------------------------- | ------------------------------------- |
 | New conversation              | Alt+N                                 |

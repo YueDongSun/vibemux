@@ -34,6 +34,7 @@ export const app_config = {
   search_delay: 180,
   toast_duration: 7000,
   save_delay: 400,
+  save_max_delay: 1000,
   api_origin: "https://api.anthropic.com",
 };
 export const shortcuts = [

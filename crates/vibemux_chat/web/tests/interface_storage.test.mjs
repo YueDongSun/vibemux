@@ -1,10 +1,10 @@
+import { save_workspace } from "./support/store_writer.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { app_config, default_settings } from "../src/config.js";
 import {
   create_conversation,
   load_workspace,
-  save_workspace,
 } from "../src/services/chat_store.js";
 function storage(context, initial) {
   const values = new Map(

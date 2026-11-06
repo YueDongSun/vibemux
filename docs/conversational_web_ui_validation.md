@@ -152,3 +152,51 @@ browser-console, responsive-layout or preview-navigation claim is made for this
 integration. The earlier dated browser evidence is retained above. No real API
 key or live inference was used. Linux/WSL and hosted CI remain separate from the
 local checks; Git source publication is separate from a hosted app deployment.
+
+## Persistence repair verification — 2026-11-06
+
+Fixed two reproducible local-history losses: stale tabs could replace newer
+history, and uninterrupted response deltas could postpone the trailing autosave
+for the entire stream. A page now owns one exclusive Web Lock while it can save,
+revalidates its last observed record before save/reset, and retains unsaved
+content with export/retry guidance on conflict. The autosave owner checkpoints
+continuous changes after one second, saves the submitted turn before dispatch
+when storage is available, and flushes completion, cancellation, hidden-page,
+and page-exit state. Page exit releases the lock after the synchronous flush;
+restoring the page reacquires and revalidates it.
+
+Validation on macOS with Node 26.13.0 and npm 12.2.1:
+
+- `npm test` and `npm test -- --test-reporter=dot`: **83 passed**, zero failures,
+  cancellations, or skips. The original 67 cases remain, including corrupt
+  records, quota failures, blocked storage, legacy records, and key exclusion.
+- Eight new session cases cover asynchronous simultaneous lock requests,
+  conflicting/retry writes, guarded reset, unchanged legacy records, unavailable
+  locks, blocked/quota failures, and release before a pending grant.
+- Six autosave cases cover immediate prompt persistence, repeated 100 ms deltas,
+  visibility/pagehide flushes, restored-page ownership, failed checkpoints and
+  retry, and timer/listener cleanup. Two additional tests execute the app's
+  actual turn functions, located with the Svelte parser, through the real
+  storage/autosave modules to verify submission-before-inference, checkpoints,
+  completion, and cancellation. These are orchestration tests, not DOM tests.
+- `npm run build`: production build succeeded, 4254 modules transformed. The
+  Svelte compiler also compiled `src/app.svelte` with zero warnings.
+- Locked JavaScript dependencies were installed offline from the local npm
+  cache. The same locked `@rolldown/binding-darwin-arm64` 1.2.15 package was reused
+  from the independently installed desktop package; no dependency declaration
+  or package lock changed.
+- Controlled Chrome walkthrough on separate loopback port 5186: tab B opened
+  before tab A's new chat and displayed the busy-saving warning. Tab A generated
+  and saved a fixture response; tab B changed its theme. After tab A closed,
+  Retry saving in B displayed the stale-history conflict. Reloading B restored
+  A's conversation and saved theme. Reload also cleared the memory-only fixture
+  key. No real credential or live provider inference was used.
+
+The browser record remains version 1 and needs no migration. Safe saving now
+requires Web Locks on a secure context (localhost/loopback or HTTPS). Reload
+all older app tabs on upgrade because old code does not take this lock. A second
+tab may keep unsaved work in memory and export it; it never silently merges or
+replaces newer stored history. Browser suspension, process crashes, timer delays,
+and storage failures can still lose changes since the last successful save.
+Windows/Linux/WSL, other browser engines, live inference, and an interrupted
+stream in the live browser were not newly exercised by this repair.

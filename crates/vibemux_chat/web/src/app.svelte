@@ -39,14 +39,14 @@
   import SettingsPanel from "./components/settings_panel.svelte";
   import { models, app_config, shortcuts } from "./config.js";
   import {
-    load_workspace,
-    save_workspace,
+    create_workspace_session,
     create_conversation,
     uid,
     export_conversation,
     export_all,
     download_file,
   } from "./services/chat_store.js";
+  import { create_workspace_autosave } from "./services/workspace_autosave.js";
   import { stream_response, validate_api_key } from "./services/provider.js";
   import {
     group_conversations,
@@ -54,7 +54,8 @@
     stopped_snapshot,
   } from "./ui_policy.js";
 
-  const initial = load_workspace();
+  const storage_session = create_workspace_session();
+  const initial = storage_session.initial;
   let interface_style = $state(
     resolve_interface(location.search, initial.settings.interface_style),
   );
@@ -144,6 +145,19 @@
   let controller = null,
     toast_timer = null,
     api_validation = 0;
+  function workspace_snapshot() {
+    return {
+      conversations: $state.snapshot(conversations),
+      settings: $state.snapshot(settings),
+      active_id,
+    };
+  }
+  const autosave = create_workspace_autosave({
+    session: storage_session,
+    snapshot: workspace_snapshot,
+    on_error: (error) => (storage_error = error.message),
+    on_saved: () => (storage_error = ""),
+  });
   let tablet = $state(innerWidth <= 1180);
   const drawer_mode = $derived(mobile || (Boolean(artifact) && tablet));
   $effect(() => {
@@ -301,6 +315,8 @@
         ? {}
         : { artifact: null, artifact_open: false }),
     });
+    // Persist the submitted turn before a fast provider stream can postpone it.
+    if (storage_ready) await autosave.persist(workspace_snapshot());
     let content = "";
     try {
       const full = await stream_response({
@@ -357,6 +373,7 @@
         controller = null;
         generating = false;
       }
+      if (storage_ready) autosave.flush_now();
     }
   }
   function send_message(content, attachments = [], force_new = false) {
@@ -546,10 +563,11 @@
         "Download the original browser record first if you need to recover it. Resetting clears that record so new conversations can be saved.",
       confirm: "Reset local history",
       danger: true,
-      action: () => {
+      action: async () => {
         try {
-          localStorage.removeItem(app_config.storage_key);
-          load_workspace();
+          await storage_session.acquire();
+          storage_session.reset();
+          autosave.discard();
           conversations = [];
           active_id = null;
           storage_ready = true;
@@ -562,21 +580,8 @@
     };
   }
   $effect(() => {
-    const snapshot = {
-      conversations: $state.snapshot(conversations),
-      settings: $state.snapshot(settings),
-      active_id,
-    };
-    if (!storage_ready) return;
-    const timer = setTimeout(() => {
-      try {
-        save_workspace(snapshot);
-        storage_error = "";
-      } catch (error) {
-        storage_error = error.message;
-      }
-    }, app_config.save_delay);
-    return () => clearTimeout(timer);
+    const snapshot = workspace_snapshot();
+    if (storage_ready) autosave.schedule(snapshot);
   });
   $effect(() => {
     const value = search;
@@ -634,6 +639,7 @@
     }
   }
   onMount(() => {
+    autosave.attach(window, document);
     const query = matchMedia("(max-width: 760px)");
     const resize = () => {
       mobile = query.matches;
@@ -651,6 +657,7 @@
     return () => {
       clearTimeout(toast_timer);
       controller?.abort();
+      autosave.dispose();
       query.removeEventListener("change", resize);
       tablet_query.removeEventListener("change", tablet_change);
       window.removeEventListener("online", up);
@@ -787,7 +794,13 @@
               notify(error.message);
             }
           }}>Download original record</button
-        >{#if !storage_ready}<button class="text-btn" onclick={recover_storage}
+        >{#if storage_ready}<button
+            class="text-btn"
+            onclick={() => export_chats("json")}>Export this tab's chats</button
+          ><button
+            class="text-btn"
+            onclick={() => autosave.persist(workspace_snapshot())}>Retry saving</button
+          >{:else}<button class="text-btn" onclick={recover_storage}
             >Reset local history</button
           >{/if}
       </div>{/if}
