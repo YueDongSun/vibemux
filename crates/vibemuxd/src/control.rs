@@ -1629,7 +1629,13 @@ async fn serve_owned(
     state.dispatch.shutdown().await;
     // Then the DSH runtime, so no vendor process outlives the daemon and its
     // exit is observed before the writer's state is finalized.
-    state.dsh.shutdown().await;
+    let dsh_result = state
+        .dsh
+        .shutdown()
+        .await
+        .map_err(|error| ControlError::Remote {
+            code: error.code().to_string(),
+        });
     // Signal all plugins together, join their cleanup, then release the one writer.
     let supervisor_result = match supervisor {
         Some(service) => service
@@ -1643,6 +1649,7 @@ async fn serve_owned(
     let plugins_result = registry.shutdown().await.map_err(ControlError::from);
     let writer_result = shutdown_writer(state).await;
     result
+        .and(dsh_result)
         .and(supervisor_result)
         .and(plugins_result)
         .and(writer_result)

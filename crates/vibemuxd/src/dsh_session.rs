@@ -69,10 +69,8 @@ impl DshServiceError {
         }
     }
 
-    /// Maps a driver failure onto the service vocabulary, preserving the
-    /// driver's own code for operational failures so an operator sees the
-    /// real cause (spawn, timeout, transport, trust) rather than a generic
-    /// refusal.
+    /// Maps driver failures onto the existing content-free service vocabulary.
+    /// Operational failures, including incomplete cleanup, refuse the request.
     #[must_use]
     pub const fn from_driver(error: &DshDriverError) -> Self {
         match error {
@@ -256,24 +254,27 @@ impl DshSessionService {
         let summary = DshSessionConfigSummary::from(&config);
 
         let mut guard = self.session.lock().await;
-        if let Some(live) = guard.as_ref() {
+        if let Some(live) = guard.as_mut() {
             if !live.driver.phase().is_terminal() {
                 return Err(DshServiceError::Busy);
             }
             // A finished session is replaced, but its child must be reaped
             // first; otherwise a restart loop would leak processes.
-            if let Some(finished) = guard.take() {
-                let mut driver = finished.driver;
-                let _ = driver.close().await;
-            }
+            cleanup_result(live.driver.close().await)?;
+            guard.take();
         }
 
         let mut driver = DshDriver::spawn(&launch, settings, limits)
             .await
             .map_err(|error| DshServiceError::from_driver(&error))?;
         if let Err(error) = driver.await_ready().await {
-            // A failed handshake still owns a child; reap it before returning.
-            let _ = driver.close().await;
+            // Retain ownership if cleanup fails, so close can be retried and
+            // another open cannot silently abandon this process tree.
+            if let Err(cleanup) = cleanup_result(driver.close().await) {
+                let status = status_of(&driver, summary, OffsetDateTime::now_utc());
+                guard.replace(LiveSession { status, driver });
+                return Err(cleanup);
+            }
             return Err(DshServiceError::from_driver(&error));
         }
         let status = status_of(&driver, summary, OffsetDateTime::now_utc());
@@ -355,23 +356,36 @@ impl DshSessionService {
     /// Closes the session, reaping the runtime, and returns its final status.
     pub async fn close(&self) -> Result<DshSessionStatus, DshServiceError> {
         let mut guard = self.session.lock().await;
-        let Some(mut live) = guard.take() else {
+        let Some(live) = guard.as_mut() else {
             return Err(self.no_session());
         };
         // `close` reports a timeout when a cooperative shutdown was ignored;
         // the teardown still happened, so the final status is what matters.
-        let _ = live.driver.close().await;
+        cleanup_result(live.driver.close().await)?;
         live.status = refresh(&live.driver, &live.status);
-        Ok(live.status)
+        let status = live.status.clone();
+        guard.take();
+        Ok(status)
     }
 
     /// Closes any live session. Called on daemon shutdown so no vendor process
     /// outlives the daemon.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), DshServiceError> {
         let mut guard = self.session.lock().await;
-        if let Some(mut live) = guard.take() {
-            let _ = live.driver.close().await;
+        if let Some(live) = guard.as_mut() {
+            cleanup_result(live.driver.close().await)?;
+            guard.take();
         }
+        Ok(())
+    }
+}
+
+/// A grace timeout is reported only after successful forced teardown. Every
+/// other error must retain the driver and refuse success/replacement.
+fn cleanup_result(result: Result<(), DshDriverError>) -> Result<(), DshServiceError> {
+    match result {
+        Ok(()) | Err(DshDriverError::ShutdownTimeout) => Ok(()),
+        Err(error) => Err(DshServiceError::from_driver(&error)),
     }
 }
 
@@ -469,5 +483,23 @@ fn fit_page(
         records = page.records;
         records.pop();
         more = true;
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn only_completed_teardown_can_be_reported_as_service_success() {
+        assert_eq!(cleanup_result(Ok(())), Ok(()));
+        assert_eq!(cleanup_result(Err(DshDriverError::ShutdownTimeout)), Ok(()));
+        for error in [
+            DshDriverError::ProcessCleanup,
+            DshDriverError::SpawnFailed,
+            DshDriverError::WriteFailed,
+        ] {
+            assert_eq!(cleanup_result(Err(error)), Err(DshServiceError::Refused));
+        }
     }
 }

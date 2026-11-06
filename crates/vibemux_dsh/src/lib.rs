@@ -40,6 +40,8 @@ pub enum DshDriverError {
     EntryScriptUntrusted,
     #[error("the DSH runtime could not be spawned")]
     SpawnFailed,
+    #[error("the DSH process tree could not be terminated and reaped")]
+    ProcessCleanup,
     #[error("the DSH runtime stdin is unavailable")]
     StdinUnavailable,
     #[error("writing to the DSH runtime failed")]
@@ -69,6 +71,7 @@ impl DshDriverError {
             Self::ExecutableUntrusted => "dsh_driver_executable_untrusted",
             Self::EntryScriptUntrusted => "dsh_driver_entry_script_untrusted",
             Self::SpawnFailed => "dsh_driver_spawn_failed",
+            Self::ProcessCleanup => "dsh_driver_process_cleanup_failed",
             Self::StdinUnavailable => "dsh_driver_stdin_unavailable",
             Self::WriteFailed => "dsh_driver_write_failed",
             Self::TransportClosed => "dsh_driver_transport_closed",
@@ -108,6 +111,7 @@ mod tests {
             DshDriverError::ExecutableUntrusted,
             DshDriverError::EntryScriptUntrusted,
             DshDriverError::SpawnFailed,
+            DshDriverError::ProcessCleanup,
             DshDriverError::StdinUnavailable,
             DshDriverError::WriteFailed,
             DshDriverError::TransportClosed,

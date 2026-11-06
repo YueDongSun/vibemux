@@ -231,15 +231,32 @@ own documentation says a client abandons a turn by closing the process. So:
   process tree. Frames the runtime wrote before it died still arrive. The
   prompt's receipt and the turn's events are dropped under §4 rule 3, so a
   cancel that beats the receipt still closes the session cleanly.
-- **Close** writes `shutdown`, waits `shutdown_grace_ms`, and then terminates
-  and reaps. A runtime that was asked to close and ignored the request is
+- **Close** writes `shutdown` and waits within one `shutdown_grace_ms` budget,
+  then always terminates remaining contained descendants before reaping the
+  leader on POSIX. A runtime that ignored the request is
   `dsh_driver_shutdown_timeout`; a runtime that had already failed is torn down
-  without a spurious error.
+  without a spurious timeout. A timeout is reported only after successful
+  forced cleanup. Termination, ownership-query, or reap failure instead returns
+  `dsh_driver_process_cleanup_failed`; the daemon keeps that session for a
+  cleanup retry and refuses replacement. Repeated completed closes are safe.
 
-The runtime is contained with `vibemux_platform::ProcessTree` from its first
-instruction, so descendants cannot outlive the session. Containment governs
-lifetime only: it is **not** a sandbox, and the runtime's own profile decides
-what it may read and write.
+The bundled `vibemux_launch_trampoline` starts the runtime only after
+`vibemux_platform::ProcessTree` containment succeeds. Build it before a
+standalone DSH test or terminal launch, and distribute it beside the executable:
+
+```text
+cargo build --locked -p vibemuxd --bin vibemux_launch_trampoline
+cargo test --locked -p vibemux_dsh
+```
+
+Use the same target directory and build profile for both commands. No PATH
+fallback is accepted. Initialization and prompt writes are bounded by their
+configured deadlines; a timed-out partial frame invalidates the transport.
+After containment, startup write failures return an owned driver whose
+`await_ready` reports the failure, so callers can explicitly close it.
+Containment governs ordinary descendant lifetime only: POSIX processes can
+deliberately escape the group, and system-service launches can escape a Windows
+job. It is **not** a sandbox; the runtime's profile decides what it may access.
 
 ## 7. Failure codes
 
@@ -250,6 +267,7 @@ what it may read and write.
 | `dsh_driver_executable_untrusted` | not a canonical `node` image outside the project root |
 | `dsh_driver_entry_script_untrusted` | not a DSH-owned `.js` script outside the project root |
 | `dsh_driver_spawn_failed` | the process could not be started |
+| `dsh_driver_process_cleanup_failed` | termination, ownership query, or bounded reap failed; cleanup is incomplete |
 | `dsh_driver_stdin_unavailable` | the child exposes no stdin/stdout pipe |
 | `dsh_driver_write_failed` | writing a frame failed |
 | `dsh_driver_transport_closed` | stdout reached EOF before the session finished |

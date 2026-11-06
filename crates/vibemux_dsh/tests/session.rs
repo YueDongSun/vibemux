@@ -60,6 +60,79 @@ async fn open(mode: &str) -> DshDriver {
     driver
 }
 
+async fn open_with_descendant(mode: &str) -> (DshDriver, tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().expect("owned fixture directory");
+    let mut launch = launch(mode);
+    launch.working_directory = directory
+        .path()
+        .canonicalize()
+        .expect("canonical directory");
+    let mut driver = DshDriver::spawn(&launch, settings(), limits())
+        .await
+        .expect("spawn");
+    driver.await_ready().await.expect("handshake");
+    let heartbeat = directory.path().join("dsh-descendant-heartbeat");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !heartbeat.is_file() {
+        assert!(tokio::time::Instant::now() < deadline, "descendant started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    (driver, directory, heartbeat)
+}
+
+async fn assert_heartbeat_stopped(heartbeat: &std::path::Path) {
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let first = std::fs::read_to_string(heartbeat).expect("heartbeat");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        std::fs::read_to_string(heartbeat).expect("heartbeat"),
+        first,
+        "a closed session must not leave an executing descendant"
+    );
+}
+
+#[tokio::test]
+async fn graceful_close_terminates_descendants_before_returning_and_is_idempotent() {
+    let (mut driver, _directory, heartbeat) = open_with_descendant("descendant").await;
+    driver.close().await.expect("close");
+    assert_eq!(driver.phase(), DshPhase::Closed);
+    // Keep the driver alive: Drop must not be what stops the descendant.
+    assert_heartbeat_stopped(&heartbeat).await;
+    driver.close().await.expect("second close");
+}
+
+#[tokio::test]
+async fn shutdown_timeout_still_terminates_descendants_before_returning() {
+    let (mut driver, _directory, heartbeat) = open_with_descendant("descendant-hang").await;
+    assert_eq!(driver.close().await, Err(DshDriverError::ShutdownTimeout));
+    assert_heartbeat_stopped(&heartbeat).await;
+    driver.close().await.expect("second close");
+}
+
+#[tokio::test]
+async fn cancellation_terminates_descendants_before_close_returns() {
+    let (mut driver, _directory, heartbeat) = open_with_descendant("descendant").await;
+    driver.cancel().await.expect("cancel");
+    driver.close().await.expect("close");
+    assert_heartbeat_stopped(&heartbeat).await;
+}
+
+#[tokio::test]
+async fn a_runtime_that_stops_reading_cannot_block_prompt_or_cleanup_forever() {
+    let mut driver = open("no-read").await;
+    // JSON escaping expands this valid 32 KiB prompt beyond a pipe buffer.
+    // This exercises the shared driver used by the terminal, not the smaller
+    // daemon IPC frame limit.
+    let prompt = "\u{0001}".repeat(32 * 1024);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), driver.prompt(&prompt))
+        .await
+        .expect("bounded prompt write");
+    assert_eq!(result, Err(DshDriverError::TurnTimeout));
+    assert!(!driver.transport_open());
+    assert_eq!(driver.phase(), DshPhase::Failed);
+    driver.close().await.expect("cleanup after partial frame");
+}
+
 #[tokio::test]
 async fn a_full_turn_completes_and_exposes_its_records() {
     let mut driver = open("serve").await;

@@ -574,8 +574,12 @@ to a vendor from this repository.
 ### VibeMux's DSH terminal surface
 
 ```powershell
+cargo build --locked -p vibemuxd --bin vibemux_launch_trampoline
 cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .
 ```
+
+Keep the launch helper beside the terminal executable, using the same target
+directory and build profile. DSH startup refuses to proceed without it.
 
 `.vibemux\dsh_session.json` describes the launcher pair. `-WriteSessionConfig`
 writes this template, filling in the two paths it resolved:

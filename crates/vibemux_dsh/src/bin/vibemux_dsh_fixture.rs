@@ -3,7 +3,8 @@
 //!
 //! It speaks the newline-delimited JSON-RPC 2.0 shapes of
 //! `@deepseek-ai/dsh-sdk-protocol` (ADR 032) and nothing else: no model, no
-//! network, no filesystem. Tests never need the real vendor runtime, and no
+//! network. Lifecycle modes write a heartbeat only in a test-owned directory.
+//! Tests never need the real vendor runtime, and no
 //! test can spend inference.
 //!
 //! Usage: `vibemux_dsh_fixture <mode>`
@@ -27,6 +28,9 @@
 //! | `crash-after-ready` | answers `initialize`, then exits with status 3 |
 //! | `shutdown-first` | holds each prompt; on `shutdown`, answers it first, then the held prompt and its whole turn |
 //! | `late_prompt` | holds the prompt receipt and turn events until `shutdown` |
+//! | `descendant` | starts a heartbeat child, then serves ordinary requests |
+//! | `descendant-hang` | starts a heartbeat child and ignores shutdown |
+//! | `no-read` | initializes, then stops reading stdin |
 
 use std::io::{self, BufRead, Write};
 
@@ -57,6 +61,33 @@ fn mode() -> String {
 
 fn main() {
     let mode = mode();
+    if mode == "heartbeat" {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut ticks = 0_u64;
+        while std::time::Instant::now() < deadline {
+            ticks += 1;
+            if std::fs::write("dsh-descendant-heartbeat", ticks.to_string()).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        return;
+    }
+    if matches!(mode.as_str(), "descendant" | "descendant-hang") {
+        let Ok(executable) = std::env::current_exe() else {
+            return;
+        };
+        let Ok(_child) = std::process::Command::new(executable)
+            .arg("heartbeat")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        // Deliberately leave this descendant to the driver's tree owner.
+    }
     if mode == "exit-early" {
         return;
     }
@@ -92,6 +123,10 @@ fn main() {
                     &serde_json::json!({"serverInfo": {
                         "name": SERVER_NAME, "version": SERVER_VERSION}}),
                 );
+                if mode == "no-read" {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    return;
+                }
                 if mode == "exit-after-ready" {
                     return;
                 }
@@ -115,6 +150,10 @@ fn main() {
                 answer_prompt(&mode, &frame, &mut turn);
             }
             "shutdown" => {
+                if mode == "descendant-hang" {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    return;
+                }
                 if let Some((prompt_id, session_id)) = pending_prompt.take() {
                     // Reading shutdown is the barrier: the client has already
                     // abandoned this request before any of its frames arrive.
