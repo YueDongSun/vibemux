@@ -16,17 +16,17 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dual_track_acceptance.runner import (  # noqa: E402
+from scripts.dual_track_acceptance.runner import (  # noqa: E402
     MODE_LIVE,
     MODE_OFFLINE,
     RunRequest,
     run,
     validate,
 )
-from dual_track_acceptance.runner_config import EXIT_BLOCKED, EXIT_USAGE  # noqa: E402
-from dual_track_acceptance.windows_launch_context import (  # noqa: E402
+from scripts.dual_track_acceptance.runner_config import EXIT_BLOCKED, EXIT_USAGE  # noqa: E402
+from scripts.dual_track_acceptance.windows_launch_context import (  # noqa: E402
     Windows_Launch_Error,
     require_launch_context,
     suppress_windows_error_dialogs,

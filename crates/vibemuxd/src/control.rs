@@ -1629,7 +1629,13 @@ async fn serve_owned(
     state.dispatch.shutdown().await;
     // Then the DSH runtime, so no vendor process outlives the daemon and its
     // exit is observed before the writer's state is finalized.
-    state.dsh.shutdown().await;
+    let dsh_result = state
+        .dsh
+        .shutdown()
+        .await
+        .map_err(|error| ControlError::Remote {
+            code: error.code().to_string(),
+        });
     // Signal all plugins together, join their cleanup, then release the one writer.
     let supervisor_result = match supervisor {
         Some(service) => service
@@ -1643,6 +1649,7 @@ async fn serve_owned(
     let plugins_result = registry.shutdown().await.map_err(ControlError::from);
     let writer_result = shutdown_writer(state).await;
     result
+        .and(dsh_result)
         .and(supervisor_result)
         .and(plugins_result)
         .and(writer_result)
@@ -2590,22 +2597,30 @@ fn endpoint_name(_runtime_dir: &Path) -> String {
 
 #[cfg(unix)]
 fn endpoint_name(runtime_dir: &Path) -> String {
-    // Linux caps unix socket paths at 107 usable bytes (sun_path is 108
-    // including the NUL terminator), so a socket inside the project
-    // runtime dir breaks for project roots nested deeper than ~50 chars.
-    // A fixed system-temp location with a project-scoped key plus a
-    // per-instance UUID keeps the path short (~66 bytes under /tmp) and
-    // preserves instance isolation. The descriptor (0600, in the runtime
-    // dir) remains the single source of truth for endpoint + auth token.
+    unix_endpoint_name(runtime_dir, &std::env::temp_dir())
+}
+
+#[cfg(unix)]
+fn unix_endpoint_name(runtime_dir: &Path, temporary_dir: &Path) -> String {
+    // Darwin has 103 usable sun_path bytes, Linux 107. The user's temporary
+    // directory can itself be long (the normal macOS /var/folders path is),
+    // so use it only when the complete UTF-8 endpoint fits a 100-byte budget.
+    // Otherwise /tmp keeps the existing project key and full random UUID.
+    // No existing socket is removed before bind. The 0600 runtime descriptor
+    // remains authoritative for the endpoint and its independent bearer token.
     let key = crate::process::project_runtime_key(runtime_dir);
-    std::env::temp_dir()
-        .join(format!(
-            "vibemux_ctl_{}_{}.sock",
-            &key[..16],
-            Uuid::new_v4().simple()
-        ))
-        .to_string_lossy()
-        .into_owned()
+    let name = format!(
+        "vibemux_ctl_{}_{}.sock",
+        &key[..16],
+        Uuid::new_v4().simple()
+    );
+    let endpoint = temporary_dir.join(&name);
+    if endpoint.is_absolute()
+        && let Some(endpoint) = endpoint.to_str().filter(|path| path.len() <= 100)
+    {
+        return endpoint.to_owned();
+    }
+    format!("/tmp/{name}")
 }
 
 /// Prefix-based pass-through: codes beginning with known namespaces
@@ -2698,11 +2713,9 @@ mod tests {
         assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
-    /// Regression: on Linux a project-scoped socket path exceeded the
-    /// 107-byte usable sun_path budget for project roots nested deeper
-    /// than ~50 chars (ENAMETOOLONG at bind, surfaced as
-    /// `EndpointUnavailable` on the ubuntu CI runner). The endpoint must
-    /// stay short regardless of runtime-dir depth.
+    /// Project roots and the default macOS temporary directory can both make
+    /// a socket exceed sun_path. Keep the complete endpoint within the common
+    /// Darwin/Linux budget, independent of the project runtime's depth.
     #[cfg(unix)]
     #[test]
     fn unix_endpoint_fits_sun_path_for_any_runtime_dir_depth() {
@@ -2712,13 +2725,49 @@ mod tests {
         let endpoint = endpoint_name(&deep);
         assert!(
             endpoint.len() <= 100,
-            "endpoint must fit the 107-byte sun_path budget: {endpoint}"
+            "endpoint must fit the 100-byte socket path budget: {endpoint}"
         );
         assert!(Path::new(&endpoint).is_absolute());
         assert!(endpoint.ends_with(".sock"));
         let temp = std::env::temp_dir();
-        let temp_prefix = temp.to_string_lossy().into_owned();
-        assert!(endpoint.starts_with(&temp_prefix));
+        assert!(
+            Path::new(&endpoint).parent() == Some(temp.as_path())
+                || Path::new(&endpoint).parent() == Some(Path::new("/tmp"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_endpoint_uses_short_temp_paths_and_falls_back_by_byte_length() {
+        use std::os::unix::ffi::OsStringExt;
+        let runtime = Path::new("/project/runtime");
+        let short = Path::new("/tmp/short");
+        let endpoint = unix_endpoint_name(runtime, short);
+        assert_eq!(Path::new(&endpoint).parent(), Some(short));
+        for temporary in [
+            PathBuf::from("/var/folders/wr/012345678901234567890123456789/T/"),
+            PathBuf::from(format!("/{}", "界".repeat(20))),
+            PathBuf::from("relative-temp"),
+            PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/invalid-\xff".to_vec())),
+        ] {
+            let endpoint = unix_endpoint_name(runtime, &temporary);
+            assert!(endpoint.len() <= 100);
+            assert_eq!(Path::new(&endpoint).parent(), Some(Path::new("/tmp")));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_endpoint_with_long_temporary_path_can_bind_and_connect() {
+        let endpoint = unix_endpoint_name(
+            Path::new("/project/runtime"),
+            &Path::new("/tmp").join("long".repeat(80)),
+        );
+        let listener = std::os::unix::net::UnixListener::bind(&endpoint).expect("bind endpoint");
+        let client = std::os::unix::net::UnixStream::connect(&endpoint).expect("connect endpoint");
+        drop(client);
+        drop(listener);
+        std::fs::remove_file(endpoint).expect("remove this test's socket");
     }
 
     #[cfg(unix)]

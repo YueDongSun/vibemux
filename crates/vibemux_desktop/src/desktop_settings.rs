@@ -2,10 +2,14 @@
 //! in the Tauri app config directory.
 //!
 //! The file is separate from the egui GUI's settings and is never imported
-//! from it. A missing, unreadable, malformed, or unknown-version file
-//! falls back to the defaults instead of failing the app.
+//! from it. A missing, unreadable, oversized, malformed, non-regular, or
+//! unknown-version file falls back to the defaults instead of failing the app.
+//! Saves create an exclusive, uniquely named sibling before replacing the
+//! settings file. Independent app instances use last-writer-wins semantics;
+//! their staged files never share a name or overwrite an existing entry.
 
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +18,7 @@ pub const SETTINGS_SCHEMA_VERSION: u16 = 1;
 pub const SETTINGS_FILE_NAME: &str = "desktop_settings.json";
 pub const MAX_PROJECT_FOLDERS: usize = 16;
 pub const MAX_ASK_CONFIRMED_PROJECTS: usize = 64;
+const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,14 +131,14 @@ pub struct SettingsPatch {
     pub start_page: Option<StartPage>,
 }
 
-/// Reads the settings file. A missing, malformed, or unknown-version file
-/// gives the defaults.
+/// Loads a regular settings file of at most 64 KiB. Missing, malformed,
+/// oversized, non-regular, or unknown-version files give the defaults.
 #[must_use]
 pub fn load_settings_at(path: &Path) -> DesktopSettings {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(bytes) = read_settings_bytes(path) else {
         return DesktopSettings::default();
     };
-    let Ok(settings) = serde_json::from_str::<DesktopSettings>(&text) else {
+    let Ok(settings) = serde_json::from_slice::<DesktopSettings>(&bytes) else {
         return DesktopSettings::default();
     };
     if settings.schema_version != SETTINGS_SCHEMA_VERSION {
@@ -142,18 +147,64 @@ pub fn load_settings_at(path: &Path) -> DesktopSettings {
     settings.bounded()
 }
 
-/// Writes the settings file through a temporary file and a rename, so a
-/// crash mid-write cannot leave a half-written file behind.
+fn read_settings_bytes(path: &Path) -> Option<Vec<u8>> {
+    // Reject special files before opening them: opening a FIFO can block.
+    // Settings symlinks remain supported for dotfile managers.
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let file = File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SETTINGS_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= MAX_SETTINGS_BYTES).then_some(bytes)
+}
+
+/// Writes a bounded settings document through an exclusively created sibling
+/// and a rename. Failed writes remove only the file this call created.
+/// Independent app instances may replace each other's complete snapshots;
+/// this function does not merge their settings.
 pub fn save_settings_at(path: &Path, settings: &DesktopSettings) -> io::Result<()> {
     let mut stored = settings.clone().bounded();
     stored.schema_version = SETTINGS_SCHEMA_VERSION;
     let text = serde_json::to_string_pretty(&stored).map_err(io::Error::other)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    if text.len() > MAX_SETTINGS_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "desktop settings exceed the 64 KiB limit",
+        ));
     }
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path)
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let temporary = path.with_file_name(name);
+    write_new(&temporary, text.as_bytes())?;
+    fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temporary);
+    })
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    written.inspect_err(|_| {
+        let _ = fs::remove_file(path);
+    })
 }
 
 #[cfg(test)]
@@ -244,5 +295,116 @@ mod tests {
         settings.apply(&patch);
         assert_eq!(settings.appearance, Appearance::Dark);
         assert_eq!(settings.density, Density::Compact);
+    }
+
+    #[test]
+    fn settings_at_the_byte_limit_load_but_larger_files_give_defaults() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop_settings.json");
+        let settings = DesktopSettings {
+            appearance: Appearance::Dark,
+            ..DesktopSettings::default()
+        };
+        let mut bytes = serde_json::to_vec(&settings).expect("JSON");
+        bytes.resize(MAX_SETTINGS_BYTES, b' ');
+        fs::write(&path, &bytes).expect("bounded settings file");
+        assert_eq!(load_settings_at(&path), settings);
+        bytes.push(b' ');
+        fs::write(&path, &bytes).expect("oversized settings file");
+        assert_eq!(load_settings_at(&path), DesktopSettings::default());
+    }
+
+    #[test]
+    fn an_oversized_save_preserves_existing_settings() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop_settings.json");
+        let original = DesktopSettings::default();
+        save_settings_at(&path, &original).expect("initial settings");
+        let oversized = DesktopSettings {
+            project_folders: vec![PathBuf::from("x".repeat(MAX_SETTINGS_BYTES))],
+            ..original.clone()
+        };
+        let error = save_settings_at(&path, &oversized).expect_err("oversized save refused");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(load_settings_at(&path), original);
+        assert_eq!(fs::read_dir(directory.path()).expect("entries").count(), 1);
+    }
+
+    #[test]
+    fn a_directory_is_not_a_settings_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        assert_eq!(
+            load_settings_at(directory.path()),
+            DesktopSettings::default()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_rejected_without_opening_it() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop_settings.json");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("mkfifo")
+                .success()
+        );
+        assert_eq!(load_settings_at(&path), DesktopSettings::default());
+    }
+
+    #[test]
+    fn a_staging_collision_preserves_the_existing_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("taken.tmp");
+        fs::write(&path, b"another writer owns this").expect("existing file");
+        let error = write_new(&path, b"new settings").expect_err("collision refused");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&path).expect("existing file"),
+            b"another writer owns this"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staging_symlink_is_not_followed_or_removed() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let target = directory.path().join("unrelated.txt");
+        let settings = directory.path().join("desktop_settings.json");
+        let staging = settings.with_extension("json.tmp");
+        fs::write(&target, b"unrelated user data").expect("unrelated file");
+        std::os::unix::fs::symlink(&target, &staging).expect("staging symlink");
+
+        let error = write_new(&staging, b"new settings").expect_err("symlink refused");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        let expected = DesktopSettings::default();
+        save_settings_at(&settings, &expected).expect("unique staging save");
+        assert_eq!(load_settings_at(&settings), expected);
+        assert!(
+            !fs::symlink_metadata(&settings)
+                .expect("settings")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(&target).expect("unrelated file"),
+            b"unrelated user data"
+        );
+        assert_eq!(fs::read_link(&staging).expect("untouched symlink"), target);
+    }
+
+    #[test]
+    fn failed_replacement_removes_its_staging_file_only() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop_settings.json");
+        fs::create_dir(&path).expect("non-file destination");
+        let owned_elsewhere = directory.path().join("another-writer.tmp");
+        fs::write(&owned_elsewhere, b"keep").expect("unrelated staging file");
+        assert!(save_settings_at(&path, &DesktopSettings::default()).is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read(&owned_elsewhere).expect("untouched file"), b"keep");
+        assert_eq!(fs::read_dir(directory.path()).expect("entries").count(), 2);
     }
 }

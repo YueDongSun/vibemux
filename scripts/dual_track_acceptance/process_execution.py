@@ -14,11 +14,10 @@ from .windows_launch_context import require_launch_context
 
 process_termination_timeout_seconds = 15
 windows_taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
-windows_creation_flags = (
-    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    if sys.platform == "win32"
-    else 0
-)
+if sys.platform == "win32":
+    windows_creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+else:
+    windows_creation_flags = 0
 
 
 def terminate_owned_tree(process: subprocess.Popen[bytes]) -> None:

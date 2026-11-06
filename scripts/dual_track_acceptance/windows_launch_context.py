@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ctypes
-import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
@@ -39,7 +39,7 @@ class _Sid_And_Attributes(ctypes.Structure):
 
 
 def _windows_token_query_api() -> _Token_Query_Api:
-    if os.name != "nt":
+    if sys.platform != "win32":
         raise OSError("Windows token APIs are unavailable")
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -115,7 +115,7 @@ def token_restriction_state(
     api_factory: Callable[[], _Token_Query_Api] = _windows_token_query_api,
 ) -> str:
     """Returns unrestricted, restricted, or unknown for the current token."""
-    if os.name != "nt":
+    if sys.platform != "win32":
         return "unrestricted"
     try:
         return "restricted" if _restricted_sid_count(api_factory()) else "unrestricted"
@@ -127,7 +127,7 @@ def require_launch_context(
     restriction_probe: Callable[[], str] = token_restriction_state,
 ) -> None:
     """Refuses native child launches for restricted or unknown token state."""
-    if os.name != "nt":
+    if sys.platform != "win32":
         return
     state = restriction_probe()
     if state == "unrestricted":
@@ -144,7 +144,7 @@ def require_launch_context(
 
 def suppress_windows_error_dialogs() -> None:
     """Set process-local fatal-error dialog bits while preserving existing bits."""
-    if os.name != "nt":
+    if sys.platform != "win32":
         return
     try:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)

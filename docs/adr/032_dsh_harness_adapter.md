@@ -227,6 +227,31 @@ implemented as an orderly teardown:
 The session outcome of a cancelled turn is `Cancelled`, and the canonical
 record keeps the fact that termination was forced.
 
+#### Cleanup correction, 2026-11-06
+
+The shared DSH driver now starts the bundled `vibemux_launch_trampoline`,
+contains it, then releases the runtime with the existing one-byte gate. A
+containment failure refuses startup before vendor code executes. The helper
+must be installed beside the host executable, as already required for native
+dispatch and workspace Git; no PATH fallback is accepted.
+
+Close always terminates remaining contained descendants, including after a
+successful runtime exit. POSIX observes leader exit without reaping until tree
+termination succeeds; Windows retains Job Object identity and checks active
+members after termination. Pipe writes use the operation's configured deadline;
+a partial timed-out frame ends the transport. Cleanup errors remain errors,
+and the daemon retains an affected session rather than replacing or forgetting
+its process owner. The TUI and daemon shutdown propagate cleanup failures.
+`Drop` remains a best-effort backstop, not proof of completed teardown.
+
+Compatibility: Control v7 payloads, configuration schema 1, canonical states,
+and provider JSON-RPC are unchanged. The internal pre-alpha driver adds
+`dsh_driver_process_cleanup_failed`; control requests map it to the existing
+`dsh_session_refused`. No data migration or protocol bump is required. The
+threat model remains lifetime containment of ordinary descendants: POSIX
+processes can deliberately escape their group, and system-service-launched
+processes can be outside a Windows job. This is not a security sandbox.
+
 ### 7. Operator configuration is a separate, versioned file
 
 DSH session config lives in `.vibemux/dsh_session.json` (schema 1), read once

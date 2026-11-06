@@ -5,21 +5,18 @@
 //! in tracked files. These checks are not a hostile same-user filesystem sandbox.
 //! The daemon must await operations to completion before acting on cancellation.
 
+mod process;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::{Child, Command},
-    time::timeout,
-};
+use tokio::process::Command;
 use vibemux_types::{
     ArtifactId, RunId,
     a2a::{ArtifactReference, RunWorkspace},
@@ -27,7 +24,6 @@ use vibemux_types::{
 
 const MAX_GIT_OUTPUT: usize = 1024 * 1024;
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
-const REAP_DEADLINE: Duration = Duration::from_secs(2);
 const MAX_ARTIFACT_BYTES: usize = 32 * 1024;
 const MAX_OWNER_RECEIPT_BYTES: usize = 16 * 1024;
 const OWNER_RECEIPT_NAME: &str = "vibemux_owner.json";
@@ -563,76 +559,8 @@ async fn git_output(
             command.env(key, value);
         }
     }
-    String::from_utf8(run_command(command, GIT_DEADLINE, MAX_GIT_OUTPUT).await?)
+    String::from_utf8(process::run_command(command, GIT_DEADLINE, MAX_GIT_OUTPUT).await?)
         .map_err(|_| WorkspaceError::Git)
-}
-
-async fn run_command(
-    mut command: Command,
-    deadline: Duration,
-    maximum_output: usize,
-) -> Result<Vec<u8>, WorkspaceError> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000);
-    let mut child = command.spawn().map_err(|_| WorkspaceError::Git)?;
-    let pipes = child.stdout.take().zip(child.stderr.take());
-    let Some((stdout, stderr)) = pipes else {
-        terminate_and_reap(&mut child).await?;
-        return Err(WorkspaceError::Git);
-    };
-    let execution = async {
-        let (output, _diagnostics, status) = tokio::try_join!(
-            read_bounded(stdout, maximum_output),
-            read_bounded(stderr, maximum_output),
-            async { child.wait().await.map_err(|_| WorkspaceError::Git) }
-        )?;
-        if !status.success() {
-            return Err(WorkspaceError::Git);
-        }
-        Ok(output)
-    };
-    let failure = match timeout(deadline, execution).await {
-        Ok(Ok(output)) => return Ok(output),
-        Ok(Err(error)) => error,
-        Err(_) => WorkspaceError::Deadline,
-    };
-    terminate_and_reap(&mut child).await?;
-    Err(failure)
-}
-
-async fn terminate_and_reap(child: &mut Child) -> Result<(), WorkspaceError> {
-    let _ = child.start_kill();
-    timeout(REAP_DEADLINE, child.wait())
-        .await
-        .map_err(|_| WorkspaceError::ProcessCleanup)?
-        .map_err(|_| WorkspaceError::ProcessCleanup)?;
-    Ok(())
-}
-
-async fn read_bounded(
-    mut stream: impl AsyncRead + Unpin,
-    maximum: usize,
-) -> Result<Vec<u8>, WorkspaceError> {
-    let mut output = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let count = stream
-            .read(&mut buffer)
-            .await
-            .map_err(|_| WorkspaceError::Git)?;
-        if count == 0 {
-            return Ok(output);
-        }
-        if count > maximum.saturating_sub(output.len()) {
-            return Err(WorkspaceError::OutputLimit);
-        }
-        output.extend_from_slice(&buffer[..count]);
-    }
 }
 
 fn canonical_output_path(cwd: &Path, output: &str) -> Result<PathBuf, WorkspaceError> {
@@ -707,12 +635,22 @@ fn git_path(path: &Path) -> Result<OsString, WorkspaceError> {
 
 fn path_key(path: &str) -> String {
     if cfg!(windows) {
-        path.trim_start_matches("\\\\?\\")
-            .replace('\\', "/")
-            .trim_end_matches('/')
-            .to_lowercase()
+        windows_path_key(path)
     } else {
         path.trim_end_matches('/').to_string()
+    }
+}
+
+fn windows_path_key(path: &str) -> String {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    if let Some(unc) = normalized.strip_prefix("//?/unc/") {
+        format!("//{}", unc.trim_end_matches('/'))
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .trim_end_matches('/')
+            .to_string()
     }
 }
 
@@ -800,6 +738,7 @@ pub fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::run_command;
 
     #[test]
     #[ignore = "child entry point executed explicitly by the bounded process test"]
@@ -808,26 +747,84 @@ mod tests {
             return;
         };
         let marker = std::env::var_os("VIBEMUX_WORKSPACE_PROCESS_MARKER").expect("fixture marker");
-        if mode == "flood" {
-            std::fs::write(&marker, "started").expect("marker");
-            let block = vec![b'x'; 64 * 1024];
-            while std::io::stdout().write_all(&block).is_ok() {}
+        let lifetime = std::time::Instant::now() + Duration::from_secs(15);
+        let mut descendant = if mode.to_string_lossy().starts_with("parent_") {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args([
+                    "--exact",
+                    "--ignored",
+                    "tests::process_fixture",
+                    "--nocapture",
+                ])
+                .env("VIBEMUX_WORKSPACE_PROCESS_FIXTURE", "heartbeat")
+                .stdin(std::process::Stdio::null());
+            #[cfg(windows)]
+            std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
+            let child = command.spawn().expect("fixture descendant");
+            while !std::path::Path::new(&marker).exists() && std::time::Instant::now() < lifetime {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(std::path::Path::new(&marker).exists(), "descendant started");
+            Some(child)
         } else {
-            loop {
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&marker)
-                    .expect("owned marker");
-                file.write_all(b"x").expect("heartbeat");
+            None
+        };
+        if mode == "parent_exit" {
+            // Leave the inherited stdout/stderr handles open in the descendant:
+            // successful leader exit must still terminate the owned tree.
+            std::process::exit(0);
+        }
+        if mode == "flood" || mode == "parent_flood" || mode == "parent_stderr_flood" {
+            if descendant.is_none() {
+                std::fs::write(&marker, "started").expect("marker");
+            }
+            let block = vec![b'x'; 64 * 1024];
+            let mut output: Box<dyn Write> = if mode == "parent_stderr_flood" {
+                Box::new(std::io::stderr())
+            } else {
+                Box::new(std::io::stdout())
+            };
+            // Bounded even if the caller's output cap is broken.
+            for _ in 0..32 {
+                if output.write_all(&block).is_err() {
+                    break;
+                }
+            }
+            // Closing a pipe must not make the fixture clean up its own child:
+            // only owner containment should stop its heartbeat before return.
+            if descendant.is_some() {
+                std::thread::sleep(lifetime.saturating_duration_since(std::time::Instant::now()));
+            }
+        } else {
+            while std::time::Instant::now() < lifetime {
+                if descendant.is_none() {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&marker)
+                        .expect("owned marker");
+                    file.write_all(b"x").expect("heartbeat");
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
+        }
+        if let Some(child) = descendant.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 
     #[tokio::test]
     async fn oversized_output_and_timeout_terminate_and_reap_real_children() {
-        for mode in ["flood", "hang"] {
+        for mode in [
+            "flood",
+            "hang",
+            "parent_flood",
+            "parent_hang",
+            "parent_exit",
+        ] {
             let directory = tempfile::tempdir().expect("directory");
             let marker = directory.path().join("child_progress.txt");
             let mut command = Command::new(std::env::current_exe().expect("test executable"));
@@ -840,20 +837,206 @@ mod tests {
                 ])
                 .env("VIBEMUX_WORKSPACE_PROCESS_FIXTURE", mode)
                 .env("VIBEMUX_WORKSPACE_PROCESS_MARKER", &marker);
-            let result = run_command(command, Duration::from_secs(2), 1024).await;
-            assert!(matches!(
-                (&result, mode),
-                (Err(WorkspaceError::OutputLimit), "flood")
-                    | (Err(WorkspaceError::Deadline), "hang")
-            ));
+            for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH"] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+            let result = run_command(command, Duration::from_secs(3), 1024).await;
+            assert!(
+                matches!(
+                    (&result, mode),
+                    (Err(WorkspaceError::OutputLimit), "flood" | "parent_flood")
+                        | (Err(WorkspaceError::Deadline), "hang" | "parent_hang")
+                        | (Ok(_), "parent_exit")
+                ),
+                "unexpected result for {mode}: {result:?}"
+            );
             let finished = std::fs::read(&marker).expect("real child started");
-            tokio::time::sleep(Duration::from_millis(80)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             assert_eq!(
                 std::fs::read(marker).expect("marker after owner returned"),
                 finished,
-                "child must stop before error returns"
+                "all owned descendants must stop before {mode} returns"
             );
         }
+    }
+
+    fn fixture_command(mode: &str, marker: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "--ignored",
+                "tests::process_fixture",
+                "--nocapture",
+            ])
+            .env("VIBEMUX_WORKSPACE_PROCESS_FIXTURE", mode)
+            .env("VIBEMUX_WORKSPACE_PROCESS_MARKER", marker);
+        for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        command
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_tree_before_releasing_its_group_identity() {
+        let directory = tempfile::tempdir().expect("directory");
+        let marker = directory.path().join("descendant_progress.txt");
+        let command = fixture_command("parent_hang", &marker);
+        let owner = tokio::spawn(run_command(command, Duration::from_secs(30), 1024));
+        let started = tokio::time::timeout(Duration::from_secs(10), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        owner.abort();
+        assert!(owner.await.expect_err("cancelled owner").is_cancelled());
+        started.expect("descendant must have started");
+        let finished = std::fs::read(&marker).expect("marker");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(std::fs::read(&marker).expect("stopped marker"), finished);
+    }
+
+    #[tokio::test]
+    async fn output_limit_stops_a_real_git_smudge_filter_and_its_descendant() {
+        let directory = tempfile::tempdir().expect("repository");
+        let root = directory.path();
+        let git_name = format!("git{}", std::env::consts::EXE_SUFFIX);
+        let git = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
+            .map(|directory| directory.join(&git_name))
+            .find(|path| path.is_file())
+            .and_then(|path| std::fs::canonicalize(path).ok())
+            .expect("Git executable");
+        git_output(
+            &git,
+            root,
+            &[
+                "init".into(),
+                "--quiet".into(),
+                "--initial-branch=main".into(),
+            ],
+        )
+        .await
+        .expect("init");
+        std::fs::write(root.join("base.txt"), "original\n").expect("base");
+        std::fs::write(root.join(".gitattributes"), "base.txt filter=fixture\n")
+            .expect("attributes");
+        git_output(
+            &git,
+            root,
+            &["add".into(), "base.txt".into(), ".gitattributes".into()],
+        )
+        .await
+        .expect("add");
+        git_output(
+            &git,
+            root,
+            &[
+                "-c".into(),
+                "user.name=VibeMux Test".into(),
+                "-c".into(),
+                "user.email=fixture@example.invalid".into(),
+                "-c".into(),
+                "commit.gpgSign=false".into(),
+                "commit".into(),
+                "--quiet".into(),
+                "-m".into(),
+                "fixture".into(),
+            ],
+        )
+        .await
+        .expect("commit");
+        // Git's filter setting is a shell command. Only this test's own executable
+        // is quoted into it; production commands never interpolate user text.
+        let executable = std::env::current_exe().expect("test executable");
+        let executable = executable
+            .to_str()
+            .expect("fixture UTF8")
+            .replace('\\', "/")
+            .replace('\'', "'\\''");
+        let filter = format!(
+            "filter.fixture.smudge='{executable}' --exact --ignored tests::process_fixture --nocapture"
+        );
+        let marker = root.join("filter_progress.txt");
+        let mut command = Command::new(&git);
+        command
+            .current_dir(root)
+            .args([
+                "-c",
+                &filter,
+                "-c",
+                "filter.fixture.required=true",
+                "cat-file",
+                "--filters",
+                "HEAD:base.txt",
+            ])
+            .env("VIBEMUX_WORKSPACE_PROCESS_FIXTURE", "parent_stderr_flood")
+            .env("VIBEMUX_WORKSPACE_PROCESS_MARKER", &marker);
+        for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        let result = run_command(command, Duration::from_secs(10), 1024).await;
+        assert!(
+            matches!(result, Err(WorkspaceError::OutputLimit)),
+            "{result:?}"
+        );
+        let finished = std::fs::read(&marker).expect("filter descendant started");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(std::fs::read(&marker).expect("stopped marker"), finished);
+        assert_eq!(
+            std::fs::read_to_string(root.join("base.txt")).expect("base"),
+            "original\n"
+        );
+        // No worktree was created: the read-only filter command leaves no
+        // registered/incomplete checkout requiring force cleanup.
+    }
+
+    #[test]
+    fn windows_inventory_keys_preserve_unc_roots_and_path_boundaries() {
+        for (extended, ordinary) in [
+            (r"\\?\UNC\SERVER\Share\Repo\Run\", "//server/share/repo/run"),
+            (r"\\?\unc\server\share\repo\run", r"\\server\share\repo\run"),
+            (r"\\?\C:\Repo With Spaces\状态\", "c:/repo with spaces/状态"),
+        ] {
+            assert_eq!(windows_path_key(extended), windows_path_key(ordinary));
+        }
+        assert_ne!(
+            windows_path_key(r"\\server\share\run"),
+            windows_path_key("unc/server/share/run")
+        );
+        assert_ne!(
+            windows_path_key(r"\\server\share\run"),
+            windows_path_key(r"\\other\share\run")
+        );
+        assert_ne!(
+            windows_path_key(r"\\server\share\run"),
+            windows_path_key(r"\\server\share\run_evil")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extended_unc_record_matches_ordinary_git_inventory() {
+        let inventory = format!(
+            "worktree //server/share/repo/run\nHEAD {}\nbranch refs/heads/codex/run_one\n\n",
+            "a".repeat(40)
+        );
+        assert!(inventory_matches(
+            &inventory,
+            r"\\?\UNC\SERVER\Share\Repo\Run",
+            "codex/run_one"
+        ));
+        assert!(!inventory_matches(
+            &inventory,
+            r"\\?\UNC\OTHER\Share\Repo\Run",
+            "codex/run_one"
+        ));
     }
 
     #[cfg(windows)]

@@ -353,16 +353,18 @@ function empty_workspace(storage_warning = null) {
   };
 }
 
-/** Returns browser-local data only; storage_warning blocks autosave until an explicit reset. */
+/** Reading does not write or acquire a writer lease. */
 export function load_workspace() {
-  let raw;
   try {
-    raw = globalThis.localStorage.getItem(app_config.storage_key);
+    return decode_workspace(globalThis.localStorage.getItem(app_config.storage_key));
   } catch {
     return empty_workspace(
       "Browser storage could not be read. Local data has not been changed; enable storage before saving.",
     );
   }
+}
+
+function decode_workspace(raw) {
   if (raw === null) return empty_workspace();
   try {
     return { ...clean_workspace(JSON.parse(raw), true), storage_warning: null };
@@ -371,24 +373,129 @@ export function load_workspace() {
   }
 }
 
-export function save_workspace(workspace) {
-  const storage = globalThis.localStorage;
-  const raw = storage.getItem(app_config.storage_key);
-  if (raw !== null) {
-    try {
-      clean_workspace(JSON.parse(raw));
-    } catch {
-      throw new Error(store_config.corrupt_warning);
-    }
-  }
-  const content = JSON.stringify(clean_workspace(workspace));
-  storage.setItem(app_config.storage_key, content);
+function storage_error(code, message) {
+  return Object.assign(new Error(message), { code });
 }
 
-/** Destructive: callers must obtain explicit user confirmation before invoking this. */
-export function reset_workspace() {
-  globalThis.localStorage.removeItem(app_config.storage_key);
-  return empty_workspace();
+/**
+ * One page owns the browser writer lock until release(). Keeping the lease lets
+ * pagehide flush synchronously; checking a record without the lock is not a CAS.
+ * Records stay version-1 compatible. The expected raw record is private and is
+ * never included in snapshots, exports, or diagnostics.
+ */
+export function create_workspace_session({ locks = globalThis.navigator?.locks } = {}) {
+  let expected;
+  let initial;
+  try {
+    expected = globalThis.localStorage.getItem(app_config.storage_key);
+    initial = decode_workspace(expected);
+  } catch {
+    initial = empty_workspace(
+      "Browser storage could not be read. Local data has not been changed; enable storage and reload before saving.",
+    );
+  }
+  let held = false;
+  let release_lock;
+  let pending;
+  let failure;
+  let generation = 0;
+  const unchanged = () => {
+    if (expected === undefined) throw new Error(initial.storage_warning);
+    const raw = globalThis.localStorage.getItem(app_config.storage_key);
+    if (raw !== expected) {
+      throw storage_error(
+        "storage_conflict",
+        "History changed in another tab. This tab has not overwritten it. Export this tab's chats, then reload to use the saved history.",
+      );
+    }
+    return raw;
+  };
+  const require_writer = () => {
+    if (expected === undefined) throw new Error(initial.storage_warning);
+    if (!held) throw failure || storage_error(
+      "storage_not_owned",
+      "This tab cannot save yet. Close the other VibeMux chat tab, then retry saving. Your chats remain available to export here.",
+    );
+    return unchanged();
+  };
+  return {
+    initial,
+    get writable() { return held; },
+    acquire() {
+      if (held) return Promise.resolve();
+      if (pending) return pending;
+      if (!locks?.request) {
+        failure = storage_error(
+          "storage_lock_unavailable",
+          "Safe saving requires browser Web Locks on localhost or HTTPS. This tab's chats are available to export but have not been saved.",
+        );
+        return Promise.reject(failure);
+      }
+      const attempt = ++generation;
+      let accept;
+      let reject_ready;
+      const ready = new Promise((resolve, fail) => { accept = resolve; reject_ready = fail; });
+      const reject = (error) => {
+        if (attempt === generation) failure = error;
+        reject_ready(error);
+      };
+      pending = ready;
+      const finished = () => { if (pending === ready) pending = undefined; };
+      ready.then(finished, finished);
+      try {
+        Promise.resolve(locks.request(
+          `${app_config.storage_key}:writer`,
+          { mode: "exclusive", ifAvailable: true },
+          (lock) => {
+            if (attempt !== generation) {
+              reject(storage_error("storage_released", "The page stopped saving before it acquired the writer lock."));
+              return;
+            }
+            if (!lock) {
+              reject(storage_error(
+                "storage_busy",
+                "Another VibeMux chat tab is saving history. Close that tab, then retry saving here. Export this tab's chats before reloading.",
+              ));
+              return;
+            }
+            try { unchanged(); } catch (error) { reject(error); return; }
+            held = true;
+            failure = undefined;
+            const lifetime = new Promise((resolve) => { release_lock = resolve; });
+            accept();
+            return lifetime;
+          },
+        )).catch((error) => {
+          if (attempt === generation) held = false;
+          reject(error);
+        });
+      } catch (error) { reject(error); }
+      return ready;
+    },
+    save(workspace) {
+      const raw = require_writer();
+      if (raw !== null) {
+        try { clean_workspace(JSON.parse(raw)); }
+        catch { throw new Error(store_config.corrupt_warning); }
+      }
+      const content = JSON.stringify(clean_workspace(workspace));
+      globalThis.localStorage.setItem(app_config.storage_key, content);
+      expected = content;
+    },
+    /** Destructive: the caller must obtain explicit user confirmation. */
+    reset() {
+      require_writer();
+      globalThis.localStorage.removeItem(app_config.storage_key);
+      expected = null;
+      return empty_workspace();
+    },
+    release() {
+      generation += 1;
+      held = false;
+      release_lock?.();
+      release_lock = undefined;
+    },
+  };
 }
 
 function render_markdown(conversation) {

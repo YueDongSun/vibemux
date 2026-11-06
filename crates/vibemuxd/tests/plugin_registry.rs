@@ -56,6 +56,7 @@ fn config(mode: &str, plugin_id: &str, directory: &std::path::Path) -> PluginSup
         CorePluginPolicy::default(),
         "unused_session".to_string(),
     );
+    // The registry caps lifecycle deadlines at two seconds.
     config.handshake_timeout = Duration::from_secs(2);
     config.shutdown_timeout = Duration::from_millis(500);
     config.receive_timeout = Duration::from_secs(30);
@@ -275,6 +276,11 @@ async fn cancellation_joins_active_plugin_and_does_not_consume_restart_budget() 
         .register(config("normal", "mock.harness", temp.path()), policy(3))
         .expect("register");
     let active = wait_registry(&registry, PluginState::Active).await;
+    assert_eq!(
+        active.restarts, 0,
+        "startup must succeed without retries before cancellation; last_error_code={:?}",
+        active.last_error_code
+    );
     assert!(active.process_id.is_some());
     registry
         .cancel("mock.harness")
@@ -282,7 +288,11 @@ async fn cancellation_joins_active_plugin_and_does_not_consume_restart_budget() 
         .expect("cancel and join");
     let stopped = registry.statuses().remove(0);
     assert_eq!(stopped.state, PluginState::Stopped);
-    assert_eq!(stopped.restarts, 0);
+    assert_eq!(
+        stopped.restarts, 0,
+        "cancellation must not restart the plugin; last_error_code={:?}",
+        stopped.last_error_code
+    );
     assert!(stopped.process_id.is_none());
     assert_eq!(stopped.graceful_shutdown, Some(true));
     registry

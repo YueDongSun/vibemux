@@ -1,9 +1,9 @@
+import { save_workspace } from "./support/store_writer.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { default_settings } from "../src/config.js";
 import {
   create_conversation,
-  save_workspace,
   load_workspace,
   export_conversation,
 } from "../src/services/chat_store.js";

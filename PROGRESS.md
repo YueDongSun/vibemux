@@ -127,7 +127,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | A2A adapter and supervisor | `PARTIAL — LOCAL STATEFUL` | `vibemux_a2a`, daemon supervisor, optional model peers | Authenticated HTTP+JSON/JSONRPC/gRPC, task/artifact/status/cancel/subscription mapping, atomic canonical bindings and local supervisor verification are implemented; remote/TLS, full ITK, history and restart recovery remain incomplete |
 | Probe and frontend shell | `PARTIAL` | `vibemux_probe`, `vibemux_frontend` | Read-only evidence collection, the Ratatui diagnostic dashboard (with re-probe and harness selection), the read-only multi-pane console with content-free daemon views (ADR 042), DSH transcript search, and the egui Supervisor Chat workspace over Control v4 task queries (ADR 028) with the ADR 030 shortcut table, quick switcher, project folders with daemon Start/Stop, a fixture-verified read-only harness Ask through ADR 029 dispatch, and a Console page over the probe, the Git inventory, and the content-free daemon feed exist; continuous coordinator chat, a live vendor Ask, real PTY/ConPTY attachment, and native-TUI lifecycle do not |
 | Python workspace/terminal safety | `PARTIAL` | `workspace.py`, `terminal.py`, `services.py` | Base-commit diff, cleanup plan, compensation, ownership, and reconciliation are implemented; live backend and Windows path-edge coverage remain incomplete |
-| Rust workspace/worktree parity | `PLANNED` | no Rust workspace crate | Git worktree lifecycle, cleanup, artifacts, and reconciliation are not implemented in Rust |
+| Rust workspace/worktree parity | `PARTIAL` | `vibemux_workspace`, ADR 024/031 | Owned role worktrees, bounded Git execution, artifacts, and fail-closed cleanup exist for supervisor/workflow use; full prototype command, terminal, and reconciliation parity remains incomplete |
 | Rust terminal plugins and native-TUI attachment | `PLANNED` | `vibemux_terminal_observer` (observation-only WezTerm list/focus; not live-verified against a running WezTerm) | Mock/WezTerm/tmux plugin parity, pane ownership, and ConPTY attach are not implemented |
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
@@ -7381,3 +7381,309 @@ from frame self-navigation. Earlier visual/interaction evidence remains dated
 visual walkthrough, live API inference, Linux run or hosted CI is claimed.
 
 See `docs/conversational_web_ui_validation.md` for current checks and limits.
+
+### 2026-11-06 — Review fixes: Git ownership and local UI persistence
+
+**Implemented**
+- Workspace Git owns ordinary descendants through successful exit, output overflow,
+  deadline, and cancellation, using the existing process-tree primitive and bundled
+  trampoline. The installer now requires that companion. Extended Windows UNC
+  inventory paths preserve their network root during comparison.
+- Chat persistence uses an exclusive page writer lease and record-identity checks
+  before saves/resets. Submitted turns save immediately; continuous streams get a
+  one-second checkpoint deadline plus completion/cancellation/lifecycle flushes.
+- Desktop settings use unique exclusive staging files, bounded 64 KiB reads/writes,
+  and cleanup of only the current save's staging file. Concurrent instances write
+  complete snapshots without sharing a temporary filename.
+- Corrected the outdated workspace-parity audit row to `PARTIAL` and the current
+  store schema annotation to 9; no schema or milestone implementation changed.
+
+**Evidence (macOS arm64, Rust 1.92.0, Node 26.13.0)**
+- Built the helper with `cargo build --locked --offline -p vibemuxd --bin
+  vibemux_launch_trampoline --target-dir /tmp/vibemux-desktop-review-target`.
+- `cargo test --locked --offline -p vibemux_workspace -p vibemux_store -p
+  vibemux_workflow -p vibemux_desktop --all-features --target-dir
+  /tmp/vibemux-desktop-review-target`: 337 passed, zero failed, one intentionally
+  ignored child fixture (invoked by its parent tests).
+- `cargo clippy --locked --offline -p vibemux_workspace -p vibemux_store -p
+  vibemux_workflow -p vibemux_desktop --all-targets --all-features --target-dir
+  /tmp/vibemux-desktop-review-target -- -D warnings`: passed.
+- Chat `npm test`: 83 passed; `npm run build`: passed. Live Chrome fixture checks
+  verified simultaneous-tab warnings, stale retry rejection, and preserved history
+  after reload. No live provider credentials or inference were used.
+- Desktop UI `npm run typecheck`, `npm run build`, and `npm test`: passed (zero
+  Svelte diagnostics, one fixture-guard test). This run used Node 26 rather than
+  the desktop package's pinned Node 22 engine.
+- `cargo fmt --all -- --check`, `git diff --check`, and
+  `python3 scripts/check_public_artifacts.py`: passed.
+
+**Compatibility / migration**
+- No canonical state, database, event, public IPC, or browser record format change.
+  Version-1 browser history remains readable. Reload older chat tabs after upgrade;
+  saving requires Web Locks on localhost/loopback or HTTPS.
+- Workspace consumers must ship the trampoline beside their executable. Focused
+  tests must build it in the same target directory/profile. Missing helpers fail
+  closed. Desktop settings over 64 KiB are refused; separate instances still use
+  last-writer-wins snapshots.
+
+**Remaining / known risks**
+- Native Windows/Linux/WSL, the PowerShell installer, live terminal backends, and
+  live provider streaming remain unverified for this change. This is scoped test
+  evidence, not a full workspace/release-gate pass. `cargo nextest`, `cargo deny`,
+  and `cargo audit` are not installed on the validation host.
+- A separate probe of the unchanged platform process-tree suite passes seven
+  tests and fails `a_leader_exit_is_observed_without_reaping_it` on macOS when
+  terminating an all-zombie group (`EPERM`). The workspace's persistent live
+  anchor avoids that path; the existing harness/platform behavior needs its own
+  follow-up. No platform failure was suppressed.
+- Browser suspension/crashes may lose changes since the last successful save.
+  POSIX process groups are not a hostile-code sandbox; settings staging does not
+  defend against active same-user directory replacement. See `SECURITY.md` and
+  the ADR 029/056 amendments for the precise boundaries.
+
+### 2026-11-06 — macOS portability and full workspace validation
+
+This follow-up resolves the macOS process-group defect and missing validation
+tools recorded in the preceding checkpoint. It does not change the Windows-first
+release target or claim native Windows/Linux or hosted CI success.
+
+**Implemented**
+- A Darwin `EPERM` from process-group termination is accepted only when a
+  non-reaping wait and complete kernel membership query prove that the owned
+  zombie leader is the sole member. Other members, permission failures and
+  incomplete observations still fail closed. The macOS-only `libproc` wrapper is
+  pinned to 0.14.11; source builds require Apple headers and libclang. ADR 029 and
+  `SECURITY.md` record the proof and its limits.
+- Local Unix control endpoints fit a 100-byte path budget even with macOS's long
+  default temporary directory. A randomized `/tmp` fallback preserves the project
+  key, full instance UUID, private descriptor and bearer authentication. Existing
+  sockets are never removed before binding; ADR 017 records the compatibility.
+- Web and workflow fixtures canonicalize their own temporary roots and compiled
+  executables, matching production path requirements. Production symlink and
+  ownership checks remain strict. Ordinary plugin-supervisor fixture handshakes
+  use that constructor's default startup budget; deliberate timeout/cancellation
+  tests retain their short bounds. The daemon registry's enforced two-second
+  lifecycle limit remains unchanged. Its test now asserts zero startup restarts
+  before cancellation and includes retained error codes on failure.
+- DSH behavior tests allow five seconds for fixture startup under concurrent
+  process launches. The explicit unanswered-handshake test still uses one second,
+  and the two-second turn / one-second shutdown bounds remain unchanged.
+  Production initialization still allows 60 seconds.
+- TaskBoard browser discovery recognizes system and user macOS Chromium-family
+  bundles. Keyboard verification no longer sends Windows key numbers as native
+  macOS key numbers. Real input, assertions, deadlines, isolated profiles and
+  cleanup remain unchanged. CI now includes its 21 browser contract tests and
+  configures macOS alongside Windows/Ubuntu for the Python and Rust jobs.
+- Python acceptance tooling uses one canonical import path and platform guards
+  that type-check on macOS and Windows. The locked `pulldown-cmark` patch release
+  is 0.13.6, resolving RUSTSEC-2026-0414 and RUSTSEC-2026-0433 without audit-policy
+  changes. No canonical state, database, event, IPC schema or browser record
+  migration is introduced.
+
+**Executed evidence — macOS 26.6.2 (25G83), arm64**
+- Rust 1.92.0; Node 22.22.0; Python 3.12.16; Chrome 152.0.7977.83. Native process
+  and IPC tests ran outside the execution sandbox, which prohibits their `ps`
+  queries and local socket operations.
+- `cargo test --locked --offline --workspace --all-features --no-fail-fast
+  --target-dir /tmp/vibemux-desktop-review-target`: **1,695 passed, zero failed**
+  on the final integrated tree, including the three new installer regressions.
+  Two existing ignored entries are a golden-fixture generator and a child-process
+  fixture invoked explicitly by its parent tests. The required launch trampoline
+  was built in the same target directory before testing.
+- The first complete nextest run exposed four DSH setup timeouts before the
+  tested behaviors. After the test-only startup-budget correction,
+  `cargo test --locked --offline -p vibemux_dsh --test session --all-features
+  --target-dir /tmp/vibemux-desktop-review-target` passed all 18 tests, including
+  the unchanged explicit timeout/error assertions.
+- A subsequent nextest run passed 1,691 tests and exposed one registry setup
+  restart. Its elapsed time was consistent with the shortened two-second
+  handshake budget; the original assertion did not include the preceding error
+  code. Its diagnostic is now explicit, and the enforced two-second registry
+  lifecycle cap is preserved. An attempted test configuration using the generic
+  supervisor's five-second default was rejected by registry validation and was
+  reverted; it is not part of the final implementation.
+- The I/O-only mock plugin now uses a single-threaded async runtime. A matched
+  Apple M3 Pro / 12-CPU macOS debug-build comparison (Rust 1.92.0, Tokio 1.51.6)
+  used the normal fixture's Hello/CoreHello/Ready stdio handshake, with no
+  database, network or model-inference workload, and fixed
+  two-second startup / 500 ms shutdown bounds, six alternating paired rounds at
+  concurrency 1/8/16/32, and 684 measured launches plus two cold probes. All
+  handshakes and cleanup succeeded; normal child thread count fell from 14 to 2.
+  At concurrency 32, median startup was 23.38/21.93 ms and p95 32.02/30.22 ms
+  before/after. Cold probes did not improve (452/475 ms). This demonstrates
+  lower fixture resource use, not a proven cause of the rare two-second outlier
+  or a production performance gain. Existing supervisor contracts also passed.
+- A later full nextest run exposed six DSH service setup refusals at approximately
+  the five-second initialization plus one-second cleanup bounds. Direct fixture
+  measurements on this host showed extra latency for fresh executable copies:
+  in one concurrent batch, six copies answered at 662–1,371 ms while six hardlinks
+  answered at 104–111 ms. The OS mechanism is not claimed. On macOS only, the
+  service test installer now shares the immutable built fixture through owned
+  hardlink paths, with an exclusive independent-copy fallback when linking is
+  unavailable. It never writes/chmods a successful hardlink or truncates an
+  existing destination. Original Windows/Linux copy behavior and all production
+  trust checks/deadlines remain unchanged. Ten original service tests and three
+  source-preservation/fallback/collision regressions passed isolated qualification;
+  the built fixture's SHA-256 remained unchanged.
+- Final `cargo nextest run --locked --offline --workspace --all-features
+  --no-fail-fast --target-dir /tmp/vibemux-desktop-review-target`: **1,695 passed,
+  zero failed, two existing skipped**, at default concurrency across 127 binaries
+  in 145.252 seconds. No test scheduling override, retry or production deadline
+  increase was needed. The total includes the three new installer regressions.
+- `cargo clippy --locked --offline --workspace --all-targets --all-features
+  --target-dir /tmp/vibemux-desktop-review-target -- -D warnings`: passed.
+- All three UI production builds passed under Node 22.22.0. Chat: 83 tests;
+  web: 15 tests; desktop: one fixture-guard test. Web and desktop type checks
+  reported zero errors and warnings.
+- TaskBoard verifier unit tests: 21 passed. Its actual Chrome frontend suite:
+  16 passed, zero failed/skipped, no cleanup errors. The unchanged duplicate-title
+  behavioral check timed out before the key-code fix and passed in 1.361 seconds
+  afterward; restoring the bad fields also failed two focused regression tests.
+- Ruff format/lint and mypy passed (49 files, both native and static Windows
+  targets). Native pytest: 135 passed, 32 explicit PowerShell-dependent skips.
+  The mock Python workflow passed. Full-tree typing used the documented optional
+  A2A SDK dependency and grpc/protobuf stubs in a temporary Python environment.
+- `cargo deny check` passed all four policy groups. `cargo audit` exited zero;
+  its existing informational `glib` unsoundness and yanked `clipboard-win` and
+  `crypto-bigint` warnings remain recorded. Neither policy nor warning severity
+  was weakened.
+
+**Remaining qualification and limits**
+- Native Windows/Linux/WSL, the PowerShell installer, hosted CI,
+  live terminal backends and live provider inference are unverified here.
+- At this qualification checkpoint, npm audit gates were failing: web had seven affected entries
+  (three low, four moderate), desktop two low. These are build-tool dependencies
+  involving deepmerge, glob and minimatch. The inspected published ranges have no
+  compatible lock-only fix, and upstream deepmerge had no patched published release in
+  the dated audit. No downgrade, untested major override, advisory exception or
+  threshold change was applied. Consequently the configured CI job is not
+  claimed green; its npm gates precede the Rust gates.
+  The npm limitation is superseded by the dependency-remediation entry below.
+- The preceding review fixes' compatibility and security boundaries still apply.
+  The work remains uncommitted in the review worktree for inspection.
+
+### 2026-11-06 — npm audit remediation after macOS qualification
+
+**Scope and implementation**
+- All three UI roots now override deepmerge with the exact reviewed
+  `npm:@oss-cve-patches/deepmerge@4.3.2` fork. Source and published bundle review
+  confirmed the two unconditional `__proto__` guards; tagged-source rebuilds
+  matched the CJS/UMD tarball artifacts. The MIT license/types are unchanged,
+  with no runtime dependencies or install hooks. The fork passed 144 upstream
+  assertions, documentation examples, type checks and consumer build probes.
+- The monitor's version-qualified `workbox-build@7.4.1` override selects
+  glob 14.0.4, locking minimatch 11.0.5 and path-scurry 3.0.0. No blanket
+  minimatch override, downgrade, advisory exclusion or threshold change is used.
+- Each UI's `npm test` includes shared dependency contracts resolved through
+  the actual installed Svelte/Rollup consumers. Source/target prototype tests
+  failed against original deepmerge 4.3.1 before passing with the fork; ordinary
+  config merging remains covered. A real Workbox manifest fixture covers file
+  filters, ignored paths, Unicode/spaces, byte sizes and revision hashes.
+- CI now also installs, tests, audits and builds the browser-local chat on its
+  existing Windows/Ubuntu/macOS matrix. No canonical state, schema, public API,
+  cache format, browser data or platform-support guarantee changed.
+- [The dependency review](docs/frontend_dependencies.md) records fork provenance,
+  the transitive-major compatibility evidence, licenses and removal criteria.
+
+**Executed evidence — macOS 26.6.2 arm64, Node 22.22.0 / npm 10.9.9**
+- In each UI root: `npm ci --no-audit --no-fund`, `npm test`,
+  `npm audit --audit-level=low --json`, `npm run build` and `npm ls --all --json`
+  passed. A temporary npm cache was used; installation hooks were enabled for
+  these integrated clean installs. Existing Linux libc selectors were retained
+  when npm 10 rewrote the lockfiles; no unrelated package versions changed.
+- Audit totals: monitor **7 → 0**, desktop **2 → 0**, chat **2 → 0** affected
+  entries, including all development dependencies. Every severity is zero.
+- Tests: monitor **15 existing + 7 dependency**, desktop **1 + 3**, chat
+  **83 + 3** passed, with zero failures/skips. `npm run typecheck` on monitor
+  and desktop reported zero errors/warnings. All three production builds passed.
+- All **15 production files** (monitor 7, desktop 4, chat 4) are byte-identical
+  to the pre-remediation macOS-qualified outputs, including the service worker.
+  No Rust source or embedded-asset bytes changed in this follow-up; the preceding
+  full Rust/nextest results remain the native qualification evidence.
+- Nine additional isolated Workbox/generated-worker contracts passed, covering
+  discovery, manifest injection failures, worker exclusion, token-partitioned
+  caching, stale fallback, clear-cache and request exclusions. They execute the
+  built worker in a VM; they are not a live installed-PWA qualification.
+
+**Limits and maintenance**
+- The fork is a recent single-maintainer third-party release with no npm SLSA
+  attestation metadata; exact tarball integrity, npm signatures, source review
+  and regression tests are recorded, not a claim of upstream endorsement.
+- Workbox still declares glob 11; retain the tested scoped override until a
+  reviewed upstream range replaces it. Dependency updates must repeat the
+  documented compatibility and audit checks.
+- Native Windows/Linux/WSL and hosted CI were not run in this follow-up.
+  Changes remain uncommitted in the review worktree.
+
+### 2026-11-06 — DSH cleanup, chat replacement, and monitor request fixes
+
+**Implemented scope**
+
+- The shared DSH driver requires the bundled launch gate before vendor execution,
+  refuses failed containment, bounds protocol writes, and terminates remaining
+  descendants even after a successful shutdown. POSIX keeps the leader unreaped
+  until termination succeeds; Windows checks the job's remaining active members.
+  Cleanup errors retain daemon session ownership and propagate through close,
+  replacement, and daemon/TUI shutdown. ADR 032 records the lifecycle correction.
+- Browser-local chat keeps regeneration/edit-resend previews outside saved
+  history until a complete nonempty response succeeds. Failure, cancellation,
+  and lifecycle flushes preserve the original transcript/artifact. Earlier-turn
+  regeneration explicitly confirms replacement of later messages.
+- Monitor requests capture an authentication generation and bearer, are aborted
+  on session changes, and reject obsolete results, errors, and finalizers.
+  Detail request identity handles A → B → A selection races; a failed current
+  detail refresh marks retained data stale. Enrollment and push callbacks use
+  the same ownership checks.
+
+**Compatibility and boundaries**
+
+- No database, event, browser record, configuration, or wire-schema migration.
+  The new internal driver cleanup error maps to existing Control v7 refusal;
+  DSH standalone installs must include `vibemux_launch_trampoline` beside the
+  executable, using the same build profile. No new dependency or lock change.
+- Process containment is lifetime ownership, not a hostile-code sandbox.
+  Provider credentials stay memory-only; frontend fixes add no daemon authority.
+- Regression evidence includes a failing pre-fix DSH descendant heartbeat test,
+  failing baseline chat/monitor preservation tests, and failure/cancellation
+  cases. Native Windows/Linux, a real DSH vendor turn, and live WezTerm remain
+  unverified for this patch.
+
+
+**Native macOS qualification for this patch**
+
+Environment: macOS 26.6.2 (25G83), arm64 Apple M3 Pro, Rust 1.92.0,
+Node 22.22.0/npm 10.9.9, Python 3.12.16. No source changes followed the
+successful Rust checks; the remaining edits record these results.
+
+- `cargo fmt --all -- --check` and `cargo clippy --locked --offline --workspace
+  --all-targets --all-features -- -D warnings`: passed.
+- `cargo test --locked --offline --workspace --all-features`: **1,702 passed,
+  zero failed, two existing ignored helper/generator tests**.
+- `cargo nextest run --locked --offline --workspace --all-features`: **1,702
+  passed, zero failed, two existing skipped helpers**, 136.685 seconds at default
+  concurrency. Both real-browser cooperation workflows passed in both runners.
+- `cargo deny check`: advisories, bans, licenses, sources passed. `cargo audit`:
+  exit zero with the existing three allowed warnings (glib 0.18.5 informational
+  unsoundness; clipboard-win 5.4.1 and crypto-bigint 0.7.6 yanked). No policy change.
+- In each UI root: clean locked `npm ci --offline`, `npm test`,
+  `npm audit --audit-level=low`, and `npm run build` passed. Monitor and desktop
+  `npm run typecheck` each reported zero errors/warnings. **148 frontend checks**
+  passed (monitor 34+7 dependency checks; desktop 1+3; chat 100+3), and each audit
+  reported **zero vulnerabilities**. The separate TaskBoard browser contract
+  command passed all 21 checks under Node 22.22.0.
+- `python -m ruff format --check .`, `python -m ruff check .`, `python -m mypy .`,
+  and `python -m mypy --platform win32 .`: passed. `python -m pytest -rs`:
+  **135 passed, 32 explicit PowerShell-unavailable skips**; smoke checks passed.
+- Controlled Chrome chat walkthrough: older-turn confirmation/cancel, stopped
+  replacement, missing-key failure, and reload preserved the original four
+  messages and artifact; zero browser console errors. Monitor regressions use
+  production functions with deferred browser/API doubles, not a live PWA claim.
+- Initial development failures remain auditable: the pre-fix descendant test
+  failed as expected; an unavailable diagnostic dependency and test-module
+  placement were corrected before the successful compilation/lint runs. No
+  blind retries, weakened assertions, or added skips were used.
+
+This qualification covers the integrated fixes on `codex/review-core-nov06`.
+These are local macOS results, not a hosted-CI result for the new patch. Exact commands,
+logs, source fingerprints, and the scope/platform/compatibility handoff are
+retained in the task's local validation artifact.

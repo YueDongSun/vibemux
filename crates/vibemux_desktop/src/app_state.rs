@@ -46,9 +46,10 @@ impl AppState {
     /// Applies a patch and writes the file. The write lock is held across
     /// the whole transaction — reading the current settings, applying the
     /// patch, writing the file, and publishing the new value — so
-    /// overlapping calls serialize instead of losing updates or racing on
-    /// the temporary file. The in-memory copy changes only when the write
-    /// succeeds.
+    /// overlapping calls on this instance serialize instead of losing updates.
+    /// Other app instances keep separate snapshots; their complete saves use
+    /// last-writer-wins semantics. The in-memory copy changes only when the
+    /// write succeeds.
     pub fn apply_settings(&self, patch: &SettingsPatch) -> io::Result<()> {
         let mut settings = self
             .settings
@@ -134,5 +135,60 @@ mod tests {
         let stored = load_settings_at(&path);
         assert_eq!(stored.appearance, Appearance::Dark);
         assert_eq!(stored.density, Density::Compact);
+    }
+
+    #[test]
+    fn independent_instances_save_complete_snapshots_without_staging_collisions() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop_settings.json");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let states = [
+            AppState::new(path.clone(), Arc::new(RecordingEventSink::default())),
+            AppState::new(path.clone(), Arc::new(RecordingEventSink::default())),
+        ];
+        let handles: Vec<_> = states
+            .into_iter()
+            .enumerate()
+            .map(|(index, state)| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let patch = SettingsPatch {
+                        appearance: Some(if index == 0 {
+                            Appearance::Dark
+                        } else {
+                            Appearance::Light
+                        }),
+                        density: Some(if index == 0 {
+                            Density::Compact
+                        } else {
+                            Density::Comfortable
+                        }),
+                        ..SettingsPatch::default()
+                    };
+                    let mut outcomes = Vec::new();
+                    for _ in 0..32 {
+                        barrier.wait();
+                        outcomes.push(state.apply_settings(&patch));
+                    }
+                    for result in outcomes {
+                        result.expect("independent settings save");
+                    }
+                    state.settings()
+                })
+            })
+            .collect();
+        let snapshots: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("writer"))
+            .collect();
+        let bytes = std::fs::read(&path).expect("settings file");
+        let stored: DesktopSettings = serde_json::from_slice(&bytes).expect("complete JSON");
+        assert!(snapshots.contains(&stored));
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("entries")
+                .count(),
+            1
+        );
     }
 }

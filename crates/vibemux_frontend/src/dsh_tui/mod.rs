@@ -353,11 +353,14 @@ pub fn open_and_run(
         settings.clone(),
         Default::default(),
     ))?;
-    handle.block_on(driver.await_ready())?;
+    if let Err(error) = handle.block_on(driver.await_ready()) {
+        handle.block_on(driver.close())?;
+        return Err(error);
+    }
     let result = run_dsh_tui(handle, &mut driver, label, theme);
     // `run_dsh_tui` already closed the session on a clean quit; this covers a
     // render error, which returns before the final drain.
-    let _ = handle.block_on(driver.close());
+    handle.block_on(driver.close())?;
     result.map_err(|_| DshDriverError::InvalidState)?;
     Ok(DshTuiState::new(settings.provider, settings.model))
 }

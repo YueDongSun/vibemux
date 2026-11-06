@@ -99,14 +99,14 @@ crates/
 ├── vibemux_workflow/           # dual-track workflow contracts, gates, broker rules, optimizer (pure logic, no I/O; ADR 031)
 ├── vibemux_decision/           # decision port: questions, facts, answer validation, local rules, fallback resolver, config, records, peer wire (pure logic, no I/O; ADR 034)
 ├── vibemux_decision_peer/      # one-shot out-of-process decision peer: the only decision-API network client (TypeSafe Jev; ADR 034)
-├── vibemux_store/              # SQLite migrations (schema 6) and repositories (bundled)
+├── vibemux_store/              # SQLite migrations (schema 9) and repositories (bundled)
 ├── vibemux_platform/           # Windows/POSIX process, IPC, process-tree containment, and launch trampoline primitives
 ├── vibemux_a2a/                # official A2A Rust SDK adapter (loopback verified)
 ├── vibemux_model_peer/         # optional, out-of-process model-provider peer
 ├── vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + TOML manifest (proto/vibemux_plugin_v1.proto)
 ├── vibemux_plugin_supervisor/  # M4.1 child-process supervision
 ├── vibemux_terminal_observer/  # out-of-process WezTerm observation plugin (list/focus native panes)
-├── vibemux_workspace/          # Git worktree lifecycle and cleanup
+├── vibemux_workspace/          # Owned Git worktrees, bounded process trees, cleanup
 ├── vibemux_probe/              # M5.0 read-only launcher/gateway probe + trusted probe cache
 ├── vibemux_dsh/                # DSH session driver: config trust, process containment, framing, deadlines, records
 ├── vibemux_client/             # GUI-neutral daemon, probe, Ask, and Git client shared by the frontends
