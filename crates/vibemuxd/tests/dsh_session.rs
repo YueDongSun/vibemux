@@ -66,6 +66,15 @@ impl Layout {
         let node = self
             .directory
             .join(format!("node{}", std::env::consts::EXE_SUFFIX));
+        // This fixture is immutable: tests only execute it. Fresh copies showed
+        // extra first-launch latency on the macOS validation host, so share the
+        // built image while retaining a separate owned launcher path per test.
+        #[cfg(target_os = "macos")]
+        install_read_only_runtime(Path::new(FIXTURE), &node, |source, destination| {
+            std::fs::hard_link(source, destination)
+        })
+        .expect("install fixture as node");
+        #[cfg(not(target_os = "macos"))]
         std::fs::copy(FIXTURE, &node).expect("install fixture as node");
 
         let package = self.directory.join("node_modules/@deepseek-ai/dsh");
@@ -120,6 +129,127 @@ impl Layout {
             .await
             .expect("control server")
     }
+}
+
+/// Test-only installation of an immutable runtime image. A hard link keeps
+/// independent launcher paths without duplicating the image on macOS. The
+/// injected operation lets tests exercise unsupported/cross-volume fallback.
+#[cfg(target_os = "macos")]
+fn install_read_only_runtime(
+    source: &Path,
+    destination: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match link(source, destination) {
+        Ok(()) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Err(error),
+        Err(_) => {}
+    }
+    // A copy is still supported across volumes or without hard-link support.
+    // create_new refuses an existing file or symlink, so fallback can never
+    // truncate an entry that might itself be linked to the built fixture.
+    let mut input = std::fs::File::open(source)?;
+    let permissions = input.metadata()?.permissions();
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.set_permissions(permissions)
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn runtime_alias_cleanup_preserves_the_source_image() {
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = tempfile::tempdir().expect("runtime alias test directory");
+    let source = directory.path().join("built-fixture");
+    let destination = directory.path().join("node");
+    std::fs::write(&source, b"immutable fixture image").expect("source");
+    let metadata = std::fs::metadata(&source).expect("source metadata");
+    install_read_only_runtime(&source, &destination, |source, destination| {
+        std::fs::hard_link(source, destination)
+    })
+    .expect("hard-linked runtime");
+    let alias = std::fs::metadata(&destination).expect("alias metadata");
+    assert_eq!((alias.dev(), alias.ino()), (metadata.dev(), metadata.ino()));
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"immutable fixture image"
+    );
+    std::fs::remove_file(&destination).expect("remove owned launcher");
+    assert_eq!(std::fs::read(&source).unwrap(), b"immutable fixture image");
+    assert_eq!(std::fs::metadata(&source).unwrap().mode(), metadata.mode());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn runtime_copy_fallback_has_independent_bytes_and_executable_permissions() {
+    use std::{io::ErrorKind, os::unix::fs::PermissionsExt};
+
+    for kind in [
+        ErrorKind::CrossesDevices,
+        ErrorKind::Unsupported,
+        ErrorKind::PermissionDenied,
+    ] {
+        let directory = tempfile::tempdir().expect("runtime fallback test directory");
+        let source = directory.path().join("built-fixture");
+        let destination = directory.path().join("node");
+        std::fs::write(&source, b"immutable fixture image").expect("source");
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755))
+            .expect("executable source");
+        install_read_only_runtime(&source, &destination, |_, _| Err(kind.into()))
+            .expect("independent fallback copy");
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"immutable fixture image"
+        );
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        std::fs::write(&destination, b"modified owned copy").expect("modify independent copy");
+        assert_eq!(std::fs::read(&source).unwrap(), b"immutable fixture image");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn runtime_install_never_truncates_an_existing_launcher() {
+    let directory = tempfile::tempdir().expect("existing runtime test directory");
+    let source = directory.path().join("built-fixture");
+    let destination = directory.path().join("node");
+    std::fs::write(&source, b"immutable fixture image").expect("source");
+    std::fs::hard_link(&source, &destination).expect("existing source alias");
+    let error = install_read_only_runtime(&source, &destination, |source, destination| {
+        std::fs::hard_link(source, destination)
+    })
+    .expect_err("an existing launcher must be refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&source).unwrap(), b"immutable fixture image");
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"immutable fixture image"
+    );
+    std::fs::remove_file(&destination).expect("remove owned alias");
+    std::fs::write(&destination, b"existing destination sentinel").expect("existing entry");
+    // Even when the filesystem reports unsupported before inspecting the
+    // destination, the exclusive fallback must preserve that entry.
+    let error = install_read_only_runtime(&source, &destination, |_, _| {
+        Err(std::io::ErrorKind::Unsupported.into())
+    })
+    .expect_err("copy fallback must refuse an existing entry");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"existing destination sentinel"
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), b"immutable fixture image");
 }
 
 /// Starts a configured server and returns the client plus its layout.

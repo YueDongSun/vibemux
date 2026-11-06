@@ -16,7 +16,9 @@ use vibemux_plugin_protocol::{
 
 const SESSION_ENVIRONMENT_KEY: &str = "VIBEMUX_PLUGIN_SESSION_ID";
 
-#[tokio::main]
+// This fixture only drives async stdio and timers. Parallel lifecycle tests
+// should not start a CPU-sized worker pool for every synthetic plugin.
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let mode = std::env::args()
         .nth(1)

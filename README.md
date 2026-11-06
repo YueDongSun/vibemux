@@ -508,7 +508,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-The current GitHub Actions workflow runs Python pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests on Windows and Ubuntu. Ruff format, mypy, package build, coverage, `cargo nextest`, `cargo deny`, `cargo audit`, fuzzing, and live terminal-backend validation are not all enforced in CI yet.
+The GitHub Actions workflow configures Python pytest/Ruff/smoke and Rust fmt/Clippy/workspace/nextest tests on Windows, Ubuntu, and macOS, with separate Rust dependency-policy checks using `cargo deny` and `cargo audit`. Ruff format, mypy, package build, coverage, fuzzing, and live terminal-backend validation are not all enforced in CI yet. macOS source builds require Xcode or Command Line Tools, including Apple headers and libclang for the process-inspection wrapper.
+
+Workspace Git operations require `vibemux_launch_trampoline` beside the executable on every platform. The local installer requires this companion binary. Before running focused tests that use `vibemux_workspace`, build it in the same target directory and profile as the tests:
+
+```powershell
+cargo build --locked -p vibemuxd --bin vibemux_launch_trampoline
+cargo test --locked -p vibemux_workspace --all-features
+```
+
+The helper contains Git and its filters before execution and ends remaining descendants on completion, timeout, output overflow, or cancellation. Missing helpers fail closed. This process ownership is not a sandbox; see [ADR 029](docs/adr/029_daemon_harness_dispatch.md#workspace-git-process-ownership-2026-11-06).
 
 ## Local probe and unified frontend preview
 

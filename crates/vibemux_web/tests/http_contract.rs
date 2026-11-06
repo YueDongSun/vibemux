@@ -35,7 +35,9 @@ async fn fixture_with(
     tokio::task::JoinHandle<std::io::Result<()>>,
 ) {
     let temp = tempfile::tempdir().unwrap();
-    let lease = InstanceLease::acquire(temp.path()).unwrap();
+    // Match the executable's canonical-root precondition before opening web state.
+    let project_root = temp.path().canonicalize().unwrap();
+    let lease = InstanceLease::acquire(&project_root).unwrap();
     let push = Arc::new(
         PushService::startup(
             &lease.state_dir,

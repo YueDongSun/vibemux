@@ -8,7 +8,7 @@ jobs:
   python:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
   rust:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +33,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.0"
+      - name: Verify TaskBoard browser contracts
+        run: >-
+          node --test
+          tests/fixtures/taskboard_lite/verifier/browser_discovery.test.mjs
+          tests/fixtures/taskboard_lite/verifier/browser_input.test.mjs
+          tests/fixtures/taskboard_lite/verifier/browser_preflight.test.mjs
+          tests/fixtures/taskboard_lite/verifier/crash_result.test.mjs
       - run: npm ci
         working-directory: crates/vibemux_web/web
       - run: npm run typecheck

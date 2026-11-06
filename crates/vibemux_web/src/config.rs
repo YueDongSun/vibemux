@@ -160,18 +160,20 @@ mod tests {
     #[test]
     fn config_is_explicit_bounded_and_fail_closed() {
         let temp = tempfile::tempdir().unwrap();
-        assert!(WebConfig::load(temp.path()).unwrap().is_none());
-        std::fs::create_dir(temp.path().join(".vibemux")).unwrap();
-        let config_path = temp.path().join(".vibemux/web_config.json");
+        // The executable canonicalizes its project root before loading configuration.
+        let project_root = temp.path().canonicalize().unwrap();
+        assert!(WebConfig::load(&project_root).unwrap().is_none());
+        std::fs::create_dir(project_root.join(".vibemux")).unwrap();
+        let config_path = project_root.join(".vibemux/web_config.json");
         let valid = serde_json::json!({"schema_version":1,"instance_token":{"env_var":"WEB_TOKEN"},"enrollment_url":"https://operator.example/","push_allowed_hosts":["fcm.googleapis.com"],"vapid_subject":"mailto:operator@example.com"});
         std::fs::write(&config_path, serde_json::to_vec(&valid).unwrap()).unwrap();
-        let loaded = WebConfig::load(temp.path()).unwrap().unwrap();
+        let loaded = WebConfig::load(&project_root).unwrap().unwrap();
         assert!(!loaded.local_page_without_token);
         let mut local_page = valid.clone();
         local_page["local_page_without_token"] = serde_json::json!(true);
         std::fs::write(&config_path, serde_json::to_vec(&local_page).unwrap()).unwrap();
         assert!(
-            WebConfig::load(temp.path())
+            WebConfig::load(&project_root)
                 .unwrap()
                 .unwrap()
                 .local_page_without_token
@@ -191,9 +193,9 @@ mod tests {
             let mut invalid = valid.clone();
             invalid[key] = value;
             std::fs::write(&config_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
-            assert!(WebConfig::load(temp.path()).is_err(), "{key}");
+            assert!(WebConfig::load(&project_root).is_err(), "{key}");
         }
         std::fs::write(&config_path, vec![b' '; MAX_CONFIG_BYTES + 1]).unwrap();
-        assert!(WebConfig::load(temp.path()).is_err());
+        assert!(WebConfig::load(&project_root).is_err());
     }
 }

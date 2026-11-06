@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root / "scripts"))
+if TYPE_CHECKING:
+    from _ctypes import _CArgObject
 
-from dual_track_acceptance import windows_launch_context as launch_context  # noqa: E402
+repo_root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(repo_root))
+
+from scripts.dual_track_acceptance import windows_launch_context as launch_context  # noqa: E402
 
 
 class Fake_Token_Api:
@@ -28,17 +33,17 @@ class Fake_Token_Api:
         self.close_count = 0
         self.last_error = launch_context.ERROR_INSUFFICIENT_BUFFER
 
-    def open_process_token(self, process: object, access: int, token: object) -> bool:
+    def open_process_token(self, process: object, access: int, token: _CArgObject) -> bool:
         ctypes.cast(token, ctypes.POINTER(ctypes.c_void_p)).contents.value = self.token_handle_value
         return True
 
     def get_token_information(
         self,
-        token: object,
+        token: ctypes.c_void_p,
         information_class: int,
-        buffer: object,
+        buffer: ctypes.Array[ctypes.c_char] | None,
         size: int,
-        returned_size: object,
+        returned_size: _CArgObject,
     ) -> bool:
         required_size = (
             ctypes.sizeof(ctypes.c_uint32)
@@ -77,7 +82,7 @@ class Fake_Token_Api:
 def test_require_launch_context_refuses_unsafe_or_unknown_token(
     monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
-    monkeypatch.setattr(launch_context.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(launch_context.Windows_Launch_Error):
         launch_context.require_launch_context(lambda: state)
 
@@ -85,7 +90,7 @@ def test_require_launch_context_refuses_unsafe_or_unknown_token(
 def test_require_launch_context_accepts_known_unrestricted_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(launch_context.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     launch_context.require_launch_context(lambda: "unrestricted")
 
 
@@ -122,7 +127,7 @@ def test_restricted_sid_count_reports_owned_handle_close_failure() -> None:
 def test_token_restriction_state_returns_unknown_for_bad_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(launch_context.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     assert (
         launch_context.token_restriction_state(lambda: (_ for _ in ()).throw(OSError()))
         == "unknown"
@@ -132,15 +137,15 @@ def test_token_restriction_state_returns_unknown_for_bad_size(
 def test_suppress_windows_error_dialogs_preserves_existing_bits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(launch_context.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
     mode = {"value": 0x20}
 
     class Fake_Function:
-        def __init__(self, callback: object) -> None:
+        def __init__(self, callback: Callable[..., int]) -> None:
             self.callback = callback
 
         def __call__(self, *args: int) -> int:
-            return self.callback(*args)  # type: ignore[operator]
+            return self.callback(*args)
 
     class Fake_Kernel32:
         GetErrorMode = Fake_Function(lambda: mode["value"])
@@ -154,9 +159,7 @@ def test_suppress_windows_error_dialogs_preserves_existing_bits(
         SetErrorMode = Fake_Function(_set_error_mode)
 
     # ctypes.WinDLL exists only on Windows; raising=False lets the fake stand in elsewhere.
-    monkeypatch.setattr(
-        launch_context.ctypes, "WinDLL", lambda *args, **kwargs: Fake_Kernel32(), raising=False
-    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: Fake_Kernel32(), raising=False)
     launch_context.suppress_windows_error_dialogs()
     assert (
         mode["value"]
@@ -167,22 +170,20 @@ def test_suppress_windows_error_dialogs_preserves_existing_bits(
 def test_suppress_windows_error_dialogs_normalizes_api_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(launch_context.os, "name", "nt")
+    monkeypatch.setattr(sys, "platform", "win32")
 
     class Fake_Function:
-        def __init__(self, callback: object) -> None:
+        def __init__(self, callback: Callable[..., int]) -> None:
             self.callback = callback
 
         def __call__(self, *args: int) -> int:
-            return self.callback(*args)  # type: ignore[operator]
+            return self.callback(*args)
 
     class Broken_Kernel32:
         GetErrorMode = Fake_Function(lambda: (_ for _ in ()).throw(OSError("native failure")))
         SetErrorMode = Fake_Function(lambda mode: 0)
 
-    monkeypatch.setattr(
-        launch_context.ctypes, "WinDLL", lambda *args, **kwargs: Broken_Kernel32(), raising=False
-    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: Broken_Kernel32(), raising=False)
     with pytest.raises(launch_context.Windows_Launch_Error) as error:
         launch_context.suppress_windows_error_dialogs()
     assert error.value.code == "windows_error_mode_unavailable"

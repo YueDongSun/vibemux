@@ -39,10 +39,13 @@ fn settings() -> DshSessionSettings {
     }
 }
 
-/// Short deadlines keep the bounded-failure tests fast.
+/// Keep turn and shutdown failures fast while allowing fixture startup time.
 fn limits() -> DshSessionLimits {
     DshSessionLimits {
-        initialize_deadline_ms: 1_000,
+        // Startup is setup for these behavior tests, not a one-second latency
+        // assertion. Concurrent process starts can delay the first fixture
+        // reply even when the executable was already built and run.
+        initialize_deadline_ms: 5_000,
         turn_deadline_ms: 2_000,
         shutdown_grace_ms: 1_000,
         ..DshSessionLimits::default()
@@ -122,7 +125,13 @@ async fn a_second_turn_reuses_the_same_session() {
 
 #[tokio::test]
 async fn a_handshake_that_never_answers_hits_its_deadline() {
-    let mut driver = DshDriver::spawn(&launch("hang"), settings(), limits())
+    // This test explicitly exercises the short deadline, unlike the startup
+    // needed to reach the behavior tested by the other sessions.
+    let timeout_limits = DshSessionLimits {
+        initialize_deadline_ms: 1_000,
+        ..limits()
+    };
+    let mut driver = DshDriver::spawn(&launch("hang"), settings(), timeout_limits)
         .await
         .expect("spawn");
     assert_eq!(

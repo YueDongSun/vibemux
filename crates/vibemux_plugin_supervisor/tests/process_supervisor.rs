@@ -222,7 +222,13 @@ fn config(mode: &str, stderr_limit: usize) -> PluginSupervisorConfig {
     .expect("core policy");
     let mut config =
         PluginSupervisorConfig::new(manifest, launch, policy, format!("session_{mode}"));
-    config.handshake_timeout = Duration::from_millis(500);
+    // Fresh macOS executable launches can take ~900 ms before emitting Hello.
+    // Exercise ordinary handshakes with the production startup budget instead
+    // of making every protocol assertion race the OS's first launch. Keep the
+    // short bound for the fixture that deliberately never completes a handshake.
+    if mode == "hang_handshake" {
+        config.handshake_timeout = Duration::from_millis(500);
+    }
     config.receive_timeout = Duration::from_secs(2);
     config.shutdown_timeout = Duration::from_secs(2);
     config.outbound_capacity = 4;

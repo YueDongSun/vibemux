@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 
 repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root / "scripts"))
+sys.path.insert(0, str(repo_root))
 
-from dual_track_acceptance import check_execution, process_execution  # noqa: E402
-from dual_track_acceptance.process_execution import run_owned_command  # noqa: E402
-from dual_track_acceptance.windows_launch_context import Windows_Launch_Error  # noqa: E402
+from scripts.dual_track_acceptance import check_execution, process_execution  # noqa: E402
+from scripts.dual_track_acceptance.process_execution import run_owned_command  # noqa: E402
+from scripts.dual_track_acceptance.windows_launch_context import Windows_Launch_Error  # noqa: E402
 
 
 def test_timeout_terminates_the_owned_parent_and_its_child(tmp_path: Path) -> None:
@@ -80,7 +80,7 @@ def test_launch_refusal_happens_before_child_probe(
         lambda: (_ for _ in ()).throw(Windows_Launch_Error("windows_restricted_token", "refused")),
     )
     monkeypatch.setattr(
-        process_execution.subprocess,
+        subprocess,
         "Popen",
         lambda *args, **kwargs: pytest.fail("Popen called"),
     )
@@ -114,7 +114,7 @@ def test_process_creation_preserves_argv_and_windows_noninteractive_flags(
         return Fake_Process()
 
     monkeypatch.setattr(process_execution, "require_launch_context", lambda: None)
-    monkeypatch.setattr(process_execution.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     argv = ["tool.exe", "--label", "spaces & quotes ' stay literal"]
     with (tmp_path / "launch.log").open("wb") as log:
         result = run_owned_command(
@@ -129,8 +129,10 @@ def test_process_creation_preserves_argv_and_windows_noninteractive_flags(
     assert captured["argv"] == argv
     assert captured["shell"] is False
     if sys.platform == "win32":
-        assert captured["creationflags"] & subprocess.CREATE_NO_WINDOW
-        assert captured["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+        creation_flags = captured["creationflags"]
+        assert isinstance(creation_flags, int)
+        assert creation_flags & subprocess.CREATE_NO_WINDOW
+        assert creation_flags & subprocess.CREATE_NEW_PROCESS_GROUP
 
 
 def test_version_probe_preserves_dll_initialization_failure(
@@ -139,7 +141,7 @@ def test_version_probe_preserves_dll_initialization_failure(
     monkeypatch.setattr(check_execution, "require_launch_context", lambda: None)
     argv = [r"C:\Program Files\Tool\ruff.exe", "--version"]
     monkeypatch.setattr(
-        check_execution.subprocess,
+        subprocess,
         "run",
         lambda actual_argv, **kwargs: subprocess.CompletedProcess(
             actual_argv, -1073741502, stdout=b"", stderr=b""
@@ -163,7 +165,7 @@ def test_version_probe_refuses_before_native_call_when_context_is_unknown(
         ),
     )
     monkeypatch.setattr(
-        check_execution.subprocess,
+        subprocess,
         "run",
         lambda *args, **kwargs: pytest.fail("native probe called"),
     )

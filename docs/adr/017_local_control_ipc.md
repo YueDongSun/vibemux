@@ -10,6 +10,13 @@ The daemon writer core now owns the only Rust SQLite writer, but CLI and fronten
 
 - Windows uses a per-instance named pipe; POSIX uses a randomized per-instance Unix-domain socket.
 - There is no TCP fallback.
+- POSIX endpoint paths are limited to 100 UTF-8 bytes, below Darwin's 103-byte
+  usable `sun_path` capacity and Linux's 107-byte capacity. The system temporary
+  directory is used when the complete path fits; otherwise `/tmp` is used with
+  the same project-derived key and full per-instance UUID. Relative or non-UTF-8
+  temporary directories also use `/tmp`. Bind never removes a pre-existing
+  entry, and descriptor ownership, socket permissions, and bearer authentication
+  remain unchanged (macOS path-length amendment, 2026-11-06).
 - Frames are four-byte big-endian length-prefixed JSON with a fixed maximum size and explicit protocol version.
 - Every request carries a unique request ID and a random 256-bit bearer token. Authentication is checked before dispatch and token text is redacted from Debug/error output.
 - The daemon publishes an ignored runtime descriptor containing the endpoint, protocol version, and token only after the listener is bound. POSIX creates the descriptor with mode `0600`; Windows relies on the per-user runtime directory plus the unguessable endpoint/token in this pre-alpha slice.

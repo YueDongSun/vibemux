@@ -8,15 +8,15 @@ from pathlib import Path
 from typing import Any
 
 repo_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo_root / "scripts"))
+sys.path.insert(0, str(repo_root))
 
-from dual_track_acceptance.assessment import (  # noqa: E402
+from scripts.dual_track_acceptance.assessment import (  # noqa: E402
     MODE_OFFLINE,
     STATUS_NOT_RUN,
     RunArtifacts,
     assess_class,
 )
-from dual_track_acceptance.check_execution import (  # noqa: E402
+from scripts.dual_track_acceptance.check_execution import (  # noqa: E402
     CHECK_FAIL,
     CHECK_PASS,
     CargoTestRun,
@@ -25,13 +25,13 @@ from dual_track_acceptance.check_execution import (  # noqa: E402
     expected_mutant_suites,
     parse_calibration_output,
 )
-from dual_track_acceptance.evidence_capture import (  # noqa: E402
+from scripts.dual_track_acceptance.evidence_capture import (  # noqa: E402
     FLAGSHIP,
     EvidenceFile,
     EvidenceStore,
     run_evidence_check,
 )
-from dual_track_acceptance.scenario_catalog import EvidenceRule, RuleKind  # noqa: E402
+from scripts.dual_track_acceptance.scenario_catalog import EvidenceRule, RuleKind  # noqa: E402
 
 
 def calibration_summary() -> dict[str, Any]:

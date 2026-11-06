@@ -14,11 +14,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { run_browser_suite } from "./browser_suite.mjs";
+import { resolve_browser_executable } from "./browser_discovery.mjs";
 import { install_crash_result_writer } from "./crash_result.mjs";
 import {
   create_temp_dir,
   is_directory,
-  is_file,
   kill_process_tree,
   remove_temp_dir,
   spawn_tracked,
@@ -34,12 +34,6 @@ const verifier_config = Object.freeze({
   default_timeout_ms: 120_000,
   runner_capture_max_bytes: 16 * 1024 * 1024,
   failure_message_max_chars: 600,
-  browser_search_paths: [
-    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-    "C:/Program Files/Google/Chrome/Application/chrome.exe",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-  ],
   // Environment variables that would change how the child test runner behaves.
   stripped_environment_keys: ["NODE_TEST_CONTEXT", "NODE_OPTIONS"],
   exit_codes: { passed: 0, failed: 1, blocked: 2, usage: 3 },
@@ -205,18 +199,6 @@ async function run_node_test_suite(suite, candidate_dir, suite_timeout_ms, run_r
       await kill_process_tree(tracked.pid);
     }
   }
-}
-
-async function resolve_browser_executable(requested_browser) {
-  if (requested_browser !== undefined) {
-    return (await is_file(requested_browser)) ? { executable: requested_browser } : { missing: `browser executable not found: ${requested_browser}` };
-  }
-  for (const candidate_path of verifier_config.browser_search_paths) {
-    if (await is_file(candidate_path)) {
-      return { executable: candidate_path };
-    }
-  }
-  return { missing: `no browser executable found; searched ${verifier_config.browser_search_paths.join(", ")}` };
 }
 
 async function run_browser_mode(suite, candidate_dir, requested_browser, suite_timeout_ms, run_root) {

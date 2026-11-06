@@ -23,5 +23,10 @@ windows-sys.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+# Darwin's killpg reports EPERM for an all-zombie group. Its safe libproc
+# wrapper can prove that only the owned, unreaped leader remains.
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "=0.14.11"
+
 [dev-dependencies]
 tempfile.workspace = true

@@ -3,7 +3,12 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn private_temporary_state() -> tempfile::TempDir {
-    let temp = tempfile::tempdir().expect("temporary state directory");
+    // Production reaches web state through the canonical project root. Resolve
+    // only this fixture parent so macOS's system /var alias is not an input link.
+    let parent = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonical temporary root");
+    let temp = tempfile::tempdir_in(parent).expect("temporary state directory");
     // This test is the producer/owner of the directory, just as InstanceLease is in production.
     #[cfg(windows)]
     vibemux_platform::secure_user_directory(temp.path()).expect("restrict fixture ACL");
