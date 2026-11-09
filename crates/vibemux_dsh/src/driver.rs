@@ -25,7 +25,7 @@ use tokio::{
     process::{Child, ChildStdin, Command},
     sync::watch,
     task::JoinHandle,
-    time::{Instant, timeout},
+    time::{Instant, timeout, timeout_at},
 };
 use vibemux_harness::dispatch::DispatchError;
 use vibemux_harness::dispatch::json_line_framer::JsonLineFramer;
@@ -33,13 +33,14 @@ use vibemux_harness::dsh::{
     DshAction, DshError, DshPhase, DshRecordBuffer, DshRecordKind, DshSessionLimits,
     DshSessionMachine, DshSessionSettings, DshSessionSummary, records::DshRecordBatch,
 };
-use vibemux_platform::ProcessTree;
+use vibemux_platform::{LAUNCH_GO_BYTE, PlatformError, ProcessTree};
 
 use crate::DshDriverError;
 
 /// How often the driver checks a deadline while waiting for a phase change.
 /// The wait itself is signal-driven; this only bounds the post-signal race.
 const PHASE_POLL: Duration = Duration::from_millis(20);
+const REAP_DEADLINE: Duration = Duration::from_secs(5);
 
 /// A resolved, shell-free command line. The configuration layer produces one;
 /// tests construct one directly so no vendor runtime is required.
@@ -98,8 +99,9 @@ struct DriverState {
 
 /// A live DSH session.
 pub struct DshDriver {
+    // The tree must be dropped before its leader can be reaped/reused.
+    tree: ProcessTree,
     child: Child,
-    tree: Option<ProcessTree>,
     stdin: Option<ChildStdin>,
     state: Arc<Mutex<DriverState>>,
     phase: watch::Receiver<DshPhase>,
@@ -108,6 +110,7 @@ pub struct DshDriver {
     /// Whether this driver terminated the process tree, so the exit it
     /// caused is not mistaken for a crash.
     terminated: bool,
+    closed: bool,
 }
 
 impl std::fmt::Debug for DshDriver {
@@ -115,25 +118,42 @@ impl std::fmt::Debug for DshDriver {
         formatter
             .debug_struct("DshDriver")
             .field("phase", &self.phase())
-            .field("has_tree", &self.tree.is_some())
+            .field("closed", &self.closed)
             .finish_non_exhaustive()
     }
 }
 
 impl DshDriver {
-    /// Spawns the runtime and sends `initialize`. Returns once the frames are
-    /// written; the handshake reply is awaited by [`DshDriver::await_ready`].
+    /// Spawns the runtime and attempts `initialize`. Once contained, ownership
+    /// is returned even if a write fails; [`DshDriver::await_ready`] reports
+    /// that failure and the caller must close the owned driver.
     pub async fn spawn(
         launch: &DshLaunch,
         settings: DshSessionSettings,
         limits: DshSessionLimits,
     ) -> Result<Self, DshDriverError> {
+        Self::spawn_contained(launch, settings, limits, ProcessTree::contain).await
+    }
+
+    async fn spawn_contained(
+        launch: &DshLaunch,
+        settings: DshSessionSettings,
+        limits: DshSessionLimits,
+        contain: impl FnOnce(u32) -> Result<ProcessTree, PlatformError>,
+    ) -> Result<Self, DshDriverError> {
         let machine =
             DshSessionMachine::new(settings, limits).map_err(|_| DshDriverError::ConfigInvalid)?;
         let buffer = DshRecordBuffer::new(&limits);
 
-        let mut command = Command::new(&launch.executable);
+        if !launch.executable.is_absolute() {
+            return Err(DshDriverError::SpawnFailed);
+        }
+        let trampoline = tokio::task::spawn_blocking(launch_trampoline)
+            .await
+            .map_err(|_| DshDriverError::SpawnFailed)??;
+        let mut command = Command::new(trampoline);
         command
+            .arg(&launch.executable)
             .args(&launch.arguments)
             .current_dir(&launch.working_directory)
             .env_clear()
@@ -157,11 +177,18 @@ impl DshDriver {
         ProcessTree::prepare_command(command.as_std_mut());
 
         let mut child = command.spawn().map_err(|_| DshDriverError::SpawnFailed)?;
-        // Contain before anything else can observe the child, so a crash here
-        // cannot leak descendants.
-        let tree = child
-            .id()
-            .and_then(|process_id| ProcessTree::contain(process_id).ok());
+        // The helper cannot start the runtime until it receives the go byte.
+        // Failed containment therefore leaves only this owned helper to reap.
+        let tree = match child.id().map(contain) {
+            Some(Ok(tree)) => tree,
+            _ => {
+                child
+                    .start_kill()
+                    .map_err(|_| DshDriverError::ProcessCleanup)?;
+                reap(&mut child).await?;
+                return Err(DshDriverError::SpawnFailed);
+            }
+        };
         let stdin = child.stdin.take().ok_or(DshDriverError::StdinUnavailable)?;
         let stdout = child
             .stdout
@@ -183,26 +210,43 @@ impl DshDriver {
         ));
 
         let mut driver = Self {
-            child,
             tree,
+            child,
             stdin: Some(stdin),
             state,
             phase,
             reader: Some(reader),
             limits,
             terminated: false,
+            closed: false,
         };
-        let actions = driver
-            .with_machine(|machine| machine.start())
-            .map_err(map_session_error)?;
-        match driver.apply(actions).await {
-            // A runtime that exits before reading `initialize` can close its
-            // stdin before the frame is written. That is the transport failure
-            // stdout EOF reports, already recorded on the session, so the
-            // caller learns it from `await_ready` whichever pipe noticed first.
-            Ok(()) | Err(DshDriverError::TransportClosed) => Ok(driver),
-            Err(error) => Err(error),
+        if let Err(error) = driver
+            .write_until(
+                &[LAUNCH_GO_BYTE],
+                Instant::now() + Duration::from_millis(limits.initialize_deadline_ms),
+                DshDriverError::InitializeTimeout,
+            )
+            .await
+        {
+            driver.record_start_failure(error);
+            return Ok(driver);
         }
+        match driver.with_machine(|machine| machine.start()) {
+            Ok(actions) => {
+                if let Err(error) = driver.apply(actions).await {
+                    driver.record_start_failure(error);
+                }
+            }
+            Err(error) => driver.record_start_failure(map_session_error(error)),
+        }
+        Ok(driver)
+    }
+
+    fn record_start_failure(&mut self, error: DshDriverError) {
+        let mut state = lock(&self.state);
+        state.machine.fail(map_driver_to_session(&error));
+        state.transport_open = false;
+        state.transport_error = Some(error);
     }
 
     #[must_use]
@@ -302,40 +346,73 @@ impl DshDriver {
     }
 
     /// Asks the runtime to `shutdown`, then escalates to tree termination when
-    /// the grace period expires. Idempotent: a second call only reaps.
+    /// the grace period expires. Remaining descendants are always terminated
+    /// before the leader is reaped. A completed close is idempotent.
     ///
     /// `ShutdownTimeout` is reported only when the runtime was asked to close
     /// and ignored the request. A session that already failed or was cancelled
     /// is torn down without a spurious error, because termination is its
     /// documented teardown (ADR 032 Decision 6).
     pub async fn close(&mut self) -> Result<(), DshDriverError> {
+        self.close_with(ProcessTree::terminate).await
+    }
+
+    async fn close_with(
+        &mut self,
+        mut terminate: impl FnMut(&mut ProcessTree) -> Result<(), PlatformError>,
+    ) -> Result<(), DshDriverError> {
+        if self.closed {
+            return Ok(());
+        }
         let cooperative = !self.phase().is_terminal();
+        let expiry = Instant::now() + Duration::from_millis(self.limits.shutdown_grace_ms);
+        let mut write_timed_out = false;
         if cooperative {
             // A session that already failed cannot be asked to close, and a
             // peer that already died cannot receive the frame; the teardown
             // below still runs in both cases.
             if let Ok(actions) = self.with_machine(|machine| machine.begin_close()) {
-                let _ = self.apply(actions).await;
+                match self
+                    .apply_until(actions, expiry, DshDriverError::ShutdownTimeout)
+                    .await
+                {
+                    Err(DshDriverError::ProcessCleanup) => {
+                        return Err(DshDriverError::ProcessCleanup);
+                    }
+                    Err(DshDriverError::ShutdownTimeout) => write_timed_out = true,
+                    // A closed pipe still needs the same teardown below.
+                    _ => {}
+                }
             }
         }
-        let grace = Duration::from_millis(self.limits.shutdown_grace_ms);
-        let exit = match timeout(grace, self.child.wait()).await {
-            Ok(Ok(status)) => Some(status),
-            Ok(Err(_)) => return Err(DshDriverError::SpawnFailed),
-            // The grace period expired; escalate below.
-            Err(_) => None,
+        let exited = if cooperative && !write_timed_out {
+            self.wait_for_exit(expiry).await?
+        } else {
+            false
         };
-        let reaped = exit.is_some();
-        // A clean exit is a successful one, or one this driver caused by
-        // terminating the tree (cancellation's documented teardown). A runtime
-        // that crashed on its own fails the session even though it was reaped.
-        let clean_exit = exit.is_some_and(|status| status.success() || self.terminated);
-        if !reaped {
-            self.terminate()?;
-            // Reap after the kill so no process handle is left behind.
-            let _ = timeout(Duration::from_secs(5), self.child.wait()).await;
+        // Even a successful shutdown can leave descendants running. On POSIX
+        // the unreaped leader reserves the group id until this kill succeeds.
+        terminate(&mut self.tree).map_err(|_| DshDriverError::ProcessCleanup)?;
+        if !exited {
+            self.terminated = true;
         }
-        self.record_exit(clean_exit);
+        self.stdin = None;
+        let exit = reap(&mut self.child).await?;
+        #[cfg(windows)]
+        timeout(REAP_DEADLINE, async {
+            while self
+                .tree
+                .active_process_count()
+                .map_err(|_| DshDriverError::ProcessCleanup)?
+                != 0
+            {
+                tokio::time::sleep(PHASE_POLL).await;
+            }
+            Ok::<_, DshDriverError>(())
+        })
+        .await
+        .map_err(|_| DshDriverError::ProcessCleanup)??;
+        self.record_exit(exit.success() || self.terminated);
         if let Some(reader) = self.reader.take() {
             reader.abort();
             let _ = reader.await;
@@ -343,21 +420,47 @@ impl DshDriver {
         // The process is gone and its reader stopped, whether or not the
         // reader saw stdout end first.
         lock(&self.state).transport_open = false;
-        if !reaped && cooperative {
+        self.closed = true;
+        if (!exited || write_timed_out) && cooperative {
             return Err(DshDriverError::ShutdownTimeout);
         }
         Ok(())
     }
 
     fn terminate(&mut self) -> Result<(), DshDriverError> {
+        self.tree
+            .terminate()
+            .map_err(|_| DshDriverError::ProcessCleanup)?;
         self.terminated = true;
-        if let Some(tree) = self.tree.as_mut() {
-            // A tree that is already gone is not an error; the child handle is
-            // still reaped below.
-            let _ = tree.terminate();
-        }
-        let _ = self.child.start_kill();
         Ok(())
+    }
+
+    async fn wait_for_exit(&mut self, expiry: Instant) -> Result<bool, DshDriverError> {
+        #[cfg(unix)]
+        {
+            loop {
+                if self
+                    .tree
+                    .leader_exited()
+                    .map_err(|_| DshDriverError::ProcessCleanup)?
+                {
+                    return Ok(true);
+                }
+                if Instant::now() >= expiry {
+                    return Ok(false);
+                }
+                tokio::time::sleep_until(expiry.min(Instant::now() + PHASE_POLL)).await;
+            }
+        }
+        #[cfg(windows)]
+        {
+            // Job identity is independent of the leader's PID after reaping.
+            match timeout_at(expiry, self.child.wait()).await {
+                Ok(Ok(_)) => Ok(true),
+                Ok(Err(_)) => Err(DshDriverError::ProcessCleanup),
+                Err(_) => Ok(false),
+            }
+        }
     }
 
     /// Folds a process exit into the machine. `clean_exit` is false when the
@@ -425,23 +528,36 @@ impl DshDriver {
     }
 
     async fn apply(&mut self, actions: Vec<DshAction>) -> Result<(), DshDriverError> {
+        let (budget, error) = if self.phase() == DshPhase::Initializing {
+            (
+                self.limits.initialize_deadline_ms,
+                DshDriverError::InitializeTimeout,
+            )
+        } else {
+            (self.limits.turn_deadline_ms, DshDriverError::TurnTimeout)
+        };
+        self.apply_until(
+            actions,
+            Instant::now() + Duration::from_millis(budget),
+            error,
+        )
+        .await
+    }
+
+    async fn apply_until(
+        &mut self,
+        actions: Vec<DshAction>,
+        expiry: Instant,
+        deadline_error: DshDriverError,
+    ) -> Result<(), DshDriverError> {
         for action in actions {
             match action {
                 DshAction::Write(frame) => {
                     let mut encoded =
                         serde_json::to_vec(&frame).map_err(|_| DshDriverError::WriteFailed)?;
                     encoded.push(b'\n');
-                    let stdin = self
-                        .stdin
-                        .as_mut()
-                        .ok_or(DshDriverError::StdinUnavailable)?;
-                    let written = match stdin.write_all(&encoded).await {
-                        Ok(()) => stdin.flush().await,
-                        Err(error) => Err(error),
-                    };
-                    if let Err(error) = written {
-                        return Err(self.write_failed(&error));
-                    }
+                    self.write_until(&encoded, expiry, deadline_error.clone())
+                        .await?;
                 }
                 DshAction::Terminate => {
                     self.terminate()?;
@@ -449,6 +565,36 @@ impl DshDriver {
             }
         }
         Ok(())
+    }
+
+    async fn write_until(
+        &mut self,
+        encoded: &[u8],
+        expiry: Instant,
+        deadline_error: DshDriverError,
+    ) -> Result<(), DshDriverError> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or(DshDriverError::StdinUnavailable)?;
+        match timeout_at(expiry, async {
+            stdin.write_all(encoded).await?;
+            stdin.flush().await
+        })
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(self.write_failed(&error)),
+            Err(_) => {
+                // A cancelled write can leave a partial JSON frame. Never
+                // reuse that transport or wait forever for a blocked reader.
+                self.stdin = None;
+                self.fail_session(deadline_error.clone());
+                lock(&self.state).transport_open = false;
+                self.terminate()?;
+                Err(deadline_error)
+            }
+        }
     }
 
     /// Records a failed frame write. A closed stdin is a transport failure,
@@ -492,13 +638,46 @@ impl Drop for DshDriver {
     fn drop(&mut self) {
         // The tree and `kill_on_drop` are the backstop; the explicit teardown
         // path is `close`.
-        if let Some(tree) = self.tree.as_mut() {
-            let _ = tree.terminate();
-        }
+        let _ = self.tree.terminate();
         if let Some(reader) = self.reader.take() {
             reader.abort();
         }
     }
+}
+
+async fn reap(child: &mut Child) -> Result<std::process::ExitStatus, DshDriverError> {
+    timeout(REAP_DEADLINE, child.wait())
+        .await
+        .map_err(|_| DshDriverError::ProcessCleanup)?
+        .map_err(|_| DshDriverError::ProcessCleanup)
+}
+
+/// Resolve only the bundled regular executable, never a helper from PATH.
+fn launch_trampoline() -> Result<PathBuf, DshDriverError> {
+    let current = std::env::current_exe().map_err(|_| DshDriverError::SpawnFailed)?;
+    let directory = current.parent().ok_or(DshDriverError::SpawnFailed)?;
+    let directory = if directory.file_name().is_some_and(|name| name == "deps") {
+        directory.parent().ok_or(DshDriverError::SpawnFailed)?
+    } else {
+        directory
+    };
+    let path = directory.join(format!(
+        "vibemux_launch_trampoline{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| DshDriverError::SpawnFailed)?;
+    if !metadata.file_type().is_file() {
+        return Err(DshDriverError::SpawnFailed);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(DshDriverError::SpawnFailed);
+        }
+    }
+    Ok(path)
 }
 
 /// Reads runtime stdout into the state cell until EOF or a framing failure.
@@ -627,6 +806,79 @@ fn map_session_error(error: DshError) -> DshDriverError {
 mod tests {
     use super::*;
     use std::io::{Error, ErrorKind};
+
+    fn test_launch() -> DshLaunch {
+        DshLaunch {
+            executable: std::env::current_exe().expect("test executable"),
+            arguments: vec!["--list".into()],
+            environment_names: Vec::new(),
+            working_directory: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        }
+    }
+
+    fn test_settings() -> DshSessionSettings {
+        DshSessionSettings {
+            session_id: "cleanup_failure_test".into(),
+            working_directory: "C:\\project".into(),
+            provider: "deepseek-official".into(),
+            model: "deepseek-v4-flash".into(),
+            reasoning_effort: None,
+            max_tokens: None,
+        }
+    }
+
+    fn containment_failure() -> PlatformError {
+        PlatformError::ProcessTree {
+            operation: vibemux_platform::ProcessTreeOperation::Verify,
+            os_code: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn containment_failure_refuses_launch_before_releasing_the_helper() {
+        let mut containment_attempted = false;
+        let result = DshDriver::spawn_contained(
+            &test_launch(),
+            test_settings(),
+            DshSessionLimits::default(),
+            |_| {
+                containment_attempted = true;
+                Err(containment_failure())
+            },
+        )
+        .await;
+        assert!(containment_attempted, "the test must reach containment");
+        assert!(matches!(result, Err(DshDriverError::SpawnFailed)));
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_is_reported_and_keeps_the_leader_owned_for_retry() {
+        let mut driver =
+            DshDriver::spawn(&test_launch(), test_settings(), DshSessionLimits::default())
+                .await
+                .expect("spawn contained test executable");
+        assert!(
+            driver
+                .wait_for_exit(Instant::now() + Duration::from_secs(5))
+                .await
+                .expect("exit")
+        );
+        assert_eq!(
+            driver.close_with(|_| Err(containment_failure())).await,
+            Err(DshDriverError::ProcessCleanup)
+        );
+        assert!(!driver.closed);
+        #[cfg(unix)]
+        assert!(
+            driver
+                .tree
+                .leader_exited()
+                .expect("leader must remain unreaped")
+        );
+        driver.close().await.expect("retry successful teardown");
+        assert!(driver.closed);
+        driver.close().await.expect("idempotent close");
+    }
 
     #[test]
     fn a_closed_runtime_pipe_is_a_transport_failure_and_other_errors_are_write_faults() {

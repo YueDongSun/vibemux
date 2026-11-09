@@ -1,11 +1,10 @@
+import { save_workspace, reset_workspace } from "./support/store_writer.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { app_config, default_settings } from "../src/config.js";
 import {
   create_conversation,
   load_workspace,
-  save_workspace,
-  reset_workspace,
   export_conversation,
   export_all,
   download_file,
@@ -248,12 +247,14 @@ test("quota failure throws and does not replace the last saved workspace", (cont
 });
 
 test("blocked browser storage surfaces a warning and never reports a successful save", (context) => {
-  install_storage(context);
+  const storage = install_storage(context);
   context.mock.method(localStorage, "getItem", () => {
     throw new DOMException("Blocked", "SecurityError");
   });
   assert.match(load_workspace().storage_warning, /could not be read/i);
-  assert.throws(() => save_workspace(workspace_with_messages()), /Blocked/);
+  assert.throws(() => save_workspace(workspace_with_messages()), /could not be read/);
+  assert.equal(storage.writes.length, 0);
+  assert.equal(storage.values.size, 0);
 });
 
 test("persistence and exports whitelist chat data, excluding API keys and transient state", (context) => {

@@ -2,7 +2,7 @@
 
 Date: 2026-11-09. Baseline: `adac4e42bc38cd481cb7541db6d59629c89eaf7a`.
 Implementation branch: `codex/dsh-superagent-enhancements`.
-Host: native macOS, Apple Silicon, Rust 1.92.0; offline fixture execution.
+Initial implementation validation: native macOS, Apple Silicon, Rust 1.92.0; offline fixture execution against the baseline above. Refreshed PR-tree validation after main integration is recorded separately below.
 Upstream reference: `deepseek-ai/dsh-superagent-prototype` at
 `8c32a9dc5d72c033816c6a8110b37f40cf94fba4`.
 
@@ -89,8 +89,8 @@ tests, with 19 other tests in that target passing:
 The exact same three failures reproduced in the separate, clean worktree at
 baseline `adac4e42bc38cd481cb7541db6d59629c89eaf7a`. Its MCP fixture uses an
 `unused_fixture_descriptor` and does not exercise the new workflow operations.
-MCP and platform source diffs against baseline are empty. The native cleanup
-cause remains an independent issue; no MCP implementation or timing assertion
+MCP and platform source diffs against baseline are empty. At the initial validation checkpoint the native cleanup
+cause was an independent issue; no MCP implementation or timing assertion
 was changed, skipped or retried blindly to hide it. Full workspace test
 success is not claimed.
 
@@ -101,3 +101,41 @@ hosted CI were not exercised by this change. No source account, watcher,
 model generation or external reply was invoked. These are offline Rust
 integration results and do not advance live vendor or Windows release gates.
 The unavailable nextest/deny/audit commands remain required CI/release checks.
+
+
+## PR preparation and refreshed validation — 2026-11-09
+
+The PR branch integrates current `main` at
+`0619a35`. Only `CHANGELOG.md` and `PROGRESS.md` conflicted; both sides'
+entries/evidence were retained. The PR diff against that base still contains
+only the 32 source/documentation files of this enhancement. Existing upstream
+macOS process, socket and browser fixes are preserved. The initial baseline
+MCP/browser failures above are historical measurements, not a claim that
+they still reproduce on the refreshed tree.
+
+Publication/privacy review checks staged file content and the PR body without
+printing matched values. Runtime state, provider settings, raw captures,
+databases and credentials are excluded. New commits use the authenticated
+GitHub account's no-reply identity with command-scoped settings. The guide
+and ADR now document plaintext local retention, metadata correlation/guessing,
+stdout disclosure and the limits of purge/expiry.
+
+Executed after integration:
+
+| Command | Outcome |
+|---|---|
+| `TMPDIR=/private/tmp cargo test --offline -p vibemuxd --test workflow_superagent --all-features --locked` | 5 passed, zero failed/ignored/filtered |
+| `TMPDIR=/private/tmp cargo test --offline -p vibemux_store --test workflow --all-features --locked` | 25 passed, zero failed/ignored/filtered |
+| `cargo clippy --offline -p vibemux_workflow -p vibemux_store -p vibemuxd -p vibemux_cli --all-targets --all-features --locked -- -D warnings` | Passed |
+| `cargo fmt --all -- --check`, `git diff --cached --check` | Passed |
+| `python3 scripts/check_public_artifacts.py` | 698 publishable text files, zero findings |
+| Explicit staged-source and PR-body privacy scan | Passed; only reviewed source/docs and synthetic fixtures |
+
+The first refreshed IPC test attempt was blocked before application setup by
+the workspace sandbox's Unix socket restriction. A separate short, task-owned
+AF_UNIX probe reproduced `PermissionError` (`EPERM`); rerunning the same offline
+fixture target with the required approved access passed. No test was changed
+or weakened for this environment restriction.
+
+Full refreshed workspace/platform/hosted CI results are not claimed by these
+focused checks; the original broader checks above remain dated evidence.

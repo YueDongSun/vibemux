@@ -8,7 +8,7 @@ jobs:
   python:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
   rust:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +33,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.0"
+      - name: Verify TaskBoard browser contracts
+        run: >-
+          node --test
+          tests/fixtures/taskboard_lite/verifier/browser_discovery.test.mjs
+          tests/fixtures/taskboard_lite/verifier/browser_input.test.mjs
+          tests/fixtures/taskboard_lite/verifier/browser_preflight.test.mjs
+          tests/fixtures/taskboard_lite/verifier/crash_result.test.mjs
       - run: npm ci
         working-directory: crates/vibemux_web/web
       - run: npm run typecheck
@@ -60,6 +67,14 @@ jobs:
         working-directory: crates/vibemux_desktop/ui
       - run: npm audit --audit-level=low
         working-directory: crates/vibemux_desktop/ui
+      - run: npm ci
+        working-directory: crates/vibemux_chat/web
+      - run: npm test
+        working-directory: crates/vibemux_chat/web
+      - run: npm audit --audit-level=low
+        working-directory: crates/vibemux_chat/web
+      - run: npm run build
+        working-directory: crates/vibemux_chat/web
       - run: rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
       - run: rustup default 1.92.0
       - uses: shogo82148/actions-setup-perl@v1

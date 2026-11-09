@@ -173,7 +173,9 @@ mod tests {
     #[test]
     fn insecure_files_and_existing_directories_fail_closed_without_adoption() {
         let temp = tempfile::tempdir().unwrap();
-        let lease = InstanceLease::acquire(temp.path()).unwrap();
+        // Match the executable's canonical-root precondition, including on macOS.
+        let project_root = temp.path().canonicalize().unwrap();
+        let lease = InstanceLease::acquire(&project_root).unwrap();
         let path = lease.state_dir.join("private_test.json");
         atomic_save(&path, b"{}").unwrap();
         vibemux_platform::test_helpers::loosen_with_icacls(&path, "*S-1-1-0:R");
@@ -189,8 +191,10 @@ mod tests {
     #[test]
     fn private_persistence_and_instance_ownership() {
         let temp = tempfile::tempdir().unwrap();
-        let lease = InstanceLease::acquire(temp.path()).unwrap();
-        assert!(InstanceLease::acquire(temp.path()).is_err());
+        // Match the executable's canonical-root precondition, including on macOS.
+        let project_root = temp.path().canonicalize().unwrap();
+        let lease = InstanceLease::acquire(&project_root).unwrap();
+        assert!(InstanceLease::acquire(&project_root).is_err());
         let path = lease.state_dir.join("test.json");
         atomic_save(&path, b"first").unwrap();
         atomic_save(&path, b"second").unwrap();
@@ -198,6 +202,62 @@ mod tests {
         assert!(read_bounded(&path, 5).is_err());
         verify_private_file(&path).unwrap();
         drop(lease);
-        assert!(InstanceLease::acquire(temp.path()).is_ok());
+        assert!(InstanceLease::acquire(&project_root).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_files_and_ancestors_are_refused_without_changing_the_target() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let project_root = temp.path().canonicalize().unwrap();
+        let lease = InstanceLease::acquire(&project_root).unwrap();
+        let path = lease.state_dir.join("test.json");
+        atomic_save(&path, b"original").unwrap();
+        let linked_file = project_root.join("linked_file");
+        symlink(&path, &linked_file).unwrap();
+        let linked_directory = project_root.join("linked_directory");
+        symlink(&lease.state_dir, &linked_directory).unwrap();
+        let linked_ancestor = linked_directory.join("test.json");
+
+        for candidate in [&linked_file, &linked_ancestor] {
+            assert!(read_bounded(candidate, 64).is_err());
+            assert!(verify_private_file(candidate).is_err());
+            assert!(atomic_save(candidate, b"replacement").is_err());
+        }
+        assert!(prepare_directory(&linked_directory).is_err());
+        assert!(InstanceLease::acquire(&linked_directory).is_err());
+        assert!(!lease.state_dir.join(".vibemux").exists());
+        assert_eq!(read_bounded(&path, 64).unwrap(), b"original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn insecure_files_and_existing_directories_fail_closed_without_adoption() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let project_root = temp.path().canonicalize().unwrap();
+        let lease = InstanceLease::acquire(&project_root).unwrap();
+        let path = lease.state_dir.join("test.json");
+        atomic_save(&path, b"original").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(verify_private_file(&path).is_err());
+        assert!(atomic_save(&path, b"replacement").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        std::fs::set_permissions(&lease.state_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(prepare_directory(&lease.state_dir).is_err());
+        assert_eq!(
+            std::fs::metadata(&lease.state_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
     }
 }

@@ -180,43 +180,45 @@ async function request_json<T>(path: string, token: string, init?: RequestInit):
   return result;
 }
 
-export function load_health(token: string): Promise<health_response> {
-  return request_json('/api/v1/health', token);
+export function load_health(token: string, signal?: AbortSignal): Promise<health_response> {
+  return request_json('/api/v1/health', token, { signal });
 }
 
-export function load_tasks(token: string, after_task_id: string | null = null): Promise<tasks_response> {
+export function load_tasks(token: string, after_task_id: string | null = null, signal?: AbortSignal): Promise<tasks_response> {
   const query = new URLSearchParams({ limit: '32' });
   if (after_task_id) query.set('after_task_id', after_task_id);
-  return request_json(`/api/v1/tasks?${query.toString()}`, token);
+  return request_json(`/api/v1/tasks?${query.toString()}`, token, { signal });
 }
 
-export function load_task(token: string, task_id: string): Promise<task_response> {
-  return request_json(`/api/v1/tasks/${encodeURIComponent(task_id)}`, token);
+export function load_task(token: string, task_id: string, signal?: AbortSignal): Promise<task_response> {
+  return request_json(`/api/v1/tasks/${encodeURIComponent(task_id)}`, token, { signal });
 }
 
-export function load_console(token: string): Promise<console_response> {
-  return request_json('/api/v1/console', token);
+export function load_console(token: string, signal?: AbortSignal): Promise<console_response> {
+  return request_json('/api/v1/console', token, { signal });
 }
 
-export function load_public_key(token: string): Promise<{ public_key: string }> {
-  return request_json('/api/v1/push/public_key', token);
+export function load_public_key(token: string, signal?: AbortSignal): Promise<{ public_key: string }> {
+  return request_json('/api/v1/push/public_key', token, { signal });
 }
 
-export function save_push_subscription(token: string, subscription: PushSubscription): Promise<unknown> {
+export function save_push_subscription(token: string, subscription: PushSubscription, signal?: AbortSignal): Promise<unknown> {
   return request_json('/api/v1/push/subscriptions', token, {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(subscription.toJSON()),
   });
 }
 
-export function create_enrollment(token: string): Promise<enrollment_response> {
-  return request_json('/api/v1/enrollment/create', token, { method: 'POST' });
+export function create_enrollment(token: string, signal?: AbortSignal): Promise<enrollment_response> {
+  return request_json('/api/v1/enrollment/create', token, { method: 'POST', signal });
 }
 
-export function redeem_enrollment(token: string, enrollment_token: string): Promise<enrollment_redemption_response> {
+export function redeem_enrollment(token: string, enrollment_token: string, signal?: AbortSignal): Promise<enrollment_redemption_response> {
   return request_json('/api/v1/enrollment', token, {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token: enrollment_token }),
   });

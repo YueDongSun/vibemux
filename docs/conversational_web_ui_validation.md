@@ -152,3 +152,111 @@ browser-console, responsive-layout or preview-navigation claim is made for this
 integration. The earlier dated browser evidence is retained above. No real API
 key or live inference was used. Linux/WSL and hosted CI remain separate from the
 local checks; Git source publication is separate from a hosted app deployment.
+
+## Persistence repair verification — 2026-11-06
+
+Fixed two reproducible local-history losses: stale tabs could replace newer
+history, and uninterrupted response deltas could postpone the trailing autosave
+for the entire stream. A page now owns one exclusive Web Lock while it can save,
+revalidates its last observed record before save/reset, and retains unsaved
+content with export/retry guidance on conflict. The autosave owner checkpoints
+continuous changes after one second, saves the submitted turn before dispatch
+when storage is available, and flushes completion, cancellation, hidden-page,
+and page-exit state. Page exit releases the lock after the synchronous flush;
+restoring the page reacquires and revalidates it.
+
+Validation on macOS with Node 26.13.0 and npm 12.2.1:
+
+- `npm test` and `npm test -- --test-reporter=dot`: **83 passed**, zero failures,
+  cancellations, or skips. The original 67 cases remain, including corrupt
+  records, quota failures, blocked storage, legacy records, and key exclusion.
+- Eight new session cases cover asynchronous simultaneous lock requests,
+  conflicting/retry writes, guarded reset, unchanged legacy records, unavailable
+  locks, blocked/quota failures, and release before a pending grant.
+- Six autosave cases cover immediate prompt persistence, repeated 100 ms deltas,
+  visibility/pagehide flushes, restored-page ownership, failed checkpoints and
+  retry, and timer/listener cleanup. Two additional tests execute the app's
+  actual turn functions, located with the Svelte parser, through the real
+  storage/autosave modules to verify submission-before-inference, checkpoints,
+  completion, and cancellation. These are orchestration tests, not DOM tests.
+- `npm run build`: production build succeeded, 4254 modules transformed. The
+  Svelte compiler also compiled `src/app.svelte` with zero warnings.
+- Locked JavaScript dependencies were installed offline from the local npm
+  cache. The same locked `@rolldown/binding-darwin-arm64` 1.2.15 package was reused
+  from the independently installed desktop package; no dependency declaration
+  or package lock changed.
+- Controlled Chrome walkthrough on separate loopback port 5186: tab B opened
+  before tab A's new chat and displayed the busy-saving warning. Tab A generated
+  and saved a fixture response; tab B changed its theme. After tab A closed,
+  Retry saving in B displayed the stale-history conflict. Reloading B restored
+  A's conversation and saved theme. Reload also cleared the memory-only fixture
+  key. No real credential or live provider inference was used.
+
+The browser record remains version 1 and needs no migration. Safe saving now
+requires Web Locks on a secure context (localhost/loopback or HTTPS). Reload
+all older app tabs on upgrade because old code does not take this lock. A second
+tab may keep unsaved work in memory and export it; it never silently merges or
+replaces newer stored history. Browser suspension, process crashes, timer delays,
+and storage failures can still lose changes since the last successful save.
+Windows/Linux/WSL, other browser engines, live inference, and an interrupted
+stream in the live browser were not newly exercised by this repair.
+
+## Regeneration history preservation — 2026-11-06
+
+Regeneration and confirmed edit/resend now stream into a temporary preview. The
+original transcript and artifact remain the saved/exported conversation until a
+complete, nonempty provider response succeeds. Missing or rejected credentials,
+network/protocol errors, token-limit truncation, cancellation, and reload during
+replacement preserve the originals. Failure and stop notices explain that the
+original conversation was kept. The existing saved artifact remains usable;
+opening newly extracted preview artifacts is deferred until completion, and
+feedback controls are disabled while the replacement preview is provisional.
+
+Regenerating an earlier answer requires the existing confirmation dialog to
+explain that success replaces that answer and all later messages. Cancelling the
+dialog sends no request. New messages retain immediate prompt persistence,
+bounded stream checkpoints, and saved partial replies on cancellation. The
+browser record remains version 1; there are no dependency, provider endpoint,
+credential-retention, daemon, or schema changes. A page reload discards an
+unfinished replacement preview while retaining the original saved conversation.
+
+Validation in an isolated worktree based on `4d4a784`, macOS arm64, Node 22.22.0,
+verified npm 10.9.9 (macOS 26.6.2):
+
+- `npm ci --offline --no-audit --no-fund --cache /private/tmp/vibemux-npm-cache`:
+  installed the unchanged lockfile successfully.
+- `node --test tests/app_persistence.test.mjs`: **19 passed**, including 17 new
+  orchestration regressions executing the actual app functions with the real
+  storage/autosave modules. Provider cases use the real parser with controlled
+  fetch fixtures; late-settlement and feedback cases inject a callback driver.
+  They cover missing/rejected keys, network failure, partial EOF, token limits,
+  empty completion, partial cancellation, late cancellation, lifecycle flushes,
+  successful latest/older replacement, older-turn confirmation cancellation,
+  edit/resend success/failure, offline behavior, feedback preservation and the
+  quoted-user-HTML preview artifact overwrite case.
+- `npm test`: **100 app/service tests + 3 dependency checks passed**, zero
+  failures or skips. Existing corrupt-storage, quota, blocked-storage, writer
+  lease and key-exclusion coverage remains enabled.
+- The missing-key preservation and older-turn confirmation tests were also run
+  against the original `4d4a784` app functions: both failed on the expected
+  history-loss/missing-confirmation assertions. This is regression evidence,
+  not a test of a reimplemented orchestration model.
+- `npm run build`: succeeded, 4254 modules transformed, no Svelte compilation
+  warnings. `git diff --check`: passed.
+- Controlled Chrome walkthrough on the separate loopback QA origin
+  `http://127.0.0.1:5197`: created two replies including an HTML artifact, opened
+  and cancelled earlier-turn confirmation, stopped a replacement, reloaded to
+  clear the memory-only fixture key, confirmed earlier-turn regeneration with
+  that missing key, then reloaded again. All four original messages and the
+  saved artifact remained. Replacement feedback controls were visibly disabled;
+  stop/failure notices were visible. Captured browser errors: **zero**. The test
+  tab and local server were closed afterward; no live provider or real key was
+  used.
+- Independent source review found no remaining blocking findings after the
+  ordinary-stream feedback and preview-artifact issues were fixed and covered.
+
+Windows/Linux/WSL, other browser engines, mobile layout, and live provider access
+were not newly exercised. The successful replacement paths have controlled
+orchestration coverage; this browser walkthrough focused on the reported
+history-loss and cancellation/confirmation paths. Incomplete replacement text
+is intentionally not durable; the original conversation is the recovery state.

@@ -736,3 +736,67 @@ Decided by the operator after one live submit.
   their credentials from the Claude desktop app, and a daemon does not
   inherit them. An authenticated live turn is still unverified and needs a
   valid standalone CLI login (`claude auth login`).
+
+## Workspace Git process ownership (2026-11-06)
+
+`vibemux_workspace` reuses `vibemux_platform::ProcessTree` and the bundled
+`vibemux_launch_trampoline` for Git subprocesses. A configured Git filter can
+start descendants before Git reads stdin; killing only Git on timeout or output
+overflow leaves those descendants running. Successful Git exit is also not
+proof that its descendants have exited.
+
+- Windows assigns the unreleased trampoline to a kill-on-close Job Object
+  before sending the go byte. Git receives EOF on stdin and inherits containment.
+- POSIX keeps an unreleased trampoline alive as a process-group anchor and
+  spawns Git directly into that group before exec. The anchor holds the group
+  identity even after a fast Git exit and keeps it signalable on macOS, where
+  an all-zombie group can reject a signal with `EPERM`. No permission error is
+  ignored. This is specific to the workspace executor; the harness executor
+  remains unchanged.
+- Normal completion, output overflow, and deadline paths terminate the owned
+  tree and wait for direct children with a bounded cleanup deadline. On Windows
+  they also wait for the Job Object's active-process count to reach zero. On
+  future cancellation, drop terminates the tree before releasing child handles;
+  Tokio retains responsibility for reaping its children.
+- The helper is resolved beside the calling executable (one directory above a
+  Cargo test's `deps` directory), never through `PATH`. Missing or non-regular
+  helpers fail closed with the existing cleanup error. The helper must be built
+  in the same target directory/profile as focused workspace tests and packaged
+  with consumers on every platform. The local installer requires it.
+
+This adds one internal crate dependency and no unsafe code, wire/schema change,
+or executable-launch permission. Explicit argv, the existing environment
+allowlist, output bounds, and deadlines remain in force. Process groups own
+ordinary descendants; this is not protection against deliberately escaping
+hostile code. Tests cover descendant heartbeats on exit, overflow, deadline,
+cancellation, and an actual Git smudge filter. Native Windows/Linux validation
+is still required; the new regression evidence is macOS arm64 only.
+
+## macOS exited-group verification (2026-11-06)
+
+Darwin can return `EPERM` from `killpg` when the group contains only zombies;
+the same error can also mean a live member cannot be signalled. It must not be
+accepted merely because the group leader exited. On macOS only, after `EPERM`,
+the platform now requires both non-reaping `waitid` evidence that its owned
+leader exited and an authoritative group-membership snapshot containing exactly
+that leader. Empty, full one-slot, multi-member, or failed snapshots retain the
+original error. No other signal result changes. The unreaped PID reserves the
+identity; the sole zombie cannot create another descendant.
+
+The safe `libproc` wrapper is pinned to 0.14.11 for this macOS-only query. XNU's
+`PROC_PGRP_ONLY` enumeration checks access for the whole request and scans live
+and zombie lists under the process-list lock, without a UID filter. Both the
+wrapper allocation and kernel buffer include spare capacity; requiring a
+capacity above one prevents interpreting a truncated single row as the full
+group. See the [XNU implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c)
+and [libproc wrapper](https://docs.rs/libproc/0.14.11/src/libproc/sys/macos.rs.html).
+
+This internal dependency uses the already-allowed MIT license, supports the
+workspace MSRV, and avoids adding unsafe source to VibeMux. Its build-time
+bindgen dependency requires Apple headers and libclang from Xcode/Command Line
+Tools; runtime dependencies are errno/libc. Windows and Linux keep their
+existing implementations. No wire, database, event, or public API changes.
+Tests preserve the original exited-leader assertion and cover a surviving
+descendant, idempotency, denied enumeration, additional/unknown members, and
+incomplete observations. Multiple residual zombies conservatively remain an
+error. This does not expand process groups into a hostile-code sandbox.

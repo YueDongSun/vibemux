@@ -525,7 +525,7 @@ impl ProjectPaths {
         };
         let guard =
             vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard::register_worker_copies(
-                Path::new(WORKER_FIXTURE),
+                &std::fs::canonicalize(WORKER_FIXTURE).expect("canonical built worker"),
                 &self.vendor_dir,
                 &[AgentKind::Codex, AgentKind::Claude],
             )
@@ -565,16 +565,19 @@ impl WorkflowFixture {
         let node = require_node();
         let git = find_on_path("git").expect("git must be on PATH for the workflow tests");
         let temp = tempfile::tempdir().expect("temp");
-        let project_root = temp.path().join("project");
+        // The fixture guard intentionally refuses linked ancestors. Resolve
+        // the system's temporary-root alias before creating our owned tree.
+        let root = temp.path().canonicalize().expect("canonical fixture root");
+        let project_root = root.join("project");
         let paths = ProjectPaths {
             state_dir: project_root.join(".vibemux"),
             project_root,
-            vendor_dir: temp.path().join("vendor"),
-            runtime_dir: temp.path().join("runtime"),
+            vendor_dir: root.join("vendor"),
+            runtime_dir: root.join("runtime"),
             git,
-            git_home: temp.path().join("git_home"),
+            git_home: root.join("git_home"),
         };
-        let verifier_dir = temp.path().join("verifier");
+        let verifier_dir = root.join("verifier");
         copy_tree(&Path::new(TASKBOARD_DIR).join("base"), &paths.project_root);
         copy_tree(&Path::new(TASKBOARD_DIR).join("verifier"), &verifier_dir);
         std::fs::write(
@@ -698,7 +701,12 @@ impl WorkflowFixture {
 
     /// A scratch directory outside the project.
     pub fn scratch(&self, name: &str) -> PathBuf {
-        let directory = self.temp.path().join(name);
+        let directory = self
+            .temp
+            .path()
+            .canonicalize()
+            .expect("canonical fixture root")
+            .join(name);
         std::fs::create_dir_all(&directory).expect("scratch directory");
         directory
     }

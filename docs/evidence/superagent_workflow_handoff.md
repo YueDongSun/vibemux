@@ -72,6 +72,7 @@
 - result: failed at three MCP lifecycle tests. The same three failures reproduced on the clean baseline. The unfiltered focused run separately reached the two unsupported browser cases. Neither run is claimed as successful.
 - command: `cargo nextest run --workspace --all-features`, `cargo deny check`, `cargo audit`
 - result: unavailable tools, exit 101.
+- Refreshed merged-tree checks: all five new IPC scenarios, all 25 workflow-store tests, focused Clippy, formatting and staged-source/PR-body privacy checks passed. Original broad results above remain dated evidence.
 - Full command history, prerequisites and diagnosed failures: [validation record](superagent_workflow_validation.md).
 
 ## Platform coverage
@@ -98,11 +99,11 @@
 ## Remaining work
 
 - Install/run nextest, deny and audit in the qualified validation environment.
-- Resolve the separately reproduced baseline MCP lifecycle failures and run native Windows/Linux browser acceptance.
+- Recheck the dated baseline MCP/browser limitations with full current-tree CI and native Windows/Linux acceptance; upstream fixes were integrated during PR preparation.
 - Live vendor certification and source integrations remain separate milestones; GitHub/Feishu monitoring, subscriptions/hand-back and external replies are outside this increment.
 
 ## Known risks
 
 - This remains private pre-alpha functionality with offline fixture evidence.
-- The default macOS temporary directory is too long for the current control socket spelling; validation used the explicitly short temporary directory.
+- Initial baseline validation needed a short temporary directory; current main includes the subsequent macOS socket/process/browser fixes. Refreshed focused validation and historical limits are separated in the validation record.
 - Old binaries cannot read schema 10. Restoring a separately retained schema-9 backup with the daemon stopped is the documented rollback path.

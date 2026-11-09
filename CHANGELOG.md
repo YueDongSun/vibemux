@@ -9,6 +9,21 @@
   Report text remains private and opt-in. Existing `worker_v1` contracts
   retain their rendered bytes; live vendor certification is unchanged.
 
+- Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.
+- Preserve chat history and artifacts when regeneration or edit/resend fails or is stopped. Successful replacements alone update saved history; regenerating an older response requires confirmation before later messages can be replaced.
+- Bind monitor requests to their authentication session and detail selection. Late responses and errors cannot overwrite a new login or selection; failed current detail refreshes are marked stale.
+
+- Fix npm audit findings across all three UIs with a pinned, reviewed deepmerge security fork and a scoped Workbox glob/minimatch update. Add dependency regression checks to each UI test command and include browser-local chat's tests, audit and build in CI; see `docs/frontend_dependencies.md` for provenance and maintenance limits.
+
+- Fix macOS cleanup of a sole exited process-group leader using verified kernel membership, without suppressing permission failures for live or unknown members. Keep local control socket paths within Darwin's length limit even with long temporary directories.
+- Make macOS validation fixtures use canonical owned roots, separate ordinary plugin/DSH startup budgets from explicit deadline assertions, and correct Python acceptance-tool imports and Windows API typing. Add macOS to the configured CI matrices.
+- Discover native macOS Chrome, Edge, and Chromium bundles in the TaskBoard verifier, and omit incorrect native key codes while retaining real keyboard events for browser checks.
+- Update the locked `pulldown-cmark` to 0.13.6 for RUSTSEC-2026-0414 and RUSTSEC-2026-0433; audit policy is unchanged.
+
+- Contain workspace Git filters and their descendants through completion, output overflow, timeout, and cancellation. Workspace Git now requires the bundled `vibemux_launch_trampoline` beside its executable on every platform; build/install both together. Normalize extended Windows UNC worktree inventory paths without losing the network root.
+- Protect browser-local chat history with an exclusive writer lease and stale-record checks; checkpoint streaming conversations at least once per second while timers run, with immediate submit/completion/cancellation and page-lifecycle saves. Existing version-1 records need no migration. Reload older tabs after upgrading; saving requires Web Locks on localhost/loopback or HTTPS.
+- Save desktop settings through uniquely and exclusively created sibling files, preserving unrelated temporary files and symlinks. Bound settings reads and writes to 64 KiB; independent app instances still use last-writer-wins complete snapshots.
+
 - Add the optional browser-local conversational workspace (ADR 056), with switchable Claude and Codex presentations, persistent history, streaming Anthropic chat, attachments, a context inspector and artifact previews. It remains separate from the monitor, native desktop and daemon state.
 
 - Add `vibemux_harness_native` (ADR 040): bounded native harness request dispatch for Codex app-server, Claude stream-json, and ACP (OpenCode, Copilot, Grok) with private full JSON capture, safe public summaries, process-tree containment through `vibemux_platform::ProcessTree` (the crate forbids unsafe code), configuration SHA-256 pinning, and the standalone `vibemux_harness_native`, `vibemux_harness_native_plugin`, and (test-only) `vibemux_harness_native_fixture` binaries. It coexists with the daemon-owned dispatch (ADR 029) and never writes canonical state.

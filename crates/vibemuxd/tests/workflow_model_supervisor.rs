@@ -7,7 +7,7 @@ mod workflow_support;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -264,7 +264,7 @@ async fn start_model_fixture(
     )
     .expect("write config");
     let guard = FixtureLaunchGuard::register_worker_copies(
-        Path::new(workflow_support::WORKER_FIXTURE),
+        &std::fs::canonicalize(workflow_support::WORKER_FIXTURE).expect("canonical built worker"),
         &fixture.vendor_dir,
         &[AgentKind::Codex, AgentKind::Claude],
     )

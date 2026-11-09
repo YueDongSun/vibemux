@@ -108,7 +108,12 @@ fn run_parent() {
     println!("{READY_MARKER} {}", grandchild.id());
     io::stdout().flush().expect("flush ready marker");
     // The grandchild sleeps for `HELPER_LIFETIME`, which bounds this wait.
+    let deadline = Instant::now() + HELPER_LIFETIME;
     let _ = grandchild.wait();
+    // Group signalling may reach the grandchild first. Keep the parent
+    // alive so it cannot exit successfully before its own signal arrives;
+    // the test must observe its termination, not race a normal return.
+    thread::sleep(deadline.saturating_duration_since(Instant::now()));
 }
 
 /// Owns a contained parent until it is killed.
@@ -411,6 +416,33 @@ fn a_leader_exit_is_observed_without_reaping_it() {
     // Still reapable, with its own status.
     let status = helper.child.wait().expect("reap the leader");
     assert_eq!(status.code(), Some(0));
+    tree.terminate()
+        .expect("successful cleanup stays idempotent");
+}
+
+/// A zombie leader is not proof that the group is finished: its descendant
+/// still holds the pipe and must be killed before the leader is reaped.
+#[cfg(unix)]
+#[test]
+fn an_unreaped_exited_leader_does_not_hide_a_live_descendant() {
+    let _serial = serial();
+    let (mut helper, mut tree) = contained_parent();
+    helper.child.kill().expect("kill the parent only");
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while !tree.leader_exited().expect("observe the leader") {
+        assert!(Instant::now() < deadline, "the leader did not exit");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !helper.closed_within(SURVIVAL_WINDOW),
+        "the grandchild should still hold the pipe"
+    );
+    tree.terminate().expect("terminate the live descendant");
+    assert!(
+        helper.closed_within(EXIT_TIMEOUT),
+        "the descendant survived"
+    );
+    assert!(!helper.child.wait().expect("reap the leader").success());
 }
 
 #[test]

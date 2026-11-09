@@ -29,9 +29,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # Frequently changed settings: which binaries are installed.
-$required_binary_names = @("vibemuxctl", "vibemuxd")
+$required_binary_names = @("vibemuxctl", "vibemuxd", "vibemux_launch_trampoline")
 $companion_binary_names = @(
-    "vibemux_launch_trampoline",
     "vibemux_probe",
     "vibemux_decision_peer",
     "vibemux_terminal_observer"

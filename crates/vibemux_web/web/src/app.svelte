@@ -51,6 +51,16 @@
   let enrollment_input = $state('');
   let update_available = $state(false);
   let tasks_page_truncated = $state(false);
+
+  // Every callback belongs to one authentication generation. Aborting fetch is
+  // a resource bound; checking ownership also handles already-settled responses.
+  type request_context = { generation: number; token: string; controller: AbortController };
+  let auth_generation = 0;
+  const active_requests = new Set<request_context>();
+  let board_request: request_context | null = null;
+  let detail_request: request_context | null = null;
+  let enrollment_request: request_context | null = null;
+
   const shown_observed_at = $derived(
     observed_at_for_view(active_view, console_data?.observed_at, data_freshness?.observed_at),
   );
@@ -64,6 +74,8 @@
     return () => {
       window.removeEventListener('vibemux:update_available', on_update);
       window.removeEventListener('keydown', on_key);
+      invalidate_requests();
+      clear_enrollment_image();
     };
   });
 
@@ -93,6 +105,7 @@
 
   function clear_daemon_views(): void {
     tasks = [];
+    tasks_page_truncated = false;
     selected_id = null;
     selected_task = null;
     selected_activity = null;
@@ -101,49 +114,105 @@
     detail_freshness = null;
   }
 
+  function invalidate_requests(): number {
+    auth_generation += 1;
+    for (const request of active_requests) request.controller.abort();
+    active_requests.clear();
+    board_request = null;
+    detail_request = null;
+    enrollment_request = null;
+    busy = false;
+    return auth_generation;
+  }
+
+  function begin_request(): request_context | null {
+    if (!token || enrollment_request) return null;
+    const request = { generation: auth_generation, token, controller: new AbortController() };
+    active_requests.add(request);
+    return request;
+  }
+
+  function request_is_current(request: request_context): boolean {
+    return request.generation === auth_generation && request.token === token && !request.controller.signal.aborted;
+  }
+
+  function finish_request(request: request_context): void {
+    request.controller.abort();
+    active_requests.delete(request);
+  }
+
+  function clear_enrollment_image(): void {
+    if (enrollment_image) URL.revokeObjectURL(enrollment_image);
+    enrollment_image = '';
+  }
+
+  function begin_session_change(): number {
+    const generation = invalidate_requests();
+    token = '';
+    token_input = '';
+    clear_daemon_views();
+    health = null;
+    clear_enrollment_image();
+    enrollment_input = '';
+    enrollment_notice = '';
+    error_message = '';
+    return generation;
+  }
+
+  async function install_token(next_token: string, notice = ''): Promise<void> {
+    const generation = begin_session_change();
+    try {
+      await clear_authenticated_state();
+      if (generation !== auth_generation) return;
+      save_instance_token(next_token);
+      token = next_token;
+      token_input = next_token;
+      enrollment_notice = notice;
+    } catch {
+      if (generation === auth_generation) error_message = 'The authenticated browser state could not be updated.';
+    }
+  }
+
   async function use_token(): Promise<void> {
     const next_token = token_input.trim();
     if (!next_token) {
       error_message = 'Enter the instance token of this vibemux_web process.';
       return;
     }
-    await clear_authenticated_state();
-    save_instance_token(next_token);
-    token = next_token;
-    clear_daemon_views();
-    error_message = '';
+    await install_token(next_token);
   }
 
   async function sign_out(): Promise<void> {
-    await clear_authenticated_state();
-    token = '';
-    token_input = '';
-    clear_daemon_views();
-    health = null;
-    enrollment_image = '';
-    error_message = '';
+    const generation = begin_session_change();
+    try {
+      await clear_authenticated_state();
+    } catch {
+      if (generation === auth_generation) error_message = 'The authenticated browser cache could not be cleared.';
+    }
   }
 
   async function expire_session(): Promise<void> {
-    await clear_authenticated_state();
-    token = '';
-    token_input = '';
-    clear_daemon_views();
-    health = null;
-    enrollment_image = '';
+    begin_session_change();
     error_message = 'The instance token was rejected or rotated. Every device must reconnect with the current authenticated bootstrap.';
+    // Local credentials and views are already invalidated, even if the worker
+    // is unavailable. A late cache-clear result must not change a new session.
+    try { await clear_authenticated_state(); } catch { /* Keep the expiry notice. */ }
   }
 
   async function refresh_board(): Promise<void> {
-    if (!token || busy) return;
+    if (board_request) return;
+    const request = begin_request();
+    if (!request) return;
+    board_request = request;
     busy = true;
     error_message = '';
     try {
       const [task_pages, health_page, console_page] = await Promise.all([
-        load_task_pages(),
-        load_health(token),
-        load_console(token),
+        load_task_pages(request),
+        load_health(request.token, request.controller.signal),
+        load_console(request.token, request.controller.signal),
       ]);
+      if (!request_is_current(request)) return;
       if (!snapshots_match(task_pages, health_page)) {
         task_pages.stale = true;
         health_page.stale = true;
@@ -160,12 +229,18 @@
       else {
         selected_task = null;
         selected_activity = null;
+        detail_freshness = null;
       }
     } catch (error) {
+      if (!request_is_current(request)) return;
       mark_views_stale();
-      show_error(error);
+      show_error(error, request);
     } finally {
-      busy = false;
+      finish_request(request);
+      if (board_request === request) {
+        board_request = null;
+        busy = false;
+      }
     }
   }
 
@@ -177,9 +252,10 @@
     if (health) health = { ...health, stale: true };
   }
 
-  async function load_task_pages(): Promise<{ tasks: task_status[]; truncated: boolean } & freshness> {
+  async function load_task_pages(request: request_context): Promise<{ tasks: task_status[]; truncated: boolean } & freshness> {
     const collected_tasks: task_status[] = [];
-    let page = await load_tasks(token);
+    let page = await load_tasks(request.token, null, request.controller.signal);
+    request.controller.signal.throwIfAborted();
     const first_snapshot = { generation: page.generation, observed_at: page.observed_at };
     let pages_loaded = 0;
     let is_stale = page.stale;
@@ -190,7 +266,8 @@
 
     while (next_cursor && pages_loaded < 7 && !seen_cursors.has(next_cursor)) {
       seen_cursors.add(next_cursor);
-      page = await load_tasks(token, next_cursor);
+      page = await load_tasks(request.token, next_cursor, request.controller.signal);
+      request.controller.signal.throwIfAborted();
       collected_tasks.push(...page.tasks);
       is_stale ||= page.stale || !snapshots_match(first_snapshot, page);
       is_truncated ||= page.truncated;
@@ -208,6 +285,10 @@
   }
 
   async function select_task(task_id: string): Promise<void> {
+    const request = begin_request();
+    if (!request) return;
+    if (detail_request) finish_request(detail_request);
+    detail_request = request;
     selected_id = task_id;
     if (selected_task?.task_id !== task_id) {
       selected_task = null;
@@ -215,71 +296,98 @@
       detail_freshness = null;
     }
     try {
-      const response = await load_task(token, task_id);
-      // Another task was selected while this read was in flight.
-      if (selected_id !== task_id) return;
+      const response = await load_task(request.token, task_id, request.controller.signal);
+      // Request identity also rejects an earlier A after selection A → B → A.
+      if (!request_is_current(request) || detail_request !== request) return;
       if (data_freshness && !snapshots_match(data_freshness, response)) response.stale = true;
       selected_task = response.task;
       selected_activity = response.activity ?? null;
       detail_freshness = response;
     } catch (error) {
-      show_error(error);
+      if (!request_is_current(request) || detail_request !== request) return;
+      if (detail_freshness) detail_freshness = { ...detail_freshness, stale: true };
+      show_error(error, request);
+    } finally {
+      finish_request(request);
+      if (detail_request === request) detail_request = null;
     }
   }
 
   async function enable_push(): Promise<void> {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-      error_message = 'Push notifications are not available in this browser.';
-      return;
-    }
+    const request = begin_request();
+    if (!request) return;
     try {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        throw new Error('Push notifications are not available in this browser.');
+      }
       const permission = await Notification.requestPermission();
+      if (!request_is_current(request)) return;
       if (permission !== 'granted') throw new Error('Notification permission was not granted.');
       const registration = await navigator.serviceWorker.ready;
-      const { public_key } = await load_public_key(token);
+      if (!request_is_current(request)) return;
+      const { public_key } = await load_public_key(request.token, request.controller.signal);
+      if (!request_is_current(request)) return;
       const application_server_key = decode_application_server_key(public_key);
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: application_server_key,
       });
-      await save_push_subscription(token, subscription);
-      enrollment_notice = 'This browser is subscribed for state notifications.';
+      if (!request_is_current(request)) return;
+      await save_push_subscription(request.token, subscription, request.controller.signal);
+      if (request_is_current(request)) enrollment_notice = 'This browser is subscribed for state notifications.';
     } catch (error) {
-      show_error(error);
+      show_error(error, request);
+    } finally {
+      finish_request(request);
     }
   }
 
   async function make_enrollment_qr(): Promise<void> {
-    enrollment_image = '';
+    const request = begin_request();
+    if (!request) return;
+    clear_enrollment_image();
     enrollment_notice = '';
     try {
-      const enrollment = await create_enrollment(token);
+      const enrollment = await create_enrollment(request.token, request.controller.signal);
+      if (!request_is_current(request)) return;
       const svg_blob = new Blob([enrollment.qr_svg], { type: 'image/svg+xml' });
+      clear_enrollment_image();
       enrollment_image = URL.createObjectURL(svg_blob);
       enrollment_notice = `One-time token expires in ${enrollment.expires_in_seconds} seconds. A phone still needs an operator-provided authenticated browser bootstrap.`;
     } catch (error) {
-      show_error(error);
+      show_error(error, request);
+    } finally {
+      finish_request(request);
     }
   }
 
   async function redeem_device_enrollment(): Promise<void> {
-    if (!enrollment_input.trim()) return;
+    const enrollment_token = enrollment_input.trim();
+    if (!token || !enrollment_token || enrollment_request) return;
+    // Redemption rotates the bearer. Stop old polls before the server can
+    // reject them, and do not start new ones until the exchange settles.
+    invalidate_requests();
+    const request = begin_request();
+    if (!request) return;
+    enrollment_request = request;
+    clear_daemon_views();
+    health = null;
+    clear_enrollment_image();
+    enrollment_notice = '';
     try {
-      const result = await redeem_enrollment(token, enrollment_input.trim());
-      await clear_authenticated_state();
-      save_instance_token(result.instance_token);
-      token = result.instance_token;
-      token_input = result.instance_token;
-      enrollment_input = '';
-      enrollment_notice = 'Device enrolled. Instance token rotation signs out every enrolled device.';
-      error_message = '';
-      await refresh_board();
+      const result = await redeem_enrollment(request.token, enrollment_token, request.controller.signal);
+      if (!request_is_current(request)) return;
+      await install_token(result.instance_token, 'Device enrolled. Instance token rotation signs out every enrolled device.');
     } catch (error) {
-      show_error(error);
+      show_error(error, request);
+    } finally {
+      finish_request(request);
+      if (enrollment_request === request) enrollment_request = null;
     }
   }
 
-  function show_error(error: unknown): void {
+  function show_error(error: unknown, request: request_context): void {
+    if (!request_is_current(request)) return;
     if (error instanceof api_error && error.status === 401) {
       void expire_session();
       return;

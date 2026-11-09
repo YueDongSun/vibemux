@@ -11,7 +11,7 @@
     "dev_fixture": "vite --config vite_config.ts --port 5180 --strictPort --mode fixture",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "build": "vite build --config vite_config.ts",
-    "test": "node --experimental-strip-types --test tests/fixture_guard_test.ts",
+    "test": "node --experimental-strip-types --test tests/fixture_guard_test.ts && node --test ../../../scripts/test_frontend_dependencies.mjs",
     "audit": "npm audit --audit-level=low"
   },
   "dependencies": {
@@ -25,5 +25,8 @@
     "svelte-check": "4.7.6",
     "typescript": "5.9.3",
     "vite": "8.3.3"
+  },
+  "overrides": {
+    "deepmerge": "npm:@oss-cve-patches/deepmerge@4.3.2"
   }
 }

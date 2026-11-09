@@ -39,14 +39,14 @@
   import SettingsPanel from "./components/settings_panel.svelte";
   import { models, app_config, shortcuts } from "./config.js";
   import {
-    load_workspace,
-    save_workspace,
+    create_workspace_session,
     create_conversation,
     uid,
     export_conversation,
     export_all,
     download_file,
   } from "./services/chat_store.js";
+  import { create_workspace_autosave } from "./services/workspace_autosave.js";
   import { stream_response, validate_api_key } from "./services/provider.js";
   import {
     group_conversations,
@@ -54,7 +54,8 @@
     stopped_snapshot,
   } from "./ui_policy.js";
 
-  const initial = load_workspace();
+  const storage_session = create_workspace_session();
+  const initial = storage_session.initial;
   let interface_style = $state(
     resolve_interface(location.search, initial.settings.interface_style),
   );
@@ -127,6 +128,8 @@
     api_key = $state(""),
     api_status = $state("Add your API key to start a live conversation."),
     generating = $state(false),
+    replacement = $state(null),
+    replacement_notice = $state(null),
     collapsed = $state(matchMedia("(max-width: 760px)").matches),
     mobile = $state(matchMedia("(max-width: 760px)").matches),
     modal = $state(null),
@@ -144,12 +147,30 @@
   let controller = null,
     toast_timer = null,
     api_validation = 0;
+  function workspace_snapshot() {
+    return {
+      conversations: $state.snapshot(conversations),
+      settings: $state.snapshot(settings),
+      active_id,
+    };
+  }
+  const autosave = create_workspace_autosave({
+    session: storage_session,
+    snapshot: workspace_snapshot,
+    on_error: (error) => (storage_error = error.message),
+    on_saved: () => (storage_error = ""),
+  });
   let tablet = $state(innerWidth <= 1180);
   const drawer_mode = $derived(mobile || (Boolean(artifact) && tablet));
   $effect(() => {
     if (artifact && tablet) untrack(() => (collapsed = true));
   });
   const active = $derived(conversations.find((chat) => chat.id === active_id));
+  const displayed_chat = $derived(
+    replacement && replacement.chat_id === active?.id
+      ? { ...active, messages: replacement.messages }
+      : active,
+  );
   const model = $derived(active?.model || draft_model),
     thinking = $derived(active?.thinking ?? draft_thinking),
     has_messages = $derived(Boolean(active?.messages.length));
@@ -272,15 +293,27 @@
     modal = { type: "settings", tab };
   }
   function open_artifact(value) {
+    if (
+      replacement && replacement.chat_id === active?.id &&
+      value !== active.artifact
+    ) {
+      notify("Wait for the replacement to finish before opening its artifact.");
+      return;
+    }
     if (active)
       update_chat(active.id, { artifact: value, artifact_open: true });
   }
-  async function generate(chat, messages) {
+  async function generate(chat, messages, { replace = false } = {}) {
     if (controller) return;
+    if (replace && !online) {
+      notify("You’re offline. Your original conversation is unchanged.");
+      return;
+    }
     const request = new AbortController();
     controller = request;
     generating = true;
-    const reply = {
+    replacement_notice = null;
+    let reply = {
       id: uid(),
       role: "assistant",
       model: chat.model,
@@ -290,19 +323,42 @@
       created_at: new Date().toISOString(),
     };
     const chat_id = chat.id;
-    update_chat(chat_id, {
-      messages: [...messages, reply],
-      updated_at: new Date().toISOString(),
-      ...(chat.artifact &&
+    const retained_artifact =
+      chat.artifact &&
       messages.some(
-        (m) =>
-          m.role === "assistant" && m.content?.includes(chat.artifact.content),
-      )
-        ? {}
-        : { artifact: null, artifact_open: false }),
-    });
+        (message) =>
+          message.role === "assistant" &&
+          message.content?.includes(chat.artifact.content),
+      );
+    const artifact_patch = retained_artifact
+      ? {}
+      : { artifact: null, artifact_open: false };
+    // Replacement previews never enter saved/exported history. A reload or
+    // failed request must still have the complete original conversation.
+    if (replace) replacement = { chat_id, messages: [...messages, reply] };
+    else {
+      update_chat(chat_id, {
+        messages: [...messages, reply],
+        updated_at: new Date().toISOString(),
+        ...artifact_patch,
+      });
+    }
+    const update_reply = (patch) => {
+      reply = { ...reply, ...patch };
+      if (replace) replacement = { chat_id, messages: [...messages, reply] };
+      else {
+        update_chat(chat_id, (current) => ({
+          messages: current.messages.map((message) =>
+            message.id === reply.id ? { ...message, ...reply } : message,
+          ),
+        }));
+      }
+    };
     let content = "";
     try {
+      // New submissions checkpoint before inference; replacements checkpoint
+      // the original history, including page lifecycle flushes while streaming.
+      if (storage_ready) await autosave.persist(workspace_snapshot());
       const full = await stream_response({
         messages: messages.filter(
           (message) => message.role === "user" || message.content.trim(),
@@ -313,50 +369,60 @@
         signal: request.signal,
         on_delta: (chunk) => {
           content += chunk;
-          update_chat(chat_id, (c) => ({
-            messages: c.messages.map((m) =>
-              m.id === reply.id ? { ...m, content } : m,
-            ),
-          }));
+          update_reply({ content });
         },
-        on_usage: (usage) =>
-          update_chat(chat_id, (c) => ({
-            messages: c.messages.map((m) =>
-              m.id === reply.id ? { ...m, usage } : m,
-            ),
-          })),
+        on_usage: (usage) => update_reply({ usage }),
       });
+      request.signal.throwIfAborted();
+      if (replace && !full.trim()) {
+        throw new Error("The provider returned an empty replacement. Please retry.");
+      }
       const new_artifact = extract_artifact(full);
-      update_chat(chat_id, (c) => ({
-        messages: c.messages.map((m) =>
-          m.id === reply.id ? { ...m, content: full, status: "complete" } : m,
-        ),
+      reply = { ...reply, content: full, status: "complete" };
+      update_chat(chat_id, (current) => ({
+        messages: replace
+          ? [
+              ...messages.map((message) => {
+                const saved = current.messages.find((item) => item.id === message.id);
+                return saved && Object.hasOwn(saved, "feedback")
+                  ? { ...message, feedback: saved.feedback }
+                  : message;
+              }),
+              reply,
+            ]
+          : current.messages.map((message) =>
+              message.id === reply.id ? { ...message, ...reply } : message,
+            ),
+        ...(replace
+          ? { updated_at: new Date().toISOString(), ...artifact_patch }
+          : {}),
         ...(new_artifact
           ? { artifact: new_artifact, artifact_open: true }
           : {}),
       }));
     } catch (error) {
-      update_chat(chat_id, (c) => ({
-        messages: c.messages.map((m) =>
-          m.id === reply.id
-            ? {
-                ...m,
-                status: error.name === "AbortError" ? "stopped" : "error",
-                ...(error.name === "AbortError"
-                  ? {}
-                  : {
-                      error:
-                        error.message || "The request failed. Please retry.",
-                    }),
-              }
-            : m,
-        ),
-      }));
+      const stopped = error.name === "AbortError";
+      if (replace) {
+        replacement_notice = {
+          chat_id,
+          error: !stopped,
+          message: `${stopped ? "Response stopped." : error.message || "The request failed. Please retry."} Your original conversation was kept.`,
+        };
+      } else {
+        update_reply({
+          status: stopped ? "stopped" : "error",
+          ...(!stopped
+            ? { error: error.message || "The request failed. Please retry." }
+            : {}),
+        });
+      }
     } finally {
       if (controller === request) {
+        replacement = null;
         controller = null;
         generating = false;
       }
+      if (storage_ready) autosave.flush_now();
     }
   }
   function send_message(content, attachments = [], force_new = false) {
@@ -389,8 +455,20 @@
   }
   function regenerate(index) {
     if (!active || controller) return;
-    const context = active.messages.slice(0, index);
-    if (context.at(-1)?.role === "user") generate(active, context);
+    const chat = active;
+    const context = chat.messages.slice(0, index);
+    if (context.at(-1)?.role !== "user") return;
+    const action = () => generate(chat, context, { replace: true });
+    if (index < chat.messages.length - 1) {
+      modal = {
+        type: "confirm",
+        title: "Regenerate this earlier response?",
+        description:
+          "A successful replacement will remove this response and all later messages. If it fails or you stop it, your original conversation will be kept.",
+        confirm: "Regenerate & replace later messages",
+        action,
+      };
+    } else action();
   }
   function edit_message(index, content, on_saved) {
     if (!active || controller) return false;
@@ -399,7 +477,7 @@
       type: "confirm",
       title: "Resend this message?",
       description:
-        "Claude will respond to the edited message. Replies after it will be replaced.",
+        "A successful response will replace this message and all later replies. If it fails or you stop it, your original conversation will be kept.",
       confirm: "Save & resend",
       action: () => {
         if (controller) {
@@ -411,6 +489,7 @@
           chat.messages
             .slice(0, index + 1)
             .map((m, i) => (i === index ? { ...m, content } : m)),
+          { replace: true },
         );
         on_saved?.();
       },
@@ -546,10 +625,11 @@
         "Download the original browser record first if you need to recover it. Resetting clears that record so new conversations can be saved.",
       confirm: "Reset local history",
       danger: true,
-      action: () => {
+      action: async () => {
         try {
-          localStorage.removeItem(app_config.storage_key);
-          load_workspace();
+          await storage_session.acquire();
+          storage_session.reset();
+          autosave.discard();
           conversations = [];
           active_id = null;
           storage_ready = true;
@@ -562,21 +642,8 @@
     };
   }
   $effect(() => {
-    const snapshot = {
-      conversations: $state.snapshot(conversations),
-      settings: $state.snapshot(settings),
-      active_id,
-    };
-    if (!storage_ready) return;
-    const timer = setTimeout(() => {
-      try {
-        save_workspace(snapshot);
-        storage_error = "";
-      } catch (error) {
-        storage_error = error.message;
-      }
-    }, app_config.save_delay);
-    return () => clearTimeout(timer);
+    const snapshot = workspace_snapshot();
+    if (storage_ready) autosave.schedule(snapshot);
   });
   $effect(() => {
     const value = search;
@@ -634,6 +701,7 @@
     }
   }
   onMount(() => {
+    autosave.attach(window, document);
     const query = matchMedia("(max-width: 760px)");
     const resize = () => {
       mobile = query.matches;
@@ -651,6 +719,7 @@
     return () => {
       clearTimeout(toast_timer);
       controller?.abort();
+      autosave.dispose();
       query.removeEventListener("change", resize);
       tablet_query.removeEventListener("change", tablet_change);
       window.removeEventListener("online", up);
@@ -787,7 +856,13 @@
               notify(error.message);
             }
           }}>Download original record</button
-        >{#if !storage_ready}<button class="text-btn" onclick={recover_storage}
+        >{#if storage_ready}<button
+            class="text-btn"
+            onclick={() => export_chats("json")}>Export this tab's chats</button
+          ><button
+            class="text-btn"
+            onclick={() => autosave.persist(workspace_snapshot())}>Retry saving</button
+          >{:else}<button class="text-btn" onclick={recover_storage}
             >Reset local history</button
           >{/if}
       </div>{/if}
@@ -808,8 +883,26 @@
               ><FileCode2 />Open artifact</button
             >{/if}
         </div>
+        {#if replacement?.chat_id === active.id}<div
+            class="conversation-info"
+            role="status"
+          >Generating a replacement. Your original replies remain saved until it finishes.</div
+          >{:else if replacement_notice?.chat_id === active.id}<div
+            class={replacement_notice.error ? "storage-banner" : "conversation-info"}
+            role={replacement_notice.error ? "alert" : "status"}
+          >
+            <span>{replacement_notice.message}</span>
+            {#if replacement_notice.error}<button
+                class="text-btn"
+                onclick={() => open_settings("api")}>API settings</button
+              >{/if}<button
+              class="text-btn"
+              onclick={() => (replacement_notice = null)}>Dismiss</button
+            >
+          </div>{/if}
         <MessageStream
-          conversation={active}
+          conversation={displayed_chat}
+          replacing={Boolean(replacement)}
           {generating}
           on_regenerate={regenerate}
           on_edit={edit_message}

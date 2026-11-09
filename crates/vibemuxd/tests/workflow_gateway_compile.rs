@@ -5,10 +5,7 @@ mod workflow_support;
 #[path = "gateway_fixture_support.rs"]
 mod gateway_fixture_support;
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 
 use gateway_fixture_support::{FakeAagServer, fixture_token};
 use serde_json::{Value, json};
@@ -169,7 +166,7 @@ async fn control_compiler_uses_only_permitted_fixture_gateway_and_revalidates_ca
     let config = gateway_config(gateway.origin());
     install_gateway_config(&fixture, &config);
     let fixture_guard = FixtureLaunchGuard::register_worker_copies(
-        Path::new(workflow_support::WORKER_FIXTURE),
+        &std::fs::canonicalize(workflow_support::WORKER_FIXTURE).expect("canonical built worker"),
         &fixture.vendor_dir,
         &[AgentKind::Codex, AgentKind::Claude],
     )

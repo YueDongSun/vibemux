@@ -412,7 +412,7 @@ const locators = Object.freeze({
 
 // ------------------------------------------------------------ page driver --
 
-class Page_driver {
+export class Page_driver {
   constructor({ session, origin, signal }) {
     this.session = session;
     this.origin = origin;
@@ -517,7 +517,10 @@ class Page_driver {
   }
 
   async press_key({ key, code, key_code, text, modifiers = 0, commands }) {
-    const key_down = { type: text === undefined ? "rawKeyDown" : "keyDown", key, code, windowsVirtualKeyCode: key_code, nativeVirtualKeyCode: key_code, modifiers };
+    // key_code is a Windows virtual key, not a platform-native key number.
+    // Supplying it as nativeVirtualKeyCode sends different keys on macOS.
+    // Leave that optional field unset and retain the portable key/code fields.
+    const key_down = { type: text === undefined ? "rawKeyDown" : "keyDown", key, code, windowsVirtualKeyCode: key_code, modifiers };
     if (text !== undefined) {
       key_down.text = text;
       key_down.unmodifiedText = text;
@@ -526,7 +529,7 @@ class Page_driver {
       key_down.commands = commands;
     }
     await this.session.send("Input.dispatchKeyEvent", key_down);
-    await this.session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: key_code, nativeVirtualKeyCode: key_code, modifiers });
+    await this.session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: key_code, modifiers });
   }
 
   // Focuses the field with a real click, clears it with Ctrl+A and Backspace,

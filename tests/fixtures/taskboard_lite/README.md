@@ -33,6 +33,9 @@ Verifier files:
 | `verifier/api_suite.test.mjs` | `node:test` suite for launch, receipt, HTTP API, static files, persistence, concurrency |
 | `verifier/store_suite.test.mjs` | `node:test` suite for the `src/store.mjs` interface (comparison mode, below) |
 | `verifier/browser_suite.mjs` | Real headless-browser suite over the Chrome DevTools Protocol |
+| `verifier/browser_discovery.mjs` | Native browser executable discovery; explicit overrides never fall back |
+| `verifier/browser_discovery.test.mjs` | Native search paths, overrides, and missing-browser failures |
+| `verifier/browser_input.test.mjs` | Portable CDP keyboard events and dispatch-failure propagation |
 | `verifier/cdp_client.mjs` | Minimal CDP client over the global `WebSocket` with flattened sessions |
 | `verifier/contract_stub_server.mjs` | Verifier-owned reference backend used only for `browser_frontend_only` |
 | `verifier/candidate_paths.mjs` | Candidate layout, temp directories, process launch, receipt validation, process cleanup |
@@ -49,7 +52,7 @@ store suite imports only `src/store.mjs`; it does not start the server.
 
 ```text
 node verifier/run_verifier.mjs --candidate <product_dir> --suite <api|store|browser|browser_frontend_only>
-                               --out <result_file.json> [--browser <absolute msedge.exe or chrome.exe>]
+                               --out <result_file.json> [--browser <absolute Chromium-family executable path>]
                                [--timeout_ms N]
 ```
 
@@ -60,10 +63,15 @@ node verifier/run_verifier.mjs --candidate <product_dir> --suite <api|store|brow
 - `browser` starts the candidate server; `browser_frontend_only` serves the
   candidate `public/` through `contract_stub_server.mjs`. Both run
   in-process and report per-check results.
-- Browser discovery without `--browser`: Edge
-  (`C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`), Chrome
-  (`C:/Program Files/Google/Chrome/Application/chrome.exe`),
-  `/usr/bin/google-chrome`, `/usr/bin/chromium`. None found means `blocked`.
+- Browser discovery without `--browser` uses native locations. Windows keeps
+  Edge (`C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`) before
+  Chrome (`C:/Program Files/Google/Chrome/Application/chrome.exe`). macOS checks
+  Google Chrome, Microsoft Edge, and Chromium executable bundle members under
+  `/Applications`, then the same bundles under `~/Applications`. Linux checks
+  `/usr/bin/google-chrome`, then `/usr/bin/chromium`. None found means `blocked`.
+  An explicit `--browser` takes precedence; a missing override is `blocked`
+  without falling back. Discovery never connects to an existing browser session
+  or selects an existing profile.
 - The default suite timeout is 120 s. Exit codes: 0 passed, 1 failed,
   2 blocked, 3 usage error (no result file is written for usage errors).
   After argument parsing, an uncaught exception or unhandled rejection is

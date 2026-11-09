@@ -11,9 +11,9 @@ from typing import Any
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
+sys.path.insert(0, str(REPO_ROOT))
 
-from dual_track_acceptance.assessment import (  # noqa: E402
+from scripts.dual_track_acceptance.assessment import (  # noqa: E402
     LIVE_NOT_IMPLEMENTED,
     MODE_LIVE,
     MODE_OFFLINE,
@@ -30,7 +30,7 @@ from dual_track_acceptance.assessment import (  # noqa: E402
     decide_verdict,
     worst_status,
 )
-from dual_track_acceptance.check_execution import (  # noqa: E402
+from scripts.dual_track_acceptance.check_execution import (  # noqa: E402
     CHECK_BLOCKED,
     CHECK_FAIL,
     CHECK_PASS,
@@ -41,7 +41,7 @@ from dual_track_acceptance.check_execution import (  # noqa: E402
     parse_cargo_test_output,
     parse_pytest_summary,
 )
-from dual_track_acceptance.evidence_capture import (  # noqa: E402
+from scripts.dual_track_acceptance.evidence_capture import (  # noqa: E402
     FLAGSHIP,
     OPTIMIZER_CYCLE,
     EvidenceFile,
@@ -52,36 +52,36 @@ from dual_track_acceptance.evidence_capture import (  # noqa: E402
     verifier_records,
     workflow_summaries,
 )
-from dual_track_acceptance.live_policy import evaluate_live_gate, policy_problems  # noqa: E402
-from dual_track_acceptance.report_builder import (  # noqa: E402
+from scripts.dual_track_acceptance.live_policy import evaluate_live_gate, policy_problems  # noqa: E402
+from scripts.dual_track_acceptance.report_builder import (  # noqa: E402
     STANDING_LIMITATIONS,
     CleanupInfo,
     EnvironmentInfo,
     SourceInfo,
     build_report,
 )
-from dual_track_acceptance.report_projection import artifact_report_fields  # noqa: E402
-from dual_track_acceptance.report_validation import (  # noqa: E402
+from scripts.dual_track_acceptance.report_projection import artifact_report_fields  # noqa: E402
+from scripts.dual_track_acceptance.report_validation import (  # noqa: E402
     CARGO_COMMAND,
     load_run_artifacts,
     validate_report,
 )
-from dual_track_acceptance.runner import private_tmp_retention_reason, validate  # noqa: E402
-from dual_track_acceptance.runner_config import (  # noqa: E402
+from scripts.dual_track_acceptance.runner import private_tmp_retention_reason, validate  # noqa: E402
+from scripts.dual_track_acceptance.runner_config import (  # noqa: E402
     BENCHMARK_PATH,
     EVIDENCE_DIR_NAME,
     EXIT_FAIL,
     MAX_PRIVATE_TMP_PATH_CHARS,
     PRIVATE_TMP_PREFIX,
 )
-from dual_track_acceptance.runtime_roots import (  # noqa: E402
+from scripts.dual_track_acceptance.runtime_roots import (  # noqa: E402
     OutputError,
     OutputLayout,
     prepare_output,
     private_tmp_problems,
     remove_private_tmp,
 )
-from dual_track_acceptance.scenario_catalog import (  # noqa: E402
+from scripts.dual_track_acceptance.scenario_catalog import (  # noqa: E402
     LIVE_CLASSES,
     RULES,
     CargoTestRef,
