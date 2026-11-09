@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "limits": {"maximum_in_flight": 1, "timeout_ms": 120000},
+  "harnesses": [{
+    "harness": "codex", "protocol": "codex_app_server",
+    "executable": "REPLACE_WITH_NATIVE_EXECUTABLE.exe", "arguments": [],
+    "working_directory": "contexts/critic_a", "environment_names": [],
+    "enabled": false, "allow_execution": false,
+    "model": "REPLACE_WITH_PINNED_CRITIC_A_MODEL"
+  }]
+}

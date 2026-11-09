@@ -119,6 +119,13 @@ crates/
 
 Outside `crates/`: `src/vibemux/` is the Python behavior-reference package, `tests/` holds Python tests and fixtures, `scripts/` holds smoke and benchmark scripts, and `docs/` holds architecture, ADRs, boundaries, and labs.
 
+The opt-in `vibemux_harness_native` example `fusion_benchmark` composes existing
+read-only requests into Single, Cascade, and Critique experiments (ADR 057).
+Its config, workflow, fixed coding-reasoning graders, and private JSONL evidence
+modules live under `examples/fusion_benchmark/`. It is separate from daemon
+workflows and never creates canonical Task/Run/Event state. See
+[the runbook](guides/fusion_benchmarks.md) for the explicit live-execution gate.
+
 ### Native MCP frontend
 
 `vibemux_mcp` has a foreground protocol owner and one lazy, same-executable reader

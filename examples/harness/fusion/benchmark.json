@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repetitions": 4,
+  "max_dispatches": 108,
+  "budget_seconds": 3600,
+  "plugin": "../../../target/release/vibemux_harness_native_plugin.exe",
+  "machine": {
+    "os_version": "RECORD_OS_VERSION",
+    "cpu": "RECORD_CPU_MODEL",
+    "rustc": "RECORD_RUSTC_VERSION",
+    "source_revision": "RECORD_SOURCE_REVISION"
+  },
+  "roles": [
+    {"id": "draft", "config": "draft.json", "harness": "codex", "vendor_version": "RECORD_VENDOR_VERSION"},
+    {"id": "strong", "config": "strong.json", "harness": "codex", "vendor_version": "RECORD_VENDOR_VERSION"},
+    {"id": "judge", "config": "judge.json", "harness": "codex", "vendor_version": "RECORD_VENDOR_VERSION"},
+    {"id": "critic_a", "config": "critic_a.json", "harness": "codex", "vendor_version": "RECORD_VENDOR_VERSION"},
+    {"id": "critic_b", "config": "critic_b.json", "harness": "codex", "vendor_version": "RECORD_VENDOR_VERSION"}
+  ]
+}
