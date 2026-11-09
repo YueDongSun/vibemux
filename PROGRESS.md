@@ -14,7 +14,7 @@
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
 | Historical audited branch | `main` |
-| Current implementation branch | `codex/remaining_runtime` for the owned follow-up; local `main` remains at `a639ed5` (feature branches previously merged back via direct merge; PR #3 and the two-shell frontend branch land through `feat/3-two-shell-frontend-integration`); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
+| Current implementation branch | `main` at `0619a35` (PR #50 merged); feature work lands through per-issue branches and pull requests — 43 merged, one closed as landed (#3), one open draft (#49, parked); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
@@ -24,6 +24,7 @@
 | Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
+| Development container | Optional [frontend profile](.devcontainer/vibemux_frontend/readme.md) configured for Node 22.22.0 and all three npm lockfiles; container-build and native-platform acceptance remain unverified |
 
 ### Status vocabulary
 
@@ -7688,6 +7689,33 @@ These are local macOS results, not a hosted-CI result for the new patch. Exact c
 logs, source fingerprints, and the scope/platform/compatibility handoff are
 retained in the task's local validation artifact.
 
+### 2026-11-09 — RUSTSEC-2026-0459: bundled SQLite upgrade
+
+- Advisory: RUSTSEC-2026-0459 (`libsqlite3-sys` via C SQLite CVE-2026-119375)
+  affects `libsqlite3-sys` below 0.39.0. The workspace locked
+  `rusqlite 0.37.0` / `libsqlite3-sys 0.35.0`, so the `dependency_policy` CI
+  job fails on every branch whose checks run after the advisory reached the
+  database (earlier green runs predate it).
+- Change: the workspace pin moves to `rusqlite = 0.41.1`, which resolves
+  `libsqlite3-sys 0.39.1`, the first fixed line. rusqlite 0.41 removed the
+  `ToSql`/`FromSql` implementations for `u64` because SQLite stores INTEGER
+  as a signed 64-bit value, so `vibemux_store` converts explicitly at the SQL
+  boundary through the new private `sql_integer` module (`to_sql_u64` /
+  `from_sql_u64`, fail closed on out-of-range values), and the read-only
+  gateway-log reader in `vibemux_probe` converts locally under the same rule.
+  Domain structs and public signatures keep `u64`; no schema, control
+  protocol, or canonical-type change.
+- Executed on native Windows 11 (10.0.26300), Rust 1.92.0:
+  `cargo check -p vibemux_store -p vibemux_probe -p vibemux_model_peer
+  --all-features` passed; `cargo test -p vibemux_store --all-features`
+  passed 139 tests across its integration targets with zero failures;
+  `cargo test -p vibemux_probe --all-features` passed 24 tests; `cargo fmt
+  --all -- --check` passed. The full-workspace check including `vibemux_web`
+  cannot run on this host because the `openssl-sys 0.9.117` build script
+  needs the Perl setup that CI installs; hosted CI covers that path.
+- The bundled SQLite engine moves to the release shipped with
+  libsqlite3-sys 0.39.1; the store's migration, replay, and recovery tests
+  run against it unchanged.
 ### 2026-11-09 — Monitor enrollment QR request single-flight
 
 - Base: `main` at `0619a35` (PR #50). The monitor's one-time enrollment QR

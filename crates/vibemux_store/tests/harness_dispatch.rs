@@ -794,6 +794,7 @@ fn corrupted_rows_fail_closed() {
     assert_eq!(record(&store, request_id), admitted);
 
     let set_version = |version: u64| {
+        let version = i64::try_from(version).expect("fixture version fits");
         raw.execute(
             "UPDATE harness_dispatches SET version = ? WHERE request_id = ?",
             rusqlite::params![version, request_id.to_string()],

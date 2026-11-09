@@ -16,6 +16,7 @@ use vibemux_events::EventEnvelope;
 use vibemux_harness::dispatch::DispatchError;
 
 use crate::harness_dispatch::admit_dispatch_in;
+use crate::sql_integer::from_sql_u64;
 use crate::{
     HarnessDispatchAdmission, HarnessDispatchCommit, SqliteStore, StoreError,
     resolve_or_mint_project_id,
@@ -251,8 +252,8 @@ fn persisted_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedRow> {
         status: row.get(1)?,
         consumed_request_id: row.get(2)?,
         record_json: row.get(3)?,
-        created_sequence: row.get(4)?,
-        updated_sequence: row.get(5)?,
+        created_sequence: from_sql_u64(row.get::<_, i64>(4)?)?,
+        updated_sequence: from_sql_u64(row.get::<_, i64>(5)?)?,
     })
 }
 

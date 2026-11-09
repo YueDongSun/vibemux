@@ -1,0 +1,17 @@
+{
+  "name": "VibeMux frontend development",
+  "image": "mcr.microsoft.com/devcontainers/base:3.0.12-noble",
+  "remoteUser": "vscode",
+  "features": {
+    "ghcr.io/devcontainers/features/node:2.1.1": {
+      "version": "22.22.0",
+      "pnpmVersion": "none"
+    }
+  },
+  "hostRequirements": { "cpus": 4, "memory": "16gb" },
+  "postCreateCommand": ["bash", ".devcontainer/vibemux_frontend/setup.sh"],
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "customizations": {
+    "vscode": { "extensions": ["svelte.svelte-vscode", "dbaeumer.vscode-eslint"] }
+  }
+}

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Make the monitor's one-time enrollment QR request single-flight. A repeated "Create one-time QR" click no longer mints a second server-side one-time token, and the request owner is released on failure, sign-out, token installation, and unmount.
+- Update the locked `rusqlite` to 0.41.1 and `libsqlite3-sys` to 0.39.1 for RUSTSEC-2026-0459 (C SQLite CVE-2026-119375). rusqlite 0.41 removed its `u64` SQL conversions, so the store converts `u64` explicitly at the SQL boundary and fails closed on out-of-range values; the bundled SQLite engine also moves to the version shipped with libsqlite3-sys 0.39.1.
 - Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.
 - Preserve chat history and artifacts when regeneration or edit/resend fails or is stopped. Successful replacements alone update saved history; regenerating an older response requires confirmation before later messages can be replaced.
 - Bind monitor requests to their authentication session and detail selection. Late responses and errors cannot overwrite a new login or selection; failed current detail refreshes are marked stale.

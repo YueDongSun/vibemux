@@ -14,6 +14,7 @@ use vibemux_types::{
     },
 };
 
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 use crate::{SqliteStore, StoreError};
 
 pub(crate) const MIGRATION_V2: &str = r#"
@@ -456,8 +457,8 @@ fn load_record(
     }
     let row = connection.query_row(
         "SELECT record_json,version,task_id,project_id,peer_id,external_task_id,worktree_path_key,branch_key,updated_sequence FROM a2a_runs WHERE run_id=?",
-        [run_id.to_string()], |row| Ok(PersistedRow { encoded: row.get(0)?, version: row.get(1)?, task_id: row.get(2)?, project_id: row.get(3)?,
-            peer_id: row.get(4)?, external_task_id: row.get(5)?, path_key: row.get(6)?, branch_key: row.get(7)?, sequence: row.get(8)? })).optional()?;
+        [run_id.to_string()], |row| Ok(PersistedRow { encoded: row.get(0)?, version: from_sql_u64(row.get::<_, i64>(1)?)?, task_id: row.get(2)?, project_id: row.get(3)?,
+            peer_id: row.get(4)?, external_task_id: row.get(5)?, path_key: row.get(6)?, branch_key: row.get(7)?, sequence: from_sql_u64(row.get::<_, i64>(8)?)? })).optional()?;
     let Some(row) = row else {
         return Ok(None);
     };
@@ -475,7 +476,7 @@ fn load_record(
     }
     let encoded_event: String = connection.query_row(
         "SELECT envelope_json FROM events WHERE sequence=?",
-        [row.sequence],
+        [to_sql_u64(row.sequence)?],
         |row| row.get(0),
     )?;
     let event = EventEnvelope::from_json_slice(encoded_event.as_bytes())?;
@@ -486,7 +487,8 @@ fn load_record(
         return Err(StoreError::A2aProjectionMismatch);
     }
     record.task = task;
-    let (run_json, sequence): (String, u64) = connection.query_row("SELECT state_json,updated_sequence FROM projections WHERE entity_kind='run' AND entity_id=?", [run_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let (run_json, sequence): (String, i64) = connection.query_row("SELECT state_json,updated_sequence FROM projections WHERE entity_kind='run' AND entity_id=?", [run_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let sequence = from_sql_u64(sequence)?;
     if serde_json::from_str::<Run>(&run_json)? != record.run || sequence != row.sequence {
         return Err(StoreError::A2aProjectionMismatch);
     }
@@ -563,9 +565,9 @@ fn save_record(
     if insert {
         transaction.execute("INSERT INTO a2a_runs(run_id,task_id,project_id,peer_id,external_task_id,worktree_path_key,branch_key,version,record_json,updated_sequence) VALUES (?,?,?,?,?,?,?,?,?,?)",
             params![record.run.run_id().to_string(), record.task.task_id().to_string(), record.task.project_id().to_string(), record.binding.peer_id,
-                record.binding.external_task_id, record.workspace.path_key(), record.workspace.branch.to_ascii_lowercase(), record.version, encoded, sequence])?;
+                record.binding.external_task_id, record.workspace.path_key(), record.workspace.branch.to_ascii_lowercase(), to_sql_u64(record.version)?, encoded, to_sql_u64(sequence)?])?;
     } else {
-        let changed = transaction.execute("UPDATE a2a_runs SET version=?,record_json=?,updated_sequence=? WHERE run_id=? AND version=?", params![record.version, encoded, sequence, record.run.run_id().to_string(), record.version - 1])?;
+        let changed = transaction.execute("UPDATE a2a_runs SET version=?,record_json=?,updated_sequence=? WHERE run_id=? AND version=?", params![to_sql_u64(record.version)?, encoded, to_sql_u64(sequence)?, record.run.run_id().to_string(), to_sql_u64(record.version - 1)?])?;
         if changed != 1 {
             return Err(StoreError::A2aVersionConflict);
         }
@@ -589,7 +591,7 @@ fn save_projection(
     sequence: u64,
 ) -> Result<(), StoreError> {
     transaction.execute("INSERT INTO projections(entity_kind,entity_id,project_id,state_json,updated_sequence) VALUES (?,?,?,?,?) ON CONFLICT(entity_kind,entity_id) DO UPDATE SET state_json=excluded.state_json,updated_sequence=excluded.updated_sequence",
-        params![kind, id, project, state, sequence])?;
+        params![kind, id, project, state, to_sql_u64(sequence)?])?;
     Ok(())
 }
 
@@ -669,7 +671,7 @@ fn append_event(
         params![
             String::from_utf8(event.to_json_vec()?)
                 .map_err(|_| StoreError::A2aProjectionMismatch)?,
-            sequence
+            to_sql_u64(sequence)?
         ],
     )?;
     Ok(event)
@@ -683,7 +685,7 @@ fn save_command(
     event: &EventEnvelope,
 ) -> Result<(), StoreError> {
     transaction.execute("INSERT INTO a2a_commands(idempotency_key,fingerprint,run_id,record_json,event_sequence) VALUES (?,?,?,?,?)",
-        params![key, fingerprint, record.run.run_id().to_string(), serde_json::to_string(record)?, event.sequence().get()])?;
+        params![key, fingerprint, record.run.run_id().to_string(), serde_json::to_string(record)?, to_sql_u64(event.sequence().get())?])?;
     Ok(())
 }
 

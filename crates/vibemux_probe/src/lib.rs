@@ -686,7 +686,22 @@ fn read_gateway_telemetry(path: &Path, window_seconds: u64) -> Result<Vec<Gatewa
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|_| ())?;
-    let since = now_epoch_seconds().saturating_sub(window_seconds);
+    // SQLite stores INTEGER as a signed 64-bit value; the counters stay u64.
+    fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+        let value: i64 = row.get(index)?;
+        u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
+    }
+    // MAX() returns NULL for an empty group, so the timestamp stays optional.
+    fn read_optional_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<u64>> {
+        match row.get::<_, Option<i64>>(index)? {
+            Some(value) => u64::try_from(value)
+                .map(Some)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value)),
+            None => Ok(None),
+        }
+    }
+    let since =
+        i64::try_from(now_epoch_seconds().saturating_sub(window_seconds)).map_err(|_| ())?;
     let mut statement = connection
         .prepare(
             "SELECT app_type, COUNT(*), SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), MAX(created_at) FROM proxy_request_logs WHERE created_at >= ? GROUP BY app_type ORDER BY MAX(created_at) DESC LIMIT 32",
@@ -696,9 +711,9 @@ fn read_gateway_telemetry(path: &Path, window_seconds: u64) -> Result<Vec<Gatewa
         .query_map([since], |row| {
             Ok(GatewayTelemetry {
                 app_type: sanitize_text(&row.get::<_, String>(0)?, 64),
-                requests: row.get(1)?,
-                failures: row.get(2)?,
-                latest_epoch_seconds: row.get(3)?,
+                requests: read_u64(row, 1)?,
+                failures: read_u64(row, 2)?,
+                latest_epoch_seconds: read_optional_u64(row, 3)?,
             })
         })
         .map_err(|_| ())?;
