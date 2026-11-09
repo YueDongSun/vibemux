@@ -10,6 +10,7 @@ use vibemux_workflow::{
 };
 
 use super::{append, millis, workflow_error, workflow_rows};
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 use crate::{SqliteStore, StoreError};
 
 // The exact one-call compiler namespace and ID derivation used by the daemon's
@@ -71,12 +72,13 @@ pub(super) fn charge_compiler_for_prepare(
     record: &WorkflowRecord,
 ) -> Result<(WorkflowRecord, Option<PreparedCompilerAssociation>), StoreError> {
     let owner_key = format!("{COMPILER_OWNER_PREFIX}{}", record.workflow_id.simple());
-    let owner: Option<(Option<String>, u32, u64, u32)> = transaction.query_row(
+    let owner: Option<(Option<String>, u32, i64, u32)> = transaction.query_row(
         "SELECT workflow_id, max_calls, deadline_unix_ms, calls_used FROM workflow_model_call_owners WHERE owner_key=?",
         [&owner_key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
     let Some((workflow_id, max_calls, deadline, calls_used)) = owner else {
         return Ok((record.clone(), None));
     };
+    let deadline = from_sql_u64(deadline)?;
     if workflow_id.is_some() || max_calls != 1 || calls_used != 1 {
         return Err(workflow_error("model_call_compiler_association_invalid"));
     }
@@ -132,7 +134,7 @@ pub(super) fn associate_prepared_compiler(
     let call = &association.call;
     let changed = transaction.execute(
         "UPDATE workflow_model_call_owners SET workflow_id=? WHERE owner_key=? AND workflow_id IS NULL AND max_calls=1 AND calls_used=1 AND deadline_unix_ms=?",
-        params![association.workflow_id.to_string(), call.admission.owner_key.as_str(), call.admission.deadline_unix_ms])?;
+        params![association.workflow_id.to_string(), call.admission.owner_key.as_str(), to_sql_u64(call.admission.deadline_unix_ms)?])?;
     if changed != 1 {
         return Err(workflow_error("model_call_compiler_association_invalid"));
     }
@@ -240,11 +242,12 @@ pub(super) fn reserve_model_call_in(
     if millis(now) >= admission.deadline_unix_ms {
         return Err(workflow_error("model_call_deadline_exceeded"));
     }
-    let owner: Option<(Option<String>, u32, u64, u32)> = transaction.query_row(
+    let owner: Option<(Option<String>, u32, i64, u32)> = transaction.query_row(
             "SELECT workflow_id, max_calls, deadline_unix_ms, calls_used FROM workflow_model_call_owners WHERE owner_key=?",
             [admission.owner_key.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
     let used = match owner {
         Some((workflow, max_calls, deadline, used)) => {
+            let deadline = from_sql_u64(deadline)?;
             if workflow != admission.workflow_id.map(|id| id.to_string())
                 || max_calls != admission.max_calls
                 || deadline != admission.deadline_unix_ms
@@ -255,7 +258,7 @@ pub(super) fn reserve_model_call_in(
         }
         None => {
             transaction.execute("INSERT INTO workflow_model_call_owners(owner_key, workflow_id, max_calls, deadline_unix_ms, calls_used) VALUES (?, ?, ?, ?, 0)",
-                    params![admission.owner_key.as_str(), admission.workflow_id.map(|id| id.to_string()), admission.max_calls, admission.deadline_unix_ms])?;
+                    params![admission.owner_key.as_str(), admission.workflow_id.map(|id| id.to_string()), admission.max_calls, to_sql_u64(admission.deadline_unix_ms)?])?;
             0
         }
     };

@@ -20,6 +20,7 @@ use vibemux_workflow::{
 };
 
 use super::{append, millis, uuid_key, workflow_error, workflow_rows};
+use crate::sql_integer::from_sql_u64;
 use crate::{SqliteStore, StoreError};
 
 pub(crate) const MIGRATION_V9: &str = r#"
@@ -216,7 +217,9 @@ impl SqliteStore {
             "SELECT COUNT(*) FROM workflow_controllers WHERE workflow_id=?",
             "SELECT COUNT(*) FROM workflow_messages WHERE workflow_id=? AND state='delivered'",
         ] {
-            let count: u64 = transaction.query_row(sql, [&parent_key], |row| row.get(0))?;
+            let count: u64 = transaction.query_row(sql, [&parent_key], |row| {
+                from_sql_u64(row.get::<_, i64>(0)?)
+            })?;
             if count != 0 {
                 return Err(workflow_error("workflow_edit_unsettled_effects"));
             }

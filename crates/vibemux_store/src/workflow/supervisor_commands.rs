@@ -7,6 +7,7 @@ mod results;
 mod rows;
 
 use super::{append, millis, model_calls, workflow_error, workflow_rows};
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 use crate::{SqliteStore, StoreError};
 use observations::observation_in;
 use results::validate_applied_result;
@@ -600,7 +601,7 @@ impl SqliteStore {
                     result_refs: vec![],
                     result_code: None,
                 };
-                transaction.execute("INSERT INTO workflow_supervisor_actions(action_id,workflow_id,generation,round_id,idempotency_key,fingerprint,state,dispatch_request_id,record_json,updated_sequence) VALUES (?,?,?,?,?,?,'pending',?,?,?)",params![action_id.to_string(),round.workflow_id.to_string(),round.generation,round_id.to_string(),action.idempotency_key,action.fingerprint.to_hex(),action.dispatch_request_id.map(|id|id.to_string()),serde_json::to_string(&action)?,sequence])?;
+                transaction.execute("INSERT INTO workflow_supervisor_actions(action_id,workflow_id,generation,round_id,idempotency_key,fingerprint,state,dispatch_request_id,record_json,updated_sequence) VALUES (?,?,?,?,?,?,'pending',?,?,?)",params![action_id.to_string(),round.workflow_id.to_string(),to_sql_u64(round.generation)?,round_id.to_string(),action.idempotency_key,action.fingerprint.to_hex(),action.dispatch_request_id.map(|id|id.to_string()),serde_json::to_string(&action)?,sequence])?;
                 actions.push(action);
             }
         }
@@ -1005,7 +1006,9 @@ impl SqliteStore {
             let ids: Vec<(String, u64)> = {
                 let mut query=self.connection.prepare("SELECT workflow_id,generation FROM workflow_supervisors WHERE state='running' AND workflow_id>? ORDER BY workflow_id LIMIT 128")?;
                 query
-                    .query_map([&after], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .query_map([&after], |row| {
+                        Ok((row.get(0)?, from_sql_u64(row.get::<_, i64>(1)?)?))
+                    })?
                     .collect::<Result<_, _>>()?
             };
             if ids.is_empty() {

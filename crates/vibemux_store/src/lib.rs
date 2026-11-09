@@ -16,6 +16,7 @@ mod a2a;
 mod decision;
 mod frontend;
 mod harness_dispatch;
+mod sql_integer;
 mod workflow;
 pub use a2a::A2aCommitOutcome;
 pub use decision::{DecidedDispatchCommit, DecisionCommit, MAX_DECISION_PAGE, StoredDecision};
