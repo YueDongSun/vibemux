@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add operator `workflow intake`, contract-bound `workflow followup`, and
+  `workflow reports` (ADR 057, Control v11, store schema 10). An opt-in
+  `worker_v2` checkpoint carries bounded structured reports and concrete
+  human questions; immutable claims fence acceptance across restarts.
+  Report text remains private and opt-in. Existing `worker_v1` contracts
+  retain their rendered bytes; live vendor certification is unchanged.
+
 - Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.
 - Preserve chat history and artifacts when regeneration or edit/resend fails or is stopped. Successful replacements alone update saved history; regenerating an older response requires confirmation before later messages can be replaced.
 - Bind monitor requests to their authentication session and detail selection. Late responses and errors cannot overwrite a new login or selection; failed current detail refreshes are marked stale.

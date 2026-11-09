@@ -32,12 +32,12 @@ pub use workflow::{
     MessageRecord, PolicyVersionRecord, ReceiptCommit, RecoveryBindingCommit,
     RecoveryCheckpointCommit, RecoveryPlanBinding, SupervisorActionFinish,
     SupervisorProposalCommit, SupervisorRoundAdmission, SupervisorStart,
-    WORKFLOW_STORE_RECORD_SCHEMA_VERSION, WorkflowAttemptAdmission, WorkflowAttemptCommit,
-    WorkflowAttemptRecord, WorkflowCommit, WorkflowExecutionBinding, WorkflowRecovery,
-    WorkflowSnapshot,
+    WORKFLOW_STORE_RECORD_SCHEMA_VERSION, WorkerReportPage, WorkflowAttemptAdmission,
+    WorkflowAttemptCommit, WorkflowAttemptRecord, WorkflowCommit, WorkflowExecutionBinding,
+    WorkflowRecovery, WorkflowSnapshot,
 };
 
-pub const STORE_SCHEMA_VERSION: u32 = 9;
+pub const STORE_SCHEMA_VERSION: u32 = 10;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -746,6 +746,13 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V9)?;
             transaction.commit()?;
         }
+        if found < 10 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(workflow::MIGRATION_V10)?;
+            transaction.commit()?;
+        }
         Ok(())
     }
 
@@ -1184,6 +1191,40 @@ mod tests {
                 .execute_batch(migration)
                 .expect("historical migration");
             transaction.commit().expect("migration commit");
+        }
+    }
+
+    #[test]
+    fn schema_ten_migrates_reports_without_rewriting_history_and_rolls_back_on_conflict() {
+        for conflict in [false, true] {
+            let temporary = tempfile::NamedTempFile::new().expect("database");
+            schema_7_database(temporary.path());
+            let connection = Connection::open(temporary.path()).expect("connection");
+            connection
+                .execute_batch(workflow::MIGRATION_V8)
+                .expect("schema eight");
+            connection
+                .execute_batch(workflow::MIGRATION_V9)
+                .expect("schema nine");
+            let history = event_log(temporary.path());
+            if conflict {
+                connection
+                    .execute_batch("CREATE INDEX workflow_worker_reports_page ON events(sequence)")
+                    .expect("conflict");
+            }
+            drop(connection);
+            let result = SqliteStore::open(temporary.path());
+            if conflict {
+                assert!(result.is_err());
+                assert_eq!(schema_version(temporary.path()), 9);
+                let connection = Connection::open(temporary.path()).expect("inspect");
+                let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='workflow_worker_reports')", [], |row| row.get(0)).expect("table");
+                assert!(!exists);
+            } else {
+                drop(result.expect("migrate"));
+                assert_eq!(schema_version(temporary.path()), STORE_SCHEMA_VERSION);
+            }
+            assert_eq!(event_log(temporary.path()), history);
         }
     }
 

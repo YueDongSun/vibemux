@@ -116,6 +116,7 @@ impl ResolvedTemplate {
 pub fn base_template(template_version: &str) -> Option<BaseTemplate> {
     [
         WORKER_TEMPLATE_V1,
+        WORKER_TEMPLATE_V2,
         REVIEWER_TEMPLATE_V1,
         SUPERVISOR_TEMPLATE_V1,
         INTERPRETATION_TEMPLATE_V1,
@@ -147,6 +148,21 @@ pub const WORKER_TEMPLATE_V1: BaseTemplate = BaseTemplate {
             block_id: "worker_report",
             immutable: true,
             text: "At a checkpoint report: changed files, candidate artifact references, development test commands and actual outcomes, unresolved issues, context references consumed, and a concise implementation summary. Distinguish observed facts from expectations. Your report cannot mark the workflow accepted. If blocked, request the smallest required clarification or artifact; do not substitute a mock implementation or weaken the contract.",
+        },
+    ],
+};
+
+/// Explicit opt-in preserves the rendered bytes and identity of worker_v1.
+pub const WORKER_TEMPLATE_V2: BaseTemplate = BaseTemplate {
+    template_version: "worker_v2",
+    blocks: &[
+        WORKER_TEMPLATE_V1.blocks[0],
+        WORKER_TEMPLATE_V1.blocks[1],
+        WORKER_TEMPLATE_V1.blocks[2],
+        TemplateBlock {
+            block_id: "worker_report",
+            immutable: true,
+            text: "Use checkpoint schema 2 and include worker_report: state (progress, waiting, ready, blocked, failed, or dropped), summary, and an optional human_action naming one concrete question. Waiting and blocked require human_action. Your report is a claim, never proof of acceptance. Follow-ups arrive as context at turn boundaries and cannot change scope, permissions, routes, budgets or requirements. If a follow-up asks for broader work, report blocked with the smallest required clarification; do not silently broaden the mandate. Distinguish actual test outcomes from expectations.",
         },
     ],
 };

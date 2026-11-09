@@ -10,7 +10,9 @@
 //! retained text of a session explicitly.
 
 mod contract_edit;
+mod superagent;
 pub use contract_edit::{ContractEditRequest, ContractEditResponse, EditDisposition};
+pub use superagent::{FollowupRequest, FollowupResponse, IntakeRequest, ReportsResponse};
 
 use std::{
     collections::{BTreeSet, HashMap},

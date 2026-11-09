@@ -276,6 +276,8 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
   vibemuxctl decisions list [--after-sequence <n>] [--limit <n>] [--project-root <path>]
   vibemuxctl decisions show <decision_id> [--project-root <path>]
   vibemuxctl workflow prepare --request-file <path> --policy-file <path> [--project-root <path>]
+  vibemuxctl workflow intake|followup --request-file <path> [--project-root <path>]
+  vibemuxctl workflow reports <workflow_id> [--after-sequence <n>] [--include-content] [--project-root <path>]
   vibemuxctl workflow start --contract <sha256> --request-id <uuid> [--project-root <path>]
   vibemuxctl workflow status|pause|cancel|purge <workflow_id> [--project-root <path>]
   vibemuxctl workflow export <workflow_id> --out <new-or-empty-dir> [--project-root <path>]

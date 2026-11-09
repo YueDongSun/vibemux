@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), operator intake/follow-ups and structured worker reports (ADR 057: schema 10, Control v11, offline fixture evidence), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10), and operator intake/follow-ups/report reads (control protocol v11) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 
@@ -7687,3 +7687,63 @@ This qualification covers the integrated fixes on `codex/review-core-nov06`.
 These are local macOS results, not a hosted-CI result for the new patch. Exact commands,
 logs, source fingerprints, and the scope/platform/compatibility handoff are
 retained in the task's local validation artifact.
+
+
+### 2026-11-09 — Operator intake, follow-ups and structured worker reports (ADR 057)
+
+**Scope:** adapt the selected behaviors from DeepSeek's `dsh-superagent-prototype`
+commit `8c32a9dc5d72c033816c6a8110b37f40cf94fba4` in the existing Rust workflow.
+
+**Implemented:**
+- Control v11 and `vibemuxctl workflow intake|followup|reports`. Explicit local
+  operator intake derives an event-bound request key and reuses workflow
+  prepare admission, immutable contracts and the existing explicit start gate.
+- Version/contract/session-bound operator follow-ups through the existing
+  broker, finite queue admission, exact duplicate suppression and turn-boundary
+  delivery. Context cannot change the mandate or revive terminal work.
+- Opt-in `worker_v2` checkpoint schema 2 with structured progress/waiting/ready/
+  blocked/failed/dropped claims and concrete human questions. `worker_v1`
+  template/rendered bytes remain unchanged. Invalid required checkpoints block
+  progress. Ready remains subject to review and trusted verification.
+- Store schema 10 appends immutable content-free report rows and their events
+  atomically. Stored readiness/attention claims fence acceptance across
+  restarts. Report text requires per-workflow opt-in retention, verified
+  ownership/digests and an explicit content query; purge preserves metadata.
+
+**Evidence:** five new real-IPC fixture scenarios and 644 applicable regression
+tests passed on native macOS with Rust 1.92.0 and `TMPDIR=/private/tmp`; two
+legacy browser cases were explicitly filtered because the verifier does not
+discover the macOS browser path. Workspace Clippy, formatting and the privacy
+scan passed. Full workspace tests failed at three MCP lifecycle cases, reproduced
+on the clean baseline. Final commands and outcomes are recorded in
+[the validation record](docs/evidence/superagent_workflow_validation.md).
+
+**Status and limits:** `PARTIAL — OFFLINE FIXTURE EVIDENCE`. These changes do not
+certify writable live routes, change the canonical Task/Run state machine,
+install GitHub/Feishu sources, perform inferred admission, send external
+replies, add source subscriptions/hand-back or bridge approvals. Windows,
+Linux/WSL, live terminal and hosted CI coverage remain unverified. Nextest,
+deny and audit were attempted but are unavailable on this host.
+
+**Artifacts:** [ADR 057](docs/adr/057_superagent_workflow_intake.md),
+[operator guide](docs/guides/superagent_workflow.md), updated architecture,
+README and changelog, and pure/store/CLI/daemon regression tests.
+
+
+#### 2026-11-09 — Superagent PR preparation on current main
+
+- Integrated `main` at `0619a35` while preserving its macOS process/socket/
+  browser fixes and all existing evidence. The two documentation conflicts
+  retained both sides; the enhancement's PR diff stays at its 32 owned
+  source/documentation files.
+- Refreshed checks: five new IPC scenarios and all 25 workflow-store tests
+  passed, with zero failures or skips; focused all-target/all-feature Clippy,
+  formatting and staged-source/PR-body privacy scans passed. The complete
+  current publishable-text scan checked 698 files with zero findings.
+- Privacy documentation explicitly covers plaintext local plans/outboxes and
+  optional reports, metadata linkability/guessing, stdout disclosure, and the
+  limits of purge/expiry. Publication excludes runtime data and machine
+  configuration, and new commits use GitHub no-reply metadata.
+- Initial baseline MCP/browser failures are retained as historical evidence;
+  full refreshed workspace/native Windows/Linux/live/hosted CI verification
+  remains separate from these focused PR checks.

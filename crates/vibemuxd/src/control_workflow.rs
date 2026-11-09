@@ -52,6 +52,16 @@ pub struct WorkflowLookup {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkflowReportsQuery {
+    pub workflow_id: Uuid,
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(default)]
+    pub include_content: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowExportQuery {
     pub workflow_id: Uuid,
     /// The previous page's `next`, or zero.
@@ -89,6 +99,39 @@ pub struct WorkflowEvaluateArgument {
 }
 
 impl ControlClient {
+    pub async fn workflow_intake(&self, intake: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowIntake,
+            Some(&intake),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+    pub async fn workflow_followup(&self, followup: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowFollowup,
+            Some(&followup),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+    pub async fn workflow_reports(
+        &self,
+        workflow_id: Uuid,
+        after_sequence: u64,
+        include_content: bool,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowReports,
+            Some(&WorkflowReportsQuery {
+                workflow_id,
+                after_sequence,
+                include_content,
+            }),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
     pub async fn workflow_contract_edit(&self, edit: Value) -> Result<Value, ControlError> {
         self.workflow_request(
             ControlOperation::WorkflowContractEdit,
@@ -331,6 +374,30 @@ pub(super) async fn dispatch(
 ) -> Result<ControlPayload, ControlError> {
     let service = &state.workflow;
     let value = match operation {
+        ControlOperation::WorkflowIntake => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let intake =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.intake(intake).await)?
+        }
+        ControlOperation::WorkflowFollowup => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let followup =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.followup(followup).await)?
+        }
+        ControlOperation::WorkflowReports => {
+            let query: WorkflowReportsQuery = parse_lookup(argument)?;
+            encode(
+                service
+                    .worker_reports(
+                        query.workflow_id,
+                        query.after_sequence,
+                        query.include_content,
+                    )
+                    .await,
+            )?
+        }
         ControlOperation::WorkflowContractEdit => {
             let argument = argument.ok_or(ControlError::InvalidRequest)?;
             let edit: Value =

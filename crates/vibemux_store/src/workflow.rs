@@ -16,6 +16,7 @@ pub(crate) use contract_edit::MIGRATION_V9;
 pub use contract_edit::{ContractEditAdmission, ContractEditCommit, ContractEditRecord};
 mod recovery_store;
 mod supervisor_commands;
+mod worker_reports;
 mod workflow_rows;
 pub use recovery_store::{
     ControllerCommit, ControllerOutboxCommit, ControllerOutboxKind, ControllerOutboxOutcome,
@@ -26,6 +27,8 @@ pub(crate) use supervisor_commands::MIGRATION_V8;
 pub use supervisor_commands::{
     SupervisorActionFinish, SupervisorProposalCommit, SupervisorRoundAdmission, SupervisorStart,
 };
+pub(crate) use worker_reports::MIGRATION_V10;
+pub use worker_reports::WorkerReportPage;
 
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -1665,6 +1668,26 @@ impl SqliteStore {
         envelope: &MessageEnvelope,
         timestamp: OffsetDateTime,
     ) -> Result<MessageCommit, StoreError> {
+        self.admit_workflow_message_with(envelope, None, timestamp)
+    }
+
+    /// Operator context admission checks current workflow/contract/session
+    /// facts in the same transaction as the message and event (ADR 057).
+    pub fn admit_workflow_followup(
+        &mut self,
+        envelope: &MessageEnvelope,
+        expected_version: u64,
+        timestamp: OffsetDateTime,
+    ) -> Result<MessageCommit, StoreError> {
+        self.admit_workflow_message_with(envelope, Some(expected_version), timestamp)
+    }
+
+    fn admit_workflow_message_with(
+        &mut self,
+        envelope: &MessageEnvelope,
+        expected_version: Option<u64>,
+        timestamp: OffsetDateTime,
+    ) -> Result<MessageCommit, StoreError> {
         let fingerprint = message_fingerprint(envelope)?;
         let transaction = self.immediate()?;
         if let Some(existing) = workflow_rows::load_message(&transaction, envelope.message_id)? {
@@ -1679,6 +1702,55 @@ impl SqliteStore {
         let stored = workflow_rows::load_existing_workflow(&transaction, envelope.workflow_id)?;
         if stored.record.phase.is_terminal() {
             return Err(workflow_error("store_workflow_not_running"));
+        }
+        if let Some(expected) = expected_version {
+            use vibemux_workflow::messages::MessageKind;
+            let Participant::Worker {
+                task_key,
+                session_id,
+            } = &envelope.recipient
+            else {
+                return Err(workflow_error("workflow_followup_invalid"));
+            };
+            let task = stored
+                .record
+                .task(task_key)
+                .ok_or_else(|| workflow_error("workflow_followup_invalid"))?;
+            if stored.record.version != expected {
+                return Err(workflow_error("workflow_followup_stale"));
+            }
+            if stored.record.mode != WorkflowMode::Cooperate
+                || !matches!(
+                    stored.record.phase,
+                    WorkflowPhase::Running | WorkflowPhase::Paused | WorkflowPhase::Blocked
+                )
+                || matches!(task.progress, TaskProgress::Accepted | TaskProgress::Failed)
+                || envelope.sender != Participant::Operator
+                || !matches!(
+                    envelope.kind,
+                    MessageKind::Question | MessageKind::Progress | MessageKind::Finding
+                )
+                || task.contract_id != envelope.contract_id
+                || task.contract_version != envelope.contract_version
+            {
+                return Err(workflow_error("workflow_followup_invalid"));
+            }
+            let attempts = workflow_rows::attempts_for(&transaction, envelope.workflow_id)?;
+            if !attempts.iter().any(|attempt| {
+                attempt.session_id == *session_id
+                    && attempt.task_key == *task_key
+                    && attempt.contract_id == envelope.contract_id
+                    && attempt.purpose != AttemptPurpose::Review
+                    && attempt.execution.is_some()
+            }) {
+                return Err(workflow_error("workflow_followup_unknown_session"));
+            }
+            let pending: u64 = transaction.query_row(
+                "SELECT COUNT(*) FROM workflow_messages WHERE workflow_id=? AND recipient=? AND state IN ('admitted','delivered')",
+                params![uuid_key(envelope.workflow_id), envelope.recipient.label()], |row| row.get(0))?;
+            if pending >= 32 {
+                return Err(workflow_error("workflow_followup_queue_full"));
+            }
         }
         let recipient_label = envelope.recipient.label();
         let recipient_sequence = workflow_rows::next_recipient_sequence(
@@ -2441,6 +2513,12 @@ fn gate_candidate(
     if candidate.candidate.contract_id != task.contract_id {
         return Err(workflow_error("store_workflow_stale_contract"));
     }
+    worker_reports::check_attention(
+        transaction,
+        record.workflow_id,
+        candidate.candidate.worker_session_id,
+        task.contract_id,
+    )?;
     let reviews = workflow_rows::receipts_for(transaction, record.workflow_id, Some("review"))?;
     let review = reviews.iter().rev().find_map(|receipt| match receipt {
         WorkflowReceipt::Review(review) if review.candidate_digest == candidate_digest => {

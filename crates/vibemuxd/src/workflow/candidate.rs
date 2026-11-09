@@ -208,10 +208,48 @@ async fn step_under_lease(
         .map(|delivery| delivery.record)
         .collect();
     let spec_digest = spec_digest(context, &unit.task_key)?;
-    let checkpoint = match &turn.final_text {
+    let mut checkpoint = match &turn.final_text {
         Some(text) => parse_checkpoint(text, spec_digest).map_err(|error| error.code().to_string()),
         None => Err("report_missing".to_string()),
     };
+    if context
+        .plan
+        .specs
+        .get(&unit.task_key)
+        .is_some_and(|spec| spec.template_version.as_str() == "worker_v2")
+        && checkpoint
+            .as_ref()
+            .is_ok_and(|report| report.worker_report.is_none())
+    {
+        checkpoint = Err("workflow_worker_report_required".into());
+    }
+    if turn.completed()
+        && let Ok(checkpoint) = &checkpoint
+        && let Some(report) = &checkpoint.worker_report
+    {
+        let writer = context.writer.clone();
+        let request_id = turn.request_id;
+        let fence = LeaseFence {
+            lease_id: lease.lease_id,
+            generation: lease.generation,
+        };
+        let claim = report.clone();
+        call_writer(move || {
+            writer.record_workflow_worker_report(
+                request_id,
+                fence,
+                claim.clone(),
+                OffsetDateTime::now_utc(),
+            )
+        })
+        .await?;
+        if let ContentStoreMode::Enabled { retention_days } = context.record().await?.content_store
+        {
+            let bytes = serde_json::to_vec(report).map_err(|_| WorkflowError::Internal)?;
+            super::broker::store_content(context, bytes, ContentKind::Report, None, retention_days)
+                .await?;
+        }
+    }
     if !turn.completed() && context.stopping() {
         // A cancelled or interrupted turn is not a candidate.
         return Ok(StepOutcome {
