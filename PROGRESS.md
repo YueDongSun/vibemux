@@ -7,6 +7,32 @@
 
 ---
 
+### 2026-11-09 — Fusion-inspired benchmark preparation (NOT RUN)
+
+- Researched GitHub Copilot Fusion against GitHub Docs commit
+  `5c9f8941dd6b10b27f350ea7de093aebc5d2a3ef` and its 2026-10-28 announcement.
+- Added an opt-in `vibemux_harness_native` Cargo example with explicit Single,
+  Cascade (judge/accept/escalate), and Critique (parallel critics/aggregate/revise)
+  patterns plus a strong Single baseline. It composes the existing read-only
+  dispatcher; it does not implement GitHub's automatic model router or alter
+  daemon workflow admission, writable capability gates, or canonical state.
+- Three fixed coding-reasoning cases provide 38 deterministic checks. Added
+  bounded strict JSON contracts, rotated mode ordering, content-free append-only
+  evidence, explicit budgets/cancellation, and disabled configuration templates.
+  Missing provider usage, actual model identity and cost remain unknown.
+- ADR 057 and `docs/guides/fusion_benchmarks.md` define the experimental scope,
+  source provenance, evidence format, security boundaries, and later commands.
+  Existing workspace-pinned `time` is reused only as a dev dependency for UTC
+  formatting; no new package version or production dependency is introduced.
+- **Status: PARTIAL / NOT RUN.** No compilation, unit/integration tests, live
+  models, benchmarks, or platform qualification executed, per the explicit user
+  request. Rust formatting and diff whitespace checks are static evidence only.
+  Offline contracts are written and await execution. No measured improvement or
+  release-readiness claim. Windows, Linux/WSL, macOS runtime, and live terminal
+  behavior are unverified. ACP model selection and DSH are outside this experiment.
+
+---
+
 ## 1. Project Snapshot
 
 | Field | Value |
