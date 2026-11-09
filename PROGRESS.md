@@ -14,7 +14,7 @@
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
 | Historical audited branch | `main` |
-| Current implementation branch | `codex/remaining_runtime` for the owned follow-up; local `main` remains at `a639ed5` (feature branches previously merged back via direct merge; PR #3 and the two-shell frontend branch land through `feat/3-two-shell-frontend-integration`); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
+| Current implementation branch | `main` at `0619a35` (PR #50 merged); feature work lands through per-issue branches and pull requests — 43 merged, one closed as landed (#3), one open draft (#49, parked); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
@@ -24,6 +24,7 @@
 | Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
+| Development container | Optional [frontend profile](.devcontainer/vibemux_frontend/readme.md) configured for Node 22.22.0 and all three npm lockfiles; container-build and native-platform acceptance remain unverified |
 
 ### Status vocabulary
 

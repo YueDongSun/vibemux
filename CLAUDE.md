@@ -4,12 +4,12 @@
 
 ## What VibeMux is
 
-VibeMux is a **Windows-first, local-first, terminal-native collaboration environment for multiple coding harnesses** (Claude Code, Codex, OpenCode, Copilot, Grok, future Gemini/Pi). The target platform is Windows 10/11 + PowerShell; WSL2/Linux is for development and the optional tmux backend. WezTerm is the first programmable terminal backend; Windows Terminal is only an entry point.
+VibeMux is a **Windows-first, local-first, terminal-native collaboration environment for multiple coding harnesses** (Claude Code, Codex, OpenCode, Copilot, Grok, future Gemini/Pi). The target platform is Windows 10/11 + PowerShell; WSL2/Linux is for development and the optional tmux backend. WezTerm is the first programmable terminal backend; Windows Terminal is only an entry point. CI runs the Python and Rust jobs on Windows, Ubuntu, and macOS; macOS is best-effort and not a promised release platform ([docs/platform_support.md](docs/platform_support.md)).
 
 Two implementations coexist:
 
 - A **Python 3.12 prototype** (`src/vibemux/`, installable as the `vibemux` CLI) is the current full entry point and the behavior reference for Rust parity.
-- A **Rust 2024 workspace** (`crates/`) is the target authoritative core. M3 (persistence + single-writer daemon + authenticated local IPC) is `VERIFIED`; M4 plugin protocol/supervisor is `PARTIAL`; M5.0 read-only probe and unified frontend shell is `PARTIAL`; A2A is `PARTIAL — LOCAL STATEFUL`, with authenticated HTTP+JSON, JSON-RPC, and gRPC plus canonical bindings and local supervisor verification. Daemon-owned harness dispatch (ADR 029) is `PARTIAL`: fixture-verified, with live evidence on native Windows for initialize-only probes and one Claude submit that the vendor refused as not logged in, because the route's `--bare` accepted only an API key; the read-only route has since dropped `--bare` (ADR 029 amendment of 2026-10-23), and no authenticated execution turn has run yet. Dual-track coding workflows (ADR 031) are `PARTIAL — OFFLINE ONLY`: verified with fixture workers; there is no AAG gateway client, native TUI session, or live run. The decision port with advisory per-task harness routing (ADR 034) is `PARTIAL — FIXTURE ONLY`: local rules and a TypeSafe Jev peer, verified against fixture peers and a loopback test server; no live Jev call has run. Native harness request dispatch in the CLI process (ADR 040, `vibemux_harness_native`) is `PARTIAL — FIXTURE ONLY`; the unified CLI and read-only multi-pane console (ADR 041, ADR 042) are `PARTIAL`; the native MCP read host (ADR 035, `vibemux_mcp`) is `PARTIAL — PRE-ALPHA`. The read-only mobile web surface (ADR 033, `vibemux_web`) is `PARTIAL`. See [PROGRESS.md](PROGRESS.md) for the authoritative status table and remaining gates.
+- A **Rust 2024 workspace** (`crates/`) is the target authoritative core. M3 (persistence + single-writer daemon + authenticated local IPC) is `VERIFIED`; M4 plugin protocol/supervisor is `PARTIAL`; M5.0 read-only probe and unified frontend shell is `PARTIAL`; A2A is `PARTIAL — LOCAL STATEFUL`, with authenticated HTTP+JSON, JSON-RPC, and gRPC plus canonical bindings and local supervisor verification. Daemon-owned harness dispatch (ADR 029) is `PARTIAL`: fixture-verified, with live evidence on native Windows for initialize-only probes and one Claude submit that the vendor refused as not logged in, because the route's `--bare` accepted only an API key; the read-only route has since dropped `--bare` (ADR 029 amendment of 2026-10-23), and no authenticated execution turn has run yet. Dual-track coding workflows (ADR 031) are `PARTIAL — OFFLINE ONLY`: verified with fixture workers; there is no AAG gateway client, native TUI session, or live run. The decision port with advisory per-task harness routing (ADR 034) is `PARTIAL — FIXTURE ONLY`: local rules and a TypeSafe Jev peer, verified against fixture peers and a loopback test server; no live Jev call has run. Native harness request dispatch in the CLI process (ADR 040, `vibemux_harness_native`) is `PARTIAL — FIXTURE ONLY`; the unified CLI and read-only multi-pane console (ADR 041, ADR 042) are `PARTIAL`; the native MCP read host (ADR 035, `vibemux_mcp`) is `PARTIAL — PRE-ALPHA`. The read-only mobile web surface (ADR 033, `vibemux_web`) is `PARTIAL`; the Tauri 2 desktop shell (ADR 043, `vibemux_desktop`) is `PARTIAL — SKELETON` with the egui GUI still the shipped frontend; the optional browser-local chat workspace (ADR 056, `crates/vibemux_chat/web`) is a separate frontend whose conversations are browser records, never canonical Tasks/Runs/Events. See [PROGRESS.md](PROGRESS.md) for the authoritative status table and remaining gates.
 
 `AGENTS.md` is the engineering-rules source of truth; `PROGRESS.md` is the implementation-status source of truth. Read both before any non-trivial change.
 
@@ -60,13 +60,16 @@ crates/vibemux_model_peer/         # optional out-of-process model peer; never r
 crates/vibemux_mcp/                # ADR 035 first-party read-only MCP frontend over the daemon client (stdio)
 crates/vibemux_web/                # ADR 033 operator-started read-only mobile web surface (+ the ADR 042 console's daemon views, opt-in loopback local page mode); build.rs needs crates/vibemux_web/web/dist (npm ci && npm run build)
 crates/vibemux_client/             # GUI-neutral daemon, probe, Ask, and Git client shared by the frontends
-crates/vibemux_desktop/           # ADR 043 Tauri 2 desktop shell (the Svelte 5 UI is crates/vibemux_desktop/ui); build.rs needs crates/vibemux_desktop/ui/dist (npm install && npm run build)
+crates/vibemux_desktop/            # ADR 043 Tauri 2 desktop shell (the Svelte 5 UI is crates/vibemux_desktop/ui); build.rs needs crates/vibemux_desktop/ui/dist (npm ci && npm run build)
+crates/vibemux_chat/web/           # ADR 056 optional browser-local Claude/Codex chat workspace (Svelte 5; not a Cargo workspace member, own npm lockfile)
 crates/vibemux_frontend/           # egui Supervisor Chat GUI (ADR 028) + Ratatui diagnostic TUI + DSH terminal surface + ASCII dump + read-only multi-pane console with content-free daemon views (ADR 041/042)
 crates/vibemux_workspace/          # Git worktree lifecycle, owner receipts, and cleanup
 crates/vibemuxd/                   # M3 daemon (writer worker + control IPC v10: health/plugin/harness/frontend/terminal/dispatch/workflow/dsh/decision ops, model-supervisor and contract-edit ops + harness dispatch, workflow, DSH, and decision services)
 crates/vibemux_cli/                # pre-alpha vibemuxctl lifecycle + harnesses/switch/dispatch/harness/workflow/dsh/decide/tasks/plugins/terminal/status/workspace/probe/ui client
 tests/                              # Python pytest suite
-scripts/                            # smoke + benchmark scripts + dual-track acceptance runner (verify_dual_track.py)
+scripts/                            # smoke, benchmark, public-artifact, and frontend-dependency checks + dual-track acceptance runner (verify_dual_track.py)
+examples/harness/                   # public ADR 040 harness configs (execution disabled)
+tools/                              # A2A TCK/ITK interoperability scripts
 docs/adr/                           # architecture decision records
 ```
 
@@ -91,6 +94,7 @@ vibemux doctor
 - Lint: `python -m ruff check .`
 - Format check: `python -m ruff format --check .`
 - Type check: `python -m mypy .`
+- Publishable-source check (CI runs it): `python scripts/check_public_artifacts.py`
 - Mock-workflow smoke: `python scripts/smoke_test.py`
 
 ### Rust workspace
@@ -103,12 +107,14 @@ MSRV is **Rust 1.92.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 - Build the pre-alpha daemon + CLI: `cargo build -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl` (add `--bin vibemux_launch_trampoline` for harness dispatch; it must sit next to `vibemuxd`)
 - Release build for benchmarking: `cargo build --release -p vibemuxd --bin vibemuxd -p vibemux_cli --bin vibemuxctl`
 - Run the read-only probe: `cargo run -p vibemux_probe --bin vibemux_probe`
+- Unified read-only CLI (no daemon needed; `--format auto|text|json` or `--json` goes before the verb): `cargo run -p vibemux_cli --bin vibemuxctl -- --format text status`, `workspace status`, `probe`; `ui` opens the same console as `vibemux_dashboard` (`--report`, `--once`, `--width`, `--height`). `status`/`workspace status` need Git 2.36+ (a partial clone 2.45+) and never fetch.
 - Render the frontend dashboard once (non-interactive smoke): `cargo run -p vibemux_frontend --bin vibemux_frontend_dump`
 - Interactive terminal dashboard: `cargo run -p vibemux_frontend --bin vibemux_frontend_tui` (`--json`, `--theme <name>`; `j`/`k` select, `r` re-runs the read-only probe, `t` cycles themes, `c` snapshots, `q`/`Esc` exit)
 - Read-only multi-pane console (ADR 041/042, also `vibemuxctl ui`): `cargo run -p vibemux_frontend --bin vibemux_dashboard -- --project-root .` (`1`-`7` views incl. daemon Tasks/Daemon/Sessions/Decisions, `L` single/split/grid, `Tab` next pane, `z` zoom, `/` filter, `r` refresh, `t` theme; reads only content-free daemon state, never starts a daemon)
 - DSH terminal surface (ADR 032; needs an operator `.vibemux/dsh_session.json`): `cargo run -p vibemux_frontend --bin vibemux_dsh_tui -- --project-root .` (`--config`, `--theme`, `--print-config`; `Enter` sends, `Esc` cancels the turn, `Ctrl-F` searches the in-memory transcript, `Home`/`End` jump, `Ctrl-C` quits)
 - GUI (egui/eframe, opens a window): `cargo run -p vibemux_frontend --bin vibemux_frontend`
-- Desktop app (ADR 043, opens a window): build the UI first with `npm install && npm run build` in `crates/vibemux_desktop/ui` (Node 22), then `cargo run -p vibemux_desktop`. Hot reload: `npm run dev` in the UI directory plus `cargo run --no-default-features -p vibemux_desktop` (the default `custom-protocol` feature makes plain `cargo run` load the bundled `ui/dist` assets)
+- Desktop app (ADR 043, opens a window): build the UI first with `npm ci && npm run build` in `crates/vibemux_desktop/ui` (Node 22), then `cargo run -p vibemux_desktop`. Hot reload: `npm run dev` in the UI directory plus `cargo run --no-default-features -p vibemux_desktop` (the default `custom-protocol` feature makes plain `cargo run` load the bundled `ui/dist` assets)
+- Browser chat workspace (ADR 056; opens in a browser, not a Cargo crate): `npm ci` and `npm run dev` in `crates/vibemux_chat/web` (Node 22.22.0; loopback `127.0.0.1:5182`); `npm test` runs network-free tests, `npm run build` writes `dist/`
 
 ### Daemon + harness surface (Windows, pre-alpha)
 
@@ -140,6 +146,8 @@ Harness dispatch (ADR 029, pre-alpha, needs control protocol v5) is off until th
 
 Codex and Claude routes execute; ACP routes (OpenCode/Copilot/Grok) are probe-only. At most one dispatch is active per project, the read-only protocol profiles are not an OS sandbox, and transcripts live in daemon memory only. Do not run `probe` or `submit` against real vendor CLIs without the user's explicit authorization (`submit` sends a real prompt); tests use the `vibemux_native_fixture` binary.
 
+The standalone `vibemuxctl harness` (ADR 040) instead runs bounded native request dispatch **in the CLI process** — no daemon, no canonical Task/Run records, no store rows: `harness catalog --config <file>`, `harness replay --protocol <protocol> --input <jsonl>`, `help harness`. Public example configs disable execution; real model requests need explicit operator authorization.
+
 Decision routing (ADR 034, pre-alpha, needs control protocol v8) is off until the operator creates `.vibemux\decision_config.json` (schema 1; example and rules in README "Decision routing") and restarts the daemon. It also needs dispatch routes, because the options are the detected harnesses with an executing route:
 
 ```powershell
@@ -152,7 +160,7 @@ cargo build -p vibemux_decision_peer --bin vibemux_decision_peer                
 
 A decision never grants execution: the decided submit re-runs every ADR 029 gate. The Jev peer runs only when the config sets `jev.enabled: true` **and** the request passes `--allow-external`; it receives enumerated facts only (option ids, operator option descriptions, allowlisted labels, a prompt size bucket, the project default), never the prompt. Do not enable Jev or pass `--allow-external` against the real API without the user's explicit authorization (paid API and key); tests use the `vibemux_decision_fixture` binary and a loopback server.
 
-DSH sessions (ADR 032, pre-alpha, needs control protocol v7) are off until the operator creates `.vibemux\dsh_session.json` (schema 1; example and rules in [docs/dsh_session_protocol.md](docs/dsh_session_protocol.md)). Booting `dsh --profile sdk` once writes to `$DSH_HOME`, so do that under operator control first. The daemon must be running:
+DSH sessions (ADR 032, pre-alpha, needs control protocol v7) are off until the operator creates `.vibemux\dsh_session.json` (schema 1; example and rules in [docs/dsh_session_protocol.md](docs/dsh_session_protocol.md)). Booting `dsh --profile sdk` once writes to `$DSH_HOME`, so do that under operator control first. `.\scripts\setup_dsh_prereq.ps1` checks (and with `-Apply` provisions, via documented operator commands only) the Node image, the npm-global `@deepseek-ai/dsh` install, and the `sdk`/`tui` profiles. The daemon must be running:
 
 ```powershell
 .\target\debug\vibemuxctl.exe dsh open   --project-root .
@@ -214,8 +222,9 @@ Release-start benchmark (script refuses a project that already has a daemon desc
 
 - **One task per branch/worktree.** Use `feat/<issue>-<short-name>`, `fix/<issue>-<short-name>`, `refactor/<issue>-<short-name>`, or `docs/<issue>-<short-name>`.
 - **Never claim "tests pass" unless they were executed on the change you're handing off.** Record the exact commands and outcomes.
-- **`vibemux_web` will not compile until its frontend is built.** Its `build.rs` asserts `crates/vibemux_web/web/dist`; run `npm ci && npm run build` in `crates/vibemux_web/web` (Node 22) first, or pass `--exclude vibemux_web` to workspace-wide cargo commands. CI runs the web `typecheck`/`test`/`audit`/`build` before the Rust steps.
-- **`vibemux_desktop` will not compile until its UI is built.** Its `build.rs` asserts `crates/vibemux_desktop/ui/dist`; run `npm install && npm run build` in `crates/vibemux_desktop/ui` (Node 22) first, or pass `--exclude vibemux_desktop` to workspace-wide cargo commands. On Linux the Tauri build also needs `libwebkit2gtk-4.1-dev`; CI installs it before the Rust steps.
+- **`vibemux_web` will not compile until its frontend is built.** Its `build.rs` asserts `crates/vibemux_web/web/dist`; run `npm ci && npm run build` in `crates/vibemux_web/web` (Node 22) first, or pass `--exclude vibemux_web` to workspace-wide cargo commands. CI runs `npm ci` plus each frontend's test/audit/build (and typecheck where defined) for the web monitor, desktop `ui`, and chat `web` before the Rust steps.
+- **`vibemux_desktop` will not compile until its UI is built.** Its `build.rs` asserts `crates/vibemux_desktop/ui/dist`; run `npm ci && npm run build` in `crates/vibemux_desktop/ui` (Node 22) first, or pass `--exclude vibemux_desktop` to workspace-wide cargo commands. On Linux the Tauri build also needs `libwebkit2gtk-4.1-dev`; CI installs it before the Rust steps.
+- **`crates/vibemux_chat/web` is not a Cargo workspace member.** It is a static Svelte client (no daemon access) with its own lockfile and a path-filtered `chat_web.yml` workflow, so workspace-wide cargo commands are unaffected; CI still runs `npm ci`/`test`/`audit`/`build` for it in `ci.yml`. Node 22.22.0 is required.
 - **Rust library crates should use `#![forbid(unsafe_code)]`.** `unsafe` is only allowed in a narrow platform module and requires an accepted ADR plus a `// SAFETY:` comment.
 - **No unbounded channels, no async mutex across `.await`, no `unwrap`/`expect` on untrusted runtime input.** Blocking SQLite/Git/filesystem/process work goes through `spawn_blocking` or a dedicated worker.
 - **No public Rust ABI plugin.** Plugins are out-of-process executables speaking length-delimited Protobuf over stdin/stdout (`vibemux_plugin_protocol`). WASM may be considered later for deterministic policy/transform plugins, but never as a substitute for OS-accessing harness or terminal plugins.
@@ -232,6 +241,9 @@ Release-start benchmark (script refuses a project that already has a daemon desc
 - Platform claims + live-validation environments: [docs/platform_support.md](docs/platform_support.md).
 - Wire contracts and what is/isn't supported: [docs/protocol_boundaries.md](docs/protocol_boundaries.md).
 - ADRs (architecture decisions): [docs/adr/](docs/adr/).
+- Documentation map (guides, reports, entry points): [docs/index.md](docs/index.md).
+- Optional browser chat workspace setup and limits: [docs/conversational_web_ui.md](docs/conversational_web_ui.md).
+- Frontend npm dependency overrides and audit policy: [docs/frontend_dependencies.md](docs/frontend_dependencies.md).
 - CLI smoke recipe: [README.md](README.md) "Mock workflow".
 
 ## Forbidden Git actions
@@ -243,6 +255,7 @@ Unless explicitly authorized for a known safe resource, do not run: `git reset -
 - `99d1f8e` is only the **original Python audit baseline**; the current Python package remains the behavior reference while new orchestration or A2A work targets Rust. Do not let the Python prototype grow a second authoritative state writer after cutover.
 - During migration, Rust only writes `.vibemux/vibemux_rust.sqlite3`; it never opens `.vibemux/vibemux.sqlite3`. Path code refuses symlinks/hardlinks that alias the Python database.
 - The GUI is the Supervisor Chat workspace (ADR 028): it reads real task/run/event/artifact summaries over Control v4 and never fabricates a transcript or reply. Send to the Coordinator target stays unavailable until a continuous coordinator-chat adapter exists; for a Claude or Codex target with an executing dispatch route, Send runs one read-only ADR 029 Ask whose reply lives in daemon memory (ADR 030 amendment of 2026-10-23; one live Claude submit reached the vendor but was refused as not logged in under `--bare`, which the read-only route has since dropped; no authenticated turn has run). The ten pre-existing harnesses (Claude/Codex/OpenCode/Copilot/Grok/Qwen/iFlow/TRAE/CodeBuddy/Kimi) plus DSH appear as diagnostics and TUI dashboard rows. Nothing attaches to PTYs/ConPTYs or renders a native TUI; the optional WezTerm observer only lists and focuses an explicitly linked native pane. Treat any reference to live native-TUI attach, embedded terminals, or harness launch/input forwarding as premature. DSH is the one exception, and it is not terminal attach: `vibemux_dsh_tui` speaks DSH's own SDK JSON-RPC stdio protocol through `vibemux_dsh`, and it writes no canonical state.
+- The Tauri desktop app (`vibemux_desktop`, ADR 043) is a shell only: settings file, navigation guard, and lockdown tests exist, but the project, Ask, task, console, and settings screens do not yet, and the egui GUI remains the shipped frontend. The browser chat workspace (ADR 056) is a static client with no daemon credential, tool execution, filesystem access, or automatic Git action; its browser-local conversations and provider replies never become canonical state.
 - `vibemuxctl dispatch` (ADR 029) runs one-shot structured turns through the daemon; it is not a continuous chat adapter (the GUI's read-only Ask is a one-shot client of the same operations), and its live vendor evidence is initialize-only probes plus one unauthenticated Claude submit ([docs/evidence/harness_dispatch_validation.md](docs/evidence/harness_dispatch_validation.md)). Do not describe ACP execution, or concurrent or writable `vibemuxctl dispatch`, as implemented; writable worker turns in separate worktrees exist only inside ADR 031 workflows.
 - Decisions (ADR 034) are advisory and fixture-verified only; no live Jev call has run. Do not describe Jev routing as live-validated or calibrated, forward prompt text or summaries to a decision backend, or let a decision bypass a dispatch gate.
 - Dual-track workflows (ADR 031) have offline fixture evidence only. No AAG client, supervisor or compiler model, native TUI session, or live run exists, and a `live` workflow config cannot make a slot eligible to code. Never present fixture runs, initialize-only probes, or log panels as dual-TUI or live acceptance. Live acceptance needs the user's explicit budget and configuration authorization.
