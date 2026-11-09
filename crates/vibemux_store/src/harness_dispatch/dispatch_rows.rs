@@ -17,6 +17,7 @@ use super::{
     HarnessDispatchRecord, is_clean_completion,
 };
 use crate::StoreError;
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 
 /// A validated row with its fence and the projections it owns.
 pub(super) struct StoredDispatch {
@@ -66,9 +67,9 @@ pub(super) fn load(
                     resource_key: row.get(3)?,
                     phase: row.get(4)?,
                     claim_fence: row.get(5)?,
-                    version: row.get(6)?,
+                    version: from_sql_u64(row.get::<_, i64>(6)?)?,
                     record_json: row.get(7)?,
-                    updated_sequence: row.get(8)?,
+                    updated_sequence: from_sql_u64(row.get::<_, i64>(8)?)?,
                 })
             },
         )
@@ -187,7 +188,7 @@ pub(super) fn insert(
             record.fingerprint.to_hex(),
             record.resource_key.to_hex(),
             record.phase.as_str(),
-            record.version,
+            to_sql_u64(record.version)?,
             serde_json::to_string(record)?,
             sequence,
         ],
@@ -208,11 +209,11 @@ pub(super) fn update(
         params![
             record.phase.as_str(),
             fence.map(|fence| fence.0.as_hyphenated().to_string()),
-            record.version,
+            to_sql_u64(record.version)?,
             serde_json::to_string(record)?,
             sequence,
             request_key(record.request_id),
-            previous_version,
+            to_sql_u64(previous_version)?,
         ],
     )?;
     if changed != 1 {

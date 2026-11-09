@@ -2,6 +2,7 @@
 use super::observations::observation_in;
 use super::{workflow_error, workflow_rows};
 use crate::StoreError;
+use crate::sql_integer::from_sql_u64;
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeSet;
 use time::OffsetDateTime;
@@ -37,7 +38,7 @@ pub(super) fn validate_applied_result(
     let claim_sequence: u64 = transaction.query_row(
         "SELECT updated_sequence FROM workflow_supervisor_actions WHERE action_id=?",
         [action.action_id.to_string()],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     let mut receipts = Vec::new();
     let unique: BTreeSet<_> = refs.iter().collect();
@@ -45,7 +46,7 @@ pub(super) fn validate_applied_result(
         return Err(invalid());
     }
     for id in refs {
-        let row: Option<(String,u64)> = transaction.query_row("SELECT record_json,created_sequence FROM workflow_receipts WHERE workflow_id=? AND receipt_id=?", params![action.workflow_id.to_string(),id.to_string()], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let row: Option<(String,u64)> = transaction.query_row("SELECT record_json,created_sequence FROM workflow_receipts WHERE workflow_id=? AND receipt_id=?", params![action.workflow_id.to_string(),id.to_string()], |row| Ok((row.get(0)?,from_sql_u64(row.get::<_, i64>(1)?)?))).optional()?;
         let (json, sequence) = row.ok_or_else(invalid)?;
         let receipt: WorkflowReceipt = serde_json::from_str(&json)?;
         if sequence <= claim_sequence || receipt.receipt_id() != *id {

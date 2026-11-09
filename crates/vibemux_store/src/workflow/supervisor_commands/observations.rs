@@ -2,6 +2,7 @@
 use super::rows::{actions_for, load_execution, load_round};
 use super::{millis, workflow_error, workflow_rows};
 use crate::StoreError;
+use crate::sql_integer::from_sql_u64;
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
@@ -210,7 +211,7 @@ pub(super) fn observation_in(
         .rev()
         .take(8)
         .collect();
-    let supervisor_cursor: u64 = transaction.query_row("SELECT COALESCE(MAX(sequence),0) FROM (SELECT updated_sequence AS sequence FROM workflow_supervisors WHERE workflow_id=?1 UNION ALL SELECT updated_sequence FROM workflow_supervisor_actions WHERE workflow_id=?1 UNION ALL SELECT updated_sequence FROM workflow_supervisor_rounds WHERE workflow_id=?1)", [workflow_id.to_string()], |row| row.get(0))?;
+    let supervisor_cursor: u64 = transaction.query_row("SELECT COALESCE(MAX(sequence),0) FROM (SELECT updated_sequence AS sequence FROM workflow_supervisors WHERE workflow_id=?1 UNION ALL SELECT updated_sequence FROM workflow_supervisor_actions WHERE workflow_id=?1 UNION ALL SELECT updated_sequence FROM workflow_supervisor_rounds WHERE workflow_id=?1)", [workflow_id.to_string()], |row| from_sql_u64(row.get::<_, i64>(0)?))?;
     Ok(SupervisorObservation {
         execution,
         workflow: stored.record,

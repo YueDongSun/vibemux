@@ -15,6 +15,7 @@ use super::{
     workflow_error,
 };
 use crate::StoreError;
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 
 fn mismatch() -> StoreError {
     workflow_error("store_workflow_projection_mismatch")
@@ -53,9 +54,9 @@ fn load_workflow_where(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, u64>(3)?,
+                    from_sql_u64(row.get::<_, i64>(3)?)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, u64>(5)?,
+                    from_sql_u64(row.get::<_, i64>(5)?)?,
                 ))
             },
         )
@@ -121,7 +122,7 @@ pub(super) fn insert_workflow(
             record.request_key,
             fingerprint.to_hex(),
             record.phase.as_str(),
-            record.version,
+            to_sql_u64(record.version)?,
             encode(record)?,
             sequence,
         ],
@@ -143,11 +144,11 @@ pub(super) fn update_workflow(
         "UPDATE workflows SET phase = ?, version = ?, record_json = ?, updated_sequence = ? WHERE workflow_id = ? AND version = ?",
         params![
             record.phase.as_str(),
-            record.version,
+            to_sql_u64(record.version)?,
             encode(record)?,
             sequence,
             uuid_key(record.workflow_id),
-            previous_version,
+            to_sql_u64(previous_version)?,
         ],
     )?;
     if changed != 1 {
@@ -250,7 +251,12 @@ pub(super) fn load_slot(
         .query_row(
             "SELECT record_json, last_generation FROM workflow_slots WHERE slot_id = ?",
             [slot_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    from_sql_u64(row.get::<_, i64>(1)?)?,
+                ))
+            },
         )
         .optional()?;
     let Some((json, generation)) = row else {
@@ -286,7 +292,7 @@ pub(super) fn bump_slot_generation(
 ) -> Result<(), StoreError> {
     let changed = transaction.execute(
         "UPDATE workflow_slots SET last_generation = ? WHERE slot_id = ? AND last_generation = ?",
-        params![next, slot_id, previous],
+        params![to_sql_u64(next)?, slot_id, to_sql_u64(previous)?],
     )?;
     if changed != 1 {
         return Err(workflow_error("store_workflow_version_conflict"));
@@ -346,7 +352,7 @@ fn query_leases(
                 row.get(1)?,
                 row.get(2)?,
                 row.get(3)?,
-                row.get(4)?,
+                from_sql_u64(row.get::<_, i64>(4)?)?,
                 row.get(5)?,
                 row.get(6)?,
             ))
@@ -406,7 +412,7 @@ pub(super) fn insert_lease(
             lease.task_key.as_str(),
             lease.slot_id.as_str(),
             lease.worktree_key.to_hex(),
-            lease.generation,
+            to_sql_u64(lease.generation)?,
             lease.state.as_str(),
             encode(lease)?,
             sequence,
@@ -429,7 +435,7 @@ pub(super) fn update_lease(
             sequence,
             uuid_key(lease.lease_id),
             previous_state,
-            lease.generation,
+            to_sql_u64(lease.generation)?,
         ],
     )?;
     if changed != 1 {
@@ -508,7 +514,7 @@ pub(super) fn insert_attempt(
             uuid_key(attempt.request_id),
             uuid_key(attempt.workflow_id),
             uuid_key(attempt.lease_id),
-            attempt.lease_generation,
+            to_sql_u64(attempt.lease_generation)?,
             attempt.task_key.as_str(),
             attempt.contract_id.to_hex(),
             attempt.purpose.as_str(),
@@ -623,7 +629,7 @@ pub(super) fn load_message(
         .query_row(
             "SELECT state, recipient_sequence, record_json FROM workflow_messages WHERE message_id = ?",
             [uuid_key(message_id)],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?)),
+            |row| Ok((row.get::<_, String>(0)?, from_sql_u64(row.get::<_, i64>(1)?)?, row.get::<_, String>(2)?)),
         )
         .optional()?;
     let Some((state, sequence, json)) = row else {
@@ -664,7 +670,7 @@ pub(super) fn next_recipient_sequence(
     let current: u64 = connection.query_row(
         "SELECT COALESCE(MAX(recipient_sequence), 0) FROM workflow_messages WHERE workflow_id = ? AND recipient = ?",
         params![uuid_key(workflow_id), recipient],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     current.checked_add(1).ok_or_else(mismatch)
 }
@@ -680,7 +686,7 @@ pub(super) fn insert_message(
             uuid_key(message.envelope.message_id),
             uuid_key(message.envelope.workflow_id),
             message.recipient_label,
-            message.recipient_sequence,
+            to_sql_u64(message.recipient_sequence)?,
             message.state.as_str(),
             message.fingerprint.to_hex(),
             encode(message)?,
@@ -749,7 +755,7 @@ pub(super) fn upsert_content(
             entry.content_sha256.to_hex(),
             entry.workflow_id.map(uuid_key),
             entry.kind.as_str(),
-            entry.byte_count,
+            to_sql_u64(entry.byte_count)?,
             entry.state.as_str(),
             encode(entry)?,
             sequence,

@@ -904,7 +904,7 @@ fn an_unexplained_content_reference_blocks_checkpoint_projection() {
         "INSERT INTO content_store_entries(content_sha256,workflow_id,kind,byte_count,state,record_json,updated_sequence) VALUES (?,?,?,?,?,?,?)",
         rusqlite::params![
             Sha256Digest::of(b"unexplained artifact").to_hex(),
-            workflow.workflow_id.to_string(), "artifact", 1_u64, "present", "{}", sequence,
+            workflow.workflow_id.to_string(), "artifact", 1_i64, "present", "{}", sequence,
         ],
     ).expect("inject one unbacked fixture content row");
     drop(connection);

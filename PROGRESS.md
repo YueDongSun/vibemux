@@ -7687,3 +7687,31 @@ This qualification covers the integrated fixes on `codex/review-core-nov06`.
 These are local macOS results, not a hosted-CI result for the new patch. Exact commands,
 logs, source fingerprints, and the scope/platform/compatibility handoff are
 retained in the task's local validation artifact.
+
+### 2026-11-09 — RUSTSEC-2026-0459: bundled SQLite upgrade
+
+- Advisory: RUSTSEC-2026-0459 (`libsqlite3-sys` via C SQLite CVE-2026-119375)
+  affects `libsqlite3-sys` below 0.39.0. The workspace locked
+  `rusqlite 0.37.0` / `libsqlite3-sys 0.35.0`, so the `dependency_policy` CI
+  job fails on every branch whose checks run after the advisory reached the
+  database (earlier green runs predate it).
+- Change: the workspace pin moves to `rusqlite = 0.41.1`, which resolves
+  `libsqlite3-sys 0.39.1`, the first fixed line. rusqlite 0.41 removed the
+  `ToSql`/`FromSql` implementations for `u64` because SQLite stores INTEGER
+  as a signed 64-bit value, so `vibemux_store` converts explicitly at the SQL
+  boundary through the new private `sql_integer` module (`to_sql_u64` /
+  `from_sql_u64`, fail closed on out-of-range values), and the read-only
+  gateway-log reader in `vibemux_probe` converts locally under the same rule.
+  Domain structs and public signatures keep `u64`; no schema, control
+  protocol, or canonical-type change.
+- Executed on native Windows 11 (10.0.26300), Rust 1.92.0:
+  `cargo check -p vibemux_store -p vibemux_probe -p vibemux_model_peer
+  --all-features` passed; `cargo test -p vibemux_store --all-features`
+  passed 139 tests across its integration targets with zero failures;
+  `cargo test -p vibemux_probe --all-features` passed 24 tests; `cargo fmt
+  --all -- --check` passed. The full-workspace check including `vibemux_web`
+  cannot run on this host because the `openssl-sys 0.9.117` build script
+  needs the Perl setup that CI installs; hosted CI covers that path.
+- The bundled SQLite engine moves to the release shipped with
+  libsqlite3-sys 0.39.1; the store's migration, replay, and recovery tests
+  run against it unchanged.

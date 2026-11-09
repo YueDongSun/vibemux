@@ -32,6 +32,7 @@ use vibemux_workflow::{
 };
 
 use super::{ContentEntry, ContentKind, append, millis, uuid_key, workflow_error, workflow_rows};
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 use crate::{SqliteStore, StoreError};
 
 const CONTROLLER_ADMISSION_EVENT: &str = "workflow_controller_admitted";
@@ -172,7 +173,7 @@ fn load_binding(
     transaction: &Transaction<'_>,
     workflow_id: Uuid,
 ) -> Result<Option<(RecoveryPlanBinding, u64)>, StoreError> {
-    let row: Option<(String, String, u64)> = transaction
+    let row: Option<(String, String, i64)> = transaction
         .query_row(
             "SELECT workflow_id,record_json,created_sequence FROM workflow_recovery_bindings WHERE workflow_id=?",
             [uuid_key(workflow_id)],
@@ -182,6 +183,7 @@ fn load_binding(
     let Some((row_id, json, sequence)) = row else {
         return Ok(None);
     };
+    let sequence = from_sql_u64(sequence)?;
     let binding: RecoveryPlanBinding = serde_json::from_str(&json)
         .map_err(|_| workflow_error("store_recovery_binding_mismatch"))?;
     if row_id != uuid_key(binding.workflow_id)
@@ -200,7 +202,7 @@ fn load_controller(
     transaction: &Transaction<'_>,
     controller_key: Uuid,
 ) -> Result<Option<StoredController>, StoreError> {
-    let row: Option<(String, String, String, String, String, u64)> = transaction
+    let row: Option<(String, String, String, String, String, i64)> = transaction
         .query_row(
             "SELECT controller_key, workflow_id, task_key, session_id, record_json, updated_sequence FROM workflow_controllers WHERE controller_key = ?",
             [uuid_key(controller_key)],
@@ -210,6 +212,7 @@ fn load_controller(
     let Some((id, workflow_id, task_key, session_id, json, sequence)) = row else {
         return Ok(None);
     };
+    let sequence = from_sql_u64(sequence)?;
     let record: NativeController = serde_json::from_str(&json)
         .map_err(|_| workflow_error("store_controller_projection_mismatch"))?;
     record
@@ -237,7 +240,7 @@ fn load_submission_outbox(
     transaction: &Transaction<'_>,
     effect_id: Uuid,
 ) -> Result<Option<ControllerOutboxRecord>, StoreError> {
-    let row: Option<(String, String, u64, String, String)> = transaction
+    let row: Option<(String, String, i64, String, String)> = transaction
         .query_row(
             "SELECT effect_id,controller_key,controller_version,command_json,state FROM workflow_controller_outbox WHERE effect_id=?",
             [uuid_key(effect_id)],
@@ -247,6 +250,7 @@ fn load_submission_outbox(
     let Some((row_id, controller_key, version, json, state)) = row else {
         return Ok(None);
     };
+    let version = from_sql_u64(version)?;
     let outbox: ControllerOutboxRecord = serde_json::from_str(&json)
         .map_err(|_| workflow_error("store_controller_outbox_mismatch"))?;
     if row_id != uuid_key(outbox.effect_id)
@@ -361,7 +365,7 @@ fn update_controller_row(
             serde_json::to_string(next)?,
             sequence,
             uuid_key(stored.controller_key),
-            stored.sequence,
+            to_sql_u64(stored.sequence)?,
         ],
     )?;
     if updated != 1 {
@@ -378,11 +382,11 @@ fn update_submission_outbox(
     let changed = transaction.execute(
         "UPDATE workflow_controller_outbox SET controller_version=?,command_json=?,state=? WHERE effect_id=? AND controller_version=? AND state=?",
         params![
-            next.controller_version,
+            to_sql_u64(next.controller_version)?,
             serde_json::to_string(next)?,
             next.state.as_str(),
             uuid_key(next.effect_id),
-            previous.controller_version,
+            to_sql_u64(previous.controller_version)?,
             previous.state.as_str(),
         ],
     )?;
@@ -464,7 +468,7 @@ fn receipt_references(
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
-                row.get::<_, u64>(6)?,
+                from_sql_u64(row.get::<_, i64>(6)?)?,
             ))
         },
     )?;
@@ -642,7 +646,7 @@ fn validate_content_metadata(
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, u64>(4)?,
+            from_sql_u64(row.get::<_, i64>(4)?)?,
         ))
     })?;
     let mut count = 0_usize;
@@ -697,30 +701,30 @@ fn project_recovery_state(
     let attempt_count: u64 = transaction.query_row(
         "SELECT COUNT(*) FROM workflow_attempts WHERE workflow_id=?",
         [&key],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     let message_count: u64 = transaction.query_row(
         "SELECT COUNT(*) FROM workflow_messages WHERE workflow_id=?",
         [&key],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     let receipt_count: u64 = transaction.query_row(
         "SELECT COUNT(*) FROM workflow_receipts WHERE workflow_id=?",
         [&key],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     let model_calls: u64 = transaction.query_row(
         "SELECT COUNT(*) FROM workflow_model_calls c JOIN workflow_model_call_owners o ON o.owner_key=c.owner_key WHERE o.workflow_id=?",
-        [&key], |row| row.get(0),
+        [&key], |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     let used_model_calls: u64 = transaction.query_row(
         "SELECT COALESCE(SUM(calls_used),0) FROM workflow_model_call_owners WHERE workflow_id=?",
         [&key],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     let orphan_effects: u64 = transaction.query_row(
         "SELECT COUNT(*) FROM workflow_controller_outbox o LEFT JOIN workflow_controllers c ON c.controller_key=o.controller_key WHERE c.controller_key IS NULL",
-        [], |row| row.get(0),
+        [], |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     if attempt_count != 0
         || message_count != 0
@@ -798,7 +802,7 @@ fn project_recovery_state(
     let lease_sequence: u64 = transaction.query_row(
         "SELECT COALESCE(MAX(updated_sequence),0) FROM workflow_leases WHERE workflow_id=?",
         [&key],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?;
     cursor = cursor.max(lease_sequence);
     let mut leases = workflow_rows::leases_for(transaction, workflow_id)?
@@ -1397,7 +1401,7 @@ impl SqliteStore {
                 params![
                     uuid_key(effect_id),
                     uuid_key(controller_key),
-                    next.version,
+                    to_sql_u64(next.version)?,
                     serde_json::to_string(&record)?,
                     record.state.as_str(),
                     sequence,
@@ -1410,7 +1414,7 @@ impl SqliteStore {
                 params![
                     uuid_key(effect_id),
                     uuid_key(controller_key),
-                    next.version,
+                    to_sql_u64(next.version)?,
                     serde_json::to_string(&command_json)?,
                     state,
                     sequence,

@@ -4,6 +4,7 @@ use super::{
     BoundPlan, MAX_PLAN_BYTES, PLAN_DOMAIN, active_execution, append, load_action, millis,
     workflow_error, workflow_rows,
 };
+use crate::sql_integer::from_sql_u64;
 use crate::{
     MessageCommit, MessageRecord, SqliteStore, StoreError, WORKFLOW_STORE_RECORD_SCHEMA_VERSION,
 };
@@ -100,7 +101,7 @@ pub(super) fn claim_sequence(
     Ok(transaction.query_row(
         "SELECT updated_sequence FROM workflow_supervisor_actions WHERE action_id=?",
         [action.action_id.to_string()],
-        |row| row.get(0),
+        |row| from_sql_u64(row.get::<_, i64>(0)?),
     )?)
 }
 
@@ -111,7 +112,7 @@ pub(super) fn bundle_for_action(
     let bundle_id = effect_id(action.action_id, "bundle");
     let (json, sequence): (String, u64) = transaction.query_row(
         "SELECT record_json,created_sequence FROM workflow_receipts WHERE workflow_id=? AND receipt_id=?",
-        params![action.workflow_id.to_string(), bundle_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?)))
+        params![action.workflow_id.to_string(), bundle_id.to_string()], |row| Ok((row.get(0)?, from_sql_u64(row.get::<_, i64>(1)?)?)))
         .map_err(|_| invalid())?;
     let WorkflowReceipt::Bundle(bundle) = serde_json::from_str(&json)? else {
         return Err(invalid());

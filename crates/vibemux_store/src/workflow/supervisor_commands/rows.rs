@@ -1,6 +1,7 @@
 //! Indexed supervisor rows, projection cross-checks and bounded recovery reads.
 use super::{MAX_STATUS_ITEMS, workflow_error};
 use crate::StoreError;
+use crate::sql_integer::{from_sql_u64, to_sql_u64};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use uuid::Uuid;
 use vibemux_workflow::supervisor::{
@@ -34,7 +35,13 @@ pub(super) fn load_execution(
         .query_row(
             "SELECT generation,state,record_json FROM workflow_supervisors WHERE workflow_id=?",
             [workflow_id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    from_sql_u64(row.get::<_, i64>(0)?)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                ))
+            },
         )
         .optional()?;
     row.map(|(generation, state, json)| {
@@ -56,7 +63,7 @@ pub(super) fn save_execution(
     sequence: i64,
 ) -> Result<(), StoreError> {
     transaction.execute("INSERT INTO workflow_supervisors(workflow_id,generation,state,record_json,updated_sequence) VALUES (?,?,?,?,?) ON CONFLICT(workflow_id) DO UPDATE SET generation=excluded.generation,state=excluded.state,record_json=excluded.record_json,updated_sequence=excluded.updated_sequence",
-        params![record.workflow_id.to_string(), record.generation, execution_state(record.state), serde_json::to_string(record)?, sequence])?;
+        params![record.workflow_id.to_string(), to_sql_u64(record.generation)?, execution_state(record.state), serde_json::to_string(record)?, sequence])?;
     Ok(())
 }
 
@@ -66,7 +73,7 @@ pub(super) fn load_round(
 ) -> Result<SupervisorRound, StoreError> {
     let row: Option<(String, u64, String, String)> = connection.query_row(
         "SELECT workflow_id,generation,call_id,record_json FROM workflow_supervisor_rounds WHERE round_id=?",
-        [round_id.to_string()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?;
+        [round_id.to_string()], |row| Ok((row.get(0)?, from_sql_u64(row.get::<_, i64>(1)?)?, row.get(2)?, row.get(3)?))).optional()?;
     let (workflow_id, generation, call_id, json) =
         row.ok_or_else(|| workflow_error("store_supervisor_round_unknown"))?;
     let record: SupervisorRound = serde_json::from_str(&json)?;
@@ -86,7 +93,7 @@ pub(super) fn save_round(
     sequence: i64,
 ) -> Result<(), StoreError> {
     transaction.execute("INSERT INTO workflow_supervisor_rounds(round_id,workflow_id,generation,call_id,record_json,updated_sequence) VALUES (?,?,?,?,?,?) ON CONFLICT(round_id) DO UPDATE SET record_json=excluded.record_json,updated_sequence=excluded.updated_sequence",
-        params![record.round_id.to_string(),record.workflow_id.to_string(),record.generation,record.call_id.to_string(),serde_json::to_string(record)?,sequence])?;
+        params![record.round_id.to_string(),record.workflow_id.to_string(),to_sql_u64(record.generation)?,record.call_id.to_string(),serde_json::to_string(record)?,sequence])?;
     Ok(())
 }
 
@@ -108,7 +115,7 @@ pub(super) fn load_action(
     let row = connection.query_row(
         "SELECT workflow_id,generation,round_id,idempotency_key,state,fingerprint,dispatch_request_id,record_json FROM workflow_supervisor_actions WHERE action_id=?",
         [action_id.to_string()], |row| Ok(ActionRow {
-            workflow_id:row.get(0)?,generation:row.get(1)?,round_id:row.get(2)?,idempotency_key:row.get(3)?,
+            workflow_id:row.get(0)?,generation:from_sql_u64(row.get::<_, i64>(1)?)?,round_id:row.get(2)?,idempotency_key:row.get(3)?,
             state:row.get(4)?,fingerprint:row.get(5)?,dispatch_request_id:row.get(6)?,record_json:row.get(7)?,
         })).optional()?.ok_or_else(|| workflow_error("store_supervisor_action_unknown"))?;
     let record: SupervisorAction = serde_json::from_str(&row.record_json)?;
