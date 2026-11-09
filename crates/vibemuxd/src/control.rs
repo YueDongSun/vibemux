@@ -74,7 +74,9 @@ pub use workflow_ops::{
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V10;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V11;
+/// V11 adds operator intake, follow-ups, and structured worker report reads.
+pub const CONTROL_PROTOCOL_V11: u32 = 11;
 /// V10 adds explicit operator contract-edit successor admission.
 pub const CONTROL_PROTOCOL_V10: u32 = 10;
 /// V9 adds explicit model-supervisor start and bounded supervisor status.
@@ -132,6 +134,9 @@ pub enum ControlOperation {
     DshSessionCancel,
     DshSessionClose,
     WorkflowPrepare,
+    WorkflowIntake,
+    WorkflowFollowup,
+    WorkflowReports,
     WorkflowStart,
     WorkflowSupervisorStart,
     WorkflowSupervisorStatus,
@@ -188,6 +193,9 @@ impl ControlOperation {
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V9,
             Self::WorkflowContractEdit => CONTROL_PROTOCOL_V10,
+            Self::WorkflowIntake | Self::WorkflowFollowup | Self::WorkflowReports => {
+                CONTROL_PROTOCOL_V11
+            }
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -1960,6 +1968,9 @@ where
             )
         }
         operation @ (ControlOperation::WorkflowPrepare
+        | ControlOperation::WorkflowIntake
+        | ControlOperation::WorkflowFollowup
+        | ControlOperation::WorkflowReports
         | ControlOperation::WorkflowStart
         | ControlOperation::WorkflowSupervisorStart
         | ControlOperation::WorkflowSupervisorStatus
@@ -2556,6 +2567,7 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V8
             | CONTROL_PROTOCOL_V9
             | CONTROL_PROTOCOL_V10
+            | CONTROL_PROTOCOL_V11
     )
 }
 
@@ -3066,9 +3078,17 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
         assert!(supported_control_version(CONTROL_PROTOCOL_V8));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V10);
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V11);
         assert!(supported_control_version(CONTROL_PROTOCOL_V9));
         assert!(supported_control_version(CONTROL_PROTOCOL_V10));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V11));
+        for operation in [
+            ControlOperation::WorkflowIntake,
+            ControlOperation::WorkflowFollowup,
+            ControlOperation::WorkflowReports,
+        ] {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V11);
+        }
         assert_eq!(
             ControlOperation::WorkflowContractEdit.minimum_protocol_version(),
             CONTROL_PROTOCOL_V10
@@ -3184,6 +3204,9 @@ mod tests {
             ControlOperation::WorkflowSupervisorStart,
             ControlOperation::WorkflowSupervisorStatus,
             ControlOperation::WorkflowContractEdit,
+            ControlOperation::WorkflowIntake,
+            ControlOperation::WorkflowFollowup,
+            ControlOperation::WorkflowReports,
         ] {
             assert!(operation.minimum_protocol_version() > CONTROL_PROTOCOL_V6);
             let name = serde_json::to_value(&operation).expect("encode operation");

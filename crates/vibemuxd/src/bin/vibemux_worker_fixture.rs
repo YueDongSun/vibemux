@@ -125,6 +125,8 @@ struct Variant {
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointStep {
+    #[serde(default)]
+    worker_report: Option<Value>,
     /// Defaults to the written and removed paths.
     #[serde(default)]
     changed_files: Option<Vec<String>>,
@@ -435,7 +437,7 @@ fn perform(
         } else {
             Vec::new()
         };
-        let block = json!({
+        let mut block = json!({
             "schema_version": 1,
             "task_spec_digest": facts.task_spec_digest,
             "changed_files": changed_files,
@@ -445,6 +447,10 @@ fn perform(
             "messages": checkpoint.messages,
             "summary": checkpoint.summary.unwrap_or_else(|| format!("fixture {key}")),
         });
+        if let Some(report) = checkpoint.worker_report {
+            block["schema_version"] = json!(2);
+            block["worker_report"] = report;
+        }
         Some((CHECKPOINT_INFO_STRING, block))
     };
     let mut final_text = format!("Fixture turn {key} finished.\n");

@@ -775,7 +775,7 @@ fn schema_eight_adds_owned_tables_and_survives_reopen() {
     let path = fixture.file.path().to_path_buf();
     drop(fixture.store);
     let store = SqliteStore::open(&path).expect("reopen schema eight");
-    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 9);
+    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 10);
     assert_eq!(
         store
             .supervisor_status(workflow_id)

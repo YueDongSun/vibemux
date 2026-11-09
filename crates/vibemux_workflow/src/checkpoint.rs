@@ -27,6 +27,7 @@ use crate::{
 };
 
 pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
+pub const CHECKPOINT_REPORT_SCHEMA_VERSION: u32 = 2;
 pub const MAX_REPORT_BYTES: usize = 32 * 1024;
 pub const MAX_REPORT_ITEMS: usize = 32;
 pub const MAX_REPORT_TEXT_BYTES: usize = 4096;
@@ -1335,6 +1336,8 @@ pub struct CheckpointReport {
     pub context_refs_consumed: Vec<Uuid>,
     pub messages: Vec<OutgoingMessage>,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_report: Option<crate::worker_report::WorkerReport>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1462,7 +1465,16 @@ pub fn parse_checkpoint(
     }
     let report: CheckpointReport =
         serde_json::from_str(block).map_err(|_| ReportError::Malformed)?;
-    if report.schema_version != CHECKPOINT_SCHEMA_VERSION {
+    if !matches!(
+        report.schema_version,
+        CHECKPOINT_SCHEMA_VERSION | CHECKPOINT_REPORT_SCHEMA_VERSION
+    ) || (report.schema_version == CHECKPOINT_SCHEMA_VERSION && report.worker_report.is_some())
+        || (report.schema_version == CHECKPOINT_REPORT_SCHEMA_VERSION
+            && report
+                .worker_report
+                .as_ref()
+                .is_none_or(|report| !report.valid()))
+    {
         return Err(ReportError::Malformed);
     }
     if report.task_spec_digest != expected {
@@ -1540,6 +1552,53 @@ mod tests {
             r#"{{"schema_version":1,"task_spec_digest":"{}","changed_files":["src/server.mjs"],"development_tests":[{{"command":"node --test tests/worker_a","outcome":"passed"}}],"unresolved_issues":[],"context_refs_consumed":[],"messages":[{{"kind":"question","to":"track_a","text":"Which error wins?"}}],"summary":"Implemented."}}"#,
             digest()
         )
+    }
+
+    #[test]
+    fn structured_reports_require_schema_two_and_cannot_claim_acceptance() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&checkpoint_json()).expect("fixture");
+        let block = |value: &serde_json::Value| format!("```vibemux_checkpoint\n{value}\n```");
+        assert!(
+            parse_checkpoint(&block(&value), digest())
+                .expect("v1")
+                .worker_report
+                .is_none()
+        );
+        value["worker_report"] = serde_json::json!({"state":"ready","summary":"Implemented"});
+        assert_eq!(
+            parse_checkpoint(&block(&value), digest()),
+            Err(ReportError::Malformed)
+        );
+        value["schema_version"] = serde_json::json!(2);
+        assert!(
+            parse_checkpoint(&block(&value), digest())
+                .expect("v2")
+                .worker_report
+                .is_some()
+        );
+        value["worker_report"]["state"] = serde_json::json!("blocked");
+        assert_eq!(
+            parse_checkpoint(&block(&value), digest()),
+            Err(ReportError::Malformed)
+        );
+        value["worker_report"]["human_action"] =
+            serde_json::json!("Which contract should be used?");
+        assert!(parse_checkpoint(&block(&value), digest()).is_ok());
+        value["worker_report"]["accepted"] = serde_json::json!(true);
+        assert_eq!(
+            parse_checkpoint(&block(&value), digest()),
+            Err(ReportError::Malformed)
+        );
+        value["worker_report"]
+            .as_object_mut()
+            .expect("object")
+            .remove("accepted");
+        value["worker_report"]["state"] = serde_json::json!("successful");
+        assert_eq!(
+            parse_checkpoint(&block(&value), digest()),
+            Err(ReportError::Malformed)
+        );
     }
 
     #[test]

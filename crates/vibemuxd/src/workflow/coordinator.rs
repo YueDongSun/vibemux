@@ -275,11 +275,34 @@ pub(crate) async fn after_steps(
                 continue;
             }
         };
-        let Ok(checkpoint) = &outcome.checkpoint else {
-            continue;
-        };
         if !outcome.turn.completed() {
             continue;
+        }
+        let Ok(checkpoint) = &outcome.checkpoint else {
+            context
+                .transition(
+                    WorkflowPhase::Blocked,
+                    Some("workflow_worker_checkpoint_invalid"),
+                )
+                .await?;
+            return Ok(Some(RunEnd::Blocked(
+                "workflow_worker_checkpoint_invalid".into(),
+            )));
+        };
+        if checkpoint
+            .worker_report
+            .as_ref()
+            .is_some_and(|report| report.needs_attention())
+        {
+            context
+                .transition(
+                    WorkflowPhase::Blocked,
+                    Some("workflow_worker_report_attention_required"),
+                )
+                .await?;
+            return Ok(Some(RunEnd::Blocked(
+                "workflow_worker_report_attention_required".into(),
+            )));
         }
         let sender = &states[index];
         let admitted = admit_step_messages(

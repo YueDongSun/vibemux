@@ -31,6 +31,17 @@ pub const EXPORT_FILE_NAME: &str = "workflow_export.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowCommand {
+    Intake {
+        request_file: PathBuf,
+    },
+    Followup {
+        request_file: PathBuf,
+    },
+    Reports {
+        workflow_id: Uuid,
+        after_sequence: u64,
+        include_content: bool,
+    },
     Prepare {
         request_file: PathBuf,
         policy_file: PathBuf,
@@ -88,6 +99,8 @@ pub enum WorkflowCommand {
 /// Flags one invocation may carry.
 #[derive(Default)]
 struct Flags {
+    after_sequence: Option<u64>,
+    include_content: bool,
     project_root: Option<PathBuf>,
     request_file: Option<PathBuf>,
     policy_file: Option<PathBuf>,
@@ -128,7 +141,9 @@ pub(crate) fn parse_workflow_arguments(
                 flags.project_root = Some(path()?);
                 2
             }
-            ("workflow", "prepare", "--request-file") if flags.request_file.is_none() => {
+            ("workflow", "prepare" | "intake" | "followup", "--request-file")
+                if flags.request_file.is_none() =>
+            {
                 flags.request_file = Some(path()?);
                 2
             }
@@ -155,6 +170,18 @@ pub(crate) fn parse_workflow_arguments(
             ("workflow", "export", "--out") if flags.out.is_none() => {
                 flags.out = Some(path()?);
                 2
+            }
+            ("workflow", "reports", "--after-sequence") if flags.after_sequence.is_none() => {
+                flags.after_sequence = Some(
+                    text_value(value)?
+                        .parse()
+                        .map_err(|_| DaemonCliError::InvalidArguments)?,
+                );
+                2
+            }
+            ("workflow", "reports", "--include-content") if !flags.include_content => {
+                flags.include_content = true;
+                1
             }
             ("context", "share", "--bundle") if flags.bundle.is_none() => {
                 flags.bundle = Some(parse_id(text_value(value)?)?);
@@ -197,6 +224,20 @@ pub(crate) fn parse_workflow_arguments(
         }
     };
     let command = match (verb, action) {
+        ("workflow", "intake" | "followup") => {
+            none(positional.is_some())?;
+            let request_file = flags.request_file.ok_or(DaemonCliError::InvalidArguments)?;
+            if action == "intake" {
+                WorkflowCommand::Intake { request_file }
+            } else {
+                WorkflowCommand::Followup { request_file }
+            }
+        }
+        ("workflow", "reports") => WorkflowCommand::Reports {
+            workflow_id: id()?,
+            after_sequence: flags.after_sequence.unwrap_or(0),
+            include_content: flags.include_content,
+        },
         ("workflow", "prepare") => {
             none(positional.is_some())?;
             WorkflowCommand::Prepare {
@@ -282,6 +323,16 @@ pub async fn run_workflow(
     command: WorkflowCommand,
 ) -> Result<Value, DaemonCliError> {
     let documents = match &command {
+        WorkflowCommand::Intake { request_file } | WorkflowCommand::Followup { request_file } => {
+            Some((
+                read_document(
+                    request_file.clone(),
+                    MAX_WORKFLOW_REQUEST_BYTES + MAX_POLICY_BYTES,
+                )
+                .await?,
+                Value::Null,
+            ))
+        }
         WorkflowCommand::Prepare {
             request_file,
             policy_file,
@@ -297,6 +348,21 @@ pub async fn run_workflow(
     };
     let client = harness_client(paths).await?;
     let answer = match command {
+        WorkflowCommand::Intake { .. } => {
+            let (request, _) = documents.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"intake":client.workflow_intake(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Followup { .. } => {
+            let (request, _) = documents.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"followup":client.workflow_followup(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Reports {
+            workflow_id,
+            after_sequence,
+            include_content,
+        } => {
+            json!({"ok":true,"worker_reports":client.workflow_reports(workflow_id, after_sequence, include_content).await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::Prepare { .. } => {
             let (request, policy) = documents.ok_or(DaemonCliError::InvalidArguments)?;
             let prepared = client
@@ -570,6 +636,55 @@ mod tests {
         match parse_workflow_arguments(verb, &arguments)? {
             CliCommand::Workflow { command, .. } => Ok(command),
             _ => Err(DaemonCliError::InvalidArguments),
+        }
+    }
+
+    #[test]
+    fn intake_followups_and_report_reads_use_strict_document_arguments() {
+        assert_eq!(
+            parse("workflow", &["intake", "--request-file", "intake.json"]).expect("intake"),
+            WorkflowCommand::Intake {
+                request_file: PathBuf::from("intake.json")
+            }
+        );
+        assert_eq!(
+            parse("workflow", &["followup", "--request-file", "followup.json"]).expect("followup"),
+            WorkflowCommand::Followup {
+                request_file: PathBuf::from("followup.json")
+            }
+        );
+        let id = Uuid::new_v4();
+        let id_text = id.to_string();
+        assert_eq!(
+            parse(
+                "workflow",
+                &[
+                    "reports",
+                    &id.to_string(),
+                    "--after-sequence",
+                    "42",
+                    "--include-content"
+                ]
+            )
+            .expect("reports"),
+            WorkflowCommand::Reports {
+                workflow_id: id,
+                after_sequence: 42,
+                include_content: true
+            }
+        );
+        for args in [
+            vec!["intake"],
+            vec!["followup", "--prompt", "untrusted"],
+            vec!["reports", &id_text, "--after-sequence", "-1"],
+            vec![
+                "reports",
+                &id_text,
+                "--include-content",
+                "--include-content",
+            ],
+        ] {
+            assert!(parse("workflow", &args).is_err());
         }
     }
 

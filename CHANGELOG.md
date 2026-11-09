@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add operator `workflow intake`, contract-bound `workflow followup`, and
+  `workflow reports` (ADR 057, Control v11, store schema 10). An opt-in
+  `worker_v2` checkpoint carries bounded structured reports and concrete
+  human questions; immutable claims fence acceptance across restarts.
+  Report text remains private and opt-in. Existing `worker_v1` contracts
+  retain their rendered bytes; live vendor certification is unchanged.
+
 - Add the optional browser-local conversational workspace (ADR 056), with switchable Claude and Codex presentations, persistent history, streaming Anthropic chat, attachments, a context inspector and artifact previews. It remains separate from the monitor, native desktop and daemon state.
 
 - Add `vibemux_harness_native` (ADR 040): bounded native harness request dispatch for Codex app-server, Claude stream-json, and ACP (OpenCode, Copilot, Grok) with private full JSON capture, safe public summaries, process-tree containment through `vibemux_platform::ProcessTree` (the crate forbids unsafe code), configuration SHA-256 pinning, and the standalone `vibemux_harness_native`, `vibemux_harness_native_plugin`, and (test-only) `vibemux_harness_native_fixture` binaries. It coexists with the daemon-owned dispatch (ADR 029) and never writes canonical state.

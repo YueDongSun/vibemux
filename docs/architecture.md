@@ -382,6 +382,29 @@ Supported actions inspect/list, reorder admitted tasks without widening contract
 
 The fixture gateway drives real guarded worker/reviewer processes and trusted verifier/integration work, including observed worker overlap. These executions establish offline behavior only. Live gateway attribution, installed vendor certification, native terminal operation and the complete Version 2 scenario gates remain unqualified. See [ADR 037](adr/037_model_supervisor_execution.md) and [current supervisor evidence](evidence/model_supervisor_increment.md).
 
+## Operator intake, follow-ups and worker reports (ADR 057)
+
+Control v11 layers explicit operator intake over existing workflow prepare
+admission. An immutable event UUID derives the request key; duplicate events
+reuse the admitted workflow and conflicting plans refuse. The contract set
+remains the work mandate, and execution still needs an explicit start and
+eligible harness route.
+
+An operator follow-up binds exact workflow, task, worker session and contract
+facts. The writer atomically checks freshness and ownership with message
+admission. Context is delivered at the next turn boundary through the existing
+broker; it cannot widen the contract or revive terminal work.
+
+The opt-in `worker_v2` template requires a schema-2 checkpoint with a bounded
+structured report. Store schema 10 records the claim and its event atomically,
+with no report text in the database. A structured question or blocking outcome
+fences automatic progress and acceptance across restarts. Ready still needs
+independent review and trusted verification. Report reads are content-free by
+default; explicit content reads require workflow-owned opt-in retention and
+verified digests. Source watchers, inferred admission and external replies
+remain separate, unimplemented integrations. See [ADR 057](adr/057_superagent_workflow_intake.md)
+and the [operator guide](guides/superagent_workflow.md).
+
 ## Operator contract editing (ADR 039)
 
 Control v10 and `vibemuxctl prompt edit --request-file ...` admit an explicit operator edit of a quiescent workflow. Exact parent version/contracts and original source bytes are required. Wording changes and authority narrowing produce an immutable successor with generation links; source, base, roles, routes and original hard requirements remain pinned. A broader task uses separate admission. One writer transaction retires the quiescent parent along legal phase edges, creates one successor and records content-free provenance. Active or uncertain effects refuse. Remaining allowances, spent task counters and the original time grant are preserved; replay compares the complete immutable successor/artifact payload. A crash during later immutable binding leaves the successor non-executable until exact replay restores its bindings. Schema 9 adds the provenance table; older binaries refuse it. See [ADR 039](adr/039_operator_contract_edits.md).

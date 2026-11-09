@@ -264,6 +264,15 @@ Workers run in separate owned worktrees. Each candidate is collected by the daem
 
 **Evidence so far is offline only.** Workers are fixture processes. No model, AAG gateway, or vendor CLI has been contacted, and a `live` config cannot make a slot eligible to code yet. See [ADR 031](docs/adr/031_dual_track_workflow.md) for the design and its limitations.
 
+Operator work intake, follow-ups and structured worker reports are available
+through `workflow intake`, `workflow followup` and `workflow reports`
+([ADR 057](docs/adr/057_superagent_workflow_intake.md), Control v11). The opt-in
+`worker_v2` template supports concrete human questions and immutable reports;
+follow-ups keep the admitted scope and reach the worker at a turn boundary.
+See the [operator guide](docs/guides/superagent_workflow.md) for request shapes
+and retained-content reads. These functions use existing workflow admission
+and gates; GitHub/Feishu watchers and external replies are not installed.
+
 The workflow service needs `.vibemux/workflow_config.json` (schema 1; read once at daemon start) and harness dispatch routes for the slots' harnesses. Without the config, every workflow command answers `workflow_unconfigured`. The config requires:
 
 - `evidence_class`: `fixture` or `live`;
