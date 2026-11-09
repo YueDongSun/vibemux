@@ -60,6 +60,10 @@
   let board_request: request_context | null = null;
   let detail_request: request_context | null = null;
   let enrollment_request: request_context | null = null;
+  // One-time enrollment tokens are minted server-side, so a second QR request
+  // would leave a second valid token behind. This owner is separate from the
+  // redemption owner and is released by its own finalizer.
+  let qr_request: request_context | null = null;
 
   const shown_observed_at = $derived(
     observed_at_for_view(active_view, console_data?.observed_at, data_freshness?.observed_at),
@@ -121,6 +125,7 @@
     board_request = null;
     detail_request = null;
     enrollment_request = null;
+    qr_request = null;
     busy = false;
     return auth_generation;
   }
@@ -342,8 +347,16 @@
     }
   }
 
-  async function make_enrollment_qr(): Promise<void> {
+  function begin_qr_request(): request_context | null {
+    if (qr_request) return null;
     const request = begin_request();
+    if (!request) return null;
+    qr_request = request;
+    return request;
+  }
+
+  async function make_enrollment_qr(): Promise<void> {
+    const request = begin_qr_request();
     if (!request) return;
     clear_enrollment_image();
     enrollment_notice = '';
@@ -357,6 +370,7 @@
     } catch (error) {
       show_error(error, request);
     } finally {
+      if (qr_request === request) qr_request = null;
       finish_request(request);
     }
   }

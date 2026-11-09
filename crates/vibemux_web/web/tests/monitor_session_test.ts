@@ -389,3 +389,161 @@ test('every authenticated API helper forwards abort ownership without putting cr
   assert.equal(calls.some(({ path }) => path === '/api/v1/tasks?limit=32&after_task_id=next-task'), true);
   assert.equal(calls.some(({ path }) => path === '/api/v1/tasks/task%2Fid'), true);
 });
+
+test('a repeated QR request does not mint a second one-time token', async () => {
+  const pending = deferred();
+  let mints = 0;
+  const app = fixture({ create_enrollment: () => { mints += 1; return pending.promise; } });
+  await app.connect();
+  const first = app.make_enrollment_qr();
+  const duplicate = app.make_enrollment_qr();
+  assert.equal(mints, 1, 'the duplicate request must not reach the API');
+  pending.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 });
+  await Promise.all([first, duplicate]);
+  assert.match(app.snapshot().enrollment_image, /^blob:/);
+  assert.match(app.snapshot().enrollment_notice, /expires in 30 seconds/);
+});
+
+test('a duplicate QR request does not revoke the displayed enrollment image again', async () => {
+  const pending = deferred();
+  let mints = 0;
+  const app = fixture({ create_enrollment: () => {
+    mints += 1;
+    return mints === 1 ? Promise.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 }) : pending.promise;
+  } });
+  await app.connect();
+  await app.make_enrollment_qr();
+  const revoked_before = app.revoked.length;
+  const second = app.make_enrollment_qr();
+  const duplicate = app.make_enrollment_qr();
+  assert.equal(app.revoked.length, revoked_before + 1, 'only the newer request clears the previous image');
+  assert.equal(mints, 2);
+  pending.resolve({ qr_svg: '<svg/>', expires_in_seconds: 60 });
+  await Promise.all([second, duplicate]);
+  assert.match(app.snapshot().enrollment_notice, /expires in 60 seconds/);
+});
+
+test('a failed QR request releases its owner for a later retry', async () => {
+  const failure = deferred();
+  let mints = 0;
+  const app = fixture({ create_enrollment: () => {
+    mints += 1;
+    return mints === 1 ? failure.promise : Promise.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 });
+  } });
+  await app.connect();
+  const first = app.make_enrollment_qr();
+  failure.reject(new Error('enrollment failed'));
+  await first;
+  assert.match(app.snapshot().error_message, /enrollment failed/);
+  await app.make_enrollment_qr();
+  assert.equal(mints, 2);
+  assert.match(app.snapshot().enrollment_image, /^blob:/);
+});
+
+test('a QR request that throws synchronously still releases its owner', async () => {
+  let mints = 0;
+  const app = fixture({ create_enrollment: () => {
+    mints += 1;
+    if (mints === 1) throw new Error('synchronous failure');
+    return Promise.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 });
+  } });
+  await app.connect();
+  await app.make_enrollment_qr();
+  assert.match(app.snapshot().error_message, /synchronous failure/);
+  await app.make_enrollment_qr();
+  assert.equal(mints, 2);
+  assert.match(app.snapshot().enrollment_image, /^blob:/);
+});
+
+test('a current QR 401 expires the session and releases the owner', async () => {
+  let mints = 0;
+  const app = fixture({ create_enrollment: () => {
+    mints += 1;
+    return Promise.reject(new ApiError(401));
+  } });
+  await app.connect();
+  await app.make_enrollment_qr();
+  assert.equal(app.snapshot().token, '');
+  assert.match(app.snapshot().error_message, /rejected or rotated/);
+  await app.connect('next-test-token');
+  await app.make_enrollment_qr();
+  assert.equal(mints, 2, 'the failed request released the owner');
+});
+
+test('signout aborts a pending QR request and releases its owner', async () => {
+  const pending = deferred();
+  const signals: AbortSignal[] = [];
+  let mints = 0;
+  const app = fixture({ create_enrollment: (_token: string, signal: AbortSignal) => {
+    mints += 1; signals.push(signal); return pending.promise;
+  } });
+  await app.connect();
+  const making = app.make_enrollment_qr();
+  await app.sign_out();
+  assert.equal(signals[0].aborted, true);
+  pending.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 });
+  await making;
+  assert.equal(app.snapshot().enrollment_image, '');
+  assert.equal(app.snapshot().enrollment_notice, '');
+  await app.connect('replacement-test-token');
+  await app.make_enrollment_qr();
+  assert.equal(mints, 2, 'the released owner admits a new request');
+});
+
+test('a late QR 401 cannot expire a replacement session', async () => {
+  const pending = deferred();
+  const app = fixture({ create_enrollment: () => pending.promise });
+  await app.connect();
+  const making = app.make_enrollment_qr();
+  await app.connect('replacement-test-token');
+  pending.reject(new ApiError(401));
+  await making;
+  assert.equal(app.snapshot().token, 'replacement-test-token');
+  assert.equal(app.snapshot().error_message, '');
+});
+
+test('a redemption aborts a pending QR request without restoring it', async () => {
+  const qr = deferred();
+  let qr_signal: AbortSignal | undefined;
+  const app = fixture({
+    create_enrollment: (_token: string, signal: AbortSignal) => { qr_signal = signal; return qr.promise; },
+    redeem_enrollment: async () => ({ instance_token: 'rotated-test-token' }),
+  });
+  await app.connect();
+  const making = app.make_enrollment_qr();
+  app.enter_enrollment('one-time-fixture');
+  await app.redeem_device_enrollment();
+  assert.equal(qr_signal?.aborted, true);
+  qr.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 });
+  await making;
+  assert.equal(app.snapshot().enrollment_image, '');
+  assert.equal(app.snapshot().token, 'rotated-test-token');
+});
+
+test('a QR request is refused while a redemption owns the enrollment exchange', async () => {
+  const redemption = deferred();
+  let mints = 0;
+  const app = fixture({
+    create_enrollment: async () => { mints += 1; return { qr_svg: '<svg/>', expires_in_seconds: 30 }; },
+    redeem_enrollment: () => redemption.promise,
+  });
+  await app.connect();
+  app.enter_enrollment('one-time-fixture');
+  const enrolling = app.redeem_device_enrollment();
+  await app.make_enrollment_qr();
+  assert.equal(mints, 0, 'the QR request waits for the exchange to settle');
+  redemption.resolve({ instance_token: 'rotated-test-token' });
+  await enrolling;
+});
+
+test('a pending QR request does not block the board refresh', async () => {
+  const qr = deferred();
+  const app = fixture({ create_enrollment: () => qr.promise });
+  await app.connect();
+  const making = app.make_enrollment_qr();
+  await app.refresh_board();
+  assert.equal(app.snapshot().error_message, '');
+  qr.resolve({ qr_svg: '<svg/>', expires_in_seconds: 30 });
+  await making;
+  assert.match(app.snapshot().enrollment_image, /^blob:/);
+});

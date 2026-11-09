@@ -7687,3 +7687,48 @@ This qualification covers the integrated fixes on `codex/review-core-nov06`.
 These are local macOS results, not a hosted-CI result for the new patch. Exact commands,
 logs, source fingerprints, and the scope/platform/compatibility handoff are
 retained in the task's local validation artifact.
+
+### 2026-11-09 — Monitor enrollment QR request single-flight
+
+- Base: `main` at `0619a35` (PR #50). The monitor's one-time enrollment QR
+  request had no owner of its own. The redemption path owns
+  `enrollment_request`, but the QR path did not, so a repeated "Create one-time
+  QR" click issued a second `create_enrollment` call and left a second
+  server-side one-time token behind while only one QR was ever displayed.
+- Production change: five added lines in
+  `crates/vibemux_web/web/src/app.svelte`. A dedicated `qr_request` owner is
+  acquired before the API call, released by its matching finalizer, and
+  cleared by session invalidation, so sign-out, token installation,
+  redemption, and unmount keep their existing lifecycle. Duplicate calls
+  return immediately, and the existing generation, bearer, and abort checks
+  still reject late responses.
+- Ten regression cases extend the existing `node:test` component-script
+  harness in `crates/vibemux_web/web/tests/monitor_session_test.ts`: a
+  repeated request, a duplicate that does not revoke the displayed image
+  again, synchronous and asynchronous failure with retry, a current 401 that
+  expires the session and releases the owner, sign-out aborting a pending
+  request, a late 401 against a replacement session, redemption aborting a
+  pending request, the QR request being refused while a redemption owns the
+  exchange, and the board refresh staying unblocked.
+- Executed on native Windows 11 (10.0.26300) with the environment's Node
+  24.18.0 and npm 11.15.0; the repository pins Node 22.22.0 for the
+  frontends. From `crates/vibemux_web/web`:
+  `node --experimental-strip-types --test tests/monitor_session_test.ts`
+  produced **29 passed / 0 failed**; `npm test` produced **44 monitor checks
+  plus 7 dependency checks passed**; `npm run typecheck` reported **384
+  files, 0 errors, 0 warnings**; `npm run build` passed; `npm audit
+  --audit-level=low` reported **zero vulnerabilities**; repository-root
+  `git diff --check` passed.
+- Pre-fix evidence: against the unmodified component, "a repeated QR request
+  does not mint a second one-time token" fails because the duplicate reaches
+  the API, and "a duplicate QR request does not revoke the displayed
+  enrollment image again" fails because the duplicate clears the displayed
+  image a second time. Both fail on their assertion rather than on a
+  timeout, and both pass after the fix.
+- Scope and limits: frontend-only. No daemon, control protocol, store
+  schema, canonical state, or public API change; one-time token semantics,
+  dependencies, and lockfiles are unchanged. The unmount cleanup path runs
+  through the shared invalidation lifecycle, but the component harness does
+  not mount a real DOM, so unmount itself is not covered by an automated
+  case. Live enrollment endpoints, real browser DOM races, and the Rust
+  workspace were not run for this patch.
