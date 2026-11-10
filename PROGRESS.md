@@ -7868,3 +7868,45 @@ release signing/notarization, and release qualification remain incomplete. Saved
 fixture replies, and local UI checks do not establish live orchestration. The
 older egui frontend and the Python CLI remain available. Local build artifacts
 and detailed run logs are ignored output, not committed source.
+
+### 2026-11-11 — DSH close-retry fixture correction for Ubuntu CI
+
+The [Ubuntu Rust job](https://github.com/YueDongSun/vibemux/actions/runs/42874675214/job/130034711217)
+on `8219cbb`, published in [the repair PR](https://github.com/YueDongSun/vibemux/pull/56),
+failed `a_close_retry_reaches_cleanup_after_a_previous_cleanup_error`: the
+fixture ended `Failed` rather than `Closed`. The other Rust matrix jobs in that
+run were cancelled; cancellation is not successful platform validation.
+
+The fixture launched the test executable with `--list`, then allowed the DSH
+JSON reader to consume its plain-text output. Closing that reader mid-list could
+make the child exit unsuccessfully. Resetting the synthetic machine to `Ready`
+did not change that actual exit status, and production close correctly retained
+failure. Deliberately dropping stdout before the launch gate independently
+reproduced child exit 101 and the original assertion on macOS.
+
+The test-only helper now constructs its injected machine separately from the
+contained child and uses null stdout for the successful-exit case. A second,
+controlled broken-output case must end `Failed`. The regression keeps stdin to
+exercise a real closed-pipe write, checks exactly one cleanup attempt and
+unreaped POSIX ownership before cleanup, verifies reaping and exit agreement,
+and checks idempotence. Production driver code, deadlines, EOF authority,
+cleanup-error precedence, wire/configuration formats, and canonical state are
+unchanged. No assertion was broadened to accept either outcome and no retry was
+added to a test.
+
+Independent macOS review passed the DSH unit/integration and daemon DSH checks,
+plus 64 exact-case executions with eight concurrent workers. Restoring the old
+cleanup-error masking deliberately failed the corrected regression, confirming
+that it still exercises the previously broken path.
+
+After integration, the main macOS worktree passed `cargo fmt --all -- --check`,
+`cargo test --locked --offline -p vibemux_dsh --all-features` (20 unit + 35
+integration), daemon `--test dsh_session` (16) and `--lib dsh_session` (7), and
+focused Clippy for both crates with `--all-targets --all-features -- -D warnings`.
+The matching Nextest selection passed all **78 selected tests**, with 253 other
+tests excluded by its filter, not executed. Production-prefix comparison against
+`8219cbb` also matched byte for byte. Public-source and diff checks passed.
+
+Native Ubuntu/Windows confirmation still belongs to the new CI run; no local
+Linux runtime was available. This focused check is not a new full-workspace or
+live-vendor qualification.

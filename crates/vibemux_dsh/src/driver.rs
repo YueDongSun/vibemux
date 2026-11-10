@@ -1268,26 +1268,17 @@ mod tests {
         driver.close().await.expect("idempotent close");
     }
 
-    /// The owned test executable exits without being reaped on POSIX. Stop
-    /// its reader before injecting machine transitions and cleanup failures.
+    /// An exited, owned process paired with a Ready machine for injected state
+    /// transitions. The process only lists tests; it does not speak DSH. Giving
+    /// its non-JSON output to the protocol reader can close the pipe mid-list
+    /// and make the test executable fail instead of exiting successfully.
     async fn exited_driver_with_ready_machine() -> DshDriver {
-        let mut driver =
-            DshDriver::spawn(&test_launch(), test_settings(), DshSessionLimits::default())
-                .await
-                .expect("spawn contained test executable");
-        assert!(
-            driver
-                .wait_for_exit(Instant::now() + Duration::from_secs(5))
-                .await
-                .expect("exit")
-        );
-        driver.await_transport_cleanup().await;
-        if let Some(reader) = driver.reader.take() {
-            reader.abort();
-            let _ = reader.await;
-        }
-        let mut machine =
-            DshSessionMachine::new(test_settings(), DshSessionLimits::default()).expect("machine");
+        exited_driver_with_stdout(Stdio::null()).await
+    }
+
+    async fn exited_driver_with_stdout(stdout: Stdio) -> DshDriver {
+        let limits = DshSessionLimits::default();
+        let mut machine = DshSessionMachine::new(test_settings(), limits).expect("machine");
         let initialize = machine.start().expect("initialize");
         let DshAction::Write(frame) = &initialize[0] else {
             panic!("initialize must write a frame");
@@ -1300,12 +1291,59 @@ mod tests {
                 }}
             }))
             .expect("ready");
-        {
-            let mut state = lock(&driver.state);
-            state.machine = machine;
-            state.transport_open = true;
-            state.transport_error = None;
-        }
+
+        let launch = test_launch();
+        let mut command = Command::new(launch_trampoline().expect("bundled launch gate"));
+        command
+            .arg(&launch.executable)
+            .args(&launch.arguments)
+            .current_dir(&launch.working_directory)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(stdout)
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        ProcessTree::prepare_command(command.as_std_mut());
+        let mut child = command.spawn().expect("spawn launch gate");
+        let tree = ProcessTree::contain(child.id().expect("child id")).expect("contain gate");
+        // Normally stdout is null. A piped stdout deliberately reproduces the
+        // fixture's broken-pipe failure, before releasing the gate so the exit
+        // status does not depend on which process the scheduler runs first.
+        drop(child.stdout.take());
+        let mut stdin = child.stdin.take().expect("stdin");
+        stdin
+            .write_all(&[LAUNCH_GO_BYTE])
+            .await
+            .expect("release gate");
+        let (phase_sender, phase) = watch::channel(DshPhase::Ready);
+        let mut driver = DshDriver {
+            stdin: Some(stdin),
+            state: Arc::new(Mutex::new(DriverState {
+                tree,
+                child,
+                terminated: false,
+                machine,
+                buffer: DshRecordBuffer::new(&limits),
+                turn_expiry: None,
+                transport_open: true,
+                transport_error: None,
+                eof_cleanup_grace: Duration::from_millis(limits.shutdown_grace_ms),
+                eof_cleanup_pending: false,
+            })),
+            phase,
+            phase_sender,
+            reader: None,
+            limits,
+            closed: false,
+        };
+        assert!(
+            driver
+                .wait_for_exit(Instant::now() + Duration::from_secs(5))
+                .await
+                .expect("exit")
+        );
         driver
     }
 
@@ -1752,33 +1790,46 @@ mod tests {
 
     #[tokio::test]
     async fn a_close_retry_reaches_cleanup_after_a_previous_cleanup_error() {
-        let mut driver = exited_driver_with_ready_machine().await;
-        {
-            let mut state = lock(&driver.state);
-            // A shutdown was delivered and the peer exited without a reply,
-            // but termination of the owned tree failed before close could
-            // clear stdin/reap. Its next write will encounter BrokenPipe.
-            state.machine.begin_close().expect("closing");
-            state.transport_open = false;
-            state.transport_error = Some(DshDriverError::ProcessCleanup);
+        for (stdout, expected_phase) in [
+            (Stdio::null(), DshPhase::Closed),
+            (Stdio::piped(), DshPhase::Failed),
+        ] {
+            let mut driver = exited_driver_with_stdout(stdout).await;
+            assert!(driver.stdin.is_some(), "retry must attempt the closed pipe");
+            {
+                let mut state = lock(&driver.state);
+                // A shutdown was delivered and the peer exited without a reply,
+                // but termination of the owned tree failed before close could
+                // clear stdin/reap. Its next write will encounter BrokenPipe.
+                state.machine.begin_close().expect("closing");
+                state.transport_open = false;
+                state.transport_error = Some(DshDriverError::ProcessCleanup);
+                assert!(!state.terminated, "the fixture must exit on its own");
+            }
+            let mut attempts = 0;
+            driver
+                .close_with(|tree| {
+                    attempts += 1;
+                    #[cfg(unix)]
+                    assert!(tree.leader_exited().expect("unreaped leader until cleanup"));
+                    tree.terminate()
+                })
+                .await
+                .expect("retry must reach termination and reap");
+            assert_eq!(attempts, 1);
+            assert!(driver.closed);
+            let exit = lock(&driver.state)
+                .child
+                .try_wait()
+                .expect("cached exit after close")
+                .expect("close must have reaped the fixture");
+            assert_eq!(driver.phase(), expected_phase, "fixture exit: {exit}");
+            assert_eq!(exit.success(), expected_phase == DshPhase::Closed, "{exit}");
+            driver
+                .close_with(|_| panic!("a completed close must not retry cleanup"))
+                .await
+                .expect("idempotent close");
         }
-        // Exercise the closed-pipe path even if startup already consumed the
-        // fixture's EOF and cleared stdin before the artificial Closing state.
-        assert_eq!(
-            driver.write_failed(&Error::from(ErrorKind::BrokenPipe)),
-            DshDriverError::TransportClosed
-        );
-        let mut retried = false;
-        driver
-            .close_with(|tree| {
-                retried = true;
-                tree.terminate()
-            })
-            .await
-            .expect("retry must reach termination and reap");
-        assert!(retried);
-        assert!(driver.closed);
-        assert_eq!(driver.phase(), DshPhase::Closed);
     }
 
     #[test]
