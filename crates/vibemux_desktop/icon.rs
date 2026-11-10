@@ -9,7 +9,7 @@
 //! absent. It writes plain PNG and ICO bytes and needs no image library.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 const SIZE: usize = 64;
@@ -35,6 +35,35 @@ pub fn write_icons(directory: &Path) -> io::Result<()> {
     fs::write(directory.join("icon.png"), png_bytes(&pixels))?;
     fs::write(directory.join("icon.ico"), ico_bytes(&pixels))?;
     Ok(())
+}
+
+/// Repairs only the exact old generated bitmap, never a custom icon or link.
+pub fn repair_legacy_icon(directory: &Path) -> io::Result<bool> {
+    let path = directory.join("icon.ico");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let corrected = ico_bytes(&render());
+    let mut legacy = corrected.clone();
+    // The old DIB omitted biCompression, shifting biSizeImage into its slot.
+    legacy.drain(38..42);
+    let image_size = (legacy.len() - 22) as u32;
+    legacy[14..18].copy_from_slice(&image_size.to_le_bytes());
+    if metadata.len() != legacy.len() as u64 {
+        return Ok(false);
+    }
+    let mut current = Vec::new();
+    fs::File::open(&path)?
+        .take(legacy.len() as u64 + 1)
+        .read_to_end(&mut current)?;
+    if current != legacy {
+        return Ok(false);
+    }
+    fs::write(path, corrected)?;
+    Ok(true)
 }
 
 /// The mark at `SIZE` pixels square, as RGBA rows from the top.
@@ -173,6 +202,7 @@ fn ico_bytes(pixels: &[[u8; 4]]) -> Vec<u8> {
     info.extend_from_slice(&((SIZE * 2) as i32).to_le_bytes());
     info.extend_from_slice(&1u16.to_le_bytes());
     info.extend_from_slice(&32u16.to_le_bytes());
+    info.extend_from_slice(&0u32.to_le_bytes());
     info.extend_from_slice(&((xor.len() + and_mask.len()) as u32).to_le_bytes());
     info.extend_from_slice(&0u32.to_le_bytes());
     info.extend_from_slice(&0u32.to_le_bytes());

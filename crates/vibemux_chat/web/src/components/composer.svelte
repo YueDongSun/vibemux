@@ -8,9 +8,11 @@
     FileText,
     ChevronDown,
   } from "@lucide/svelte";
-  import { prepare_attachment, uid } from "../services/chat_store.js";
+  import { uid } from "../services/chat_store.js";
+  import { native_unavailable } from "../services/workspace_host.js";
   import { app_config, models } from "../config.js";
   let {
+    host,
     draft = $bindable(""),
     generating = false,
     on_send,
@@ -29,7 +31,7 @@
     dragging = $state(false);
   const reading = $derived(attachments.some((a) => a.progress < 100));
   const can_send = $derived(
-    Boolean(draft.trim() || attachments.length) && !generating && !reading,
+    host.capabilities.send && Boolean(draft.trim() || attachments.length) && !generating && !reading,
   );
   $effect(() => {
     draft;
@@ -43,6 +45,10 @@
     attachments = [];
   });
   async function add_files(files) {
+    if (!host.capabilities.attachments) {
+      notify(native_unavailable.attachments);
+      return;
+    }
     const available = Math.max(
       0,
       app_config.max_attachments - attachments.length,
@@ -63,7 +69,7 @@
       notify("Attach up to five files per message.");
     for (const { id, file } of reserved) {
       try {
-        const ready = await prepare_attachment(file, (progress) => {
+        const ready = await host.prepare_attachment(file, (progress) => {
           attachments = attachments.map((a) =>
             a.id === id ? { ...a, progress } : a,
           );
@@ -85,7 +91,7 @@
     attachments = [];
   }
   function on_key(event) {
-    if (event.isComposing) return;
+    if (event.isComposing || !host.capabilities.send) return;
     if (
       event.key === "Enter" &&
       (event.ctrlKey ||
@@ -104,7 +110,7 @@
   role="presentation"
   ondragover={(e) => {
     e.preventDefault();
-    dragging = true;
+    dragging = host.capabilities.attachments;
   }}
   ondragleave={() => (dragging = false)}
   ondrop={(e) => {
@@ -122,7 +128,7 @@
   >
     {#if attachments.length}<div class="attachment-list">
         {#each attachments as file (file.id)}<div class="attachment-chip">
-            {#if file.type.startsWith("image/") && file.data}<img
+            {#if host.capabilities.images && file.type.startsWith("image/") && file.data}<img
                 src={`data:${file.type};base64,${file.data}`}
                 alt={file.name}
               />{:else}<FileText />{/if}
@@ -152,7 +158,8 @@
       bind:value={draft}
       id="message_composer"
       aria-label="Message VibeMux"
-      placeholder="How can I help you today?"
+      placeholder={host.capabilities.send ? "How can I help you today?" : "Write a draft (sending is unavailable)"}
+      aria-describedby="composer_status"
       rows="2"
       maxlength={app_config.max_characters}
       disabled={generating}
@@ -164,13 +171,14 @@
           type="button"
           class="icon-btn"
           aria-label="Attach images or files"
-          title="Attach images or files"
-          disabled={generating ||
+          title={host.capabilities.attachments ? "Attach images or files" : native_unavailable.attachments}
+          disabled={!host.capabilities.attachments || generating ||
             attachments.length >= app_config.max_attachments}
           onclick={() => file_input.click()}><Plus /></button
         ><input
           bind:this={file_input}
           hidden
+          disabled={!host.capabilities.attachments}
           type="file"
           multiple
           aria-label="Upload attachments"
@@ -185,9 +193,9 @@
           aria-label="Toggle extended thinking"
           class:active={thinking}
           aria-pressed={thinking}
-          disabled={generating || model === "claude-haiku-4-5"}
+          disabled={!host.capabilities.send || generating || model === "claude-haiku-4-5"}
           onclick={() => on_thinking(!thinking)}
-          title={model === "claude-haiku-4-5"
+          title={!host.capabilities.send ? native_unavailable.send : model === "claude-haiku-4-5"
             ? "Choose Sonnet or Opus for extended thinking"
             : "Toggle extended thinking"}
           ><Brain /><span
@@ -199,10 +207,11 @@
         <label class="composer-model"
           ><span class="sr-only">Composer model</span><select
             value={model}
-            disabled={generating}
+            disabled={generating || !host.capabilities.send}
+            title={!host.capabilities.send ? native_unavailable.send : undefined}
             onchange={(e) => on_model(e.currentTarget.value)}
-            >{#each models as item}<option value={item.id}>{item.name}</option
-              >{/each}</select
+            >{#if host.capabilities.send}{#each models as item}<option value={item.id}>{item.name}</option
+              >{/each}{:else}<option value={model}>Chat unavailable</option>{/if}</select
           ><ChevronDown /></label
         >{#if generating}<button
             class="send-btn stop-btn"
@@ -215,18 +224,18 @@
             type="submit"
             disabled={!can_send}
             aria-label="Send message"
-            title="Send message"><ArrowUp /></button
+            title={host.capabilities.send ? "Send message" : native_unavailable.send}><ArrowUp /></button
           >{/if}
       </div>
     </div>
   </form>
-  <div class="composer-caption">
+  <div class="composer-caption" id="composer_status">
     <span
       >{draft.length
         ? `${draft.length.toLocaleString()} / ${app_config.max_characters.toLocaleString()} characters`
         : "VibeMux can make mistakes. Check important details."}</span
     ><span
-      >{reading
+      >{!host.capabilities.send ? "Unsaved draft · Desktop chat unavailable" : reading
         ? "Preparing attachments…"
         : settings.enter_to_send
           ? "↵ to send · Shift ↵ for a new line"

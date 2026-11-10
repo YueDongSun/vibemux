@@ -6,6 +6,7 @@ use a2a::{
     SendMessageResponse, SubscribeToTaskRequest,
 };
 use a2a_pb::protojson_conv::{self, ProtoJsonPayload};
+use axum::body::Bytes;
 use futures::stream;
 use reqwest::{Client, Method, Response};
 use serde_json::Value;
@@ -271,6 +272,7 @@ impl TaskClient {
         }
         let state = SseState {
             response,
+            pending_chunk: Bytes::new(),
             buffer: Vec::new(),
             previous: None,
             finished: false,
@@ -445,6 +447,7 @@ fn rpc_result(value: Value, expected_id: Option<&JsonRpcId>) -> Result<Value, Ta
 }
 struct SseState {
     response: Response,
+    pending_chunk: Bytes,
     buffer: Vec<u8>,
     previous: Option<TaskSnapshot>,
     finished: bool,
@@ -485,15 +488,24 @@ async fn next_snapshot(state: &mut SseState) -> Result<TaskSnapshot, TaskGateway
             state.finished = snapshot.state.is_terminal();
             return Ok(snapshot);
         }
-        let chunk = timeout(TASK_CALL_DEADLINE, state.response.chunk())
-            .await
-            .map_err(|_| TaskGatewayError::Deadline)?
-            .map_err(|_| TaskGatewayError::Transport)?
-            .ok_or(TaskGatewayError::Transport)?;
-        if chunk.len() > MAX_TASK_WIRE_BYTES.saturating_sub(state.buffer.len()) {
+        if state.pending_chunk.is_empty() {
+            state.pending_chunk = timeout(TASK_CALL_DEADLINE, state.response.chunk())
+                .await
+                .map_err(|_| TaskGatewayError::Deadline)?
+                .map_err(|_| TaskGatewayError::Transport)?
+                .ok_or(TaskGatewayError::Transport)?;
+        }
+        let remaining = MAX_TASK_WIRE_BYTES.saturating_sub(state.buffer.len());
+        if remaining == 0 {
             return Err(TaskGatewayError::Protocol);
         }
-        state.buffer.extend_from_slice(&chunk);
+        // A transport chunk can contain many events. Retain its unread bytes and
+        // drain complete frames before copying more into the bounded buffer.
+        let count = remaining.min(state.pending_chunk.len());
+        state
+            .buffer
+            .extend_from_slice(&state.pending_chunk[..count]);
+        state.pending_chunk = state.pending_chunk.slice(count..);
     }
 }
 fn event_boundary(bytes: &[u8]) -> Option<(usize, usize)> {

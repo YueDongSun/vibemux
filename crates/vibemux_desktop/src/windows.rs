@@ -16,6 +16,12 @@ use crate::navigation::navigation_allowed;
 
 /// Opens the main window: 1280 by 820, and never smaller than 900 by 600.
 pub fn open_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    main_window_builder(app).build()
+}
+
+/// Shares the production window policy with the incognito UI smoke window.
+#[must_use]
+pub fn main_window_builder(app: &AppHandle) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     let dev_url = tauri::is_dev()
         .then(|| app.config().build.dev_url.clone())
         .flatten();
@@ -25,5 +31,4 @@ pub fn open_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 600.0)
         .on_navigation(move |url| navigation_allowed(url, allowed_dev_url.as_ref()))
-        .build()
 }

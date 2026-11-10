@@ -1,8 +1,8 @@
 //! The navigation guard: the webview may only ever show the app's own
 //! origin.
 //!
-//! The app origin is `tauri://localhost` on Windows and Linux and
-//! `http://tauri.localhost` on macOS. The dev origin is allowed only when
+//! Bundled origins are `tauri://localhost` or `http(s)://tauri.localhost`,
+//! depending on the platform/runtime. The dev origin is allowed only when
 //! the caller passes it, so a release build never trusts a dev server.
 
 use url::Url;

@@ -40,7 +40,6 @@ from .models import (
     RunRole,
     RunStatus,
     Task,
-    TaskStatus,
     TerminalLocation,
     utc_now,
 )
@@ -224,14 +223,15 @@ class RunService:
         self.backends: dict[str, TerminalBackend] = {}
 
     def _backend(self, name: str) -> TerminalBackend:
-        return self.backends.setdefault(
+        if name in self.backends:
+            return self.backends[name]
+        backend = choose_terminal_backend(
             name,
-            choose_terminal_backend(
-                name,
-                self.runner,
-                config_dir(self.repo_root) / MOCK_TERMINAL_STATE_FILE,
-            ),
+            self.runner,
+            config_dir(self.repo_root) / MOCK_TERMINAL_STATE_FILE,
         )
+        # Cache concrete backends only: auto is a per-Run selection policy.
+        return self.backends.setdefault(backend.name, backend)
 
     def spawn(
         self,
@@ -261,10 +261,10 @@ class RunService:
             raise HarnessNotDetectedError(
                 f"harness not detected on this machine: {harness_name} (see 'vibemux harnesses')"
             )
-        if task.status == TaskStatus.OPEN:
-            task.transition(TaskStatus.IN_PROGRESS)
-            self.storage.save_task(task)
         base_commit = ensure_clean_with_commit(self.repo_root, self.runner)
+        backend = self._backend(backend_name)
+        backend_name = backend.name
+        self.storage.start_task_if_open(task_id, self.project_id)
         run = Run(
             task_id,
             self.project_id,
@@ -286,7 +286,6 @@ class RunService:
         )
         worktree: WorktreeRecord | None = None
         location: TerminalLocation | None = None
-        backend = self._backend(backend_name)
         try:
             worktree = self.workspace.create_worktree(
                 run.run_id.hex[:12], f"vibemux/{run.run_id.hex[:12]}", base_commit

@@ -1585,6 +1585,7 @@ p {
 .has-artifact .composer-caption > span:last-child {
   display: none;
 }
+.native-banner,
 .network-banner,
 .storage-banner {
   display: flex;
@@ -1597,6 +1598,13 @@ p {
   color: var(--danger);
   font-size: var(--text-xs);
   border-block: var(--space-px) solid var(--border);
+}
+.native-banner {
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+}
+.native-banner > span {
+  max-width: 80ch;
 }
 .dialog {
   color: var(--text);
@@ -1914,6 +1922,43 @@ p {
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
   margin-top: var(--space-3);
+}
+.provider-profiles {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.provider-profile {
+  border: var(--space-px) solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin: var(--space-5) 0;
+  min-width: 0;
+}
+.provider-profile legend {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  padding: 0 var(--space-2);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.provider-fields {
+  display: grid;
+  gap: var(--space-3);
+}
+.provider-fields .field {
+  margin: 0;
+}
+.provider-fields p {
+  margin: 0;
+}
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
 }
 .settings-body table {
   border-collapse: collapse;

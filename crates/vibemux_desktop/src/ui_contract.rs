@@ -6,6 +6,35 @@
 
 use serde::Serialize;
 
+pub use crate::provider_profiles::ProviderProfilesView;
+
+use crate::desktop_settings::{Appearance, Density, DesktopSettings, StartPage, TextSize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SettingsView {
+    pub schema_version: u16,
+    pub appearance: Appearance,
+    pub text_size: TextSize,
+    pub density: Density,
+    pub reduce_motion: bool,
+    pub sidebar_collapsed: bool,
+    pub start_page: StartPage,
+}
+
+impl From<DesktopSettings> for SettingsView {
+    fn from(settings: DesktopSettings) -> Self {
+        Self {
+            schema_version: settings.schema_version,
+            appearance: settings.appearance,
+            text_size: settings.text_size,
+            density: settings.density,
+            reduce_motion: settings.reduce_motion,
+            sidebar_collapsed: settings.sidebar_collapsed,
+            start_page: settings.start_page,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum UiEvent {
@@ -44,6 +73,27 @@ pub struct AboutInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_views_do_not_disclose_native_folder_lists() {
+        let settings = DesktopSettings {
+            appearance: Appearance::Dark,
+            text_size: TextSize::Large,
+            project_folders: vec!["private-project-folder".into()],
+            ask_confirmed_projects: vec!["private-consent-folder".into()],
+            ..DesktopSettings::default()
+        };
+        let value = serde_json::to_value(SettingsView::from(settings)).expect("view");
+        assert_eq!(value["appearance"], "dark");
+        assert_eq!(value["text_size"], "large");
+        assert_eq!(value.as_object().expect("object").len(), 7);
+        for field in ["project_folders", "ask_confirmed_projects", "settings_path"] {
+            assert!(value.get(field).is_none());
+        }
+        let text = value.to_string();
+        assert!(!text.contains("private-project-folder"));
+        assert!(!text.contains("private-consent-folder"));
+    }
 
     #[test]
     fn the_event_name_matches_the_tagged_payload() {

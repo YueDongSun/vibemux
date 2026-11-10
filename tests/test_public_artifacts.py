@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from scripts.check_public_artifacts import Finding, inspect_text, is_negative_fixture
 
 
@@ -33,13 +35,18 @@ def test_public_placeholders_and_loopback_are_allowed() -> None:
     assert inspect_text("example.json", public) == []
 
 
-def test_negative_fixture_exception_is_bound_to_content_and_path() -> None:
-    relative = "crates/vibemux_a2a/src/lib.rs"
+@pytest.mark.parametrize(
+    ("relative", "rule"),
+    [
+        ("crates/vibemux_a2a/src/lib.rs", "url_credentials"),
+        ("crates/vibemux_desktop/src/provider_profiles/tests.rs", "url_credentials"),
+        ("crates/vibemux_desktop/src/provider_profiles/tests.rs", "private_network_address"),
+    ],
+)
+def test_negative_fixture_exception_is_bound_to_content_and_path(relative: str, rule: str) -> None:
     source = (Path(__file__).resolve().parents[1] / relative).read_text(encoding="utf-8")
     lines = source.splitlines()
-    findings = [
-        finding for finding in inspect_text(relative, source) if finding.rule == "url_credentials"
-    ]
+    findings = [finding for finding in inspect_text(relative, source) if finding.rule == rule]
     assert len(findings) == 1
     finding = findings[0]
     line = lines[finding.line - 1]

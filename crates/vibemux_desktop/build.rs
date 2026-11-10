@@ -21,6 +21,8 @@ fn main() {
     let icons = std::path::Path::new("icons");
     if !icons.join("icon.ico").is_file() || !icons.join("icon.png").is_file() {
         icon::write_icons(icons).expect("failed to draw the desktop app icons");
+    } else {
+        icon::repair_legacy_icon(icons).expect("failed to repair the generated desktop icon");
     }
 
     let attributes = tauri_build::Attributes::new()

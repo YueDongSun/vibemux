@@ -178,7 +178,7 @@ class WorkspaceManager:
             dirty = bool(
                 git_run(
                     record.path,
-                    ["status", "--porcelain"],
+                    ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
                     runner=self.runner,
                 ).stdout.strip()
             )

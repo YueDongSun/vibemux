@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { app_config, default_settings } from "../src/config.js";
 import {
   create_conversation,
+  create_workspace_session,
   load_workspace,
   export_conversation,
   export_all,
@@ -106,6 +107,103 @@ test("reload stops interrupted assistant messages without losing partial text or
   assert.equal(storage.writes.length, 1);
 });
 
+test("legacy messages receive distinct deterministic IDs without rewriting saved history", (context) => {
+  const messages = [
+    { role: "user", content: "Repeated question", attachments: [] },
+    { role: "assistant", content: "Repeated answer", status: "complete" },
+    { role: "user", content: "Repeated question", attachments: [] },
+    { role: "assistant", content: "Repeated answer", status: "streaming" },
+  ];
+  const original = JSON.stringify(workspace_with_messages(messages));
+  const storage = install_storage(context, original);
+  const restored = load_workspace();
+  assert.equal(restored.storage_warning, null);
+  const normalized = restored.conversations[0].messages;
+  const ids = normalized.map((message) => message.id);
+  assert.ok(ids.every((id) => typeof id === "string" && id.length > 0));
+  assert.equal(new Set(ids).size, messages.length);
+  assert.deepEqual(
+    normalized.map(({ id, ...message }) => message),
+    messages.map((message) => message.status === "streaming"
+      ? { ...message, status: "stopped" }
+      : message),
+  );
+  assert.deepEqual(load_workspace(), restored);
+  assert.deepEqual(create_workspace_session().initial, restored);
+  assert.equal(storage.values.get(app_config.storage_key), original);
+  assert.equal(storage.writes.length, 0);
+});
+
+test("legacy ID normalization reserves supplied IDs even after missing messages", (context) => {
+  const supplied_ids = [
+    undefined,
+    "provided_message",
+    undefined,
+    "legacy_message_0",
+    "legacy_message_1",
+    "legacy_message_3",
+    undefined,
+  ];
+  const messages = supplied_ids.map((id, index) => ({
+    ...(id === undefined ? {} : { id }),
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `Message ${index}`,
+  }));
+  const original = JSON.stringify(workspace_with_messages(messages));
+  const storage = install_storage(context, original);
+  const restored = load_workspace();
+  assert.equal(restored.storage_warning, null);
+  const normalized = restored.conversations[0].messages;
+  const ids = normalized.map((message) => message.id);
+  assert.ok(ids.every((id) => typeof id === "string" && id.length > 0));
+  assert.equal(new Set(ids).size, messages.length);
+  supplied_ids.forEach((id, index) => {
+    if (id !== undefined) assert.equal(ids[index], id);
+    else assert.equal(supplied_ids.includes(ids[index]), false);
+  });
+  assert.deepEqual(
+    normalized.map((message) => message.content),
+    messages.map((message) => message.content),
+  );
+  assert.deepEqual(load_workspace(), restored);
+  assert.equal(storage.values.get(app_config.storage_key), original);
+  assert.equal(storage.writes.length, 0);
+});
+
+test("normalized legacy IDs survive export, save and reload without changing", (context) => {
+  const workspace = workspace_with_messages([
+    { role: "user", content: "First question" },
+    { id: "provided_reply", role: "assistant", content: "First reply" },
+    { role: "user", content: "Follow-up" },
+    { role: "assistant", content: "Second reply" },
+  ]);
+  const original = JSON.stringify(workspace);
+  const storage = install_storage(context, original);
+  const restored = load_workspace();
+  const ids = restored.conversations[0].messages.map((message) => message.id);
+  assert.ok(ids.every((id) => typeof id === "string" && id.length > 0));
+  assert.equal(new Set(ids).size, 4);
+  const exported = JSON.parse(export_conversation(restored.conversations[0]));
+  assert.deepEqual(exported.messages.map((message) => message.id), ids);
+  assert.deepEqual(
+    JSON.parse(export_conversation(workspace.conversations[0])),
+    exported,
+  );
+  assert.equal(JSON.stringify(workspace), original);
+  assert.equal(storage.writes.length, 0);
+
+  save_workspace(restored);
+  const saved = storage.values.get(app_config.storage_key);
+  assert.deepEqual(
+    JSON.parse(saved).conversations[0].messages.map((message) => message.id),
+    ids,
+  );
+  assert.deepEqual(load_workspace(), restored);
+  assert.deepEqual(create_workspace_session().initial, restored);
+  save_workspace(load_workspace());
+  assert.equal(storage.values.get(app_config.storage_key), saved);
+});
+
 test("corrupt storage remains byte-for-byte intact and blocks saving until explicit reset", (context) => {
   const original = "{broken JSON with valuable data";
   const storage = install_storage(context, original);
@@ -167,6 +265,24 @@ for (const [description, change] of [
       workspace.conversations.push(workspace.conversations[0]);
     },
   ],
+  [
+    "duplicate provided message ID",
+    (workspace) => {
+      workspace.conversations[0].messages = [
+        { role: "user", content: "Legacy question" },
+        { id: "legacy_message_0", role: "assistant", content: "First reply" },
+        { id: "legacy_message_0", role: "user", content: "Duplicate ID" },
+      ];
+    },
+  ],
+  ...["", null, 0].map((id) => [
+    `provided message ID ${JSON.stringify(id)}`,
+    (workspace) => {
+      workspace.conversations[0].messages = [
+        { id, role: "user", content: "Invalid ID is not a missing ID" },
+      ];
+    },
+  ]),
   [
     "invalid timestamp",
     (workspace) => {

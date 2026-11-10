@@ -5,6 +5,7 @@ import { parse } from "svelte/compiler";
 import { create_workspace_autosave } from "../src/services/workspace_autosave.js";
 import { create_conversation, uid, load_workspace } from "../src/services/chat_store.js";
 import { stream_response as provider_stream } from "../src/services/provider.js";
+import { browser_capabilities } from "../src/services/workspace_host.js";
 import { extract_artifact } from "../src/ui_policy.js";
 import { persistence_fixture, settle } from "./support/persistence_fixture.mjs";
 
@@ -19,13 +20,16 @@ const functions = ["workspace_snapshot", "update_chat", "generate", "regenerate"
   return source.slice(node.start, node.end);
 }).join("\n");
 
-function app_fixture(context, stream_response = provider_stream, chat = create_conversation()) {
+function app_fixture(context, stream_response = provider_stream, chat = create_conversation(), raw = null) {
   let environment;
   // Flush before the fixture restores global storage and releases its lease.
   context.after(() => environment?.autosave.dispose());
-  const storage = persistence_fixture(context);
+  const storage = persistence_fixture(context, raw);
   const session = storage.session();
+  if (raw !== null) chat = session.initial.conversations[0];
   environment = {
+    workspace_host: { workspace_settings: (settings) => settings },
+    capabilities: browser_capabilities,
     settings: session.initial.settings,
     active_id: chat.id,
     controller: null,
@@ -320,6 +324,62 @@ for (const succeed of [false, true]) {
       assert.deepEqual(saved.messages[2].attachments, fixture.original.messages[2].attachments);
       assert.equal(saved.messages[3].content, "Edited answer");
     } else assert_original(fixture);
+    assert_settled(fixture);
+  });
+}
+
+for (const action of ["edit", "regenerate"]) {
+  test(`restored legacy IDs keep ${action} and retained feedback targeted`, async (context) => {
+    const chat = saved_conversation();
+    for (const message of chat.messages) delete message.id;
+    const raw = JSON.stringify({
+      conversations: [chat], settings: {}, active_id: chat.id,
+    });
+    context.mock.method(globalThis, "fetch", () => {
+      throw new Error("Network is forbidden in legacy identity tests");
+    });
+    const fixture = app_fixture(context, async ({ messages, on_delta }) => {
+      assert.deepEqual(
+        messages.map((message) => message.id),
+        original.slice(0, 3).map((message) => message.id),
+      );
+      assert.equal(messages[0].content, "First question");
+      assert.equal(messages[2].content, action === "edit" ? "Edited follow-up" : "Important follow-up");
+      on_delta("Replacement reply");
+      fixture.environment.conversations = fixture.environment.conversations.map((current) => ({
+        ...current,
+        messages: current.messages.map((message) => message.id === original[1].id
+          ? { ...message, feedback: "down" }
+          : message),
+      }));
+      return "Replacement reply";
+    }, chat, raw);
+    const original = structuredClone(fixture.chat.messages);
+    assert.equal(fixture.storage.raw(), raw);
+    assert.equal(fixture.storage.writes.length, 0);
+    const target_index = action === "edit" ? 2 : 3;
+    const target_id = original[target_index].id;
+    const index = fixture.environment.active.messages.findIndex((message) => message.id === target_id);
+    assert.equal(index, target_index);
+    if (action === "edit") {
+      fixture.actions.edit_message(index, "Edited follow-up");
+      fixture.environment.modal.action();
+    } else fixture.actions.regenerate(index);
+    await fixture.actions.wait();
+
+    const saved = load_workspace().conversations[0];
+    const expected_prefix = original.slice(0, 3).map((message, index) => ({
+      ...message,
+      ...(index === 1 ? { feedback: "down" } : {}),
+      ...(index === 2 && action === "edit" ? { content: "Edited follow-up" } : {}),
+    }));
+    assert.deepEqual(saved.messages.slice(0, 3), expected_prefix);
+    assert.equal(saved.messages.length, 4);
+    assert.equal(saved.messages[3].content, "Replacement reply");
+    assert.equal(saved.messages[3].status, "complete");
+    assert.equal(original.some((message) => message.id === saved.messages[3].id), false);
+    assert.deepEqual(fixture.environment.active.messages, saved.messages);
+    assert.equal(fixture.environment.replacement_notice, null);
     assert_settled(fixture);
   });
 }

@@ -94,8 +94,9 @@ pub fn attempt_end(status: &AttemptStatus) -> Option<AskEnd> {
 }
 
 /// Runs one Ask to its end, reporting every observation to `sink`. Setting
-/// `cancel` asks the daemon to cancel; the Ask still ends only when the
-/// daemon reports the attempt settled.
+/// `cancel` before submission ends locally without contacting the daemon.
+/// After submission, it asks the daemon to cancel; the Ask still ends only
+/// when the daemon reports the attempt settled.
 pub(crate) async fn drive<P: DispatchPort>(
     port: &mut P,
     request: DispatchRequest,
@@ -116,6 +117,11 @@ pub(crate) async fn drive<P: DispatchPort>(
     };
     let mut reply = ReplyText::default();
     report(AskPhase::Submitting, &reply, None);
+    // The sink may request cancellation while receiving the initial update.
+    if cancel.load(Ordering::Acquire) {
+        report(AskPhase::Finished, &reply, Some(AskEnd::Cancelled));
+        return;
+    }
     let protocol = match port.submit(&request).await {
         Ok(protocol) => protocol,
         Err(code) => {
@@ -253,7 +259,7 @@ async fn abandon<P: DispatchPort>(port: &mut P, request_id: Uuid, cancel_sent: b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, sync::Arc};
     use vibemux_harness::{
         AgentKind,
         dispatch::{ObservationKind, request::DISPATCH_REQUEST_SCHEMA_VERSION},
@@ -269,13 +275,20 @@ mod tests {
         pages: VecDeque<DispatchOutputPage>,
         phases: VecDeque<DispatchPhase>,
         cancels: usize,
+        calls: Vec<&'static str>,
+        cancel_on_submit: Option<Arc<AtomicBool>>,
     }
 
     impl DispatchPort for FakePort {
         async fn submit(&mut self, _: &DispatchRequest) -> Result<NativeProtocol, String> {
+            self.calls.push("submit");
+            if let Some(cancel) = &self.cancel_on_submit {
+                cancel.store(true, Ordering::Release);
+            }
             self.submit.clone()
         }
         async fn status(&mut self, _: Uuid) -> Result<AttemptStatus, String> {
+            self.calls.push("status");
             let phase = if self.phases.len() > 1 {
                 self.phases.pop_front().expect("phase")
             } else {
@@ -291,6 +304,7 @@ mod tests {
             &mut self,
             query: HarnessDispatchOutputQuery,
         ) -> Result<DispatchOutputPage, String> {
+            self.calls.push("output");
             if let Some(code) = self.output_errors.pop_front() {
                 return Err(code);
             }
@@ -301,6 +315,7 @@ mod tests {
             }))
         }
         async fn cancel(&mut self, _: Uuid) -> Result<(), String> {
+            self.calls.push("cancel");
             self.cancels += 1;
             Ok(())
         }
@@ -349,18 +364,92 @@ mod tests {
     }
 
     async fn run(port: &mut FakePort, cancel: bool) -> Vec<AskUpdate> {
+        run_with_flag(port, &AtomicBool::new(cancel)).await
+    }
+
+    async fn run_with_flag(port: &mut FakePort, flag: &AtomicBool) -> Vec<AskUpdate> {
         let mut updates = Vec::new();
-        let flag = AtomicBool::new(cancel);
         drive(
             port,
             request(),
-            &flag,
+            flag,
             Duration::from_millis(1),
             Duration::from_secs(5),
             |update| updates.push(update),
         )
         .await;
         updates
+    }
+
+    fn assert_finished_once(updates: &[AskUpdate], end: AskEnd) -> &AskUpdate {
+        let last = updates.last().expect("final update");
+        assert_eq!(last.phase, AskPhase::Finished);
+        assert_eq!(last.end, Some(end));
+        assert!(
+            updates[..updates.len() - 1]
+                .iter()
+                .all(|update| { update.phase != AskPhase::Finished && update.end.is_none() })
+        );
+        last
+    }
+
+    #[tokio::test]
+    async fn an_initially_cancelled_ask_never_contacts_the_daemon() {
+        for submit in [
+            Ok(NativeProtocol::ClaudeStreamJson),
+            Err("dispatch_route_unavailable".into()),
+        ] {
+            let mut port = FakePort {
+                submit,
+                output_errors: VecDeque::new(),
+                pages: VecDeque::new(),
+                phases: VecDeque::from([DispatchPhase::Completed]),
+                cancels: 0,
+                calls: Vec::new(),
+                cancel_on_submit: None,
+            };
+            let updates = run(&mut port, true).await;
+            assert!(port.calls.is_empty(), "unexpected RPCs: {:?}", port.calls);
+            let last = assert_finished_once(&updates, AskEnd::Cancelled);
+            assert!(last.reply.is_empty());
+            assert!(!last.truncated);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_the_submitting_update_prevents_admission() {
+        let mut port = FakePort {
+            submit: Ok(NativeProtocol::ClaudeStreamJson),
+            output_errors: VecDeque::new(),
+            pages: VecDeque::new(),
+            phases: VecDeque::from([DispatchPhase::Completed]),
+            cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
+        };
+        let flag = AtomicBool::new(false);
+        let request = request();
+        let request_id = request.request_id;
+        let mut updates = Vec::new();
+        drive(
+            &mut port,
+            request,
+            &flag,
+            Duration::from_millis(1),
+            Duration::from_secs(5),
+            |update| {
+                if update.phase == AskPhase::Submitting {
+                    flag.store(true, Ordering::Release);
+                }
+                updates.push(update);
+            },
+        )
+        .await;
+        assert!(port.calls.is_empty(), "unexpected RPCs: {:?}", port.calls);
+        let last = assert_finished_once(&updates, AskEnd::Cancelled);
+        assert_eq!(last.request_id, request_id);
+        assert!(last.reply.is_empty());
+        assert!(!last.truncated);
     }
 
     #[tokio::test]
@@ -380,16 +469,21 @@ mod tests {
             ]),
             phases: VecDeque::from([DispatchPhase::Running, DispatchPhase::Completed]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let updates = run(&mut port, false).await;
         assert_eq!(
             updates.first().map(|update| update.phase),
             Some(AskPhase::Submitting)
         );
-        let last = updates.last().expect("final update");
-        assert_eq!(last.end, Some(AskEnd::Completed));
+        let last = assert_finished_once(&updates, AskEnd::Completed);
         assert_eq!(last.reply, "Hello there");
         assert_eq!(port.cancels, 0);
+        assert_eq!(
+            port.calls,
+            ["submit", "output", "output", "status", "output", "status"]
+        );
     }
 
     #[tokio::test]
@@ -419,6 +513,8 @@ mod tests {
             ]),
             phases: VecDeque::from([DispatchPhase::Completed]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut port, false).await.pop().expect("final");
         assert_eq!(last.end, Some(AskEnd::Completed));
@@ -427,6 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancel_is_sent_once_and_the_daemon_decides_the_end() {
+        let flag = Arc::new(AtomicBool::new(false));
         let mut port = FakePort {
             submit: Ok(NativeProtocol::ClaudeStreamJson),
             output_errors: VecDeque::new(),
@@ -437,18 +534,88 @@ mod tests {
                 DispatchPhase::Cancelled,
             ]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: Some(Arc::clone(&flag)),
         };
-        let updates = run(&mut port, true).await;
+        let updates = run_with_flag(&mut port, &flag).await;
         assert_eq!(port.cancels, 1);
+        assert_eq!(
+            port.calls,
+            [
+                "submit", "cancel", "output", "status", "output", "status", "output", "status"
+            ]
+        );
         assert!(
             updates
                 .iter()
                 .any(|update| update.phase == AskPhase::Cancelling)
         );
-        assert_eq!(
-            updates.last().and_then(|update| update.end.clone()),
-            Some(AskEnd::Cancelled)
+        assert_finished_once(&updates, AskEnd::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_admission_keeps_the_daemons_terminal_result() {
+        for (phase, end) in [
+            (DispatchPhase::Completed, AskEnd::Completed),
+            (
+                DispatchPhase::Failed,
+                AskEnd::Failed("dispatch_vendor_failed".into()),
+            ),
+        ] {
+            let mut port = FakePort {
+                submit: Ok(NativeProtocol::ClaudeStreamJson),
+                output_errors: VecDeque::new(),
+                pages: VecDeque::from([page(&[(1, r#"{"type":"result","result":"Kept"}"#)], true)]),
+                phases: VecDeque::from([DispatchPhase::Running, phase]),
+                cancels: 0,
+                calls: Vec::new(),
+                cancel_on_submit: None,
+            };
+            let flag = AtomicBool::new(false);
+            let mut updates = Vec::new();
+            drive(
+                &mut port,
+                request(),
+                &flag,
+                Duration::from_millis(1),
+                Duration::from_secs(5),
+                |update| {
+                    if update.phase == AskPhase::Running {
+                        flag.store(true, Ordering::Release);
+                    }
+                    updates.push(update);
+                },
+            )
+            .await;
+            assert_eq!(
+                port.calls,
+                ["submit", "output", "status", "cancel", "output", "status"]
+            );
+            let last = assert_finished_once(&updates, end);
+            assert_eq!(last.reply, "Kept");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_submission_fails_preserves_the_failure() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut port = FakePort {
+            submit: Err("dispatch_route_unavailable".into()),
+            output_errors: VecDeque::new(),
+            pages: VecDeque::new(),
+            phases: VecDeque::new(),
+            cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: Some(Arc::clone(&flag)),
+        };
+        let updates = run_with_flag(&mut port, &flag).await;
+        assert_eq!(port.calls, ["submit"]);
+        let last = assert_finished_once(
+            &updates,
+            AskEnd::Failed("dispatch_route_unavailable".into()),
         );
+        assert!(last.reply.is_empty());
+        assert!(!last.truncated);
     }
 
     #[tokio::test]
@@ -459,6 +626,8 @@ mod tests {
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Running]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut refused, false).await.pop().expect("final");
         assert_eq!(
@@ -471,6 +640,8 @@ mod tests {
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Failed]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut failed, false).await.pop().expect("final");
         assert_eq!(
@@ -494,6 +665,8 @@ mod tests {
                 DispatchPhase::Completed,
             ]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut port, false).await.pop().expect("final");
         assert_eq!(last.end, Some(AskEnd::Completed));
@@ -509,6 +682,8 @@ mod tests {
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Failed]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut never_launched, false).await.pop().expect("final");
         assert_eq!(
@@ -521,6 +696,8 @@ mod tests {
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Completed]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut evicted, false).await.pop().expect("final");
         assert_eq!(last.end, Some(AskEnd::Failed(UNAVAILABLE.into())));
@@ -534,6 +711,8 @@ mod tests {
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Running]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let last = run(&mut lost, false).await.pop().expect("final");
         assert_eq!(
@@ -548,6 +727,8 @@ mod tests {
             pages: VecDeque::new(),
             phases: VecDeque::from([DispatchPhase::Running]),
             cancels: 0,
+            calls: Vec::new(),
+            cancel_on_submit: None,
         };
         let mut last = None;
         drive(

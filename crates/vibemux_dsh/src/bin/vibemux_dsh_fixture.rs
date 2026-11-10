@@ -31,6 +31,12 @@
 //! | `descendant` | starts a heartbeat child, then serves ordinary requests |
 //! | `descendant-hang` | starts a heartbeat child and ignores shutdown |
 //! | `no-read` | initializes, then stops reading stdin |
+//! | `delayed-turn-end` | each completed turn takes 1.2 seconds |
+//! | `shutdown-eof` | exits cleanly on shutdown without a response |
+//! | `shutdown-crash` | exits with status 3 on shutdown without a response |
+//! | `crash-during-turn` | answers the prompt, starts its turn, then exits with status 3 |
+//! | `descendant-no-turn-end` | a silent turn with a heartbeat descendant |
+//! | `crash-with-descendant` | dies mid-turn while a descendant holds stdout open |
 
 use std::io::{self, BufRead, Write};
 
@@ -73,14 +79,24 @@ fn main() {
         }
         return;
     }
-    if matches!(mode.as_str(), "descendant" | "descendant-hang") {
+    if matches!(
+        mode.as_str(),
+        "descendant" | "descendant-hang" | "descendant-no-turn-end" | "crash-with-descendant"
+    ) {
         let Ok(executable) = std::env::current_exe() else {
             return;
+        };
+        let stdout = if mode == "crash-with-descendant" {
+            // The parent's death must be noticed even while this child keeps
+            // the protocol pipe open without producing any records.
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
         };
         let Ok(_child) = std::process::Command::new(executable)
             .arg("heartbeat")
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(stdout)
             .stderr(std::process::Stdio::null())
             .spawn()
         else {
@@ -127,11 +143,19 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     return;
                 }
-                if mode == "exit-after-ready" {
+                if matches!(mode.as_str(), "exit-after-ready" | "crash-after-ready") {
+                    // Optional test-owned barrier: lets a control client finish
+                    // opening the session before it releases the crash/exit.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    while std::path::Path::new("dsh-fixture-hold-exit").is_file()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    if mode == "crash-after-ready" {
+                        std::process::exit(3);
+                    }
                     return;
-                }
-                if mode == "crash-after-ready" {
-                    std::process::exit(3);
                 }
             }
             "session/prompt" if mode == "shutdown-first" => {
@@ -150,6 +174,12 @@ fn main() {
                 answer_prompt(&mode, &frame, &mut turn);
             }
             "shutdown" => {
+                if mode == "shutdown-eof" {
+                    return;
+                }
+                if mode == "shutdown-crash" {
+                    std::process::exit(3);
+                }
                 if mode == "descendant-hang" {
                     std::thread::sleep(std::time::Duration::from_secs(30));
                     return;
@@ -245,8 +275,14 @@ fn answer_prompt(mode: &str, frame: &serde_json::Value, turn: &mut u64) {
         "session.status",
         &serde_json::json!({"sessionId": session_id, "status": "idle"}),
     );
-    if mode == "no-turn-end" {
+    if matches!(mode, "no-turn-end" | "descendant-no-turn-end") {
         return;
+    }
+    if matches!(mode, "crash-during-turn" | "crash-with-descendant") {
+        std::process::exit(3);
+    }
+    if mode == "delayed-turn-end" {
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
     }
     let reason = if mode == "error-turn" {
         serde_json::json!({"kind": "error", "error": {

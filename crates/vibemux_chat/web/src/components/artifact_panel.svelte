@@ -9,23 +9,23 @@
     Copy,
     FileCode2,
   } from "@lucide/svelte";
-  import { download_file } from "../services/chat_store.js";
+  import { native_unavailable } from "../services/workspace_host.js";
   import MarkdownView from "./markdown_view.svelte";
-  let { artifact, on_close, notify } = $props();
+  let { host, artifact, on_close, notify } = $props();
   let view = $state("code"),
     fullscreen = $state(false),
     panel;
   $effect(() => {
-    view = ["html", "svg", "md", "markdown"].includes(artifact.language)
-      ? "preview"
-      : "code";
+    view = previewable ? "preview" : "code";
   });
-  const previewable = $derived(
-    ["html", "svg", "md", "markdown"].includes(artifact.language),
-  );
   const document = $derived(["md", "markdown"].includes(artifact.language));
+  const previewable = $derived(
+    document || (host.capabilities.html_preview && ["html", "svg"].includes(artifact.language)),
+  );
   const preview = $derived(
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">${artifact.content}`,
+    host.capabilities.html_preview
+      ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">${artifact.content}`
+      : "",
   );
   function resize_start(event) {
     event.preventDefault();
@@ -53,7 +53,11 @@
     }
   }
   function download() {
-    download_file(
+    if (!host.capabilities.exports) {
+      notify(native_unavailable.exports);
+      return;
+    }
+    host.download_file(
       `artifact.${{ html: "html", svg: "svg", markdown: "md", md: "md", javascript: "js", typescript: "ts", python: "py", css: "css", json: "json" }[artifact.language] || "txt"}`,
       artifact.content,
       "text/plain",
@@ -108,30 +112,32 @@
         disabled={!previewable}
         title={previewable
           ? "Preview artifact"
-          : "HTML, SVG and Markdown support preview"}
+          : !host.capabilities.html_preview ? native_unavailable.html_preview : "HTML, SVG and Markdown support preview"}
         onclick={() => (view = "preview")}><Eye />Preview</button
       >
     </div>
     <button class="icon-btn" aria-label="Copy artifact" onclick={copy}
       ><Copy /></button
     ><button class="icon-btn" aria-label="Download artifact" onclick={download}
+      disabled={!host.capabilities.exports} title={!host.capabilities.exports ? native_unavailable.exports : "Download artifact"}
       ><Download /></button
     >
   </div>
   <div class="artifact-body">
-    {#if view === "preview"}{#if document}<div class="document-preview">
-          <MarkdownView content={artifact.content} {notify} />
-        </div>{:else}<iframe
+    {#if view === "preview" && previewable}{#if document}<div class="document-preview">
+          <MarkdownView {host} content={artifact.content} {notify} />
+        </div>{:else if host.capabilities.html_preview}<iframe
           title="Sandboxed artifact preview"
           sandbox="allow-scripts"
           srcdoc={preview}
         ></iframe>{/if}{:else}<div class="artifact-code">
+        {#if !host.capabilities.html_preview && ["html", "svg"].includes(artifact.language)}<p class="status-note">{native_unavailable.html_preview}</p>{/if}
         <pre class="raw-artifact-code"><code>{artifact.content}</code></pre>
       </div>{/if}
   </div>
   <footer class="artifact-footer">
-    <span class="status-dot"></span>{view === "preview"
-      ? "Preview runs in an isolated sandbox"
+    <span class="status-dot"></span>{view === "preview" && previewable
+      ? document ? "Sanitized Markdown · No executable preview" : "Preview runs in an isolated sandbox"
       : `${artifact.content.split("\n").length} lines · ${artifact.content.length.toLocaleString()} characters`}
   </footer>
 </aside>

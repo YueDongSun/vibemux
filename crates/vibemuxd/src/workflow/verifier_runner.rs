@@ -170,7 +170,7 @@ async fn run_one(
     } else {
         Instant::now()
     };
-    let (exit, _) = process.finish(!drained, exit_deadline).await;
+    let (exit, _) = process.finish(!drained, exit_deadline).await.ok()?;
     if exit.forced_termination {
         return None;
     }
@@ -334,6 +334,57 @@ mod tests {
         assert_eq!(missing.status, SuiteStatus::Blocked);
         let (timeout, _) = map_result(&suite(), vec![], None, 5, Some((output("passed"), digest)));
         assert_eq!(timeout.status, SuiteStatus::Blocked);
+    }
+
+    #[cfg(feature = "test_helpers")]
+    #[tokio::test]
+    async fn cleanup_failure_cannot_verify_a_passing_result() {
+        use crate::harness_dispatch::native_process::{
+            TEST_TERMINATE,
+            tests::{fixture_plan, termination_failure_after_cleanup},
+        };
+        let directory = tempfile::tempdir().expect("scratch");
+        let plan = fixture_plan(directory.path(), &["--fixture_mode", "echo_stdin"]);
+        let config = LoadedWorkflowConfig {
+            config: serde_json::from_value(serde_json::json!({
+                "schema_version": 1,
+                "evidence_class": "fixture",
+                "git_executable": plan.executable,
+                "slots": [],
+                "verifier": {
+                    "directory": directory.path(),
+                    "executable": plan.executable,
+                    "suites": {"api": plan.spec.arguments},
+                    "timeout_ms": 5_000,
+                },
+                "heartbeat_ms": 1_000,
+                "candidate_limits": {"max_files": 8, "max_file_bytes": 1024, "max_total_bytes": 8192},
+            })).expect("test config"),
+            digest: Sha256Digest::of(b"config"),
+            verifier_digest: Sha256Digest::of(b"verifier"),
+            git_executable: plan.executable.clone(),
+            verifier_directory: directory.path().to_path_buf(),
+            verifier_executable: plan.executable.clone(),
+        };
+        let exit = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                run_one(
+                    &config,
+                    &plan.trampoline,
+                    plan.spec.arguments,
+                    directory.path(),
+                ),
+            )
+            .await;
+        let (result, _) = map_result(
+            &suite(),
+            vec![],
+            exit,
+            0,
+            Some((output("passed"), Sha256Digest::of(b"passed"))),
+        );
+        assert_eq!(result.status, SuiteStatus::Blocked);
     }
 
     /// The TaskBoard verifier's crash writer (`crash_result.mjs`) reports an

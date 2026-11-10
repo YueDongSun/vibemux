@@ -149,6 +149,86 @@ navigation guard, and the lockdown tests. Its build gates (`cargo fmt`,
 `test`, and `build`) were still outstanding when the ADR was accepted, so
 the skeleton is not yet a qualified build.
 
+## Amendment: shared workspace and provider configuration (2026-11-10)
+
+The desktop presentation reuses the actual Svelte root, components, and styles
+of ADR 056 rather than rebuilding that design in egui or maintaining a second
+copy. This replaces §6's desktop token input with the shared chat token/styles;
+the monitor's `config/design_tokens.css` and palette-parity contract remain
+unchanged. The renderer reuses ADR 056's `marked`, DOMPurify, `highlight.js`,
+and `@lucide/svelte` dependencies instead of adding another Markdown engine.
+The browser and desktop have separate entry points and explicit hosts.
+The browser keeps its current transport and storage contracts. The desktop
+host has no browser-provider fallback; native capabilities that have not been
+ported remain visibly unavailable. This does not satisfy the phase-1 parity
+checklist or remove egui.
+
+The native host maps supported appearance settings to `desktop_settings.json`.
+The `settings_get`/`settings_set` replies now project only schema version and
+appearance, text size, density, motion, sidebar, and start-page preferences;
+private project folders and Ask-consent paths stay on the Rust side. This
+narrows the previously unused shell reply without changing the saved file.
+Optional conversation drafts remain noncanonical records in the WebView's own
+origin, never an automatic import of a browser profile. Their existing Web Lock
+and stale-record checks remain mandatory: an unsupported WebView must report
+unsaved content, not downgrade to an unsafe writer. Native artifact previews
+remain code-only; this amendment does not grant executable `srcdoc`, downloads,
+external navigation, or additional renderer networking.
+
+Two additional private commands, `provider_profiles_get` and
+`provider_profiles_set`, manage native provider metadata. Only the main window
+receives their capability; the existing 23-command grant to main/task windows
+is unchanged. CSP, navigation checks, prototype freezing, and the absence of
+generic HTTP/filesystem/shell plugins are unchanged. Configuration filesystem
+work runs behind the blocking boundary, and command errors contain fixed codes
+and messages rather than input fragments, environment values, or file paths.
+
+`provider_profiles.json`, in the native app configuration directory, starts at
+schema 1. It is separate from appearance settings, browser exports, CC Switch
+records, and canonical storage. It holds at most 16 profiles and 64 KiB:
+
+```json
+{
+  "schema_version": 1,
+  "profiles": [{
+    "id": "local-model",
+    "name": "Local model",
+    "api_type": "openai_chat_completions",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "model": "operator-model",
+    "credential_env": null,
+    "auth_type": "none"
+  }],
+  "orchestrator_profile_id": "local-model"
+}
+```
+
+Supported metadata describes Anthropic Messages or OpenAI-compatible Chat
+Completions, with explicit `api_key` (`x-api-key`), `bearer`, or `none`
+authentication semantics. Authenticated profiles name an environment variable,
+never its value. URLs must use HTTPS, or HTTP at a numeric loopback address,
+without userinfo, query, fragment, or backslashes. Versioned base paths are
+preserved. This is syntax validation, not destination resolution, a credential
+grant, or an endpoint certification.
+
+A missing file reads as an empty schema-1 configuration with a null selection;
+there is no old provider record to migrate. Malformed, unknown-version,
+oversized, and non-regular files are preserved and refuse saves. Publication
+uses an exclusive same-directory staging file and atomic replacement.
+Independent app instances use complete-snapshot, last-writer-wins semantics.
+Existing appearance schema 1 and Control v10 remain unchanged; an older bundled
+UI has no access to the new commands and does not consume the new file.
+
+Every provider view reports `readiness: configuration_only`. Save and validation
+resolve no secrets, read no credential database, run no CLI, and make no network
+request. The selected profile is preparation for orchestration, not an active
+route: ADR 037 still consumes its separately configured, startup-pinned loopback
+gateway and retains its live-attestation and owned-fixture-permit gates. Direct
+upstream routing, live gateway certification, credential forwarding, budgets,
+and request-scoped route evidence require a later integration decision. Neither
+ordinary provider chat nor the separate A2A model-peer recipe may substitute for
+those gates.
+
 ## Alternatives
 
 - Rewrite in egui: rejected; the rendering limits are the problem.

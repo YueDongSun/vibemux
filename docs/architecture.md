@@ -398,6 +398,30 @@ The acceptance CLI and owned command/version-probe helpers check `TokenRestricte
 
 `vibemux_frontend` consumes probe reports and authenticated Control v4 snapshots; it never opens the core SQLite database. Its native Supervisor Chat workspace (ADR 028) has one main conversation, real task activity, secondary Agents/Settings/Diagnostics, and docked or independent task windows. The Claude light theme is the default for new profiles (ADR 030); Studio and the five dark themes remain available. Task queries run through the daemon writer channel and return bounded metadata, not prompt bodies. A separately configured WezTerm observation plugin may list matching native panes and focus an explicitly linked pane after identity validation. Native TUI content stays in WezTerm. There is no continuous coordinator chat adapter, harness launch/input forwarding, embedded terminal renderer, or terminal-text completion inference. Ratatui remains the diagnostic surface, with existing classic/high-contrast/mono/light/nord/gruvbox themes. Shared palette export and terminal theme generation remain governed by ADR 026. The `vibemux_dsh_tui` surface independently owns an SDK runtime through `vibemux_dsh`; it writes no canonical state.
 
+## Native desktop workspace and configuration
+
+`vibemux_desktop` mounts the ADR 056 Svelte root, components, and styles through
+an explicit native host. Its entry, npm lockfile, and bundled `ui/dist` are
+separate from the browser entry. The native build refuses browser-provider
+transport imports; shared presentation does not grant shared execution authority.
+
+Native appearance preferences use `desktop_settings.json` and a path-free
+settings projection. Provider metadata uses a separate bounded, schema-1
+`provider_profiles.json`: stable IDs, protocol, base URL, model, credential
+variable name, authentication kind, and a selected orchestrator profile.
+Only the main window receives the two provider commands. Their filesystem work
+runs on blocking workers; validation and save resolve no credentials, perform
+no network request, emit no canonical event, and always report
+`configuration_only`. They do not alter ADR 037's pinned gateway or execution gates.
+
+Optional conversation drafts use the WebView origin's existing lease-protected
+browser record. Native preferences and provider metadata never enter it. Missing
+Web Locks produce an unsaved/read-only warning, not a fallback writer. Native
+chat, unported project/Ask/task/console operations, attachments, downloads,
+external links, and scripted artifact previews remain unavailable. CSP and
+navigation guards stay unchanged. See [ADR 043](adr/043_tauri_desktop_app.md) and
+[the native guide](native_desktop.md).
+
 ## Stateful local A2A and supervisor
 
 `vibemux_a2a` isolates official wire types and all three local transports from canonical state. Its bounded backend/runtime contracts authorize each subject, retain task identity, and supervise cancellation and subscriptions. The daemon injects a non-owning `WriterHandle`; schema-2 transactions validate state versions and verifier receipts before committing Task/Run bindings plus events. Optional `vibemux_model_peer` processes read selected CC Switch profiles read-only and return data artifacts. `vibemux_workspace` binds role worktrees to private owner receipts. The current supervisor recipe does not execute generated code or provide terminal/harness parity. See [ADR 024](adr/024_stateful_a2a_supervisor.md) and the [supervisor protocol](a2a_supervisor_protocol.md) for limits and startup commands.
@@ -430,6 +454,8 @@ Codex presentations. It stores versioned conversation records in its own browser
 namespace and sends explicit chat/API-validation requests directly to the fixed
 Anthropic HTTPS origin. Provider keys remain only in page memory. It has no
 control descriptor, database writer, canonical Run state or harness execution.
-The read-only monitor and native desktop retain their existing boundaries.
+The read-only monitor retains its boundary. The desktop reuses the presentation
+through the separate native host described above; it does not import this direct
+provider transport or browser credentials.
 [ADR 056](adr/056_browser_local_chat.md) records storage, preview and provider
 limits; [the guide](conversational_web_ui.md) gives startup commands.

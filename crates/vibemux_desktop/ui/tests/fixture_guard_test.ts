@@ -27,6 +27,12 @@ test('production build contains no fixture data', () => {
     'the production build has no JavaScript to check',
   );
   for (const file of files) {
-    assert.ok(!readFileSync(file, 'utf8').includes(FIXTURE_MARKER), file);
+    const content = readFileSync(file, 'utf8');
+    for (const marker of [FIXTURE_MARKER, 'fixture_profile', 'fixture-model', 'Fixture provider']) {
+      assert.ok(!content.includes(marker), `${file} includes fixture data: ${marker}`);
+    }
+    for (const marker of ['anthropic-dangerous-direct-browser-access', 'https://api.anthropic.com/v1/messages', 'https://api.anthropic.com/v1/models']) {
+      assert.ok(!content.includes(marker), `${file} includes browser provider transport: ${marker}`);
+    }
   }
 });

@@ -190,6 +190,36 @@ class Storage:
         except sqlite3.Error as exc:
             raise StorageError(str(exc)) from exc
 
+    def start_task_if_open(self, task_id: UUID, project_id: UUID) -> bool:
+        """Audit only the caller that actually changes the persisted OPEN state."""
+        try:
+            with self.connection:
+                changed = self.connection.execute(
+                    """
+                    UPDATE tasks SET status = ?
+                    WHERE task_id = ? AND project_id = ? AND status = ?
+                    """,
+                    (
+                        TaskStatus.IN_PROGRESS.value,
+                        str(task_id),
+                        str(project_id),
+                        TaskStatus.OPEN.value,
+                    ),
+                )
+                if changed.rowcount != 1:
+                    return False
+                self._append_event(
+                    Event(
+                        "task_started",
+                        project_id,
+                        task_id,
+                        payload={"from": TaskStatus.OPEN.value, "to": TaskStatus.IN_PROGRESS.value},
+                    )
+                )
+                return True
+        except sqlite3.Error as exc:
+            raise StorageError(str(exc)) from exc
+
     def get_task(self, task_id: UUID) -> Task | None:
         row = self.connection.execute(
             "SELECT * FROM tasks WHERE task_id = ?", (str(task_id),)
@@ -255,6 +285,15 @@ class Storage:
         if not row:
             return None
         terminal_data = json.loads(row["terminal"]) if row["terminal"] else None
+        terminal = TerminalLocation(**terminal_data) if terminal_data else None
+        terminal_backend = row["terminal_backend"]
+        # Legacy auto-policy rows already recorded the concrete backend in their placement.
+        if (
+            terminal_backend == "auto"
+            and terminal is not None
+            and terminal.backend in {"mock", "tmux", "wezterm"}
+        ):
+            terminal_backend = terminal.backend
         return Run(
             task_id=UUID(row["task_id"]),
             project_id=UUID(row["project_id"]),
@@ -262,13 +301,13 @@ class Storage:
             role=_coerce_run_role(row["role"]),
             protocol=row["protocol"],
             execution_backend=row["execution_backend"],
-            terminal_backend=row["terminal_backend"],
+            terminal_backend=terminal_backend,
             run_id=UUID(row["run_id"]),
             status=RunStatus(row["status"]),
             branch=row["branch"],
             worktree=row["worktree"],
             base_commit=row["base_commit"],
-            terminal=TerminalLocation(**terminal_data) if terminal_data else None,
+            terminal=terminal,
             created_at=datetime.fromisoformat(row["created_at"]),
             metadata=json.loads(row["metadata"]),
         )

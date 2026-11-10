@@ -14,7 +14,9 @@
   import MarkdownView from "./markdown_view.svelte";
   import { app_config } from "../config.js";
   import { extract_artifact } from "../ui_policy.js";
+  import { native_unavailable } from "../services/workspace_host.js";
   let {
+    host,
     conversation,
     generating,
     replacing = false,
@@ -137,7 +139,8 @@
               >
                 <textarea
                   aria-label="Edit message"
-                  disabled={generating}
+                  disabled={generating || !host.capabilities.send}
+                  title={!host.capabilities.send ? native_unavailable.send : undefined}
                   bind:value={edit_text}
                   rows="4"
                 ></textarea>
@@ -149,7 +152,7 @@
                   ><button
                     type="submit"
                     class="btn btn-primary"
-                    disabled={!edit_text.trim() || generating}
+                    disabled={!edit_text.trim() || generating || !host.capabilities.send}
                     >Save & resend</button
                   >
                 </div>
@@ -159,12 +162,13 @@
                   {#each message.attachments as file}<div
                       class="message-attachment"
                     >
-                      {#if file.type?.startsWith("image/")}<img
+                      {#if host.capabilities.images && file.type?.startsWith("image/")}<img
                           src={`data:${file.type};base64,${file.data}`}
                           alt={file.name}
                         />{:else}<FileText />{/if}<span>{file.name}</span>
                     </div>{/each}
                 </div>{/if}{#if message.content}<MarkdownView
+                  {host}
                   content={message.content}
                   {notify}
                   {on_artifact}
@@ -181,7 +185,7 @@
                 </div>{/if}{#if message.status === "stopped"}<p
                   class="message-status"
                 >
-                  Response stopped. Regenerate whenever you’re ready.
+                  {host.capabilities.send ? "Response stopped. Regenerate whenever you’re ready." : "Response stopped. Regeneration is unavailable in the desktop host."}
                 </p>{/if}{#if message.error}<div
                   class="inline-error"
                   role="alert"
@@ -190,11 +194,12 @@
                   <p>{message.error}</p>
                   <button
                     class="btn"
-                    disabled={generating}
+                    disabled={generating || !host.capabilities.send}
+                    title={!host.capabilities.send ? native_unavailable.send : undefined}
                     onclick={() => on_regenerate(start + index)}
                     ><RotateCcw />Retry response</button
                   ><button class="btn" onclick={on_configure}
-                    >API settings</button
+                    >{host.kind === "native" ? "Provider profiles" : "API settings"}</button
                   >
                 </div>{/if}{#if artifact && message.status !== "streaming"}<button
                   class="artifact-card"
@@ -215,7 +220,8 @@
                 >{#if user}<button
                     class="icon-btn"
                     aria-label="Edit message"
-                    disabled={generating}
+                    disabled={generating || !host.capabilities.send}
+                    title={!host.capabilities.send ? native_unavailable.send : undefined}
                     onclick={() => {
                       editing = message.id;
                       edit_text = message.content;
@@ -243,7 +249,8 @@
                   ><button
                     class="icon-btn"
                     aria-label="Regenerate response"
-                    disabled={generating}
+                    disabled={generating || !host.capabilities.send}
+                    title={!host.capabilities.send ? native_unavailable.send : undefined}
                     onclick={() => on_regenerate(start + index)}
                     ><RotateCcw /></button
                   >{#if message.usage}<span class="usage-hint"
@@ -259,7 +266,7 @@
       onclick={() => {
         scroll_node.scrollTo({
           top: scroll_node.scrollHeight,
-          behavior: "smooth",
+          behavior: host.kind === "native" && host.preferences.state.values.reduce_motion ? "auto" : "smooth",
         });
         at_bottom = true;
       }}><ArrowDown />Jump to latest</button

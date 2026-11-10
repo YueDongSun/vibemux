@@ -10,9 +10,11 @@ pub mod app_state;
 pub mod command_error;
 pub mod command_names;
 pub mod commands;
+mod config_file;
 pub mod desktop_settings;
 pub mod event_sink;
 pub mod navigation;
+pub mod provider_profiles;
 pub mod ui_contract;
 pub mod windows;
 
@@ -27,6 +29,14 @@ use crate::event_sink::{EventSink, TauriEventSink};
 
 /// Starts the desktop app.
 pub fn run() {
+    app_builder()
+        .run(tauri::generate_context!())
+        .expect("the VibeMux desktop app stopped unexpectedly");
+}
+
+/// The production command boundary, also used by the isolated native UI smoke.
+#[must_use]
+pub fn app_builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
             let handle = app.handle().clone();
@@ -58,10 +68,10 @@ pub fn run() {
             commands::open_link,
             commands::settings_get,
             commands::settings_set,
+            commands::provider_profiles_get,
+            commands::provider_profiles_set,
             commands::about_info,
         ])
-        .run(tauri::generate_context!())
-        .expect("the VibeMux desktop app stopped unexpectedly");
 }
 
 /// The settings file in the Tauri app config directory.

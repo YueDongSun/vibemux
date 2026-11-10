@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"name":"versioned HTTPS path", "valid":true, "profile":{"base_url":"https://provider.example.test/team/v2/"}},
+    {"name":"escaped path space", "valid":true, "profile":{"base_url":"https://provider.example.test/team%20one/v1"}},
+    {"name":"numeric IPv4 loopback", "valid":true, "profile":{"base_url":"http://127.1:8080/v1"}},
+    {"name":"numeric IPv6 loopback", "valid":true, "profile":{"base_url":"http://[::1]:8080/v1"}},
+    {"name":"remote HTTP", "valid":false, "profile":{"base_url":"http://provider.example.test/v1"}},
+    {"name":"empty authority", "valid":false, "profile":{"base_url":"https:////provider.example.test/v1"}},
+    {"name":"port zero", "valid":false, "profile":{"base_url":"http://127.0.0.1:0/v1"}},
+    {"name":"raw path space", "valid":false, "profile":{"base_url":"https://provider.example.test/team one/v1"}},
+    {"name":"raw Unicode path padding", "valid":false, "profile":{"base_url":"https://provider.example.test/team﻿one/v1"}},
+    {"name":"empty userinfo", "valid":false, "profile":{"base_url":"https://@provider.example.test/v1"}},
+    {"name":"Unicode name padding", "valid":false, "profile":{"name":"﻿Provider"}},
+    {"name":"Unicode model padding", "valid":false, "profile":{"model":"operator-model﻿"}}
+  ]
+}
