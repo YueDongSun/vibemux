@@ -72,6 +72,12 @@ negative_fixture_hashes = {
     ("crates/vibemux_decision_peer/src/jev_client.rs", "url_credentials"): (
         "79abed56570a1a9796d694a83a47ce7613f199543cf4f3447e7d83620d095a9d",
     ),
+    ("crates/vibemux_desktop/src/provider_profiles/tests.rs", "private_network_address"): (
+        "ab6bfbf147d35172df259c8ccb8d358003121f102fc243847cd3e8eeb35c63b1",
+    ),
+    ("crates/vibemux_desktop/src/provider_profiles/tests.rs", "url_credentials"): (
+        "8e100b39df9136c6fa836ac75f34ea0f7d755d903043db1eebb92045b9386702",
+    ),
     ("crates/vibemux_web/src/push_tests.rs", "private_network_address"): (
         "08cd81b5ebc91f7e63cd2d00d312b80cf105d1b74fea20b286e697bd57233031",
         "0a9bab98b590e7cd1a0b7f66043e605c134ac792072ea9d74a07493f59ee1a80",

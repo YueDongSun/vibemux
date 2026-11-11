@@ -89,10 +89,8 @@ fn the_windows_are_created_in_rust() {
     );
 }
 
-#[test]
-fn the_capability_grants_exactly_the_command_list() {
-    let capability = read_json("capabilities/main_window.json");
-    let granted: BTreeSet<String> = capability["permissions"]
+fn permissions(capability: &serde_json::Value) -> BTreeSet<String> {
+    capability["permissions"]
         .as_array()
         .expect("permissions is not an array")
         .iter()
@@ -102,8 +100,23 @@ fn the_capability_grants_exactly_the_command_list() {
                 .expect("permission is not a string")
                 .to_owned()
         })
-        .collect();
+        .collect()
+}
 
+fn provider_permissions() -> BTreeSet<String> {
+    BTreeSet::from([
+        "allow-provider-profiles-get".to_owned(),
+        "allow-provider-profiles-set".to_owned(),
+    ])
+}
+
+#[test]
+fn the_combined_capabilities_grant_exactly_the_command_list() {
+    let shared = read_json("capabilities/main_window.json");
+    let provider = read_json("capabilities/provider_profiles.json");
+    let mut granted = permissions(&shared);
+    assert!(granted.is_disjoint(&provider_permissions()));
+    granted.extend(permissions(&provider));
     let mut expected: BTreeSet<String> = BTreeSet::from([
         "core:event:allow-listen".to_owned(),
         "core:event:allow-unlisten".to_owned(),
@@ -111,8 +124,57 @@ fn the_capability_grants_exactly_the_command_list() {
     for name in COMMAND_NAMES {
         expected.insert(format!("allow-{}", name.replace('_', "-")));
     }
-
     assert_eq!(granted, expected);
+    assert_eq!(COMMAND_NAMES.len(), 25);
+}
+
+#[test]
+fn provider_configuration_is_granted_only_to_the_main_window() {
+    let capability = read_json("capabilities/provider_profiles.json");
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(permissions(&capability), provider_permissions());
+    assert!(capability.get("remote").is_none());
+    assert_ne!(
+        capability.get("local"),
+        Some(&serde_json::Value::Bool(false))
+    );
+}
+
+#[test]
+fn no_unreviewed_capability_file_can_add_a_grant() {
+    let files: BTreeSet<_> = std::fs::read_dir(crate_dir().join("capabilities"))
+        .expect("capability directory")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(
+        files,
+        BTreeSet::from([
+            std::ffi::OsString::from("main_window.json"),
+            std::ffi::OsString::from("provider_profiles.json"),
+        ])
+    );
+}
+
+#[test]
+fn the_typescript_command_names_match_the_native_manifest() {
+    let source = std::fs::read_to_string(crate_dir().join("ui/src/lib/ui_contract.ts"))
+        .expect("TypeScript contract");
+    let list = source
+        .split_once("export const COMMAND_NAMES = [")
+        .expect("command declaration")
+        .1
+        .split_once("] as const")
+        .expect("command array")
+        .0;
+    let names: BTreeSet<_> = list
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.strip_prefix('\'')
+                .and_then(|line| line.strip_suffix("',"))
+        })
+        .collect();
+    assert_eq!(names, BTreeSet::from(COMMAND_NAMES));
 }
 
 #[test]

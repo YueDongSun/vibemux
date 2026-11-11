@@ -450,6 +450,28 @@ removing the own-id check; on Linux, a no-op group kill, removing the
 own-group check, or removing the init check (run under `setsid`, so that the
 own-group check does not also catch id 1).
 
+#### Cleanup-result correction, 2026-11-10
+
+The daemon-owned `NativeProcess::finish` returns exit evidence only after
+process-tree termination succeeds. A termination error is propagated as the
+existing content-free `harness_process_containment_failed` code, before POSIX
+reaping, so the retained owner can be retried. Successful repeated finishes
+return the same evidence, and a retry does not erase an earlier forced-finish
+requirement.
+
+Dispatch classifies that cleanup error as failure even when a correlated
+completion record and a natural zero exit were observed. An earlier protocol
+failure retains its primary error code, but cleanup failure still withholds
+clean exit evidence. The trusted workflow
+verifier treats it as blocked rather than accepting a passing result file;
+the test-only browser lifecycle probe returns the error. `Drop` remains a
+best-effort backstop, not verification that cleanup succeeded. The daemon
+process owner drops its tree before its child; this correction does not alter
+the separate ADR 040 standalone process wrapper.
+
+No store migration, Control version, configuration shape, or public error code
+is added. The containment and non-sandbox boundaries above remain unchanged.
+
 ### 7. Control IPC v5 (Stage 5)
 
 `CONTROL_PROTOCOL_VERSION` goes from 4 to 5. The six new operations require

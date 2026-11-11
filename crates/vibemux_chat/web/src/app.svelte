@@ -39,23 +39,27 @@
   import SettingsPanel from "./components/settings_panel.svelte";
   import { models, app_config, shortcuts } from "./config.js";
   import {
-    create_workspace_session,
     create_conversation,
     uid,
     export_conversation,
     export_all,
-    download_file,
   } from "./services/chat_store.js";
   import { create_workspace_autosave } from "./services/workspace_autosave.js";
-  import { stream_response, validate_api_key } from "./services/provider.js";
+  import { require_workspace_host, native_unavailable } from "./services/workspace_host.js";
   import {
     group_conversations,
     extract_artifact,
     stopped_snapshot,
   } from "./ui_policy.js";
 
-  const storage_session = create_workspace_session();
+  let { host } = $props();
+  const workspace_host = require_workspace_host(untrack(() => host));
+  const native = workspace_host.kind === "native";
+  const capabilities = workspace_host.capabilities;
+  const { stream_response, validate_api_key, download_file } = workspace_host;
+  const storage_session = workspace_host.storage_session;
   const initial = storage_session.initial;
+  let native_preferences = $state(workspace_host.preferences?.state || null);
   let interface_style = $state(
     resolve_interface(location.search, initial.settings.interface_style),
   );
@@ -122,7 +126,7 @@
   ];
   const prompt_cards = $derived(is_codex ? codex_prompts : claude_prompts);
   let conversations = $state(initial.conversations),
-    settings = $state(initial.settings),
+    settings = $state(native ? { ...initial.settings, ...workspace_host.preferences.state.values } : initial.settings),
     active_id = $state(initial.active_id),
     draft = $state(""),
     api_key = $state(""),
@@ -141,7 +145,8 @@
     draft_thinking = $state(initial.settings.default_thinking),
     rename_value = $state(""),
     online = $state(navigator.onLine),
-    storage_error = $state(initial.storage_warning || ""),
+    storage_error = $state(initial.storage_warning
+      ? workspace_host.storage_message(new Error(initial.storage_warning)) : ""),
     storage_ready = $state(!initial.storage_warning),
     resolved_theme = $state("light");
   let controller = null,
@@ -150,14 +155,14 @@
   function workspace_snapshot() {
     return {
       conversations: $state.snapshot(conversations),
-      settings: $state.snapshot(settings),
+      settings: workspace_host.workspace_settings($state.snapshot(settings)),
       active_id,
     };
   }
   const autosave = create_workspace_autosave({
     session: storage_session,
     snapshot: workspace_snapshot,
-    on_error: (error) => (storage_error = error.message),
+    on_error: (error) => (storage_error = workspace_host.storage_message(error)),
     on_saved: () => (storage_error = ""),
   });
   let tablet = $state(innerWidth <= 1180);
@@ -209,8 +214,17 @@
     );
   }
   function change_settings(patch) {
+    if (native) {
+      if (patch.interface_style) set_interface(patch.interface_style);
+      workspace_host.preferences.update(patch);
+      return;
+    }
     settings = { ...settings, ...patch };
     if (patch.interface_style) set_interface(patch.interface_style);
+  }
+  function set_collapsed(value) {
+    collapsed = value;
+    if (native) workspace_host.preferences.update({ sidebar_collapsed: value });
   }
   function toggle_context() {
     if (tablet) context_drawer = true;
@@ -265,7 +279,7 @@
     if (mobile) collapsed = true;
   }
   function choose_model(value) {
-    if (generating) return;
+    if (generating || !capabilities.send) return;
     if (value === "claude-haiku-4-5") {
       if (active) update_chat(active.id, { thinking: false });
       else draft_thinking = false;
@@ -275,7 +289,7 @@
     model_menu = false;
   }
   function choose_thinking(value) {
-    if (generating) return;
+    if (generating || !capabilities.send) return;
     if (value && model === "claude-haiku-4-5") {
       notify("Choose Sonnet or Opus for extended thinking.");
       return;
@@ -284,10 +298,7 @@
     else draft_thinking = value;
   }
   function toggle_theme() {
-    settings = {
-      ...settings,
-      theme: resolved_theme === "light" ? "dark" : "light",
-    };
+    change_settings({ theme: resolved_theme === "light" ? "dark" : "light" });
   }
   function open_settings(tab = "appearance") {
     modal = { type: "settings", tab };
@@ -304,6 +315,10 @@
       update_chat(active.id, { artifact: value, artifact_open: true });
   }
   async function generate(chat, messages, { replace = false } = {}) {
+    if (!capabilities.send) {
+      notify(native_unavailable.send);
+      return;
+    }
     if (controller) return;
     if (replace && !online) {
       notify("You’re offline. Your original conversation is unchanged.");
@@ -426,6 +441,10 @@
     }
   }
   function send_message(content, attachments = [], force_new = false) {
+    if (!capabilities.send) {
+      notify(native_unavailable.send);
+      return false;
+    }
     if (controller || (!content.trim() && !attachments.length)) return false;
     if (!online) {
       notify("You’re offline. Your draft is preserved until you reconnect.");
@@ -454,7 +473,7 @@
     return true;
   }
   function regenerate(index) {
-    if (!active || controller) return;
+    if (!active || controller || !capabilities.send) return;
     const chat = active;
     const context = chat.messages.slice(0, index);
     if (context.at(-1)?.role !== "user") return;
@@ -471,7 +490,7 @@
     } else action();
   }
   function edit_message(index, content, on_saved) {
-    if (!active || controller) return false;
+    if (!active || controller || !capabilities.send) return false;
     const chat = active;
     modal = {
       type: "confirm",
@@ -497,6 +516,10 @@
   }
   function chat_action(action, chat) {
     if (action === "export") {
+      if (!capabilities.exports) {
+        notify(native_unavailable.exports);
+        return;
+      }
       try {
         download_file(
           (chat.title
@@ -572,7 +595,9 @@
     modal = {
       type: "confirm",
       title: "Clear all conversations?",
-      description: `All ${conversations.length} conversations and attachments will be removed from this browser. You can export first and undo from the notification.`,
+      description: native
+        ? `All ${conversations.length} conversations and attachments will be removed from this WebView. Native export is unavailable. You can undo from the notification.`
+        : `All ${conversations.length} conversations and attachments will be removed from this browser. You can export first and undo from the notification.`,
       confirm: "Clear conversations",
       danger: true,
       action: () => {
@@ -585,6 +610,10 @@
     };
   }
   function export_chats(format) {
+    if (!capabilities.exports) {
+      notify(native_unavailable.exports);
+      return;
+    }
     try {
       download_file(
         `vibemux_conversations.${format}`,
@@ -597,6 +626,7 @@
     }
   }
   async function save_api(value) {
+    if (native) throw new Error("Use native provider profiles; raw API keys are not accepted here.");
     const validation = ++api_validation;
     if (!value) {
       api_key = "";
@@ -621,8 +651,9 @@
     modal = {
       type: "confirm",
       title: "Reset unreadable local history?",
-      description:
-        "Download the original browser record first if you need to recover it. Resetting clears that record so new conversations can be saved.",
+      description: native
+        ? "Native export is unavailable. Resetting permanently removes the unreadable local history in this WebView. Cancel to keep the original record; native settings and provider profiles are not affected."
+        : "Download the original browser record first if you need to recover it. Resetting clears that record so new conversations can be saved.",
       confirm: "Reset local history",
       danger: true,
       action: async () => {
@@ -668,6 +699,7 @@
   $effect(() => {
     document.documentElement.dataset.font = settings.font_size;
     document.documentElement.dataset.density = settings.density;
+    document.documentElement.dataset.reduceMotion = String(native && Boolean(settings.reduce_motion));
   });
   function hotkey(event) {
     if (event.isComposing || event.defaultPrevented) return;
@@ -690,7 +722,7 @@
       if (["n", "b", "t", "k", "/"].includes(key)) {
         event.preventDefault();
         if (key === "n") new_chat();
-        if (key === "b") collapsed = !collapsed;
+        if (key === "b") set_collapsed(!collapsed);
         if (key === "t") toggle_theme();
         if (key === "k") {
           search = "";
@@ -701,6 +733,18 @@
     }
   }
   onMount(() => {
+    let sidebar_preference;
+    const unsubscribe_preferences = workspace_host.preferences?.subscribe((state) => {
+      native_preferences = state;
+      settings = { ...settings, ...state.values };
+      if (state.loaded && sidebar_preference !== state.values.sidebar_collapsed) {
+        sidebar_preference = state.values.sidebar_collapsed;
+        if (!mobile) collapsed = sidebar_preference;
+      }
+    });
+    void workspace_host.preferences?.load();
+    const flush_preferences = () => { void workspace_host.preferences?.flush(); };
+    window.addEventListener("pagehide", flush_preferences);
     autosave.attach(window, document);
     const query = matchMedia("(max-width: 760px)");
     const resize = () => {
@@ -720,6 +764,9 @@
       clearTimeout(toast_timer);
       controller?.abort();
       autosave.dispose();
+      unsubscribe_preferences?.();
+      workspace_host.preferences?.dispose();
+      window.removeEventListener("pagehide", flush_preferences);
       query.removeEventListener("change", resize);
       tablet_query.removeEventListener("change", tablet_change);
       window.removeEventListener("online", up);
@@ -736,12 +783,13 @@
   class:has-context={is_codex && context_open && !tablet && !artifact}
 >
   <a class="skip-link" href="#message_composer">Skip to composer</a><Sidebar
+    host={workspace_host}
     {interface_style}
     {conversations}
     {active_id}
     {collapsed}
     mobile={drawer_mode}
-    on_toggle={() => (collapsed = !collapsed)}
+    on_toggle={() => set_collapsed(!collapsed)}
     on_new={new_chat}
     on_select={select_chat}
     on_search={() => {
@@ -760,7 +808,7 @@
         {#if collapsed}<button
             class="icon-btn"
             aria-label="Open sidebar"
-            onclick={() => (collapsed = false)}><PanelLeft /></button
+            onclick={() => set_collapsed(false)}><PanelLeft /></button
           >{/if}
         {#if is_codex}<div class="codex-breadcrumb">
             <FolderOpen /><span>Personal workspace</span><span>/</span><strong
@@ -771,10 +819,11 @@
           <button
             class="model-trigger"
             aria-expanded={model_menu}
-            disabled={generating}
+            disabled={generating || !capabilities.send}
+            title={!capabilities.send ? native_unavailable.send : undefined}
             onclick={() => (model_menu = !model_menu)}
-            ><span class="model-family">Claude</span>
-            <strong>{selected_model.name}</strong><ChevronDown /></button
+            ><span class="model-family">{native ? "Desktop" : "Claude"}</span>
+            <strong>{native ? "Chat unavailable" : selected_model.name}</strong><ChevronDown /></button
           >{#if model_menu}<button
               class="menu-dismiss"
               aria-label="Dismiss model menu"
@@ -800,8 +849,8 @@
           class:active={thinking}
           aria-label="Toggle conversation thinking mode"
           aria-pressed={thinking}
-          disabled={generating || model === "claude-haiku-4-5"}
-          title={model === "claude-haiku-4-5"
+          disabled={!capabilities.send || generating || model === "claude-haiku-4-5"}
+          title={!capabilities.send ? native_unavailable.send : model === "claude-haiku-4-5"
             ? "Haiku uses normal answers; choose Sonnet or Opus for extended thinking"
             : "Toggle extended thinking"}
           onclick={() => choose_thinking(!thinking)}
@@ -820,9 +869,9 @@
             onclick={toggle_context}><PanelRight /></button
           >{/if}
         <span class="workspace-badge"
-          ><span class="status-dot"></span>{import.meta.env.MODE === "qa"
-            ? "Controlled QA fixture"
-            : "Personal workspace"}</span
+          ><span class="status-dot"></span>{native
+            ? workspace_host.fixture ? "Desktop fixture · Configuration only" : "Desktop · Configuration only"
+            : import.meta.env.MODE === "qa" ? "Controlled QA fixture" : "Personal workspace"}</span
         ><button
           class="icon-btn shortcuts-button"
           aria-label="Keyboard shortcuts"
@@ -830,36 +879,47 @@
         ><button
           class="icon-btn"
           aria-label={`Switch to ${resolved_theme === "light" ? "dark" : "light"} theme`}
+          disabled={native && !native_preferences?.loaded}
           onclick={toggle_theme}
           >{#if resolved_theme === "light"}<Moon />{:else}<Sun />{/if}</button
         >{#if has_messages}<button
             class="icon-btn"
             aria-label="Export conversation"
+            disabled={!capabilities.exports}
+            title={!capabilities.exports ? native_unavailable.exports : undefined}
             onclick={() => chat_action("export", active)}><Download /></button
           >{/if}
       </div>
     </header>
-    {#if !online}<div class="network-banner" role="status">
+    {#if native}<div class="native-banner" role="status">
+        <span><strong>Local UI and configuration only.</strong> Chat, projects and Ask are unavailable. Attachments, downloads and external links have no native adapter. Drafts stay in this window.</span>
+        <button class="text-btn" onclick={() => open_settings("api")}>Provider profiles</button>
+      </div>
+      {#if native_preferences?.status === "error"}<div class="storage-banner" role="alert">
+          <span>{native_preferences.message}</span>
+          <button class="text-btn" onclick={() => workspace_host.preferences.retry()}>Retry desktop settings</button>
+        </div>{/if}
+    {:else if !online}<div class="network-banner" role="status">
         <WifiOff />You’re offline. Reconnect to continue. Your draft is kept
         here.
       </div>{/if}{#if storage_error}<div class="storage-banner" role="alert">
-        <span>{storage_error}</span><button
+        <span>{storage_error}</span>{#if capabilities.exports}<button
           class="text-btn"
           onclick={() => {
             try {
               download_file(
                 "vibemux_history_recovery.json",
-                localStorage.getItem(app_config.storage_key) || "",
+                workspace_host.read_original_record(),
                 "application/json",
               );
             } catch (error) {
               notify(error.message);
             }
           }}>Download original record</button
-        >{#if storage_ready}<button
+        >{/if}{#if storage_ready}{#if capabilities.exports}<button
             class="text-btn"
             onclick={() => export_chats("json")}>Export this tab's chats</button
-          ><button
+          >{/if}<button
             class="text-btn"
             onclick={() => autosave.persist(workspace_snapshot())}>Retry saving</button
           >{:else}<button class="text-btn" onclick={recover_storage}
@@ -872,7 +932,7 @@
             >{#if thinking}<Brain />Extended thinking{:else}<Sparkles />Normal
               answer{/if}</span
           ><span
-            >{usage
+            >{native ? "Local transcript · Desktop chat unavailable" : usage
               ? `${usage.toLocaleString()} tokens used · Provider limits apply`
               : api_key
                 ? "API limits are managed by your Anthropic account"
@@ -901,6 +961,7 @@
             >
           </div>{/if}
         <MessageStream
+          host={workspace_host}
           conversation={displayed_chat}
           replacing={Boolean(replacement)}
           {generating}
@@ -921,6 +982,7 @@
         />
         <div class="bottom-composer">
           <Composer
+            host={workspace_host}
             context_id={(active_id || "new") + ":" + draft_context}
             bind:draft
             {generating}
@@ -954,6 +1016,7 @@
                 take you.{/if}
             </p>
             <Composer
+              host={workspace_host}
               context_id={(active_id || "new") + ":" + draft_context}
               bind:draft
               {generating}
@@ -981,7 +1044,8 @@
               <div class="prompt-grid">
                 {#each prompt_cards as { icon: Icon, label, description, prompt }}<button
                     class="prompt-card"
-                    disabled={generating}
+                    disabled={generating || !capabilities.send}
+                    title={!capabilities.send ? native_unavailable.send : undefined}
                     onclick={() => send_message(prompt)}
                     ><div><Icon /><ArrowUpRight /></div>
                     <strong>{label}</strong><span>{description}</span></button
@@ -1006,6 +1070,7 @@
     </div>
   </main>
   {#if is_codex && context_open && !tablet && !artifact}<CodexContext
+      host={workspace_host}
       conversation={active || null}
       connected={Boolean(api_key)}
       on_close={() => (context_open = false)}
@@ -1016,6 +1081,7 @@
       {notify}
     />{/if}
   {#if artifact}<ArtifactPanel
+      host={workspace_host}
       {artifact}
       on_close={() => update_chat(active.id, { artifact_open: false })}
       {notify}
@@ -1049,6 +1115,8 @@
           : ""}
     >
       {#if modal.type === "settings"}<SettingsPanel
+          host={workspace_host}
+          {native_preferences}
           settings={{ ...settings, interface_style }}
           on_change={change_settings}
           on_close={() => (modal = null)}
@@ -1205,12 +1273,15 @@
               class="modal-empty"
             >
               <FileCode2 />
-              <h3>Your next creation starts with a chat.</h3>
+              <h3>{native ? "No local artifacts yet." : "Your next creation starts with a chat."}</h3>
               <p>
-                Ask Claude to build a web page, write code, or draft a document.
+                {native ? "Artifact generation is unavailable. Existing local artifacts can be inspected in code view; executable previews and downloads are disabled."
+                  : "Ask Claude to build a web page, write code, or draft a document."}
               </p>
               <button
                 class="btn btn-primary"
+                disabled={!capabilities.send}
+                title={!capabilities.send ? native_unavailable.send : undefined}
                 onclick={() => {
                   modal = null;
                   send_message(
@@ -1245,8 +1316,9 @@
             </div>
           </div>
           <p>
-            This is a local, single-user workspace. Chats and preferences are
-            saved in this browser, separate from the VibeMux daemon.
+            {#if native}This is a local UI and configuration workspace. History in this WebView requires a writer lock; unsent drafts are in memory only. Desktop settings and provider profiles use separate native storage. None of these records are canonical Tasks, Runs or Events.
+            {:else}This is a local, single-user workspace. Chats and preferences are
+            saved in this browser, separate from the VibeMux daemon.{/if}
           </p>
           <button
             class="btn btn-primary"
@@ -1276,6 +1348,7 @@
       class_name="context-dialog"
       on_close={() => (context_drawer = false)}
       ><CodexContext
+        host={workspace_host}
         conversation={active || null}
         connected={Boolean(api_key)}
         on_close={() => (context_drawer = false)}

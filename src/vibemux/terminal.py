@@ -270,7 +270,8 @@ class TmuxBackend:
             return False
 
     def open(self, location: TerminalLocation, command: list[str], cwd: Path) -> TerminalLocation:
-        session = location.workspace_id or f"vibemux_{uuid4().hex[:8]}"
+        # A workspace name is not permission to reuse an existing tmux session.
+        session = f"{location.workspace_id or 'vibemux'}_{uuid4().hex}"
         result = self._run(
             [
                 "new-session",
@@ -306,7 +307,7 @@ class TmuxBackend:
                 "list-panes",
                 "-a",
                 "-F",
-                "#{pane_id}\t#{pane_current_path}\t#{pane_title}\t#{pane_dead}",
+                "#{pane_id}\t#{session_name}\t#{pane_current_path}\t#{pane_dead}\t#{pane_title}",
             ]
         )
         if result.returncode != 0:
@@ -315,36 +316,53 @@ class TmuxBackend:
             raise TerminalBackendError(result.stderr.strip() or "tmux list failed")
         panes = []
         for line in result.stdout.splitlines():
-            fields = line.split("\t", 3)
-            if len(fields) == 4:
+            fields = line.split("\t", 4)
+            if len(fields) == 5:
                 panes.append(
                     Pane(
                         fields[0],
-                        fields[1],
                         fields[2],
-                        fields[0].split(":", 1)[0],
+                        fields[4],
+                        fields[1],
                         fields[3] != "1",
                     )
                 )
         return panes
 
     def send_text(self, pane_id: str, text: str, *, submit: bool = False) -> SendReceipt:
-        with tempfile.NamedTemporaryFile(prefix="vibemux_", suffix=".txt", delete=False) as handle:
-            handle.write(text.encode("utf-8"))
-            path = handle.name
+        buffer_name = f"vibemux_{uuid4().hex}"
+        buffer_loaded = False
+        path: Path | None = None
         try:
-            result = self._run(["load-buffer", path])
-            if result.returncode != 0:
-                raise TerminalBackendError(result.stderr.strip() or "tmux load-buffer failed")
-            result = self._run(["paste-buffer", "-t", pane_id, "-d"])
-            if result.returncode != 0:
-                raise TerminalBackendError(result.stderr.strip() or "tmux paste-buffer failed")
+            if text:
+                with tempfile.NamedTemporaryFile(
+                    prefix="vibemux_", suffix=".txt", delete=False
+                ) as handle:
+                    path = Path(handle.name)
+                    handle.write(text.encode("utf-8"))
+                result = self._run(["load-buffer", "-b", buffer_name, str(path)])
+                if result.returncode != 0:
+                    raise TerminalBackendError(result.stderr.strip() or "tmux load-buffer failed")
+                buffer_loaded = True
+                result = self._run(["paste-buffer", "-b", buffer_name, "-t", pane_id, "-d"])
+                if result.returncode != 0:
+                    raise TerminalBackendError(result.stderr.strip() or "tmux paste-buffer failed")
+                buffer_loaded = False
             if submit:
                 result = self._run(["send-keys", "-t", pane_id, "Enter"])
                 if result.returncode != 0:
                     raise TerminalBackendError(result.stderr.strip() or "tmux submit failed")
         finally:
-            Path(path).unlink(missing_ok=True)
+            try:
+                if buffer_loaded:
+                    # Preserve the send failure if cleanup is unavailable. Never
+                    # fall back to deleting the server's current/default buffer.
+                    self._run(["delete-buffer", "-b", buffer_name])
+            except TerminalBackendError:
+                pass
+            finally:
+                if path is not None:
+                    path.unlink(missing_ok=True)
         return _receipt(text, submit)
 
     def stop(self, location: TerminalLocation) -> None:

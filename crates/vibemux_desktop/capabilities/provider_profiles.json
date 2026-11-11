@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "provider_profiles",
+  "description": "Main-window access to configuration-only provider metadata; no credentials or execution.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-provider-profiles-get",
+    "allow-provider-profiles-set"
+  ]
+}

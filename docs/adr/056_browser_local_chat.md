@@ -22,6 +22,24 @@ Regeneration and edit/resend instead keep a transient replacement preview outsid
 
 Markdown raw HTML is escaped; rendered output is sanitized. Generated HTML previews use an opaque-origin sandbox without same-origin permission and a CSP restricting subresource loads, scripted fetches, and form submission. Inline preview scripts may run. This is not complete network isolation: frame self-navigation is not fenced. The parent controls copy and download. Preview scripts have no daemon API, provider key, filesystem, or canonical state handle.
 
+## Amendment: shared desktop presentation (2026-11-10)
+
+ADR 043 may import this workspace's actual Svelte root, components, and styles
+through an explicit native host. The source is shared; authority is not. The
+standalone browser entry keeps its fixed Anthropic destination, memory-only key,
+version-1 conversation codec, writer lease, and export behavior. The native
+entry must not import or fall back to that provider transport.
+
+The desktop's WebView origin has its own optional noncanonical drafts and must
+retain the same storage-ownership checks. Native appearance settings and
+secret-free provider profiles belong to Rust-owned configuration, not browser
+conversation records or exports. A selected native provider profile is labeled
+configuration-only and does not enable chat, change a workflow route, or grant
+execution. Native controls without an implemented adapter remain unavailable;
+scripted artifact previews do not cross into the privileged WebView. The two
+entries retain separate package locks and production outputs, with build guards
+for browser/native transport separation and fixture exclusion.
+
 ## Alternatives
 
 - Reuse the existing read-only monitor: rejected for this slice because conversational submission changes its explicit boundary.

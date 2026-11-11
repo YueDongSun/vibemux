@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "name": "Shared native workspace loads",
+      "action": null,
+      "until": "Boolean(document.querySelector('main.workspace') && document.querySelector('#message_composer') && document.querySelector('button[aria-label=\"Open settings\"]'))"
+    },
+    {
+      "name": "Install walkthrough helpers",
+      "action": "(() => {\n  const state = window.__vibemux_ui_smoke;\n  const query = selector => {\n    const node = document.querySelector(selector);\n    if (!node) throw new Error('Missing control: ' + selector);\n    return node;\n  };\n  const set = (selector, value) => {\n    const node = query(selector);\n    if (node.type === 'checkbox') node.checked = value;\n    else node.value = value;\n    node.dispatchEvent(new Event('input', {bubbles: true}));\n    node.dispatchEvent(new Event('change', {bubbles: true}));\n  };\n  const click = (text, selector = 'button') => {\n    const node = [...document.querySelectorAll(selector)].find(item => item.textContent.trim() === text);\n    if (!node || node.disabled) throw new Error('Unavailable action: ' + text);\n    node.click();\n  };\n  const poll = (slot, command, predicate) => {\n    const current = state[slot] ??= {pending: false, value: null, error: null};\n    if (current.value && predicate(current.value)) return true;\n    if (current.error && current.error.code !== 'provider_profiles_busy') throw new Error(command + ': ' + JSON.stringify(current.error));\n    if (!current.pending) {\n      current.pending = true;\n      window.__TAURI_INTERNALS__.invoke(command).then(value => { current.value = value; current.error = null; })\n        .catch(error => { current.error = error; }).finally(() => { current.pending = false; });\n    }\n    return false;\n  };\n  state.tools = {query, set, click, poll};\n  return true;\n})()",
+      "until": "Boolean(window.__vibemux_ui_smoke.tools)"
+    },
+    {
+      "name": "Unsupported send preserves the draft",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#message_composer', 'Synthetic local draft'); query('form.composer').dispatchEvent(new Event('submit', {bubbles:true,cancelable:true})); return true; })()",
+      "until": "document.querySelector('#message_composer')?.value === 'Synthetic local draft' && document.querySelector('[aria-label=\"Send message\"]')?.disabled === true && document.querySelector('[aria-label=\"Attach images or files\"]')?.disabled === true"
+    },
+    {
+      "name": "Open native appearance settings",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; query('[aria-label=\"Open settings\"]').click(); return true; })()",
+      "until": "Boolean(document.querySelector('#setting_theme') && !document.querySelector('#setting_theme').disabled)"
+    },
+    {
+      "name": "Light appearance saves through native IPC",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#setting_theme','light'); set('#setting_font_size','default'); set('#setting_density','comfortable'); return true; })()",
+      "until": "window.__vibemux_ui_smoke.tools.poll(\"light\", \"settings_get\", value => (value.appearance === 'light' && value.text_size === 'default' && value.density === 'comfortable'))"
+    },
+    {
+      "name": "Dark compact appearance saves through native IPC",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#setting_theme','dark'); set('#setting_font_size','large'); set('#setting_density','compact'); set('#setting_reduce_motion',true); return true; })()",
+      "until": "window.__vibemux_ui_smoke.tools.poll(\"dark\", \"settings_get\", value => (value.appearance === 'dark' && value.text_size === 'large' && value.density === 'compact' && value.reduce_motion === true)) && document.documentElement.dataset.theme === 'dark'"
+    },
+    {
+      "name": "Codex presentation uses the shared workspace",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#interface_style','codex'); return true; })()",
+      "until": "document.documentElement.dataset.interface === 'codex'"
+    },
+    {
+      "name": "Restore Claude light presentation",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#interface_style','claude'); set('#setting_theme','light'); set('#setting_font_size','default'); set('#setting_density','comfortable'); return true; })()",
+      "until": "window.__vibemux_ui_smoke.tools.poll(\"restored\", \"settings_get\", value => (value.appearance === 'light' && value.text_size === 'default' && value.density === 'comfortable')) && document.documentElement.dataset.interface === 'claude' && document.documentElement.dataset.theme === 'light'"
+    },
+    {
+      "name": "Open provider configuration without a raw-key field",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; click('Provider profiles', '.settings-nav button'); return true; })()",
+      "until": "Boolean(document.querySelector('#orchestrator_profile')) && document.querySelector('[aria-label=\"API key\"]') === null"
+    },
+    {
+      "name": "Add profile 1",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; click('Add profile'); return true; })()",
+      "until": "Boolean(document.querySelector('#profile_0_id'))"
+    },
+    {
+      "name": "Edit profile 1 metadata",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#profile_0_id', \"local\"); set('#profile_0_name', \"Local model\"); set('#profile_0_api', \"openai_chat_completions\"); set('#profile_0_url', \"http://127.0.0.1:11434/v1\"); set('#profile_0_model', \"operator-local-model\"); set('#profile_0_auth', \"none\"); return true; })()",
+      "until": "document.querySelector('#profile_0_id')?.value === \"local\" && document.querySelector('#profile_0_name')?.value === \"Local model\" && [...document.querySelector('#orchestrator_profile').options].some(option => option.value === \"local\") && document.querySelector('#profile_0_env') === null"
+    },
+    {
+      "name": "Add profile 2",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; click('Add profile'); return true; })()",
+      "until": "Boolean(document.querySelector('#profile_1_id'))"
+    },
+    {
+      "name": "Edit profile 2 metadata",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#profile_1_id', \"messages\"); set('#profile_1_name', \"Messages API\"); set('#profile_1_api', \"anthropic_messages\"); set('#profile_1_url', \"https://messages.example.test/v1\"); set('#profile_1_model', \"operator-messages-model\"); set('#profile_1_auth', \"api_key\"); set('#profile_1_env', \"SYNTHETIC_MESSAGES_KEY\"); return true; })()",
+      "until": "document.querySelector('#profile_1_id')?.value === \"messages\" && document.querySelector('#profile_1_name')?.value === \"Messages API\" && [...document.querySelector('#orchestrator_profile').options].some(option => option.value === \"messages\")"
+    },
+    {
+      "name": "Add profile 3",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; click('Add profile'); return true; })()",
+      "until": "Boolean(document.querySelector('#profile_2_id'))"
+    },
+    {
+      "name": "Edit profile 3 metadata",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#profile_2_id', \"compatible\"); set('#profile_2_name', \"Compatible gateway\"); set('#profile_2_api', \"openai_chat_completions\"); set('#profile_2_url', \"https://gateway.example.test/team/v2/\"); set('#profile_2_model', \"operator/chat-model\"); set('#profile_2_auth', \"bearer\"); set('#profile_2_env', \"SYNTHETIC_CHAT_KEY\"); return true; })()",
+      "until": "document.querySelector('#profile_2_id')?.value === \"compatible\" && document.querySelector('#profile_2_name')?.value === \"Compatible gateway\" && [...document.querySelector('#orchestrator_profile').options].some(option => option.value === \"compatible\")"
+    },
+    {
+      "name": "Save three profiles and select the orchestrator",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#orchestrator_profile','compatible'); click('Save profiles'); return true; })()",
+      "until": "window.__vibemux_ui_smoke.tools.poll(\"saved_profiles\", \"provider_profiles_get\", value => (value.readiness === 'configuration_only' && value.config.profiles.length === 3 && value.config.orchestrator_profile_id === 'compatible' && value.config.profiles[0].credential_env === null && value.config.profiles[1].api_type === 'anthropic_messages' && value.config.profiles[2].base_url === 'https://gateway.example.test/team/v2/'))"
+    },
+    {
+      "name": "Native IPC refuses remote HTTP and raw keys without changing the file",
+      "action": "(() => {\n  const state = window.__vibemux_ui_smoke;\n  state.refusals = {done:false, passed:false};\n  void (async () => {\n    const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);\n    const before = await invoke('provider_profiles_get');\n    const results = [];\n    for (const kind of ['url', 'secret']) {\n      const config = JSON.parse(JSON.stringify(before.config));\n      if (kind === 'url') config.profiles[0].base_url = 'http://remote.example.test/v1';\n      else config.profiles[0].api_key = 'synthetic-do-not-store';\n      try { await invoke('provider_profiles_set', {config}); results.push('accepted'); }\n      catch (error) { results.push(error?.code ?? String(error)); }\n    }\n    const after = await invoke('provider_profiles_get');\n    state.refusals = {done:true, passed:results[0] === 'provider_profiles_invalid_base_url' && results[1] === 'provider_profiles_invalid_document' && JSON.stringify(before) === JSON.stringify(after), results};\n  })().catch(error => { state.refusals = {done:true, passed:false, error:String(error)}; });\n  return true;\n})()",
+      "until": "window.__vibemux_ui_smoke.refusals?.done === true && window.__vibemux_ui_smoke.refusals?.passed === true"
+    },
+    {
+      "name": "Renaming the selected profile preserves selection",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; set('#profile_2_id','coordinator'); set('#profile_2_name','Primary gateway'); return true; })()",
+      "until": "document.querySelector('#orchestrator_profile')?.value === 'coordinator'"
+    },
+    {
+      "name": "Remove one profile without losing the selected profile",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; query('[aria-label=\"Remove Local model\"]').click(); return true; })()",
+      "until": "document.querySelectorAll('fieldset.provider-profile').length === 2 && document.querySelector('#orchestrator_profile')?.value === 'coordinator'"
+    },
+    {
+      "name": "Save the remaining profiles",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; click('Save profiles'); return true; })()",
+      "until": "window.__vibemux_ui_smoke.tools.poll(\"remaining\", \"provider_profiles_get\", value => (value.readiness === 'configuration_only' && value.config.profiles.length === 2 && value.config.orchestrator_profile_id === 'coordinator' && !value.config.profiles.some(profile => profile.id === 'local') && value.config.profiles[1].name === 'Primary gateway'))"
+    },
+    {
+      "name": "Closing settings retains the unsent draft",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; query('[aria-label=\"Close settings\"]').click(); return true; })()",
+      "until": "document.querySelector('[aria-label=\"Close settings\"]') === null && document.querySelector('#message_composer')?.value === 'Synthetic local draft'"
+    },
+    {
+      "name": "No native page errors before reload",
+      "action": null,
+      "until": "Array.isArray(window.__vibemux_ui_smoke.errors) && window.__vibemux_ui_smoke.errors.length === 0"
+    },
+    {
+      "name": "Reload the native page",
+      "action": "(() => { window.__vibemux_ui_smoke.phase='before-reload'; setTimeout(() => location.reload(),50); return true; })()",
+      "until": "window.__vibemux_ui_smoke?.phase !== 'before-reload' && Boolean(document.querySelector('main.workspace') && document.querySelector('[aria-label=\"Open settings\"]'))"
+    },
+    {
+      "name": "Restore walkthrough helpers after reload",
+      "action": "(() => {\n  const state = window.__vibemux_ui_smoke;\n  const query = selector => {\n    const node = document.querySelector(selector);\n    if (!node) throw new Error('Missing control: ' + selector);\n    return node;\n  };\n  const set = (selector, value) => {\n    const node = query(selector);\n    if (node.type === 'checkbox') node.checked = value;\n    else node.value = value;\n    node.dispatchEvent(new Event('input', {bubbles: true}));\n    node.dispatchEvent(new Event('change', {bubbles: true}));\n  };\n  const click = (text, selector = 'button') => {\n    const node = [...document.querySelectorAll(selector)].find(item => item.textContent.trim() === text);\n    if (!node || node.disabled) throw new Error('Unavailable action: ' + text);\n    node.click();\n  };\n  const poll = (slot, command, predicate) => {\n    const current = state[slot] ??= {pending: false, value: null, error: null};\n    if (current.value && predicate(current.value)) return true;\n    if (current.error && current.error.code !== 'provider_profiles_busy') throw new Error(command + ': ' + JSON.stringify(current.error));\n    if (!current.pending) {\n      current.pending = true;\n      window.__TAURI_INTERNALS__.invoke(command).then(value => { current.value = value; current.error = null; })\n        .catch(error => { current.error = error; }).finally(() => { current.pending = false; });\n    }\n    return false;\n  };\n  state.tools = {query, set, click, poll};\n  return true;\n})()",
+      "until": "Boolean(window.__vibemux_ui_smoke.tools)"
+    },
+    {
+      "name": "Appearance survives a page reload",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; query('[aria-label=\"Open settings\"]').click(); return true; })()",
+      "until": "document.querySelector('#setting_theme')?.value === 'light' && document.querySelector('#setting_font_size')?.value === 'default' && document.querySelector('#setting_density')?.value === 'comfortable' && document.querySelector('#setting_reduce_motion')?.checked === true"
+    },
+    {
+      "name": "Profiles and selection survive a page reload",
+      "action": "(() => { const {query,set,click,poll} = window.__vibemux_ui_smoke.tools; click('Provider profiles', '.settings-nav button'); return true; })()",
+      "until": "document.querySelectorAll('fieldset.provider-profile').length === 2 && document.querySelector('#orchestrator_profile')?.value === 'coordinator' && document.querySelector('#profile_1_url')?.value === 'https://gateway.example.test/team/v2/'"
+    },
+    {
+      "name": "Native settings omit private paths",
+      "action": null,
+      "until": "window.__vibemux_ui_smoke.tools.poll(\"private_fields\", \"settings_get\", value => (Object.keys(value).sort().join(',') === 'appearance,density,reduce_motion,schema_version,sidebar_collapsed,start_page,text_size'))"
+    }
+  ],
+  "inspect": "(() => {\n  const body = getComputedStyle(document.body);\n  const sidebar = document.querySelector('[aria-label=\"Conversation sidebar\"]');\n  return {\n    url:location.href, user_agent:navigator.userAgent,\n    secure_context:window.isSecureContext, web_locks:typeof navigator.locks?.request === 'function',\n    public_tauri_global:typeof window.__TAURI__,\n    theme:document.documentElement.dataset.theme, interface:document.documentElement.dataset.interface,\n    body_font:body.fontFamily, body_color:body.color,\n    sidebar_width:sidebar?.getBoundingClientRect().width,\n    scripted_frames:document.querySelectorAll('iframe[srcdoc]').length,\n    raw_key_inputs:document.querySelectorAll('[aria-label=\"API key\"]').length,\n    profile_count:document.querySelectorAll('fieldset.provider-profile').length,\n    selected_profile:document.querySelector('#orchestrator_profile')?.value,\n    page_text:document.body.innerText.slice(0,6000),\n    read_settings:window.__vibemux_ui_smoke.private_fields?.value\n  };\n})()"
+}

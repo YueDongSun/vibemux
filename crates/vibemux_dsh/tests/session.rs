@@ -53,11 +53,29 @@ fn limits() -> DshSessionLimits {
 }
 
 async fn open(mode: &str) -> DshDriver {
-    let mut driver = DshDriver::spawn(&launch(mode), settings(), limits())
+    open_with_limits(mode, limits()).await
+}
+
+async fn open_with_limits(mode: &str, limits: DshSessionLimits) -> DshDriver {
+    let mut driver = DshDriver::spawn(&launch(mode), settings(), limits)
         .await
         .expect("spawn");
     driver.await_ready().await.expect("handshake");
     driver
+}
+
+/// Like the production UI/control consumers, observe only poll/status after
+/// delivery. The separate test deadline bounds a broken driver, not its turn.
+async fn poll_until_settled(driver: &DshDriver) -> DshPoll {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let page = driver.poll(0).expect("poll");
+        if page.summary.phase != DshPhase::Prompting {
+            return page;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "turn never settled");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 async fn open_with_descendant(mode: &str) -> (DshDriver, tempfile::TempDir, PathBuf) {
@@ -220,38 +238,52 @@ async fn a_handshake_that_never_answers_hits_its_deadline() {
 
 #[tokio::test]
 async fn a_runtime_that_exits_early_is_reported_as_a_transport_failure() {
-    let mut driver = DshDriver::spawn(&launch("exit-early"), settings(), limits())
+    let directory = tempfile::tempdir().expect("owned fixture directory");
+    let mut launch = launch("exit-early");
+    launch.working_directory = directory.path().to_path_buf();
+    let mut driver = DshDriver::spawn(&launch, settings(), limits())
         .await
         .expect("spawn");
     let error = driver.await_ready().await.expect_err("closed transport");
+    let page = driver.poll(0).expect("poll");
+    let cleanup = driver.close().await;
     assert_eq!(error, DshDriverError::TransportClosed);
+    assert_eq!(page.summary.phase, DshPhase::Failed);
+    assert_eq!(page.summary.error_code, Some("dsh_unexpected_exit"));
+    assert!(!page.transport_open);
     assert!(!driver.transport_open());
-    assert!(!driver.poll(0).expect("poll").transport_open);
-    let _ = driver.close().await;
+    cleanup.expect("verified cleanup after early EOF");
+    driver.close().await.expect("idempotent close");
 }
 
-/// Opens a session whose runtime exits right after the handshake, and waits
-/// for its stdout to end, so `close` writes `shutdown` into a pipe whose
-/// reader is gone on every platform.
+/// The valid handshake and an immediate exit may both be consumed before a
+/// waiter runs. Observe through poll/status, not an await_ready race that
+/// assumes the runtime is still alive after its handshake.
 async fn open_until_exited(mode: &str) -> DshDriver {
-    let driver = open(mode).await;
+    let driver = DshDriver::spawn(&launch(mode), settings(), limits())
+        .await
+        .expect("spawn");
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     while driver.transport_open() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(!driver.transport_open(), "the runtime should have exited");
+    assert_eq!(driver.summary().server_version.as_deref(), Some("0.0.1"));
+    assert_eq!(driver.phase(), DshPhase::Failed);
     driver
 }
 
 #[tokio::test]
-async fn closing_after_the_runtime_exited_on_its_own_is_still_a_clean_close() {
+async fn a_successful_exit_without_shutdown_stays_failed_after_close() {
     let mut driver = open_until_exited("exit-after-ready").await;
-    // `close` documents that a peer that already died cannot receive the
-    // frame and that the teardown still runs: a successful exit closes the
-    // session rather than failing it.
+    // Exit status zero is not a cooperative shutdown. Once EOF failed the
+    // ready session, cleanup must not rewrite that failure as a clean close.
     driver.close().await.expect("close");
-    assert_eq!(driver.phase(), DshPhase::Closed);
-    assert_eq!(driver.poll(0).expect("poll").summary.error_code, None);
+    assert_eq!(driver.phase(), DshPhase::Failed);
+    assert_eq!(
+        driver.poll(0).expect("poll").summary.error_code,
+        Some("dsh_unexpected_exit")
+    );
 }
 
 #[tokio::test]
@@ -286,6 +318,324 @@ async fn a_structured_turn_error_is_failed_not_completed() {
     assert_eq!(summary.failed_turns, 1);
     assert_eq!(summary.completed_turns, 0);
     driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn a_turn_deadline_is_enforced_without_await_turn() {
+    let mut driver = DshDriver::spawn(
+        &launch("no-turn-end"),
+        settings(),
+        DshSessionLimits {
+            turn_deadline_ms: 1_000,
+            ..limits()
+        },
+    )
+    .await
+    .expect("spawn");
+    driver.await_ready().await.expect("handshake");
+    driver
+        .prompt("stall without a waiter")
+        .await
+        .expect("prompt");
+    // Production consumers only use status/poll. No await_turn or even a
+    // status read drives the session while its whole-turn budget expires.
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    let summary = driver.summary();
+    let page = driver.poll(0).expect("poll");
+    let error = driver.transport_error();
+    driver.close().await.expect("cleanup");
+
+    assert_eq!(summary.phase, DshPhase::Failed);
+    assert_eq!(page.summary, summary);
+    assert_eq!(summary.completed_turns, 0);
+    assert_eq!(summary.unverified_turns, 1);
+    assert_eq!(summary.last_outcome, Some(DshTurnOutcome::Unverified));
+    assert_eq!(summary.error_code, Some("dsh_unexpected_exit"));
+    assert_eq!(error, Some(DshDriverError::TurnTimeout));
+    assert!(!page.transport_open);
+}
+
+#[tokio::test]
+async fn abandoning_a_blocked_prompt_does_not_disarm_its_turn_deadline() {
+    let mut driver = open_with_limits(
+        "no-read",
+        DshSessionLimits {
+            turn_deadline_ms: 1_000,
+            ..limits()
+        },
+    )
+    .await;
+    let prompt = "\u{0001}".repeat(32 * 1024);
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            driver.prompt(&prompt)
+        )
+        .await
+        .is_err(),
+        "the fixture must block the prompt write"
+    );
+    assert_eq!(driver.phase(), DshPhase::Prompting);
+    // No prompt future or await_turn remains to enforce the budget. Leave
+    // status and poll idle as well, exactly as a disconnected consumer does.
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    let page = driver.poll(0).expect("poll");
+    let error = driver.transport_error();
+    driver.close().await.expect("cleanup");
+    assert_eq!(page.summary.phase, DshPhase::Failed);
+    assert_eq!(page.summary.unverified_turns, 1);
+    assert_eq!(page.summary.completed_turns, 0);
+    assert_eq!(page.summary.last_outcome, Some(DshTurnOutcome::Unverified));
+    assert!(!page.transport_open);
+    assert_eq!(error, Some(DshDriverError::TurnTimeout));
+}
+
+#[tokio::test]
+async fn a_crash_after_ready_fails_status_without_await_turn() {
+    let mut driver = DshDriver::spawn(&launch("crash-after-ready"), settings(), limits())
+        .await
+        .expect("spawn");
+    // The fixture writes its valid handshake before exiting. Do not wait on
+    // await_ready either: the reader must report the exit to the machine.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while driver.transport_open() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let page = driver.poll(0).expect("poll");
+    let summary = driver.summary();
+    let error = driver.transport_error();
+    driver.close().await.expect("cleanup");
+
+    assert!(!page.transport_open, "the fixture must have exited");
+    assert!(
+        page.records
+            .iter()
+            .any(|record| record.kind == DshRecordKind::Handshake)
+    );
+    assert_eq!(summary.phase, DshPhase::Failed);
+    assert_eq!(page.summary, summary);
+    assert_eq!(summary.error_code, Some("dsh_unexpected_exit"));
+    assert_eq!(summary.completed_turns, 0);
+    assert_eq!(error, Some(DshDriverError::TransportClosed));
+}
+
+#[tokio::test]
+async fn successful_poll_only_turns_do_not_inherit_an_earlier_turns_deadline() {
+    let mut driver = open("delayed-turn-end").await;
+    for ordinal in 1..=2 {
+        driver.prompt("another bounded turn").await.expect("prompt");
+        let page = poll_until_settled(&driver).await;
+        assert_eq!(page.summary.phase, DshPhase::Ready);
+        assert_eq!(page.summary.turns_started, ordinal);
+        assert_eq!(page.summary.completed_turns, ordinal);
+        assert_eq!(page.summary.unverified_turns, 0);
+        assert_eq!(page.summary.last_outcome, Some(DshTurnOutcome::Completed));
+    }
+    // Each turn lasts 1.2s against a 2s budget, so the first deadline elapses
+    // during the second turn. Let the second elapse while idle as well.
+    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+    assert_eq!(driver.phase(), DshPhase::Ready);
+    assert!(driver.transport_open());
+    assert_eq!(driver.transport_error(), None);
+    driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn awaiting_late_or_again_does_not_restart_the_turn_budget() {
+    let mut driver = open_with_limits(
+        "no-turn-end",
+        DshSessionLimits {
+            turn_deadline_ms: 1_000,
+            ..limits()
+        },
+    )
+    .await;
+    driver.prompt("one budget").await.expect("prompt");
+    // Dropping a wait future is not cancellation of the driver's timer.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), driver.await_turn())
+            .await
+            .is_err()
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(600), driver.await_turn())
+        .await
+        .expect("the original deadline must end this wait");
+    assert_eq!(result, Err(DshDriverError::TurnTimeout));
+    assert_eq!(driver.await_turn().await, Err(DshDriverError::TurnTimeout));
+    assert_eq!(driver.summary().unverified_turns, 1);
+    driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn a_turn_wait_without_an_admitted_turn_is_refused_instead_of_unbounded() {
+    let mut starting = DshDriver::spawn(&launch("hang"), settings(), limits())
+        .await
+        .expect("spawn");
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), starting.await_turn())
+            .await
+            .expect("no admitted turn"),
+        Err(DshDriverError::InvalidState)
+    );
+    let _ = starting.close().await;
+
+    let mut closing = open("no-turn-end").await;
+    closing.prompt("abandon this turn").await.expect("prompt");
+    closing.cancel().await.expect("cancel");
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), closing.await_turn())
+            .await
+            .expect("the admitted turn was abandoned"),
+        Err(DshDriverError::InvalidState)
+    );
+    closing.close().await.expect("close");
+    assert_eq!(closing.summary().cancelled_turns, 1);
+    assert_eq!(closing.summary().unverified_turns, 0);
+}
+
+#[tokio::test]
+async fn completion_after_the_budget_is_not_success_for_a_poll_only_consumer() {
+    let mut driver = open_with_limits(
+        "delayed-turn-end",
+        DshSessionLimits {
+            turn_deadline_ms: 1_000,
+            ..limits()
+        },
+    )
+    .await;
+    driver.prompt("too late").await.expect("prompt");
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    let page = driver.poll(0).expect("poll");
+    assert_eq!(page.summary.phase, DshPhase::Failed);
+    assert_eq!(page.summary.completed_turns, 0);
+    assert_eq!(page.summary.unverified_turns, 1);
+    assert_eq!(page.summary.last_outcome, Some(DshTurnOutcome::Unverified));
+    assert_eq!(driver.transport_error(), Some(DshDriverError::TurnTimeout));
+    driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn a_crash_during_a_turn_is_unverified_for_a_poll_only_consumer() {
+    let mut driver = open("crash-during-turn").await;
+    driver.prompt("observe the crash").await.expect("prompt");
+    let page = poll_until_settled(&driver).await;
+    assert_eq!(page.summary.phase, DshPhase::Failed);
+    assert_eq!(page.summary.unverified_turns, 1);
+    assert_eq!(page.summary.completed_turns, 0);
+    assert_eq!(page.summary.last_outcome, Some(DshTurnOutcome::Unverified));
+    assert_eq!(page.summary.error_code, Some("dsh_unexpected_exit"));
+    assert_eq!(
+        driver.transport_error(),
+        Some(DshDriverError::TransportClosed)
+    );
+    assert!(!page.transport_open);
+    driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn a_silent_turn_deadline_terminates_descendants_without_a_close_call() {
+    let (mut driver, _directory, heartbeat) = open_with_descendant("descendant-no-turn-end").await;
+    driver
+        .prompt("expire the whole tree")
+        .await
+        .expect("prompt");
+    let page = poll_until_settled(&driver).await;
+    assert_eq!(page.summary.phase, DshPhase::Failed);
+    assert_eq!(driver.transport_error(), Some(DshDriverError::TurnTimeout));
+    assert_eq!(page.summary.unverified_turns, 1);
+    // Neither close nor Drop has run: the lifecycle task must do the kill.
+    assert_heartbeat_stopped(&heartbeat).await;
+    driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn process_death_is_detected_even_when_a_descendant_holds_stdout_open() {
+    let (mut driver, _directory, heartbeat) = open_with_descendant("crash-with-descendant").await;
+    driver.prompt("observe the leader").await.expect("prompt");
+    let page = poll_until_settled(&driver).await;
+    assert_eq!(page.summary.phase, DshPhase::Failed);
+    // A whole-turn timeout would eventually fail as well, but is not evidence
+    // that process death itself was noticed.
+    assert_eq!(
+        driver.transport_error(),
+        Some(DshDriverError::TransportClosed)
+    );
+    assert_eq!(page.summary.unverified_turns, 1);
+    assert_heartbeat_stopped(&heartbeat).await;
+    driver.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn close_disarms_the_turn_deadline_while_late_frames_drain() {
+    let mut driver = open_with_limits(
+        "delayed-turn-end",
+        DshSessionLimits {
+            turn_deadline_ms: 1_000,
+            shutdown_grace_ms: 3_000,
+            ..limits()
+        },
+    )
+    .await;
+    driver
+        .prompt("close before completion")
+        .await
+        .expect("prompt");
+    // The fixture takes 1.2s to finish its turn before it reads shutdown.
+    // Closing owns that interval, not the abandoned turn's one-second timer.
+    driver.close().await.expect("cooperative close");
+    let summary = driver.summary();
+    assert_eq!(summary.phase, DshPhase::Closed);
+    assert_eq!(summary.cancelled_turns, 1);
+    assert_eq!(summary.completed_turns, 0);
+    assert_eq!(summary.unverified_turns, 0);
+    assert_eq!(summary.error_code, None);
+    assert_eq!(driver.transport_error(), None);
+}
+
+#[tokio::test]
+async fn cancellation_disarms_the_timer_before_a_later_close() {
+    let mut driver = open_with_limits(
+        "no-turn-end",
+        DshSessionLimits {
+            turn_deadline_ms: 1_000,
+            ..limits()
+        },
+    )
+    .await;
+    driver
+        .prompt("cancel before the deadline")
+        .await
+        .expect("prompt");
+    driver.cancel().await.expect("cancel");
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    let summary = driver.summary();
+    assert_eq!(summary.phase, DshPhase::Closing);
+    assert_eq!(summary.cancelled_turns, 1);
+    assert_eq!(summary.unverified_turns, 0);
+    assert_eq!(driver.transport_error(), None);
+    driver.close().await.expect("close");
+    assert_eq!(driver.phase(), DshPhase::Closed);
+}
+
+#[tokio::test]
+async fn eof_during_shutdown_is_judged_by_the_owned_exit_status() {
+    for (mode, expected_phase, expected_error) in [
+        ("shutdown-eof", DshPhase::Closed, None),
+        (
+            "shutdown-crash",
+            DshPhase::Failed,
+            Some("dsh_unexpected_exit"),
+        ),
+    ] {
+        let mut driver = open(mode).await;
+        driver.close().await.expect("cleanup");
+        let summary = driver.summary();
+        assert_eq!(summary.phase, expected_phase, "{mode}");
+        assert_eq!(summary.error_code, expected_error, "{mode}");
+        assert!(!driver.transport_open());
+        driver.close().await.expect("idempotent close");
+    }
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@
 | Project | VibeMux |
 | Repository | `YueDongSun/vibemux` |
 | Historical audited branch | `main` |
-| Current implementation branch | `main` at `0619a35` (PR #50 merged); feature work lands through per-issue branches and pull requests — 43 merged, one closed as landed (#3), one open draft (#49, parked); prior baseline `codex/m7_a2a_supervisor` per `85697d6743b01b8e0aa10c48d79837dcc56c007c` with its tested input fingerprint in `docs/evidence/a2a_source_manifest.json` and the 2026-08-31 publication audit |
+| Current implementation branch | Latest local qualification: `fix/confirmed-review-bugs`, based on `a980561` (2026-11-11); implementation and limits are recorded in the dated entry below. Feature work lands through per-issue branches and pull requests. |
 | Audited implementation baseline | PR #1 head `fce05cffe628ce65c49620a06f6bd1ef7eaadb89`, merged as `6498e6aa711f751d9f9e50e37034d61c17d4b341` |
 | Python package version | `0.1.0a0` |
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
@@ -133,7 +133,7 @@ See [docs/architecture.md §External A2A transport policy](docs/architecture.md#
 | Standalone native harness dispatch | `PARTIAL — FIXTURE ONLY` | `vibemux_harness_native`, `vibemuxctl harness`, `examples/harness`, fixture-binary tests (ADR 040) | Bounded one-shot Codex (`app-server`/`exec`), Claude stream-json, and ACP (OpenCode/Copilot/Grok) request dispatch with Windows Job Object containment and configuration SHA-256 pinning, run in the CLI process with no daemon admission, store records, or Task/Run binding; branch evidence is initialize-plus-clean-exit for Codex, Claude, OpenCode, and Copilot, Grok shutdown unverified, no model generation executed; ADR 029 remains the daemon-owned path |
 | Structured vendor harness adapters | `PARTIAL` | `vibemux_harness::dispatch`, `vibemuxd::harness_dispatch`, fixture-binary tests (ADR 029) | Daemon-owned one-shot Codex (`exec --json`, `app-server`) and Claude stream-json execution plus ACP initialize-only probes (OpenCode/Copilot/Grok), verified against a fixture binary on Windows and Linux and by live initialize-only probes of the installed Codex, Claude, OpenCode, Copilot, and Grok CLIs on native Windows; one live Claude submit was refused as not logged in, because `--bare` accepted only an API key, and the read-only Claude route has since dropped `--bare`; no authenticated execution turn, ACP execution, concurrency, approvals, or Pi/Gemini adapter |
 | Decision port and per-task harness routing | `PARTIAL — FIXTURE ONLY` | `vibemux_decision`, `vibemux_decision_peer`, `vibemuxd::decision`, store schema 6, Control v8, `vibemuxctl decide`/`decisions`/`dispatch submit --decision` (ADR 034) | Advisory, content-free decisions over the detected executing harnesses with a threshold, local label rules, project-default fallback, and escalation; a decided submit re-runs every ADR 029 gate and runs once. The Jev peer needs both the config gate and `--allow-external` and receives enumerated facts only. Verified against fixture peers and a loopback test server; no live Jev call, calibrated threshold, or other decision kind |
-| Desktop app (ADR 043) | `PARTIAL — SKELETON` | `vibemux_desktop` (Tauri 2 shell), `crates/vibemux_desktop/ui` (Svelte 5 UI), the fixed 23-command list, `desktop_settings.json`, the navigation guard, and the lockdown tests | The project, Ask, task, console, and settings screens; no vendor text is fetched yet; the egui GUI is still the shipped frontend |
+| Desktop app (ADR 043) | `PARTIAL — SHARED UI / CONFIGURATION` | `vibemux_desktop` mounts the shared ADR 056 Svelte workspace through a native host; `desktop_settings.json`, configuration-only `provider_profiles.json`, 25 typed command names, main-window-only provider grants, navigation guards, and boundary tests | Appearance and provider metadata are native; optional local conversations remain noncanonical. Project/Ask/task/console adapters, native chat, and direct profile-to-workflow routing are incomplete; the egui GUI remains available until parity |
 | Python-to-Rust state migration and default cutover | `PLANNED` | separate Python and Rust databases | No state migration, default CLI cutover, or shared-schema compatibility promise exists |
 | Tests and CI | `PARTIAL` | Python/Rust Windows+Ubuntu workflow; PR #1 head CI run #8 | pytest/Ruff/smoke and Rust fmt/Clippy/workspace tests run cross-platform; mypy/format/package/coverage/nextest/deny/audit/fuzz/live-backend gates are not all enforced in CI |
 | Scheduler, artifacts, review gates | `PLANNED` | design text only | No production implementation |
@@ -7760,3 +7760,153 @@ retained in the task's local validation artifact.
   not mount a real DOM, so unmount itself is not covered by an automated
   case. Live enrollment endpoints, real browser DOM races, and the Rust
   workspace were not run for this patch.
+
+### 2026-11-11 — Confirmed repairs and shared native desktop workspace
+
+**Scope and compatibility**
+
+Work on `fix/confirmed-review-bugs` starts from `a980561`, including the upstream
+SQLite advisory correction. Thirteen reported source defects were repaired; the
+advisory required no additional dependency change, and the separately reported
+plausible standalone POSIX teardown issue was not included. The original review
+statuses were updated after qualification. No commits or pushes were performed
+as part of this local repair/build task.
+
+- Python retains the prototype database and behavior-reference role. Terminal
+  ownership records now carry concrete backends and real tmux session identity;
+  sends use independent buffers, task-start transitions and events are atomic,
+  cleanup sees ignored files, and configuration publication is atomic.
+- Rust retains canonical single-writer state. Cleanup results are fallible and
+  cannot authorize completion; existing protocol errors retain precedence.
+  Ask cancellation is checked before submission, and SSE limits apply to events,
+  not coalesced HTTP chunks. DSH has one lifecycle owner for deadlines, peer exit,
+  pending EOF cleanup, and retained cleanup-failure ownership.
+- Browser legacy messages gain stable, collision-free IDs without a record-version
+  change. The desktop mounts the actual shared Svelte root/components/styles,
+  not the egui demo. Explicit browser/native hosts preserve separate transports,
+  storage ownership, and capabilities.
+- Native provider metadata starts at schema 1 in `provider_profiles.json`, with
+  at most 16 profiles and 64 KiB, explicit authentication references, and an
+  orchestrator selection. Views remain `configuration_only`; no environment
+  values, credential stores, provider requests, or canonical routes are accessed.
+  Tauri has 25 command names, with the two provider commands granted only to the
+  main window. Native appearance replies exclude private folder/consent paths.
+  Control v10, store schema 9, and version-1 browser records are unchanged.
+
+**Native GUI and packaging evidence**
+
+- The 27-step real WebView walkthrough passed: native preference writes, both
+  presentations/themes, disabled-send draft retention, provider creation and
+  selection, rename/removal, unsafe-input refusal without changing saved data,
+  and reload persistence. The same walkthrough passed with stdout closed and
+  exited normally. Web Locks were available on the tested native origin;
+  unsupported WebViews still receive an explicit unsaved/read-only warning.
+- The walkthrough uses production builders with incognito/owned test data,
+  a runtime preflight, a page-load handshake, bounded startup/evaluation/exit,
+  and no added production eval command. It recorded no page errors or CSP
+  violations; native raw-key inputs and executable preview frames were absent.
+- Tauri CLI built `VibeMux Local Test.app` as a macOS arm64 debug app with the
+  separate identifier `io.github.yuedongsun.vibemux.localtest`. Ad-hoc signing,
+  strict local signature verification, ZIP integrity, and a cold launch of the
+  packaged app succeeded. It is not notarized or an installer/release claim.
+- Packaging exposed a missing `biCompression` field in the fallback ICO encoder.
+  The header regression failed with 16896 instead of BI_RGB zero before the fix.
+  The encoder now writes the complete 40-byte DIB; cache repair matches only the
+  exact old generated bytes and preserves custom icons, PNGs, and links.
+
+**Validation executed on native macOS arm64**
+
+Rust 1.92.0, Node 22.22.0/npm 10.9.9, Python 3.12.16; Chrome 152.0.7977.83 and the
+system WebView. Commands ran from the repair worktree with isolated fixtures.
+
+- `cargo fmt --all -- --check`, `cargo build --locked --offline --workspace
+  --all-features --bins`, `cargo clippy --locked --offline --workspace
+  --all-targets --all-features -- -D warnings`, `cargo test --locked --offline
+  --workspace --all-features --no-fail-fast`, and `cargo nextest run --locked
+  --offline --workspace --all-features --no-fail-fast` passed. The final
+  post-packaging run completed **1,781 tests in each Rust runner**, zero failed,
+  with two existing ignored/skipped helpers. This includes the four icon
+  encoding/cache-ownership cases; targeted desktop checks passed **70 tests**.
+  Final workspace Clippy and the all-binaries build also passed.
+- DSH failure characterization reproduced 17 failures in 512 early-exit fixture
+  runs before its bounded first-cleanup observation. The corrected source passed
+  2,048/2,048 exact-case runs and ten default-concurrency focused Nextest suites
+  (710 executions). No kill retries, widened assertions, or shared-platform
+  changes were used to hide the failure.
+- `python -m pytest -rs`: **177 passed, 32 explicit PowerShell-unavailable skips**.
+  Ruff check/format and mypy (native and `--platform win32`) passed. The latter
+  is static checking, not native Windows execution. Mock-workflow smoke passed.
+- The public-artifact check passed **705 text files, zero findings**, with 20
+  exact reviewed negative-fixture lines. The two new exceptions are bound to
+  synthetic rejection-test content and path, not a file-wide or rule-wide bypass.
+- Frontend tests/builds passed: desktop **78 UI + 3 dependency checks**; browser
+  chat **114 + 3**; monitor **44 + 7** from the unchanged monitor validation.
+  Desktop typechecking reported zero errors/warnings. Desktop qualification
+  also ran without a sibling chat `node_modules`. All three npm audits reported
+  zero vulnerabilities; native/browser transport and fixture-exclusion guards
+  passed.
+- The rebuilt production-browser legacy-history walkthrough passed, including
+  targeted editing, feedback, IDs, and reload. Loopback-only QA submission passed
+  in both Claude/Codex presentations; four messages survived reload and no API
+  key was stored. Both checks recorded no JavaScript exceptions and no observed
+  non-loopback page request. No live model was called.
+- `cargo deny check` passed advisories/bans/licenses/sources; `cargo audit` exited
+  zero. Existing allowed warnings remain: glib's informational unsoundness and
+  the yanked clipboard-win/crypto-bigint versions. No policy ignore was widened.
+
+Earlier failed runs remain recorded: protocol-error precedence, the DSH early-exit
+race, a fallible test-cleanup assumption, provider validation parity, pre-load
+native callback loss, test selector quoting, and the malformed ICO were diagnosed
+before their successful checks. An overlapping UI worker was stopped and its
+latest work preserved before a single-owner recovery and integration.
+
+**Remaining boundaries**
+
+Windows/Linux execution, WebView2 acceptance, live vendors, authenticated native
+chat, project/Ask/task/console parity, direct profile-to-orchestrator routing,
+release signing/notarization, and release qualification remain incomplete. Saved profiles,
+fixture replies, and local UI checks do not establish live orchestration. The
+older egui frontend and the Python CLI remain available. Local build artifacts
+and detailed run logs are ignored output, not committed source.
+
+### 2026-11-11 — DSH close-retry fixture correction for Ubuntu CI
+
+The [Ubuntu Rust job](https://github.com/YueDongSun/vibemux/actions/runs/42874675214/job/130034711217)
+on `8219cbb`, published in [the repair PR](https://github.com/YueDongSun/vibemux/pull/56),
+failed `a_close_retry_reaches_cleanup_after_a_previous_cleanup_error`: the
+fixture ended `Failed` rather than `Closed`. The other Rust matrix jobs in that
+run were cancelled; cancellation is not successful platform validation.
+
+The fixture launched the test executable with `--list`, then allowed the DSH
+JSON reader to consume its plain-text output. Closing that reader mid-list could
+make the child exit unsuccessfully. Resetting the synthetic machine to `Ready`
+did not change that actual exit status, and production close correctly retained
+failure. Deliberately dropping stdout before the launch gate independently
+reproduced child exit 101 and the original assertion on macOS.
+
+The test-only helper now constructs its injected machine separately from the
+contained child and uses null stdout for the successful-exit case. A second,
+controlled broken-output case must end `Failed`. The regression keeps stdin to
+exercise a real closed-pipe write, checks exactly one cleanup attempt and
+unreaped POSIX ownership before cleanup, verifies reaping and exit agreement,
+and checks idempotence. Production driver code, deadlines, EOF authority,
+cleanup-error precedence, wire/configuration formats, and canonical state are
+unchanged. No assertion was broadened to accept either outcome and no retry was
+added to a test.
+
+Independent macOS review passed the DSH unit/integration and daemon DSH checks,
+plus 64 exact-case executions with eight concurrent workers. Restoring the old
+cleanup-error masking deliberately failed the corrected regression, confirming
+that it still exercises the previously broken path.
+
+After integration, the main macOS worktree passed `cargo fmt --all -- --check`,
+`cargo test --locked --offline -p vibemux_dsh --all-features` (20 unit + 35
+integration), daemon `--test dsh_session` (16) and `--lib dsh_session` (7), and
+focused Clippy for both crates with `--all-targets --all-features -- -D warnings`.
+The matching Nextest selection passed all **78 selected tests**, with 253 other
+tests excluded by its filter, not executed. Production-prefix comparison against
+`8219cbb` also matched byte for byte. Public-source and diff checks passed.
+
+Native Ubuntu/Windows confirmation still belongs to the new CI run; no local
+Linux runtime was available. This focused check is not a new full-workspace or
+live-vendor qualification.

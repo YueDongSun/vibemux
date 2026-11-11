@@ -422,6 +422,187 @@ async fn a_second_open_is_refused_while_one_session_is_live() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_deadline_fails_poll_and_status_without_a_turn_waiter() {
+    let layout = Layout::new("turn-deadline");
+    let (node, script) = layout.install_launcher_pair();
+    layout.write_config(
+        &node,
+        &script,
+        json!({
+            "profile": "no-turn-end",
+            "limits": {
+                "initialize_deadline_ms": 5_000,
+                "turn_deadline_ms": 1_000,
+                "shutdown_grace_ms": 1_000,
+            },
+        }),
+    );
+    let server = layout.server().await;
+    let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+    client
+        .dsh_session_open(&DshSessionOpenRequest::default())
+        .await
+        .expect("open");
+    client
+        .dsh_session_prompt(&DshSessionPromptRequest {
+            prompt: "a silent turn must expire".to_string(),
+        })
+        .await
+        .expect("prompt");
+    // The production service never calls await_turn. Leave it alone past the
+    // budget, then read both of the views that real consumers use.
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    let status = client.dsh_session_status().await.expect("status");
+    let page = client
+        .dsh_session_poll(DshSessionPollQuery::default())
+        .await
+        .expect("poll");
+    // The failed turn must be replaceable without an explicit close. Open
+    // performs the retained owner's verified cleanup before spawning again.
+    layout.write_config(&node, &script, json!({"profile": "serve"}));
+    let replacement = client
+        .dsh_session_open(&DshSessionOpenRequest::default())
+        .await;
+    client.dsh_session_close().await.expect("close");
+    server.shutdown().await.expect("shutdown");
+
+    let replacement = replacement.expect("the failed turn must not keep the service busy");
+    assert_eq!(replacement.phase, DshPhase::Ready);
+    assert_ne!(replacement.session_id, status.session_id);
+    for status in [&status, &page.status] {
+        assert_eq!(status.phase, DshPhase::Failed);
+        assert_eq!(status.completed_turns, 0);
+        assert_eq!(status.unverified_turns, 1);
+        assert_eq!(status.last_outcome, Some(DshTurnOutcome::Unverified));
+        assert!(!status.transport_open);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_after_ready_is_failed_and_replaceable_without_a_turn_waiter() {
+    let layout = Layout::new("crash-replacement");
+    let (node, script) = layout.install_launcher_pair();
+    layout.write_config(&node, &script, json!({"profile": "crash-after-ready"}));
+    let hold_exit = layout
+        .state_dir
+        .parent()
+        .expect("project")
+        .join("dsh-fixture-hold-exit");
+    std::fs::write(&hold_exit, b"hold fixture exit").expect("exit barrier");
+    let server = layout.server().await;
+    let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+    let opened = client
+        .dsh_session_open(&DshSessionOpenRequest::default())
+        .await
+        .expect("open");
+    assert_eq!(opened.phase, DshPhase::Ready);
+    std::fs::remove_file(&hold_exit).expect("release fixture exit");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        let status = client.dsh_session_status().await.expect("status");
+        if !status.transport_open || std::time::Instant::now() >= deadline {
+            break status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    let page = client
+        .dsh_session_poll(DshSessionPollQuery::default())
+        .await
+        .expect("poll");
+    // A terminal session is cleaned up before replacement; no explicit close
+    // or failed prompt should be needed to make the daemon notice the crash.
+    layout.write_config(&node, &script, json!({"profile": "serve"}));
+    let replacement = client
+        .dsh_session_open(&DshSessionOpenRequest::default())
+        .await;
+    client.dsh_session_close().await.expect("close");
+    server.shutdown().await.expect("shutdown");
+
+    assert!(!status.transport_open, "the fixture must have exited");
+    assert_eq!(status.phase, DshPhase::Failed);
+    assert_eq!(page.status.phase, DshPhase::Failed);
+    let replacement = replacement.expect("a terminal session is replaceable");
+    assert_eq!(replacement.phase, DshPhase::Ready);
+    assert_ne!(replacement.session_id, opened.session_id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crashed_session_with_a_descendant_is_cleaned_before_replacement() {
+    let layout = Layout::new("crash-descendant-replacement");
+    let (node, script) = layout.install_launcher_pair();
+    layout.write_config(
+        &node,
+        &script,
+        json!({
+            "profile": "crash-with-descendant",
+            "limits": {
+                "initialize_deadline_ms": 5_000,
+                "turn_deadline_ms": 10_000,
+                "shutdown_grace_ms": 1_000,
+            },
+        }),
+    );
+    let heartbeat = layout
+        .state_dir
+        .parent()
+        .expect("project")
+        .join("dsh-descendant-heartbeat");
+    let server = layout.server().await;
+    let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+    let opened = client
+        .dsh_session_open(&DshSessionOpenRequest::default())
+        .await
+        .expect("open");
+    let started = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !heartbeat.is_file() {
+        assert!(std::time::Instant::now() < started, "descendant started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    client
+        .dsh_session_prompt(&DshSessionPromptRequest {
+            prompt: "observe the crash before the turn deadline".to_string(),
+        })
+        .await
+        .expect("prompt");
+    // The descendant holds stdout open. Process-death observation, not EOF
+    // or the ten-second turn deadline, must fail this session.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let status = loop {
+        let status = client.dsh_session_status().await.expect("status");
+        if status.phase == DshPhase::Failed {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "crash was not observed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    layout.write_config(&node, &script, json!({"profile": "serve"}));
+    let replacement = client
+        .dsh_session_open(&DshSessionOpenRequest::default())
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let stopped = std::fs::read(&heartbeat).expect("heartbeat");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let after_replacement = std::fs::read(&heartbeat).expect("heartbeat");
+    client.dsh_session_close().await.expect("close replacement");
+    server.shutdown().await.expect("shutdown");
+
+    assert_eq!(status.unverified_turns, 1);
+    assert_eq!(status.completed_turns, 0);
+    assert!(!status.transport_open);
+    let replacement = replacement.expect("cleanup must permit replacement");
+    assert_eq!(replacement.phase, DshPhase::Ready);
+    assert_ne!(replacement.session_id, opened.session_id);
+    assert_eq!(
+        after_replacement, stopped,
+        "the old descendant survived replacement"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_terminates_the_runtime_and_records_the_turn() {
     // The fixture selects its behaviour from `--profile`, so the config's
     // `profile` field is what makes it stream a turn that never ends.

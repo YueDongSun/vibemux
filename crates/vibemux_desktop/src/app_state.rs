@@ -1,4 +1,4 @@
-//! The state the Tauri app owns: the settings file and the event sink.
+//! The state the Tauri app owns: native configuration and the event sink.
 //!
 //! The daemon credentials never live here. They stay inside
 //! `vibemux_client`, which talks to the daemon over the local control
@@ -6,14 +6,19 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
 
 use crate::desktop_settings::{DesktopSettings, SettingsPatch, load_settings_at, save_settings_at};
 use crate::event_sink::EventSink;
+use crate::provider_profiles::{
+    PROVIDER_PROFILES_FILE_NAME, ProviderProfilesConfig, ProviderProfilesError,
+    ProviderProfilesView, load_provider_profiles_at, save_provider_profiles_at,
+};
 
 pub struct AppState {
     settings_path: PathBuf,
     settings: RwLock<DesktopSettings>,
+    provider_profiles: Mutex<()>,
     sink: Arc<dyn EventSink>,
 }
 
@@ -24,6 +29,7 @@ impl AppState {
         Self {
             settings_path,
             settings: RwLock::new(settings),
+            provider_profiles: Mutex::new(()),
             sink,
         }
     }
@@ -62,6 +68,45 @@ impl AppState {
         Ok(())
     }
 
+    /// Reads current on-disk metadata, not a cached execution configuration.
+    /// The caller must run this filesystem operation on a blocking worker.
+    pub fn provider_profiles(&self) -> Result<ProviderProfilesView, ProviderProfilesError> {
+        let _guard = self.lock_provider_profiles()?;
+        load_provider_profiles_at(&self.provider_profiles_path()?).map(Into::into)
+    }
+
+    /// Publishes one complete, validated metadata snapshot. It emits no event
+    /// and changes no daemon settings, credential grant, or admitted route.
+    pub fn save_provider_profiles(
+        &self,
+        config: ProviderProfilesConfig,
+    ) -> Result<ProviderProfilesView, ProviderProfilesError> {
+        let _guard = self.lock_provider_profiles()?;
+        save_provider_profiles_at(&self.provider_profiles_path()?, &config)?;
+        Ok(config.into())
+    }
+
+    fn provider_profiles_path(&self) -> Result<PathBuf, ProviderProfilesError> {
+        if !self.settings_path.is_absolute() {
+            return Err(ProviderProfilesError::Unavailable);
+        }
+        self.settings_path
+            .parent()
+            .map(|directory| directory.join(PROVIDER_PROFILES_FILE_NAME))
+            .ok_or(ProviderProfilesError::Unavailable)
+    }
+
+    fn lock_provider_profiles(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, ProviderProfilesError> {
+        self.provider_profiles
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => ProviderProfilesError::Busy,
+                TryLockError::Poisoned(_) => ProviderProfilesError::Unavailable,
+            })
+    }
+
     /// The sink the services emit their events to.
     #[must_use]
     pub fn sink(&self) -> &Arc<dyn EventSink> {
@@ -74,6 +119,89 @@ mod tests {
     use super::*;
     use crate::desktop_settings::{Appearance, Density};
     use crate::event_sink::RecordingEventSink;
+
+    #[test]
+    fn provider_profiles_are_separate_from_appearance_and_refresh_from_disk() {
+        use crate::provider_profiles::{ProviderApiType, ProviderAuthType, ProviderProfile};
+
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("desktop_settings.json");
+        let first = AppState::new(path.clone(), Arc::new(RecordingEventSink::default()));
+        first
+            .apply_settings(&SettingsPatch {
+                appearance: Some(Appearance::Dark),
+                ..SettingsPatch::default()
+            })
+            .expect("appearance");
+        let appearance_bytes = std::fs::read(&path).expect("appearance bytes");
+        let second = AppState::new(path.clone(), Arc::new(RecordingEventSink::default()));
+        let configured = ProviderProfilesConfig {
+            schema_version: 1,
+            profiles: vec![ProviderProfile {
+                id: "local".to_owned(),
+                name: "Synthetic local provider".to_owned(),
+                api_type: ProviderApiType::OpenaiChatCompletions,
+                base_url: "http://127.0.0.1:11434/v1".to_owned(),
+                model: "operator-model".to_owned(),
+                credential_env: None,
+                auth_type: ProviderAuthType::None,
+            }],
+            orchestrator_profile_id: Some("local".to_owned()),
+        };
+        let saved = first
+            .save_provider_profiles(configured.clone())
+            .expect("save");
+        assert_eq!(saved.config, configured);
+        assert_eq!(second.provider_profiles().expect("fresh disk read"), saved);
+        assert_eq!(first.settings().appearance, Appearance::Dark);
+        assert_eq!(
+            std::fs::read(&path).expect("appearance remains intact"),
+            appearance_bytes
+        );
+        assert!(directory.path().join(PROVIDER_PROFILES_FILE_NAME).is_file());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("entries")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn provider_configuration_does_not_fall_back_to_the_working_directory() {
+        let state = AppState::new(
+            PathBuf::from("synthetic-missing-desktop-settings.json"),
+            Arc::new(RecordingEventSink::default()),
+        );
+        assert_eq!(
+            state.provider_profiles(),
+            Err(ProviderProfilesError::Unavailable)
+        );
+        assert_eq!(
+            state.save_provider_profiles(ProviderProfilesConfig::default()),
+            Err(ProviderProfilesError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn concurrent_provider_operations_fail_busy_instead_of_waiting() {
+        let directory = tempfile::tempdir().expect("directory");
+        let state = AppState::new(
+            directory.path().join("desktop_settings.json"),
+            Arc::new(RecordingEventSink::default()),
+        );
+        let guard = state.provider_profiles.lock().expect("owned lock");
+        assert_eq!(state.provider_profiles(), Err(ProviderProfilesError::Busy));
+        assert_eq!(
+            state.save_provider_profiles(ProviderProfilesConfig::default()),
+            Err(ProviderProfilesError::Busy)
+        );
+        drop(guard);
+        assert_eq!(
+            state.provider_profiles().expect("released").config,
+            ProviderProfilesConfig::default()
+        );
+    }
 
     #[test]
     fn the_settings_file_is_read_at_construction() {

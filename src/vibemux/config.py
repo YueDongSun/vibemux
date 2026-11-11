@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -26,10 +28,29 @@ class Config:
     schema_version: int = 1
 
     def write(self, path: Path) -> None:
+        payload = json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        staged_path: Path | None = None
+        try:
+            # Exclusive, same-directory staging keeps concurrent readers and writers
+            # away from a partial live file and from one another's temporary files.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                staged_path = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            staged_path.replace(path)
+            staged_path = None
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
 
     @classmethod
     def read(cls, path: Path) -> Config:

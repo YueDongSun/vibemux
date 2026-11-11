@@ -8,11 +8,13 @@
 //! settings file. Independent app instances use last-writer-wins semantics;
 //! their staged files never share a name or overwrite an existing entry.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::config_file::replace_config_file;
 
 pub const SETTINGS_SCHEMA_VERSION: u16 = 1;
 pub const SETTINGS_FILE_NAME: &str = "desktop_settings.json";
@@ -178,38 +180,13 @@ pub fn save_settings_at(path: &Path, settings: &DesktopSettings) -> io::Result<(
             "desktop settings exceed the 64 KiB limit",
         ));
     }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut name = std::ffi::OsString::from(".");
-    name.push(path.file_name().unwrap_or_default());
-    name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
-    let temporary = path.with_file_name(name);
-    write_new(&temporary, text.as_bytes())?;
-    fs::rename(&temporary, path).inspect_err(|_| {
-        let _ = fs::remove_file(&temporary);
-    })
-}
-
-fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    let written = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
-    written.inspect_err(|_| {
-        let _ = fs::remove_file(path);
-    })
+    replace_config_file(path, text.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::write_new;
 
     #[test]
     fn a_missing_file_gives_the_defaults() {

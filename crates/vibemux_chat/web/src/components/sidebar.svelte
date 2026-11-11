@@ -20,7 +20,9 @@
   } from "@lucide/svelte";
   import BrandMark from "./brand_mark.svelte";
   import { group_conversations } from "../ui_policy.js";
+  import { native_unavailable } from "../services/workspace_host.js";
   let {
+    host,
     conversations,
     interface_style = "claude",
     active_id,
@@ -100,7 +102,7 @@
   </div>
   <div class="sidebar-nav">
     <button class="new-chat" onclick={on_new}
-      ><span class="new-plus"><Plus /></span>New chat<kbd>Alt N</kbd></button
+      ><span class="new-plus"><Plus /></span>{host.kind === "native" ? "New draft" : "New chat"}<kbd>Alt N</kbd></button
     ><button class="nav-btn" onclick={on_search}
       ><Search />Search conversations<kbd>Alt K</kbd></button
     ><button class="nav-btn" onclick={on_library}
@@ -161,6 +163,8 @@
                   <div class="popover history-menu">
                     {#each [[chat.pinned ? "Unpin" : "Pin", Pin, "pin"], ["Rename", Pencil, "rename"], ["Duplicate", Copy, "duplicate"], ["Export Markdown", Download, "export"], ["Delete", Trash2, "delete"]] as [label, Icon, action]}<button
                         class:danger-text={action === "delete"}
+                        disabled={action === "export" && !host.capabilities.exports}
+                        title={action === "export" && !host.capabilities.exports ? native_unavailable.exports : undefined}
                         onclick={() => {
                           menu_id = null;
                           on_action(action, chat);
@@ -172,7 +176,7 @@
         </section>{/each}{#if !conversations.length}<div class="history-empty">
           <MessageSquare />
           <p>A little space for your next idea.</p>
-          <span>Your conversations will appear here.</span>
+          <span>{host.kind === "native" ? "Saved local transcripts appear here. New drafts stay in memory." : "Your conversations will appear here."}</span>
         </div>{/if}
     {/if}
   </div>
@@ -180,13 +184,15 @@
     <button class="connection-card" onclick={() => on_settings("api")}
       ><div>
         <span class="status-dot" class:connected></span><strong
-          >{connected ? "API connected" : "Make it your own"}</strong
+          >{host.kind === "native" ? "Provider profiles" : connected ? "API connected" : "Make it your own"}</strong
         ><ArrowUpRight />
       </div>
       <span
-        >{connected
-          ? "Your models, your workspace"
-          : "Connect Claude with your API key"}</span
+        >{host.kind === "native"
+          ? "Configuration only · Chat unavailable"
+          : connected
+            ? "Your models, your workspace"
+            : "Connect Claude with your API key"}</span
       ></button
     >
     <div class="account-row">

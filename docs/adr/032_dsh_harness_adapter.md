@@ -252,6 +252,42 @@ threat model remains lifetime containment of ordinary descendants: POSIX
 processes can deliberately escape their group, and system-service-launched
 processes can be outside a Windows job. This is not a security sandbox.
 
+#### Lifecycle supervision correction, 2026-11-10
+
+The shared driver owns one lifecycle task, not one timer task per turn. That
+task reads stdout, enforces the absolute deadline supplied in the driver
+limits from prompt admission, and observes process exit even when a descendant
+keeps stdout open. Polling consumers do not need to call `await_turn` to obtain
+these guarantees. Waiting again does not restart the budget, and abandoning a
+pending prompt write does not disarm it.
+
+The state cell adjudicates elapsed deadlines before accepting a completion,
+cancellation, close, or completed write. An older timer rechecks the current
+turn's deadline instead of ending a later turn. Unexpected EOF or process death
+updates the authoritative machine to failure; an unfinished turn is unverified,
+not completed. Intentional close and cancellation retain their established
+outcomes. The lifecycle task terminates the owned tree but does not reap the
+POSIX leader; explicit close or replacement must still verify cleanup before
+reaping. Cleanup failure retains the owner and takes precedence over the
+original timeout or pipe error.
+
+EOF failure is published immediately, but its owner observes leader exit before
+its first termination attempt, for at most the smaller of shutdown grace and
+the remaining absolute turn budget. Closing the last stdout handle can precede
+a waitable exit; on Darwin, signaling in that interval can return `EPERM` before
+non-reaping observation can prove the leader dead. The bounded observation does
+not suppress a termination error or retry a failed kill. Error-returning waits
+and writes wait for pending cleanup, and close/cancel first adjudicate their
+state before waiting, so cleanup failure and retained ownership remain
+authoritative. A stale initialize-wait timer also rechecks terminal state rather
+than overtaking that pending cleanup.
+
+The task is joined on close and aborted on drop. No shared mutex is held across
+an await. Existing Control v7 payloads, configuration and record formats,
+content-free errors, and the absence of canonical DSH Task/Run state are
+unchanged. This is fixture-verified lifecycle behavior, not live-provider or
+native-terminal-attachment acceptance.
+
 ### 7. Operator configuration is a separate, versioned file
 
 DSH session config lives in `.vibemux/dsh_session.json` (schema 1), read once

@@ -1,9 +1,9 @@
 //! The typed commands the webview may call.
 //!
 //! Every command is a thin wrapper: it converts the arguments, and a
-//! service does the work. The list is complete from this step on, so the
-//! capability file and the app manifest stay stable; the commands that
-//! belong to a later step answer `not_implemented` until then.
+//! service does the work. The manifest and per-window capability grants
+//! enumerate this private API; commands that belong to a later step answer
+//! `not_implemented` until then.
 //!
 //! The webview never passes a filesystem path. It passes the `project_key`
 //! of a folder the Rust side already knows.
@@ -14,8 +14,9 @@ use tauri::State;
 
 use crate::app_state::AppState;
 use crate::command_error::CommandError;
-use crate::desktop_settings::{DesktopSettings, SettingsPatch};
-use crate::ui_contract::AboutInfo;
+use crate::desktop_settings::SettingsPatch;
+use crate::provider_profiles::{ProviderProfilesConfig, ProviderProfilesError};
+use crate::ui_contract::{AboutInfo, ProviderProfilesView, SettingsView};
 
 fn not_implemented(command: &str) -> CommandError {
     CommandError::new(
@@ -178,23 +179,51 @@ pub async fn open_link(_state: State<'_, Arc<AppState>>, _url: String) -> Result
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn settings_get(
-    state: State<'_, Arc<AppState>>,
-) -> Result<DesktopSettings, CommandError> {
-    Ok(state.settings())
+pub async fn settings_get(state: State<'_, Arc<AppState>>) -> Result<SettingsView, CommandError> {
+    Ok(state.settings().into())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn settings_set(
     state: State<'_, Arc<AppState>>,
     patch: SettingsPatch,
-) -> Result<DesktopSettings, CommandError> {
+) -> Result<SettingsView, CommandError> {
     let worker_state = Arc::clone(state.inner());
+    let write_failed = || {
+        CommandError::new(
+            "settings_write_failed",
+            "Appearance settings could not be saved. The previous settings were preserved.",
+        )
+    };
     tauri::async_runtime::spawn_blocking(move || worker_state.apply_settings(&patch))
         .await
-        .map_err(|error| CommandError::new("settings_write_failed", error.to_string()))?
-        .map_err(|error| CommandError::new("settings_write_failed", error.to_string()))?;
-    Ok(state.settings())
+        .map_err(|_| write_failed())?
+        .map_err(|_| write_failed())?;
+    Ok(state.settings().into())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn provider_profiles_get(
+    state: State<'_, Arc<AppState>>,
+) -> Result<ProviderProfilesView, CommandError> {
+    let worker_state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || worker_state.provider_profiles())
+        .await
+        .map_err(|_| CommandError::from(ProviderProfilesError::Unavailable))?
+        .map_err(Into::into)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn provider_profiles_set(
+    state: State<'_, Arc<AppState>>,
+    config: serde_json::Value,
+) -> Result<ProviderProfilesView, CommandError> {
+    let config = ProviderProfilesConfig::from_command_value(config)?;
+    let worker_state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || worker_state.save_provider_profiles(config))
+        .await
+        .map_err(|_| CommandError::from(ProviderProfilesError::Unavailable))?
+        .map_err(Into::into)
 }
 
 #[tauri::command(rename_all = "snake_case")]

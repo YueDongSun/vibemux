@@ -15,8 +15,10 @@
   } from "@lucide/svelte";
   import { models } from "../config.js";
   import { summarize_context } from "../codex_context_policy.js";
+  import { native_unavailable } from "../services/workspace_host.js";
 
   let {
+    host,
     conversation = null,
     connected = false,
     on_close,
@@ -107,7 +109,7 @@
   <header class="context-header">
     <div>
       <h2 id="codex_context_heading">Context</h2>
-      <span>{connected ? "Connected" : "Not connected"}</span>
+      <span>{host.kind === "native" ? "Configuration only" : connected ? "Connected" : "Not connected"}</span>
     </div>
     <button
       type="button"
@@ -184,7 +186,7 @@
           </div>
           {#if !has_context}
             <p class="context-empty">
-              Start a conversation to see its context.
+              {host.kind === "native" ? "No local transcript. Desktop chat is unavailable." : "Start a conversation to see its context."}
             </p>
           {/if}
         </section>
@@ -280,18 +282,20 @@
     {/if}
 
     <section class="context-section" aria-labelledby="context_api_heading">
-      <h3 id="context_api_heading">API setup</h3>
+      <h3 id="context_api_heading">{host.kind === "native" ? "Provider profiles" : "API setup"}</h3>
       <div class="context-row">
         <KeyRound size={16} aria-hidden="true" />
         <span
-          >{connected
-            ? "API key configured"
-            : "Connect an API key to send messages."}</span
+          >{host.kind === "native"
+            ? "Configuration only. Desktop chat and workflow execution are not connected."
+            : connected
+              ? "API key configured"
+              : "Connect an API key to send messages."}</span
         >
       </div>
       <button type="button" class="btn" onclick={open_settings}>
         <Settings2 size={15} aria-hidden="true" />
-        {connected ? "Manage API settings" : "Set up API key"}
+        {host.kind === "native" ? "Manage provider profiles" : connected ? "Manage API settings" : "Set up API key"}
       </button>
     </section>
   </div>
@@ -300,7 +304,8 @@
     <button
       type="button"
       class="btn"
-      disabled={!has_context}
+      disabled={!has_context || !host.capabilities.exports}
+      title={!host.capabilities.exports ? native_unavailable.exports : undefined}
       onclick={export_conversation}
     >
       <Download size={15} aria-hidden="true" />

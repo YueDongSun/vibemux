@@ -12,7 +12,11 @@
   } from "@lucide/svelte";
   import { models, shortcuts } from "../config.js";
   import { interface_options } from "../interface_policy.js";
+  import ProviderProfiles from "./provider_profiles.svelte";
+  import { native_unavailable } from "../services/workspace_host.js";
   let {
+    host,
+    native_preferences = null,
     settings,
     on_change,
     on_close,
@@ -24,13 +28,13 @@
     conversation_count,
     initial_tab = "appearance",
   } = $props();
-  const tabs = [
+  const tabs = $derived([
     ["appearance", "Appearance", Palette],
     ["behavior", "Behavior", SlidersHorizontal],
-    ["api", "API connection", KeyRound],
+    ["api", host.kind === "native" ? "Provider profiles" : "API connection", KeyRound],
     ["data", "Data & privacy", Database],
     ["shortcuts", "Shortcuts", Keyboard],
-  ];
+  ]);
   let active_tab = $state("appearance"),
     key_draft = $state(""),
     visible = $state(false),
@@ -87,20 +91,36 @@
           >
         </div>
         <p>A workspace that feels right for you.</p>
+        {#if host.kind === "native"}<div class="status-note" role={native_preferences?.status === "error" ? "alert" : "status"}>
+            {native_preferences?.message || "Loading desktop settings…"}
+            {#if native_preferences?.status === "error"}<button class="btn" onclick={() => host.preferences.retry()}>Retry desktop settings</button>{/if}
+          </div>
+          <p>Theme, font size, density, motion and sidebar use native desktop settings. The interface choice stays with local WebView history, subject to its writer lock.</p>{/if}
         {#each [["theme", "Theme", [["system", "System"], ["light", "Light"], ["dark", "Dark"]]], ["font_size", "Font size", [["small", "Small"], ["default", "Default"], ["large", "Large"]]], ["density", "Density", [["comfortable", "Comfortable"], ["compact", "Compact"]]]] as [key, label, options]}<div
             class="settings-row"
           >
             <label for={`setting_${key}`}>{label}</label><select
               id={`setting_${key}`}
               value={settings[key]}
+              disabled={host.kind === "native" && !native_preferences?.loaded}
               onchange={(e) => on_change({ [key]: e.currentTarget.value })}
               >{#each options as [value, name]}<option {value}>{name}</option
                 >{/each}</select
             >
-          </div>{/each}{:else if active_tab === "behavior"}<h2>
+          </div>{/each}
+        {#if host.kind === "native"}
+          {#each [["reduce_motion", "Reduce motion"], ["sidebar_collapsed", "Collapse sidebar"]] as [key, label]}
+            <div class="settings-row">
+              <label for={`setting_${key}`}>{label}</label>
+              <input class="toggle" id={`setting_${key}`} type="checkbox" checked={settings[key] || false}
+                disabled={!native_preferences?.loaded} onchange={(event) => on_change({ [key]: event.currentTarget.checked })} />
+            </div>
+          {/each}
+        {/if}
+      {:else if active_tab === "behavior"}<h2>
           A little more your way.
         </h2>
-        <p>Choose how each conversation flows.</p>
+        {#if host.kind === "native"}<p>{native_unavailable.send} Conversation behavior and model defaults are disabled; provider model IDs belong in Provider profiles.</p>{:else}<p>Choose how each conversation flows.</p>{/if}
         {#each [["enter_to_send", "Enter to send", "Use Shift + Enter for a new line."], ["auto_scroll", "Auto-scroll responses", "Follow the response until you scroll up."], ["default_thinking", "Extended thinking by default", "Take more time on involved questions."]] as [key, label, description]}<div
             class="settings-row"
           >
@@ -113,6 +133,8 @@
               id={`setting_${key}`}
               type="checkbox"
               checked={settings[key]}
+              disabled={!host.capabilities.send}
+              title={!host.capabilities.send ? native_unavailable.send : undefined}
               onchange={(e) => on_change({ [key]: e.currentTarget.checked })}
             />
           </div>{/each}
@@ -120,13 +142,17 @@
           <label for="default_model">Default model</label><select
             id="default_model"
             value={settings.default_model}
+            disabled={!host.capabilities.send}
+            title={!host.capabilities.send ? native_unavailable.send : undefined}
             onchange={(e) =>
               on_change({ default_model: e.currentTarget.value })}
             >{#each models as model}<option value={model.id}
                 >{model.name}</option
               >{/each}</select
           >
-        </div>{:else if active_tab === "api"}<h2>Bring your own Claude.</h2>
+        </div>{:else if active_tab === "api"}{#if host.kind === "native"}
+          <ProviderProfiles profiles={host.provider_profiles} />
+        {:else}<h2>Bring your own Claude.</h2>
         <p>
           Connect directly to Anthropic to start a conversation. Your API
           account controls model access, billing, and rate limits.
@@ -191,16 +217,18 @@
           when you reload. Messages and selected attachments are sent directly
           to api.anthropic.com when you send. Browser memory is not an encrypted
           credential vault.
-        </p>{:else if active_tab === "data"}<h2>Your ideas stay yours.</h2>
+        </p>{/if}{:else if active_tab === "data"}<h2>Your ideas stay yours.</h2>
         <p>
-          {conversation_count} conversations saved in this browser. Conversation
+          {#if host.kind === "native"}{conversation_count} local conversations in this WebView, separate from canonical Tasks, Runs and Events. Local history saving requires an exclusive writer lock; unsent composer drafts stay only in memory. Native settings and provider profiles are saved separately, never in conversation records or exports.
+          {:else}{conversation_count} conversations saved in this browser. Conversation
           history and attachments are stored locally on this device and are separate
-          from VibeMux’s daemon state.
+          from VibeMux’s daemon state.{/if}
         </p>
         <h3>Take a copy with you</h3>
-        <button class="btn" onclick={() => on_export("md")}
+        {#if !host.capabilities.exports}<p>{native_unavailable.exports}</p>{/if}
+        <button class="btn" disabled={!host.capabilities.exports} onclick={() => on_export("md")}
           >Export all as Markdown</button
-        ><button class="btn" onclick={() => on_export("json")}
+        ><button class="btn" disabled={!host.capabilities.exports} onclick={() => on_export("json")}
           >Export all as JSON</button
         >
         <h3>Start fresh</h3>

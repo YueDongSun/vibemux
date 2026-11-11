@@ -300,10 +300,24 @@ function clean_conversation(conversation, recover_interrupted = false) {
   const message_ids = messages
     .filter((message) => message.id !== undefined)
     .map((message) => message.id);
+  const used_message_ids = new Set(message_ids);
   require_shape(
-    new Set(message_ids).size === message_ids.length,
+    used_message_ids.size === message_ids.length,
     "duplicate message id",
   );
+  // Reserve every supplied ID before filling legacy gaps, including IDs later
+  // in the transcript. Deterministic IDs stay stable across reads/exports until
+  // a normal save persists them; only these cleaned copies are changed.
+  let legacy_index = 0;
+  for (const message of messages) {
+    if (message.id !== undefined) continue;
+    let id;
+    do {
+      id = `legacy_message_${legacy_index++}`;
+    } while (used_message_ids.has(id));
+    message.id = id;
+    used_message_ids.add(id);
+  }
   return {
     id: conversation.id,
     title: conversation.title,

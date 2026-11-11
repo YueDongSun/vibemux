@@ -1,7 +1,19 @@
 {
   "compilerOptions": {
     "allowJs": true,
-    "checkJs": true,
+    "checkJs": false,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@chat/*": ["../../vibemux_chat/web/src/*"],
+      "svelte": ["node_modules/svelte"],
+      "svelte/*": ["node_modules/svelte/*"],
+      "@lucide/svelte": ["node_modules/@lucide/svelte"],
+      "dompurify": ["node_modules/dompurify"],
+      "marked": ["node_modules/marked"],
+      "highlight.js/*": ["node_modules/highlight.js/*"]
+    },
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,

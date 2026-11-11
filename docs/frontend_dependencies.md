@@ -51,6 +51,20 @@ filters, ignored files, spaces/Unicode, byte sizes and revision hashes. An
 isolated before/after build produced identical monitor assets, including the
 generated service worker; built-worker cache-boundary checks also passed.
 
+## Shared desktop renderer
+
+The native desktop imports the browser chat workspace's Svelte source through a
+narrow build alias. Its own package manifest and lockfile declare the same
+renderer roles: `marked`, DOMPurify, `highlight.js`, and `@lucide/svelte`, alongside
+Svelte and the native Tauri API. It must build without a sibling chat
+`node_modules`; Svelte is deduplicated to the desktop's own installation. This
+reuses the existing renderer rather than adding a second Markdown stack.
+
+Browser and desktop still produce separate bundles. The native build rejects
+browser-provider transport modules and production fixture data; shared visual
+source does not widen the desktop's IPC-only networking policy. Run both
+packages' tests and fresh production builds after a shared component change.
+
 ## Removing or updating an override
 
 Review published upstream fixes before removing these pins. For every affected

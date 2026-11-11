@@ -22,6 +22,11 @@ custom-protocol = ["tauri/custom-protocol"]
 name = "vibemux_desktop"
 path = "src/main.rs"
 
+[[example]]
+name = "native_ui_smoke"
+path = "examples/native_ui_smoke.rs"
+test = true
+
 [build-dependencies]
 tauri-build.workspace = true
 
