@@ -217,7 +217,7 @@ Before handoff:
 4. Update `PROGRESS.md` if implementation status changed.
 5. Update an ADR if an architecture decision changed.
 6. Report unverified platform paths explicitly.
-7. Leave the worktree clean or clearly describe remaining changes.
+7. Complete the build-artifact cleanup in Section 12.5 and describe any remaining worktree changes.
 8. Never say "tests pass" when they were not executed.
 
 ---
@@ -330,6 +330,14 @@ docs/<issue>-<short-name>
 - Redact authorization headers, cookies, tokens, environment secrets, and signed URLs.
 - High-cardinality payloads and file content do not belong in normal logs.
 - Audit events and diagnostic logs are separate concepts.
+
+### 7.8 Build profiles and artifact storage
+
+- Use `--release --locked` for installation, distribution, long-running use, and performance acceptance. Deliver the CLI, daemon, and companion programs from the same source revision as a matched set. Install them in a stable directory separate from disposable build output; the Windows flow is [scripts/install_local_tools.ps1](scripts/install_local_tools.ps1).
+- Development and ordinary tests may use dev/test profiles. Apply the validation scope in Section 14.4; a release build alone does not satisfy release validation.
+- Keep shared profile settings in repository-level Cargo configuration. Disable incremental compilation by default for temporary worktrees and one-off validation, and retain debug symbols according to diagnostic needs.
+- Before a large build, confirm the actual output path, including any `CARGO_TARGET_DIR` override, total build-artifact usage, and available disk space. Reuse a stable output location for the task instead of creating another `target` copy for each conversation or validation round.
+- Parallel tasks must have explicit ownership and coordination for their output directories. Sharing a cache requires coordinating both builds and cleanup; another task's active output is not available for deletion.
 
 ---
 
@@ -601,6 +609,14 @@ Never use string `startswith` as the sole containment test.
 - Do not prune unknown worktrees.
 - Main worktree deletion is impossible by construction and tested.
 
+### 12.5 Build-artifact cleanup
+
+- At task completion or worktree retirement, clean idle, reproducible artifacts owned by the task: incremental caches, test binaries, temporary test directories, and unneeded build intermediates. Within existing task authorization, execute the inspected cleanup plan without requesting the same authorization again. Otherwise, the dry-run default in Section 2 applies.
+- Verify resolved paths, ownership, active build/test/editor use, and dependencies of retained programs before deleting artifacts. `target`, `deps`, and `build` can contain runtime libraries, patches, or handoff evidence; directory names alone do not establish that their contents are disposable. Clearing generated artifacts does not authorize worktree removal, which follows Section 12.4.
+- Preserve source, test source, versioned fixtures, lockfiles, Git history, `.vibemux` state, uncommitted changes, required failure/handoff evidence, final deliverables, and their runtime dependencies. Test-source reduction requires an explicitly scoped change with its coverage impact documented.
+- Retain useful caches during active development; avoid repeated full cleanup and recompilation between validation steps. Retain and report resources whose ownership or use cannot be resolved rather than interrupting another task or guessing that its data is expendable.
+- After cleanup, compare source/worktree state, verify retained programs remain usable, and measure the change in filesystem free space. Report retained artifacts and unresolved cleanup in the handoff. Rebuild only when a code change or dependency concern requires it, not solely to verify deletion.
+
 ---
 
 ## 13. Security Rules
@@ -675,6 +691,12 @@ python -m pytest
 ```
 
 CI must build packages and run on Windows and Ubuntu. Release gates additionally require documented live Windows/WezTerm validation.
+
+### 14.4 Local validation scope
+
+- Start with the affected packages and tests, and reuse results that remain valid for unchanged inputs. Avoid repeating full-workspace validation in every worktree after each small edit.
+- Run complete checks at the applicable merge, CI, and release checkpoints. Local scoping does not waive Section 14.3 or the platform, protocol, security, and live-validation requirements that apply to the change.
+- Preserve required coverage when managing storage; skipped or unexecuted checks must remain explicit. Reclaim generated test artifacts through Section 12.5 after validation.
 
 ---
 
@@ -810,7 +832,7 @@ A task is complete only when all applicable items are true:
 - `PROGRESS.md` reflects any status change;
 - required checks were actually executed;
 - the diff contains no unrelated edits;
-- no unknown resource or dirty worktree is left behind;
+- task-owned resources are accounted for, pre-existing state is preserved, and any retained resources or remaining worktree changes are reported;
 - handoff lists residual risks accurately.
 
 ---
@@ -836,6 +858,11 @@ Every coding-agent handoff must include:
 ## Validation executed
 - command:
 - result:
+
+## Build artifacts and cleanup (when applicable)
+- build profile and retained program locations:
+- cleanup scope and measured free-space change:
+- retained artifacts or unresolved cleanup:
 
 ## Platform coverage
 - Windows:
