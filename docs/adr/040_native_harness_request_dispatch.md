@@ -181,6 +181,11 @@ and `vibemux_harness_native_fixture`.
   2026-08-27 record. They were not re-run on the merged tree, and the merge ran
   no vendor CLI.
 
+The [POSIX installer layout and selected cache](029_daemon_harness_dispatch.md#posix-claude-native-launcher-and-selected-version-observations)
+belong to daemon dispatch and the launcher observation producer. The
+standalone `vibemuxctl harness` route retains its own configuration and
+admission rules.
+
 ## Compatibility and Rollback
 
 The new crate is additive; existing daemon IPC, database formats, and Python

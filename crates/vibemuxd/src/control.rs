@@ -38,7 +38,10 @@ use crate::supervisor_service::{SupervisorService, SupervisorServiceConfig};
 use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapshot};
 use crate::workflow::{WorkflowService, WorkflowServiceSettings};
 use crate::{CompatibilityLock, WriterError, WriterHealth, WriterWorker};
-use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
+use vibemux_harness::{
+    HarnessDetection, HarnessRefreshScope, HarnessRow, dispatch::route_config::DispatchCatalogEntry,
+};
+use vibemux_probe::{cache::DetectionCache, version_only::LauncherObservation};
 #[path = "control_decision.rs"]
 mod decision_ops;
 #[path = "control_dsh_session.rs"]
@@ -2165,8 +2168,14 @@ async fn shutdown_writer(state: Arc<ServerState>) -> Result<(), ControlError> {
 /// from committing the rest.
 fn load_probe_detections(
     path: &Path,
-) -> Result<std::collections::BTreeMap<String, HarnessDetection>, ControlError> {
-    let report = vibemux_probe::cache::read_cache(path).map_err(|error| match error {
+) -> Result<
+    (
+        HarnessRefreshScope,
+        std::collections::BTreeMap<String, HarnessDetection>,
+    ),
+    ControlError,
+> {
+    let cache = vibemux_probe::cache::read_detection_cache(path).map_err(|error| match error {
         vibemux_probe::cache::CacheError::Missing => ControlError::Remote {
             code: "harness_probe_cache_missing".to_string(),
         },
@@ -2175,35 +2184,49 @@ fn load_probe_detections(
         vibemux_probe::cache::CacheError::Invalid => ControlError::InvalidRequest,
         vibemux_probe::cache::CacheError::Io => ControlError::InvalidRequest,
     })?;
+    let (scope, observations) = match cache {
+        DetectionCache::Full(report) => (
+            HarnessRefreshScope::Full,
+            report
+                .agents
+                .into_iter()
+                .map(|agent| LauncherObservation {
+                    agent: agent.agent,
+                    launcher_state: agent.launcher_state,
+                    launcher: agent.launcher,
+                    path: agent.path,
+                    version: agent.version,
+                })
+                .collect(),
+        ),
+        DetectionCache::VersionOnly(report) => {
+            (HarnessRefreshScope::ObservedOnly, vec![report.observation])
+        }
+    };
     let mut detections = std::collections::BTreeMap::new();
-    for agent in report.agents {
+    for observation in observations {
         // Fail-closed: one bad agent row degrades only itself.
-        let Ok(detection) = vibemux_harness::detection_from_probe(
-            agent.launcher_state,
-            agent.launcher,
-            agent.version.as_deref(),
-            agent.path.as_deref(),
-        ) else {
-            detections.insert(
-                agent.agent.command_name().to_string(),
-                HarnessDetection {
-                    detected: false,
-                    path: None,
-                    launcher: None,
-                    version: None,
-                },
-            );
-            continue;
-        };
-        detections.insert(agent.agent.command_name().to_string(), detection);
+        let detection = vibemux_harness::detection_from_probe(
+            observation.launcher_state,
+            observation.launcher,
+            observation.version.as_deref(),
+            observation.path.as_deref(),
+        )
+        .unwrap_or(HarnessDetection {
+            detected: false,
+            path: None,
+            launcher: None,
+            version: None,
+        });
+        detections.insert(observation.agent.command_name().to_string(), detection);
     }
-    Ok(detections)
+    Ok((scope, detections))
 }
 
 async fn harness_refresh(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, ControlError> {
     let probe_cache_path = state.probe_cache_path.clone();
     tokio::task::spawn_blocking(move || -> Result<Vec<HarnessRow>, ControlError> {
-        let detections = load_probe_detections(&probe_cache_path)?;
+        let (scope, detections) = load_probe_detections(&probe_cache_path)?;
         let writer = {
             let guard = state
                 .writer
@@ -2219,7 +2242,8 @@ async fn harness_refresh(state: Arc<ServerState>) -> Result<Vec<HarnessRow>, Con
         // listing rows are built locally without a second commit or a
         // second harness_config read.
         let idempotency_key = format!("harness-probe-{}", Uuid::new_v4());
-        let outcome = writer.commit_harness_snapshot(detections, iso_now(), idempotency_key)?;
+        let outcome =
+            writer.commit_scoped_harness_snapshot(detections, iso_now(), idempotency_key, scope)?;
         Ok(vibemux_harness::build_rows_from_registry(
             &outcome.registry,
             &outcome.config,
@@ -3665,6 +3689,38 @@ mod tests {
         assert!(claude_cached.available);
 
         // Events were appended.
+        server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn selected_refresh_clears_only_the_observed_launcher() {
+        use vibemux_probe::{AgentKind, ProbeConfig, cache, version_only::run_version_probe};
+
+        let temp = tempfile::tempdir().expect("temp");
+        let database_path = temp.path().join("state.sqlite3");
+        let runtime_dir = temp.path().join(".vibemux");
+        let server = DaemonControlServer::start(&database_path, &runtime_dir)
+            .await
+            .expect("server");
+        let client = ControlClient::from_descriptor(server.descriptor_path()).expect("client");
+        write_probe_cache(temp.path(), &["claude", "codex"]);
+        client.harness_refresh().await.expect("full refresh");
+        client.harness_switch("codex").await.expect("switch");
+
+        let mut config = ProbeConfig::from_environment();
+        config.path_entries.clear();
+        let report = run_version_probe(&config, AgentKind::Claude).await;
+        let path = temp.path().join(cache::PROBE_CACHE_FILE_NAME);
+        cache::write_version_cache(&report, &path).expect("selected cache");
+        let rows = client.harness_refresh().await.expect("selected refresh");
+        let codex = rows.iter().find(|row| row.name == "codex").expect("codex");
+        assert!(codex.available && codex.default);
+        let claude = rows
+            .iter()
+            .find(|row| row.name == "claude")
+            .expect("claude");
+        assert!(!claude.available);
+        assert!(claude.version.is_none());
         server.shutdown().await.expect("shutdown");
     }
 

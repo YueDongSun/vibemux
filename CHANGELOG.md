@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Accept the macOS and Linux Claude native installer's version-named image for daemon initialize-only routes. Add `vibemux_probe --version-only --harness <name>` and a selected cache that refreshes one harness without provider, CC Switch, or A2A discovery. Existing full reports and caches retain schema 1.
+
 - Make the monitor's one-time enrollment QR request single-flight. A repeated "Create one-time QR" click no longer mints a second server-side one-time token, and the request owner is released on failure, sign-out, token installation, and unmount.
 - Update the locked `rusqlite` to 0.41.1 and `libsqlite3-sys` to 0.39.1 for RUSTSEC-2026-0459 (C SQLite CVE-2026-119375). rusqlite 0.41 removed its `u64` SQL conversions, so the store converts `u64` explicitly at the SQL boundary and fails closed on out-of-range values; the bundled SQLite engine also moves to the version shipped with libsqlite3-sys 0.39.1.
 - Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.

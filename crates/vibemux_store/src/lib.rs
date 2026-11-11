@@ -8,7 +8,8 @@ use serde_json::Value;
 use thiserror::Error;
 use vibemux_events::{EventDraft, EventEnvelope, EventError, EventSequence};
 use vibemux_harness::{
-    HarnessConfigSnapshot, HarnessDetection, HarnessRegistrySnapshot, seed_config, seed_registry,
+    HarnessConfigSnapshot, HarnessDetection, HarnessRefreshScope, HarnessRegistrySnapshot,
+    seed_config, seed_registry,
 };
 use vibemux_types::{ProjectId, Run, Task};
 
@@ -386,9 +387,25 @@ impl SqliteStore {
         checked_at: &str,
         idempotency_key: &str,
     ) -> Result<HarnessSnapshotOutcome, StoreError> {
+        self.commit_scoped_harness_snapshot(
+            detections,
+            checked_at,
+            idempotency_key,
+            HarnessRefreshScope::Full,
+        )
+    }
+
+    pub fn commit_scoped_harness_snapshot(
+        &mut self,
+        detections: &std::collections::BTreeMap<String, HarnessDetection>,
+        checked_at: &str,
+        idempotency_key: &str,
+        scope: HarnessRefreshScope,
+    ) -> Result<HarnessSnapshotOutcome, StoreError> {
         let previous = self.harness_registry()?;
         let previous_config = self.harness_config()?;
-        let (registry, payload) = vibemux_harness::build_refresh(&previous, detections, checked_at);
+        let (registry, payload) =
+            vibemux_harness::build_scoped_refresh(&previous, detections, checked_at, scope);
         registry
             .validate()
             .map_err(|error| StoreError::InvalidHarnessState(error.code()))?;

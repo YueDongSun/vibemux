@@ -155,7 +155,7 @@ fn sanitize(mut report: ProbeReport) -> Result<ProbeReport, Error> {
     Ok(report)
 }
 
-fn public_version(value: &str) -> Option<String> {
+pub(crate) fn public_version(value: &str) -> Option<String> {
     // Expose numeric version components only, never arbitrary launcher output.
     value.split_whitespace().find_map(|word| {
         let word = word.strip_prefix('v').unwrap_or(word);

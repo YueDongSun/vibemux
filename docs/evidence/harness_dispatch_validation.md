@@ -243,3 +243,112 @@ and launched.
 
 Still not verified: an authenticated Claude turn, any Codex turn, and a
 cancel against a live vendor.
+
+## Selected Claude initialize procedure
+
+Use a fresh, disposable project on macOS or Linux and the operator's native
+Claude installer. This procedure uses daemon dispatch (ADR 029). Set up the
+vendor process and any permitted account access explicitly before running
+initialize. The vendor process runs as the operator and may consult the account
+environment or OS services. Omitting a credential variable does not prevent
+vendor access to account state. Use the controlled check below when that access
+has not been authorized.
+
+Build all four VibeMux binaries into the same directory:
+
+```sh
+cargo build -p vibemuxd --bin vibemuxd --bin vibemux_launch_trampoline \
+  -p vibemux_cli --bin vibemuxctl -p vibemux_probe --bin vibemux_probe
+bin_dir="$PWD/target/debug"
+```
+
+Create the route and observe the single launcher. Run these commands in a shell
+whose PATH resolves Claude to the same installer launcher:
+
+```sh
+project="$(mktemp -d /tmp/vmx-claude.XXXXXX)"
+launcher="$HOME/.local/bin/claude"
+test "$(command -v claude)" = "$launcher" || exit 1
+mkdir -m 700 "$project/.vibemux"
+
+python3 - "$project" "$launcher" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+project, launcher = sys.argv[1:]
+route = {
+    "harness": "claude",
+    "protocol": "claude_stream_json",
+    "executable": launcher,
+    "enabled": True,
+    "allow_execution": False,
+    "environment_names": ["DISABLE_AUTOUPDATER"],
+}
+with (Path(project) / ".vibemux/harness_dispatch.json").open("x") as file:
+    json.dump({"schema_version": 1, "routes": [route]}, file)
+PY
+
+"$bin_dir/vibemux_probe" --version-only --harness claude --write-cache \
+  --project-root "$project"
+```
+
+Check that the observation is `verified` and names the expected installer
+launcher. The report is private local metadata, including a launcher path.
+This probe runs `--version` with bounded output and a deadline. VibeMux
+does not inspect provider config or CC Switch databases, contact a gateway,
+or run the A2A self-test in this mode.
+
+After the operator has authorized this vendor initialize, run:
+
+```sh
+TMPDIR="$project" DISABLE_AUTOUPDATER=1 "$bin_dir/vibemuxctl" daemon start --project-root "$project"
+"$bin_dir/vibemuxctl" --format json harnesses --project-root "$project" >/dev/null
+"$bin_dir/vibemuxctl" --format json dispatch catalog --project-root "$project"
+"$bin_dir/vibemuxctl" --format json tasks list --project-root "$project"
+"$bin_dir/vibemuxctl" --format json dispatch probe claude --project-root "$project"
+"$bin_dir/vibemuxctl" --format json tasks list --project-root "$project"
+"$bin_dir/vibemuxctl" daemon stop --project-root "$project"
+test ! -e "$project/.vibemux/control.json" && test ! -e "$project/.vibemux/writer.lock"
+```
+
+Expect one probe-supported route with execution disabled, empty task lists
+before and after, and `outcome: "probed"` with exit code zero and no forced
+termination. The probe sends only initialize. Its response contains counts,
+exit status, and a digest. Treat any other outcome as a failed check and retain
+only the fixed error code and process/capture metadata. Always stop the daemon,
+including after a failure. Before removing the exact scratch directory,
+confirm the stop succeeded, the descriptor and writer lock are gone, and no
+`vibemux_ctl_*.sock` remains in that directory.
+
+The controlled POSIX check runs the same VibeMux binaries against a synthetic
+Claude process. It asserts that initialize is the only message before EOF,
+verifies that diagnostics omit fixture content, checks that the scratch database
+has zero canonical Task/Run records, and verifies daemon cleanup:
+
+```sh
+python3.12 crates/vibemux_cli/tests/claude_initialize_smoke.py "$bin_dir"
+```
+
+Version detection and an initialize exchange do not establish authentication,
+model inference, or readiness for paid prompts.
+
+### macOS live run (2026-11-11)
+
+The feature worktree's Rust 1.92.0 dev binaries ran Claude Code 2.1.322 on
+macOS 26.6.2 arm64. The operator authorized the existing account context
+with a zero inference budget. The daemon forwarded the existing `HOME`
+and disabled the vendor updater. The single route had `allow_execution: false`.
+
+`vibemux_probe --version-only --harness claude --write-cache` verified the
+native installer launcher. After detection refresh, `vibemuxctl --format json
+dispatch probe claude --project-root <scratch>` returned `probed` with exit
+code 0, one record, zero usage records, zero stderr bytes, and no forced
+termination. VibeMux sent no user message or inference request.
+
+`vibemuxctl tasks list` was empty before and after the probe. After the daemon
+stopped, a read-only check of the scratch store found zero Task and Run
+projections, zero Task or Run correlated events, and zero dispatch attempts.
+The owned daemon was reaped, the observed probe process group was empty,
+and the descriptor, writer lock, and socket were gone before the scratch
+project was removed.

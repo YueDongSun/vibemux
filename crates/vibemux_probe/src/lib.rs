@@ -5,6 +5,7 @@
 pub mod cache;
 
 pub mod snapshot;
+pub mod version_only;
 
 use std::{
     collections::BTreeSet,
@@ -237,49 +238,37 @@ pub fn report_json(report: &ProbeReport) -> Result<String, ProbeError> {
 async fn probe_agent(agent: AgentKind, config: &ProbeConfig) -> AgentProbe {
     let endpoints = discover_endpoints(agent, config);
     let route = classify_route(&endpoints);
-    let Some(launcher) =
-        resolve_launcher(agent.command_name(), &config.path_entries, &config.home_dir)
-    else {
-        return AgentProbe {
-            agent,
-            launcher_state: ProbeState::Unavailable,
-            authentication_state: ProbeState::NotRun,
-            inference_state: ProbeState::NotRun,
-            launcher: LauncherKind::Unavailable,
-            path: None,
-            version: None,
-            route,
-            endpoints,
-            code: "launcher_unavailable".to_string(),
-        };
+    let (launcher, path, version) = observe_launcher(agent, config, &config.path_entries).await;
+    let (launcher_state, code) = match (&path, &version) {
+        (None, _) => (ProbeState::Unavailable, "launcher_unavailable"),
+        (Some(_), None) => (ProbeState::Failed, "version_probe_failed"),
+        (Some(_), Some(_)) => (ProbeState::Verified, "version_verified"),
     };
-    let path = Some(launcher.resolved_path.to_string_lossy().into_owned());
-    match probe_version(&launcher, config.command_timeout).await {
-        Ok(version) => AgentProbe {
-            agent,
-            launcher_state: ProbeState::Verified,
-            authentication_state: ProbeState::NotRun,
-            inference_state: ProbeState::NotRun,
-            launcher: launcher.kind,
-            path,
-            version: Some(version),
-            route,
-            endpoints,
-            code: "version_verified".to_string(),
-        },
-        Err(()) => AgentProbe {
-            agent,
-            launcher_state: ProbeState::Failed,
-            authentication_state: ProbeState::NotRun,
-            inference_state: ProbeState::NotRun,
-            launcher: launcher.kind,
-            path,
-            version: None,
-            route,
-            endpoints,
-            code: "version_probe_failed".to_string(),
-        },
+    AgentProbe {
+        agent,
+        launcher_state,
+        authentication_state: ProbeState::NotRun,
+        inference_state: ProbeState::NotRun,
+        launcher,
+        path,
+        version,
+        route,
+        endpoints,
+        code: code.to_string(),
     }
+}
+
+async fn observe_launcher(
+    agent: AgentKind,
+    config: &ProbeConfig,
+    paths: &[PathBuf],
+) -> (LauncherKind, Option<String>, Option<String>) {
+    let Some(launcher) = resolve_launcher(agent.command_name(), paths, &config.home_dir) else {
+        return (LauncherKind::Unavailable, None, None);
+    };
+    let path = launcher.resolved_path.to_string_lossy().into_owned();
+    let version = probe_version(&launcher, config.command_timeout).await.ok();
+    (launcher.kind, Some(path), version)
 }
 
 async fn probe_version(launcher: &LauncherSpec, deadline: Duration) -> Result<String, ()> {
@@ -292,7 +281,10 @@ async fn probe_version(launcher: &LauncherSpec, deadline: Duration) -> Result<St
         }
     }
     command.kill_on_drop(true);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // Windows: probe children (harness shims, powershell/pwsh wrappers
     // for .ps1 launchers) must never flash a console window of their
     // own, even when the parent is a GUI-subsystem process.

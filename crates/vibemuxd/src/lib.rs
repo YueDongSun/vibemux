@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
-use vibemux_harness::{HarnessDetection, HarnessRow};
+use vibemux_harness::{HarnessDetection, HarnessRefreshScope, HarnessRow};
 use vibemux_store::{
     A2aCommitOutcome, HarnessDispatchAdmission, HarnessDispatchClaim, HarnessDispatchCommit,
     HarnessDispatchFinish, HarnessDispatchRecord, HarnessSnapshotOutcome, HarnessSwitchOutcome,
@@ -224,6 +224,7 @@ enum WriterRequest {
     ProjectId(mpsc::Sender<Result<Option<ProjectId>, WriterError>>),
     CommitHarnessSnapshot {
         detections: std::collections::BTreeMap<String, HarnessDetection>,
+        scope: HarnessRefreshScope,
         checked_at: String,
         idempotency_key: String,
         response: mpsc::Sender<Result<HarnessSnapshotOutcome, WriterError>>,
@@ -447,9 +448,25 @@ impl WriterHandle {
         checked_at: String,
         idempotency_key: String,
     ) -> Result<HarnessSnapshotOutcome, WriterError> {
+        self.commit_scoped_harness_snapshot(
+            detections,
+            checked_at,
+            idempotency_key,
+            HarnessRefreshScope::Full,
+        )
+    }
+
+    pub(crate) fn commit_scoped_harness_snapshot(
+        &self,
+        detections: std::collections::BTreeMap<String, HarnessDetection>,
+        checked_at: String,
+        idempotency_key: String,
+        scope: HarnessRefreshScope,
+    ) -> Result<HarnessSnapshotOutcome, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::CommitHarnessSnapshot {
             detections,
+            scope,
             checked_at,
             idempotency_key,
             response,
@@ -938,12 +955,18 @@ fn writer_loop(
             }
             WriterRequest::CommitHarnessSnapshot {
                 detections,
+                scope,
                 checked_at,
                 idempotency_key,
                 response,
             } => {
                 let result = store
-                    .commit_harness_snapshot(&detections, &checked_at, &idempotency_key)
+                    .commit_scoped_harness_snapshot(
+                        &detections,
+                        &checked_at,
+                        &idempotency_key,
+                        scope,
+                    )
                     .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }
