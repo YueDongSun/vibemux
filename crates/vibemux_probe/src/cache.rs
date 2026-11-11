@@ -21,7 +21,16 @@ use std::{
 
 use thiserror::Error;
 
-use crate::ProbeReport;
+use crate::{
+    PROBE_SCHEMA_VERSION, ProbeReport,
+    version_only::{self, VersionProbeReport},
+};
+
+/// Cache formats accepted by the daemon for detection refresh.
+pub enum DetectionCache {
+    Full(Box<ProbeReport>),
+    VersionOnly(VersionProbeReport),
+}
 
 /// The cache file name. This module is the single owner of the name; the
 /// daemon's `DaemonPaths::probe_cache_path` and the probe binary both derive
@@ -67,6 +76,17 @@ pub fn default_cache_path(project_root: &Path) -> PathBuf {
 /// cache or the new complete cache, never a partial write. On any failure the
 /// temp file is removed and the previous cache is left untouched.
 pub fn write_cache(report: &ProbeReport, path: &Path) -> Result<(), CacheError> {
+    write_encoded_cache(report, path)
+}
+
+pub fn write_version_cache(report: &VersionProbeReport, path: &Path) -> Result<(), CacheError> {
+    if !report.is_valid() {
+        return Err(CacheError::Invalid);
+    }
+    write_encoded_cache(report, path)
+}
+
+fn write_encoded_cache(report: &impl serde::Serialize, path: &Path) -> Result<(), CacheError> {
     let bytes = serde_json::to_vec(report).map_err(|_| CacheError::Io)?;
     let parent = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
@@ -94,6 +114,13 @@ pub fn write_cache(report: &ProbeReport, path: &Path) -> Result<(), CacheError> 
 /// bounded read so a file that grows between the metadata check and the read
 /// cannot slip past the bound.
 pub fn read_cache(path: &Path) -> Result<ProbeReport, CacheError> {
+    match read_detection_cache(path)? {
+        DetectionCache::Full(report) => Ok(*report),
+        DetectionCache::VersionOnly(_) => Err(CacheError::Invalid),
+    }
+}
+
+pub fn read_detection_cache(path: &Path) -> Result<DetectionCache, CacheError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -134,7 +161,26 @@ pub fn read_cache(path: &Path) -> Result<ProbeReport, CacheError> {
     if bytes.len() as u64 > MAX_CACHE_BYTES {
         return Err(CacheError::TooLarge);
     }
-    serde_json::from_slice(&bytes).map_err(|_| CacheError::Invalid)
+    #[derive(serde::Deserialize)]
+    struct CacheHeader {
+        schema_version: u16,
+    }
+    let header: CacheHeader = serde_json::from_slice(&bytes).map_err(|_| CacheError::Invalid)?;
+    match header.schema_version {
+        PROBE_SCHEMA_VERSION => {
+            let report = serde_json::from_slice(&bytes).map_err(|_| CacheError::Invalid)?;
+            Ok(DetectionCache::Full(report))
+        }
+        version_only::SCHEMA_VERSION => {
+            let report: VersionProbeReport =
+                serde_json::from_slice(&bytes).map_err(|_| CacheError::Invalid)?;
+            if !report.is_valid() {
+                return Err(CacheError::Invalid);
+            }
+            Ok(DetectionCache::VersionOnly(report))
+        }
+        _ => Err(CacheError::Invalid),
+    }
 }
 
 fn create_private_dir(parent: &Path) -> Result<(), CacheError> {
@@ -368,6 +414,54 @@ mod tests {
         );
         let decoded = read_cache(&path).expect("legacy cache parses");
         assert_eq!(decoded.agents[0].path, None);
+    }
+
+    #[test]
+    fn detection_cache_rejects_unknown_versions_and_unverified_shapes() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = default_cache_path(temp.path());
+        fs::create_dir_all(path.parent().expect("parent")).expect("runtime dir");
+        let mut legacy = serde_json::to_value(sample_report()).expect("v1 cache");
+        legacy["schema_version"] = serde_json::json!(3);
+        write_raw(&path, &serde_json::to_vec(&legacy).expect("encode"));
+        assert!(matches!(
+            read_detection_cache(&path),
+            Err(CacheError::Invalid)
+        ));
+
+        let mut selective = serde_json::json!({
+            "schema_version": 2,
+            "coverage": "version_only",
+            "observed_at_epoch_seconds": 1,
+            "platform": "test",
+            "observation": {
+                "agent": "claude",
+                "launcher_state": "verified",
+                "launcher": "direct_executable",
+                "path": null,
+                "version": null
+            }
+        });
+        write_raw(&path, &serde_json::to_vec(&selective).expect("encode"));
+        assert!(matches!(
+            read_detection_cache(&path),
+            Err(CacheError::Invalid)
+        ));
+
+        selective["observation"]["launcher_state"] = serde_json::json!("unavailable");
+        selective["observation"]["launcher"] = serde_json::json!("unavailable");
+        write_raw(&path, &serde_json::to_vec(&selective).expect("encode"));
+        assert!(matches!(
+            read_detection_cache(&path),
+            Ok(DetectionCache::VersionOnly(_))
+        ));
+
+        selective["agents"] = serde_json::json!([]);
+        write_raw(&path, &serde_json::to_vec(&selective).expect("encode"));
+        assert!(matches!(
+            read_detection_cache(&path),
+            Err(CacheError::Invalid)
+        ));
     }
 
     #[cfg(unix)]

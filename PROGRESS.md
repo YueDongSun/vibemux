@@ -7760,3 +7760,31 @@ retained in the task's local validation artifact.
   not mount a real DOM, so unmount itself is not covered by an automated
   case. Live enrollment endpoints, real browser DOM races, and the Rust
   workspace were not run for this patch.
+
+### 2026-11-11 — Claude native installer and selected version probe
+
+- [ADR 029](docs/adr/029_daemon_harness_dispatch.md#posix-claude-native-launcher-and-selected-version-observations)
+  defines a probe-only exception for the Claude installer symlink on macOS
+  and Linux. The daemon pins its canonical external version image. Tests
+  reject interpreter links, project-owned targets, scripted version targets,
+  direct version paths, and use of the exception on execution-enabled routes.
+- `vibemux_probe --version-only --harness claude --write-cache` records one
+  observed launcher in cache schema 2. The existing full schema 1 still
+  imports. The sole writer updates only the selected detection. This mode
+  skips VibeMux provider discovery, CC Switch health and database reads,
+  and A2A self-test.
+- On macOS 26.6.2 arm64 with Rust 1.92.0, the selected producer verified
+  Claude Code 2.1.322 and the daemon accepted the installed symlink as a
+  probe-only route. The disposable project had zero Tasks and was removed
+  after the owned daemon, descriptor, lock, and socket were gone. The
+  controlled CLI/daemon test verified a single initialize followed by EOF,
+  content-free diagnostics, zero canonical Task/Run records, and clean
+  shutdown. See the [procedure](docs/evidence/harness_dispatch_validation.md#selected-claude-initialize-procedure).
+- With operator authorization and a zero inference budget, the live
+  Claude Code 2.1.322 initialize probe returned `probed`, exited 0 without
+  forced termination, and recorded zero usage. The scratch store had zero
+  Tasks, Runs, correlated events, and dispatch attempts. The owned daemon
+  and observed probe process group exited, and the scratch project was removed.
+  See the [macOS run](docs/evidence/harness_dispatch_validation.md#macos-live-run-2026-11-11).
+- Copilot and Kilo execution and the AAG gateway remain outside this slice.
+  Native Windows and Linux were not exercised for this change.

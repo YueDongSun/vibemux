@@ -538,6 +538,20 @@ pub fn executable_names_harness(path: &Path, harness: AgentKind, policy: Executa
     }
 }
 
+/// The POSIX Claude native installer uses a plain version as its image
+/// filename. This checks only the leaf name. The daemon verifies the layout.
+#[must_use]
+pub fn claude_native_version_name(name: &str) -> bool {
+    let mut parts = name.split('.');
+    name.len() <= 32
+        && (0..3).all(|_| {
+            parts.next().is_some_and(|part| {
+                !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
+        && parts.next().is_none()
+}
+
 fn validate_environment_names(names: &[String]) -> Result<(), DispatchError> {
     if names.len() > MAX_ENVIRONMENT_NAMES {
         return Err(DispatchError::ConfigEnvironmentInvalid);
@@ -853,6 +867,21 @@ mod tests {
                 AgentKind::Codex,
                 policy
             ));
+        }
+    }
+
+    #[test]
+    fn claude_native_version_name_is_three_numeric_components() {
+        assert!(claude_native_version_name("2.1.322"));
+        for name in [
+            "claude",
+            "2.1",
+            "2.1.322.exe",
+            "2.1.322-beta",
+            "2..322",
+            "2.1.３２２",
+        ] {
+            assert!(!claude_native_version_name(name), "{name}");
         }
     }
 

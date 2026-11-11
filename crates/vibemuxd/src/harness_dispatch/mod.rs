@@ -711,6 +711,9 @@ impl HarnessDispatchService {
                 return Err(DispatchError::Busy.into());
             }
             let (signal, cancel) = watch::channel(false);
+            // Like dispatch attempts, retire completed workers as new probes
+            // arrive so repeated initialize-only calls do not grow the JoinSet.
+            while registry.tasks.try_join_next().is_some() {}
             registry.probe = Some(signal);
             let inner = Arc::downgrade(&self.inner);
             registry.tasks.spawn(async move {

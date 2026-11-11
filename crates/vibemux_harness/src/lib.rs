@@ -368,28 +368,11 @@ pub fn build_rows_from_registry(
         .collect()
 }
 
-/// Classify the detected/missing harness partition alphabetically, matching
-/// the Python `services.py` payload order (Python iterates over a sorted
-/// `dict`). This is the only classifier that produces the partition; every
-/// other entry point delegates here.
-fn classify_detections(
-    detections: &BTreeMap<String, HarnessDetection>,
-) -> (Vec<&'static str>, Vec<&'static str>) {
-    let mut detected = Vec::new();
-    let mut missing = Vec::new();
-    for profile in profiles() {
-        if detections
-            .get(profile.command)
-            .is_some_and(HarnessDetection::is_detected)
-        {
-            detected.push(profile.command);
-        } else {
-            missing.push(profile.command);
-        }
-    }
-    detected.sort_unstable();
-    missing.sort_unstable();
-    (detected, missing)
+/// Whether a refresh covers the full registry or just its observation keys.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HarnessRefreshScope {
+    Full,
+    ObservedOnly,
 }
 
 impl HarnessDetection {
@@ -417,43 +400,51 @@ pub fn build_refresh(
     detections: &BTreeMap<String, HarnessDetection>,
     checked_at: &str,
 ) -> (HarnessRegistrySnapshot, Value) {
+    build_scoped_refresh(previous, detections, checked_at, HarnessRefreshScope::Full)
+}
+
+pub fn build_scoped_refresh(
+    previous: &HarnessRegistrySnapshot,
+    detections: &BTreeMap<String, HarnessDetection>,
+    checked_at: &str,
+    scope: HarnessRefreshScope,
+) -> (HarnessRegistrySnapshot, Value) {
     let mut harnesses = Vec::with_capacity(AgentKind::all().len());
+    let mut detected = Vec::new();
+    let mut missing = Vec::new();
     for profile in profiles() {
         let input = detections.get(profile.command);
-        let is_detected = input.is_some_and(HarnessDetection::is_detected);
-        // Fail-closed: an undetected entry never persists path/launcher/
-        // version, even if the caller supplied a `HarnessDetection` with
-        // those fields populated. Every upstream pipeline (the probe-derived
-        // `detection_from_probe` and the daemon's degrade path) already zeros
-        // them for undetected, so this is the one place that can enforce the
-        // invariant independently of the caller.
+        let previous_state = previous.state(profile.command);
+        let observed = input.is_some() || scope == HarnessRefreshScope::Full;
+        if !observed && let Some(state) = previous_state {
+            harnesses.push(HarnessEntry {
+                name: profile.command.to_string(),
+                state: state.clone(),
+            });
+            continue;
+        }
+        // Undetected entries never persist paths, launchers, or versions.
+        let detected_input = input.filter(|input| input.is_detected());
+        if detected_input.is_some() {
+            detected.push(profile.command);
+        } else if observed {
+            missing.push(profile.command);
+        }
         harnesses.push(HarnessEntry {
             name: profile.command.to_string(),
             state: HarnessState {
-                detected: is_detected,
-                path: if is_detected {
-                    input.and_then(|input| input.path.clone())
-                } else {
-                    None
-                },
-                roles: previous
-                    .state(profile.command)
+                detected: detected_input.is_some(),
+                path: detected_input.and_then(|input| input.path.clone()),
+                roles: previous_state
                     .map(|state| state.roles.clone())
                     .unwrap_or_default(),
-                launcher: if is_detected {
-                    input.and_then(|input| input.launcher)
-                } else {
-                    None
-                },
-                version: if is_detected {
-                    input.and_then(|input| input.version.clone())
-                } else {
-                    None
-                },
+                launcher: detected_input.and_then(|input| input.launcher),
+                version: detected_input.and_then(|input| input.version.clone()),
             },
         });
     }
-    let (detected, missing) = classify_detections(detections);
+    detected.sort_unstable();
+    missing.sort_unstable();
     let snapshot = HarnessRegistrySnapshot {
         checked_at: Some(checked_at.to_string()),
         harnesses,

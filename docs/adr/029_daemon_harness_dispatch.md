@@ -231,7 +231,8 @@ it and rejects any edge not listed here.
   be the harness command name (`codex`, `claude`, `opencode`, `copilot`,
   `grok`; ASCII case-insensitive on Windows), so a cloned repository cannot
   plant the binary or point a route at an interpreter (open decision 2).
-  Failures return `harness_dispatch_config_executable_invalid`. The
+  The [POSIX Claude native installer amendment](#posix-claude-native-launcher-and-selected-version-observations)
+  defines a probe-only exception. Failures return `harness_dispatch_config_executable_invalid`. The
   file's trust boundary is the same logon SID as the rest of `.vibemux/`; no
   extra ACL is promised. Schema 1 carries **no operator argv**: every argument
   comes from the protocol profile. The installed CLIs expose more than 60
@@ -800,3 +801,65 @@ Tests preserve the original exited-leader assertion and cover a surviving
 descendant, idempotency, denied enumeration, additional/unknown members, and
 incomplete observations. Multiple residual zombies conservatively remain an
 error. This does not expand process groups into a hostile-code sandbox.
+
+## POSIX Claude native launcher and selected version observations
+
+The POSIX native installer can expose `$HOME/.local/bin/claude` as a symlink
+to `$HOME/.local/share/claude/versions/<major.minor.patch>`. For a
+`claude_stream_json` route with `allow_execution: false`, accept this
+layout in addition to the existing named-image rule. Resolve the account
+home, require the configured installer symlink and its canonical parent,
+and compare the canonical image to the exact version path under that home.
+Require an executable regular file outside the canonical project root and a
+native image header for the host (Mach-O on macOS or ELF on Linux). Launch
+the canonical image pinned at load time. A retargeted launcher pointing
+outside the installer directory, a project-owned image, an arbitrary
+interpreter path, a script, and an arbitrary version-named path fail the
+check. The same-account install directory is trusted under the existing
+operator boundary. The layout check does not authenticate the publisher or
+protect against modification by that account. Windows keeps its existing
+named `.exe` rule. ADR 040's standalone path has independent admission.
+
+`vibemux_probe --version-only --harness <name>` resolves one launcher from the
+operator's absolute UTF-8 PATH entries and runs its fixed `--version` command. VibeMux skips provider
+discovery, CC Switch health and database access, and A2A self-test in this
+mode. The private report contains one real launcher observation, its platform
+and timestamp, and `coverage: "version_only"` identifying its provenance.
+Verified observations retain a numeric version and resolved launcher path.
+No unobserved harness, endpoint, authentication, or inference rows are written.
+
+Full reports and caches keep schema 1. The selected report uses schema 2 with a
+single `observation` and no full-report fields. For example:
+
+```json
+{
+  "schema_version": 2,
+  "coverage": "version_only",
+  "observed_at_epoch_seconds": 1794384000,
+  "platform": "macos",
+  "observation": {
+    "agent": "claude",
+    "launcher_state": "verified",
+    "launcher": "direct_executable",
+    "path": "/example/account/.local/bin/claude",
+    "version": "2.1.322"
+  }
+}
+```
+
+`--write-cache` atomically replaces the project cache. The sole writer updates
+only the observed registry entry when importing schema 2, including clearing
+its detection after a failed or unavailable observation. Other entries,
+roles, and the selected default carry over. The existing `harness_probed`
+event lists the observed harness in `detected` or `missing`. The database and
+Control IPC schemas are unchanged. Existing schema 1 caches still import
+as full refreshes. Before downgrading to an older daemon, regenerate the
+cache with the schema 1 producer if full discovery is authorized. Older
+readers require full-report fields and refuse schema 2.
+
+Detection remains launcher evidence. Dispatch still requires the trusted
+enabled route and persisted detection. The probe keeps the existing deadline,
+capture limits, content-free response, and process-tree cleanup. Completed
+probe workers are drained as new probes arrive. It sends
+only initialize and creates no Task or Run. This amendment grants no prompt
+execution, budget, provider, gateway, or attestation authority.
