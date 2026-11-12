@@ -36,6 +36,7 @@ python scripts/verify_fused_harness_cloud.py \
 | C01 | passed | `actual_daemon_hub_adapter` | Real daemon descriptor v10; Hub adapter authenticated `health` + `frontend_tasks`; `check=connected`; additive v10 `capabilities` discovery (`discovery=capabilities`, 47 operations, 11 runtimes); unknown operation → `vibemux_operation_not_allowed`; unknown descriptor version → `vibemux_ipc_version_mismatch`; unknown contract family → `vibemux_contract_family_mismatch`; unknown catalog shape → `vibemux_contract_mismatch` |
 | A1 | passed | `source_dependency_graph` | CLI tree has no egui/eframe/winit/Tauri; default web tree has no ece/openssl/p256; `--features push` restores OpenSSL |
 | A2 | passed | `local_build_tooling` | `build_storage.py inventory` returned schema 1 with free-space and slot data |
+| C11-SLOTS | passed | `managed_build_slot_contention` | Two owned Git worktrees serialized on one `max-active=1` token; both task ids recorded in the slot owner; slot released; owned cleanup removed only `slots/c11/target` |
 | HUB-GATES | passed | `actual_hub_tests` | `npm run check`, `npm test` (2032 passed, 2 skipped, 0 failed), `npm run verify:artifacts` |
 | C02–C15 | not_run | `not_executed` | Reasons are recorded per case in the JSON report |
 

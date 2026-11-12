@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,22 @@ def test_budget_exhaustion_stops_owned_tree(tmp_path: Path) -> None:
     assert measurement["status"] == "resource_exhausted"
     assert measurement["stop_reason"] == "budget_exceeded"
     assert measurement["after"]["logical_bytes"] >= 4 * 1024 * 1024
+
+
+def test_concurrent_owner_registration_keeps_every_task(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    task_ids = [f"task-{index}" for index in range(8)]
+
+    def register(task_id: str) -> None:
+        build_storage._ensure_owner(
+            layout, "core", task_id, adopt_unknown=False, retained=[], note=""
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(register, task_ids))
+
+    owner = json.loads(layout.slot_dir("core").joinpath("owner.json").read_text())
+    assert sorted(owner["tasks"]) == sorted(task_ids)
 
 
 def test_active_slot_lease_refuses_concurrent_run(tmp_path: Path) -> None:

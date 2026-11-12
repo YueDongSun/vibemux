@@ -7886,3 +7886,22 @@ retained in the task's local validation artifact.
 - Limits: no live qualification is claimed (`qualified_actions` is empty);
   C02+ still `not_run`; the descriptor remains v10 until a coordinated
   cutover is planned.
+
+### 2026-11-12 — C11-SLOTS and concurrent slot-owner registration fix
+
+- Added the `C11-SLOTS` verification case: two owned Git worktrees run
+  managed builds concurrently against one slot with `max-active=1`; the case
+  asserts child non-overlap, both task ids recorded in the slot owner, the
+  slot returning to idle, and owned cleanup removing only
+  `slots/c11/target`.
+- The first run exposed a real race in `build_storage.py`: concurrent
+  registrations of the same slot wrote the same `owner.json.tmp` path, so one
+  process failed and the other task id was dropped. Registration is now
+  serialized by a slot-local `.owner.lock` lease, and the temporary manifest
+  name includes the pid and a monotonic counter. A threaded regression test
+  registers eight task ids and asserts all survive.
+- Executed on macOS 15.6: `pytest tests/test_build_storage.py` 12 passed;
+  `C11-SLOTS` passed (two worktrees serialized; ownership and cleanup
+  verified); ruff/mypy clean.
+- Limits: the worker/candidate merge half of C11 remains `not_run`; it needs
+  the workflow candidate path.

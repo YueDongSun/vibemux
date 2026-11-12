@@ -312,9 +312,21 @@ def _read_owner(layout: Layout, slot: str) -> SlotOwner | None:
 def _write_owner(layout: Layout, owner: SlotOwner) -> None:
     path = _owner_path(layout, owner.slot)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
+    # Unique temporary name: two concurrent builds may register the same slot.
+    temporary = path.with_name(f".owner.{os.getpid()}.{time.monotonic_ns()}.tmp")
     temporary.write_text(json.dumps(owner.to_json(), indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _acquire_lease_wait(lease: FileLease, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not lease.try_acquire():
+        if time.monotonic() >= deadline:
+            raise StorageError(
+                "owner_lock_busy",
+                f"another process held the owner registration lock for {timeout:.0f}s: {lease.path}",
+            )
+        time.sleep(0.02)
 
 
 def _ensure_owner(
@@ -334,30 +346,38 @@ def _ensure_owner(
 
     if not task_id:
         raise StorageError("task_id_required", "pass --task-id or VIBEMUX_TASK_ID")
-    layout.slot_dir(slot).mkdir(parents=True, exist_ok=True)
-    owner = _read_owner(layout, slot)
-    if owner is None:
-        target = layout.target_dir(slot)
-        non_empty = target.is_dir() and any(target.iterdir())
-        if non_empty and not adopt_unknown:
-            raise StorageError(
-                "slot_unowned",
-                f"{target} already contains output without owner.json; "
-                "rerun with --adopt only if this task owns it",
+    slot_dir = layout.slot_dir(slot)
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    # Registration is a read-modify-write; serialize it so two concurrent
+    # builds cannot drop each other's task id or race the temporary file.
+    owner_lock = FileLease(slot_dir / ".owner.lock")
+    _acquire_lease_wait(owner_lock)
+    try:
+        owner = _read_owner(layout, slot)
+        if owner is None:
+            target = layout.target_dir(slot)
+            non_empty = target.is_dir() and any(target.iterdir())
+            if non_empty and not adopt_unknown:
+                raise StorageError(
+                    "slot_unowned",
+                    f"{target} already contains output without owner.json; "
+                    "rerun with --adopt only if this task owns it",
+                )
+            owner = SlotOwner(
+                slot=slot,
+                tasks=[task_id],
+                created_at=_now(),
+                retained=list(retained) or list(DEFAULT_RETAINED),
+                note=note,
             )
-        owner = SlotOwner(
-            slot=slot,
-            tasks=[task_id],
-            created_at=_now(),
-            retained=list(retained) or list(DEFAULT_RETAINED),
-            note=note,
-        )
-        _write_owner(layout, owner)
+            _write_owner(layout, owner)
+            return owner
+        if task_id not in owner.tasks:
+            owner.tasks.append(task_id)
+            _write_owner(layout, owner)
         return owner
-    if task_id not in owner.tasks:
-        owner.tasks.append(task_id)
-        _write_owner(layout, owner)
-    return owner
+    finally:
+        owner_lock.release()
 
 
 # --------------------------------------------------------------------------

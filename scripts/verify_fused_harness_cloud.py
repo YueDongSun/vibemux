@@ -44,6 +44,7 @@ CASE_IDS: Final = (
     "C01",
     "A1",
     "A2",
+    "C11-SLOTS",
     "HUB-GATES",
     "C02",
     "C03",
@@ -71,7 +72,7 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C08": "Requires a second fixture harness adapter with native identity preservation.",
     "C09": "Requires the Hub skill_refs resolver and bounded context assembly.",
     "C10": "Requires the Hub read-only MCP tool and worker tool-call admission.",
-    "C11": "Requires two writable worker slots competing for managed build slots.",
+    "C11": "The worker/candidate merge half requires the workflow candidate path; the managed build-slot contention half is covered by C11-SLOTS.",
     "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
     "C13": "Requires the unified migration lineage recognizer for schema 9/10/14 layouts.",
     "C14": "Requires the Fusion offline benchmark contracts and fixture runner.",
@@ -493,6 +494,192 @@ def _run_hub_gates(*, hub_root: Path, timeout: float) -> dict[str, Any]:
     )
 
 
+def _run_c11_slots(*, vibemux_root: Path, state_root: Path, timeout: float) -> dict[str, Any]:
+    """Two owned Git worktrees compete for one managed build slot.
+
+    This covers the slot/ownership half of C11: two independent worktrees,
+    one registered task per worktree, a single active-build token, observable
+    serialization, clear ownership, slot release, and owned cleanup. The
+    worker-candidate merge half is not claimed by this case.
+    """
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    root = state_root / "c11"
+    base = root / "base"
+    worktree_a = root / "worktree-a"
+    worktree_b = root / "worktree-b"
+
+    def launch(worktree: Path, task_id: str) -> subprocess.Popen[str]:
+        script = (
+            "import pathlib, time\n"
+            "start = time.time()\n"
+            "pathlib.Path('managed-build-started').write_text(str(start))\n"
+            "time.sleep(1.2)\n"
+            "pathlib.Path('managed-build-done').write_text(str(time.time()))\n"
+        )
+        return subprocess.Popen(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(state_root),
+                "run",
+                "--slot",
+                "c11",
+                "--task-id",
+                task_id,
+                "--max-active",
+                "1",
+                "--lease-timeout",
+                str(max(30.0, timeout)),
+                "--poll-seconds",
+                "0.1",
+                "--",
+                sys.executable,
+                "-c",
+                script,
+            ],
+            cwd=worktree,
+            env=dict(os.environ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    try:
+        _init_fixture_repo(base)
+        _run(
+            ["git", "worktree", "add", "-q", "-b", "c11-a", str(worktree_a)],
+            cwd=base,
+            timeout=timeout,
+            check=True,
+        )
+        _run(
+            ["git", "worktree", "add", "-q", "-b", "c11-b", str(worktree_b)],
+            cwd=base,
+            timeout=timeout,
+            check=True,
+        )
+        first = launch(worktree_a, "c11-worktree-a")
+        second = launch(worktree_b, "c11-worktree-b")
+        out_a, err_a = first.communicate(timeout=timeout)
+        out_b, err_b = second.communicate(timeout=timeout)
+        failures: list[str] = []
+        if first.returncode != 0:
+            failures.append(f"worktree_a_exit={first.returncode}:{err_a.strip()[-160:]}")
+        if second.returncode != 0:
+            failures.append(f"worktree_b_exit={second.returncode}:{err_b.strip()[-160:]}")
+        intervals: dict[str, tuple[float, float]] = {}
+        for label, worktree in (("a", worktree_a), ("b", worktree_b)):
+            started_file = worktree / "managed-build-started"
+            done_file = worktree / "managed-build-done"
+            if not started_file.is_file() or not done_file.is_file():
+                failures.append(f"worktree_{label}_marker_missing")
+                continue
+            intervals[label] = (
+                float(started_file.read_text().strip()),
+                float(done_file.read_text().strip()),
+            )
+        if len(intervals) == 2:
+            overlap = min(intervals["a"][1], intervals["b"][1]) - max(
+                intervals["a"][0], intervals["b"][0]
+            )
+            # A shared max-active=1 token must serialize the children.
+            if overlap > 0.25:
+                failures.append(f"build_overlap={overlap:.2f}s")
+        inventory = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(state_root),
+                "--json",
+                "inventory",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        slot: dict[str, Any] | None = None
+        if inventory.returncode == 0:
+            report = json.loads(inventory.stdout)
+            slot = next(
+                (item for item in report.get("slots", []) if item.get("slot") == "c11"),
+                None,
+            )
+        if slot is None:
+            failures.append("slot_inventory_missing")
+        else:
+            if slot.get("active") is not False:
+                failures.append("slot_still_active")
+            owner = slot.get("owner") or {}
+            tasks = owner.get("tasks", [])
+            for task_id in ("c11-worktree-a", "c11-worktree-b"):
+                if task_id not in tasks:
+                    failures.append(f"owner_missing:{task_id}")
+        plan = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(state_root),
+                "plan-clean",
+                "--task-id",
+                "c11-worktree-a",
+                "--slot",
+                "c11",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        plan_path = ""
+        if plan.returncode == 0:
+            for line in plan.stdout.splitlines():
+                if line.startswith("plan: "):
+                    plan_path = line[len("plan: ") :].strip()
+        if not plan_path:
+            failures.append("cleanup_plan_missing")
+        else:
+            applied = _run(
+                [
+                    sys.executable,
+                    str(build_storage),
+                    "--state-root",
+                    str(state_root),
+                    "apply-clean",
+                    plan_path,
+                    "--task-id",
+                    "c11-worktree-a",
+                ],
+                cwd=vibemux_root,
+                timeout=timeout,
+            )
+            if applied.returncode != 0:
+                failures.append(f"cleanup_failed:{_tail(applied, 160)}")
+        target = state_root / "slots" / "c11" / "target"
+        if target.exists():
+            failures.append("slot_target_not_removed")
+        return _case(
+            "C11-SLOTS",
+            "failed" if failures else "passed",
+            evidence_class="managed_build_slot_contention",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail="; ".join(failures)
+            or (
+                "two worktrees serialized on one max-active=1 token; "
+                "ownership recorded; slot released and cleaned"
+            ),
+            artifact_refs=[],
+        )
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
+        return _case(
+            "C11-SLOTS",
+            "failed",
+            evidence_class="managed_build_slot_contention",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -594,6 +781,14 @@ def main(argv: list[str] | None = None) -> int:
         if "A2" in selected:
             cases.append(
                 _run_a2(
+                    vibemux_root=vibemux_root,
+                    state_root=run_root / "build-storage",
+                    timeout=arguments.timeout_seconds,
+                )
+            )
+        if "C11-SLOTS" in selected:
+            cases.append(
+                _run_c11_slots(
                     vibemux_root=vibemux_root,
                     state_root=run_root / "build-storage",
                     timeout=arguments.timeout_seconds,
