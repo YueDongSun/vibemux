@@ -177,6 +177,7 @@ vendor output.
 .\target\debug\vibemuxctl.exe tasks list --project-root .
 .\target\debug\vibemuxctl.exe tasks list --limit 5 --after <task_id> --project-root .
 .\target\debug\vibemuxctl.exe tasks show <task_id> --project-root .
+.\target\debug\vibemuxctl.exe capabilities --project-root .
 .\target\debug\vibemuxctl.exe plugins status --project-root .
 .\target\debug\vibemuxctl.exe terminal inspect <task_id> <run_id> --project-root .
 .\target\debug\vibemuxctl.exe terminal link <task_id> <run_id> --instance-id <id> --pane-id <pane_id> --project-root .
@@ -190,6 +191,14 @@ vendor output.
   event summaries, and artifact digests. An unknown id fails with
   `frontend_task_not_found`. Neither verb creates a task: a task comes from
   `dispatch submit` or `workflow start`.
+- `capabilities` returns the daemon's content-free capability catalog: every
+  control operation with its stable name, minimum protocol version, read/write
+  access, schema ids, and handler group, plus one row per harness runtime with
+  its build-supported actions, operator configuration, probe observation, and
+  enabled actions. `qualified_actions` is empty because the daemon records no
+  live qualification. The operation is additive at Control v10; a daemon that
+  predates it fails with `control_capabilities_unavailable` and the legacy
+  reads keep working. See [ADR 058](../adr/058_capability_discovery.md).
 - `plugins status` lists each registered plugin's state, restart count, and last
   error code. It cannot start, restart, or cancel a plugin. The registry is
   empty unless the operator started the daemon with `--plugin-config`, which

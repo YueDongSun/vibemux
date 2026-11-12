@@ -33,10 +33,10 @@ python scripts/verify_fused_harness_cloud.py \
 
 | Case | Status | Evidence class | Result |
 |---|---|---|---|
-| C01 | passed | `actual_daemon_hub_adapter` | Real daemon descriptor v10; Hub adapter authenticated `health` + `frontend_tasks`; `check=connected`; unknown operation → `vibemux_operation_not_allowed`; unknown descriptor version → `vibemux_ipc_version_mismatch` |
+| C01 | passed | `actual_daemon_hub_adapter` | Real daemon descriptor v10; Hub adapter authenticated `health` + `frontend_tasks`; `check=connected`; additive v10 `capabilities` discovery (`discovery=capabilities`, 47 operations, 11 runtimes); unknown operation → `vibemux_operation_not_allowed`; unknown descriptor version → `vibemux_ipc_version_mismatch`; unknown contract family → `vibemux_contract_family_mismatch`; unknown catalog shape → `vibemux_contract_mismatch` |
 | A1 | passed | `source_dependency_graph` | CLI tree has no egui/eframe/winit/Tauri; default web tree has no ece/openssl/p256; `--features push` restores OpenSSL |
 | A2 | passed | `local_build_tooling` | `build_storage.py inventory` returned schema 1 with free-space and slot data |
-| HUB-GATES | passed | `actual_hub_tests` | `npm run check`, `npm test` (2026 passed, 2 skipped, 0 failed), `npm run verify:artifacts` |
+| HUB-GATES | passed | `actual_hub_tests` | `npm run check`, `npm test` (2032 passed, 2 skipped, 0 failed), `npm run verify:artifacts` |
 | C02–C15 | not_run | `not_executed` | Reasons are recorded per case in the JSON report |
 
 C01 detail:
@@ -45,10 +45,22 @@ C01 detail:
 descriptor_version=10
 health.healthy=true
 check.status=connected
+discovery=capabilities
+catalog.control_contract_id=vibemux.control.v10
+catalog.operations=47 (capabilities: minimum_version=10, access=read)
+catalog.runtimes=11
 frontend_tasks.tasks=[] (fresh fixture project)
 unknown_operation_error=vibemux_operation_not_allowed
 unknown_version_error=vibemux_ipc_version_mismatch
+unknown_family_error=vibemux_contract_family_mismatch
+unknown_shape_error=vibemux_contract_mismatch
 ```
+
+The real `vibemuxctl capabilities --project-root <fixture>` output was also
+captured: contract `vibemux.control.v10`, 47 operations, 11 runtimes, and an
+unconfigured Claude row with `supported_actions=[probe,submit]`,
+`enabled_actions=[]`, `qualified_actions=[]`, and
+`unavailable_reason=route_not_configured`.
 
 The daemon was stopped in the case's `finally` block; no `vibemuxd` process
 remained.
@@ -69,8 +81,17 @@ The fix (Hub commit `0d24222`):
   including a Windows junction;
 - compare the integration export directory with the canonical project root.
 
-After the fix: `npm run check` passed, `npm test` reported **2026 passed, 0
-failed, 2 skipped**, and `npm run verify:artifacts` passed.
+After the fix: `npm run check` passed, `npm test` reported **2032 passed, 0
+failed, 2 skipped** (the count includes the new capability-discovery cases),
+and `npm run verify:artifacts` passed.
+
+## Capability discovery increment
+
+The additive v10 `capabilities` operation and the Hub consumption landed after
+the first evidence capture (ADR 058). The C01 row and detail above are from the
+re-run against a real daemon and the real Hub adapter. The Hub suite grew from
+2026 to 2032 passing tests; the VibeMux side added 4 daemon tests, the CLI verb
+and its tests, and the C01 assertions.
 
 ## Additional VibeMux gates
 
@@ -80,7 +101,7 @@ Executed on the same host and managed slot:
 |---|---|
 | `cargo fmt --all -- --check` | passed |
 | `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | passed (49 s) |
-| `cargo test --locked --workspace --all-features` | **1702 passed, 0 failed, 2 ignored, 151 targets** (638.9 s cold, 363.6 s warm) |
+| `cargo test --locked --workspace --all-features` | **1708 passed, 0 failed, 2 ignored, 151 targets** (638.9 s cold, 493.7 s warm after the capability increment) |
 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
 | `python -m pytest` | passed (2 skipped groups) |
 | `ruff check scripts tests`, `ruff format --check` | passed |

@@ -1,6 +1,7 @@
 //! Application orchestration. UI and inspection never start a daemon or model turn.
 use crate::{
     CliCommand, DaemonBootstrapConfig, DaemonCliError, DaemonStartOutcome,
+    capabilities_commands::run_capabilities,
     command::{self, Command, Format},
     daemon_executable, daemon_health, daemon_paths,
     decision_commands::run_decision,
@@ -285,6 +286,10 @@ async fn run_control(command: CliCommand) -> Result<Value, DaemonCliError> {
         CliCommand::Plugins { project_root } => {
             let paths = paths(project_root).await?;
             run_plugin_status(&paths).await
+        }
+        CliCommand::Capabilities { project_root } => {
+            let paths = paths(project_root).await?;
+            run_capabilities(&paths).await
         }
         CliCommand::Terminal {
             project_root,

@@ -12,7 +12,7 @@ const MAX_ARGUMENTS: usize = 32;
 const MAX_CONTROL_ARGUMENTS: usize = 1024;
 /// The daemon lifecycle and daemon-backed control verbs routed to
 /// [`parse_cli_arguments`].
-const CONTROL_VERBS: [&str; 14] = [
+const CONTROL_VERBS: [&str; 15] = [
     "harnesses",
     "switch",
     "dispatch",
@@ -26,6 +26,7 @@ const CONTROL_VERBS: [&str; 14] = [
     "prompt",
     "tasks",
     "plugins",
+    "capabilities",
     "terminal",
 ];
 
@@ -122,7 +123,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
         Some(
             "daemon" | "harness" | "workspace" | "probe" | "ui" | "harnesses" | "switch"
             | "dispatch" | "decide" | "decisions" | "dsh" | "workflow" | "slots" | "context"
-            | "session" | "prompt" | "tasks" | "plugins" | "terminal",
+            | "session" | "prompt" | "tasks" | "plugins" | "capabilities" | "terminal",
         ) if arguments.len() == 2 && matches!(arguments[1].to_str(), Some("--help" | "-h")) => {
             Command::Help(topic(first)?)
         }
@@ -292,6 +293,7 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
   vibemuxctl tasks list [--after <task_id>] [--limit <limit>] [--project-root <path>]
   vibemuxctl tasks show <task_id> [--project-root <path>]
   vibemuxctl plugins status [--project-root <path>]
+  vibemuxctl capabilities [--project-root <path>]
   vibemuxctl terminal inspect <task_id> <run_id> [--plugin-id <id>] [--project-root <path>]
   vibemuxctl terminal link <task_id> <run_id> --instance-id <id> --pane-id <pane_id> [--plugin-id <id>] [--project-root <path>]
   vibemuxctl terminal focus|unlink <binding_id> [--project-root <path>]
@@ -325,6 +327,7 @@ Operate explicitly (daemon)
   dsh                 DSH sessions (ADR 032)
   tasks               Read-only Task/Run list and detail
   plugins             Read-only plugin registry status
+  capabilities        Read-only daemon capability catalog
   terminal            Observation-only pane inspect | link | focus | unlink
   help control        Full syntax for the daemon-backed verbs
 
@@ -408,7 +411,7 @@ mod tests {
     #[test]
     fn the_observation_verbs_route_to_the_control_parser_and_the_control_help() {
         let binding = "11111111-1111-4111-8111-111111111111";
-        for verb in ["tasks", "plugins", "terminal"] {
+        for verb in ["tasks", "plugins", "capabilities", "terminal"] {
             let invocation = parse([verb, "--help"].map(OsString::from)).unwrap();
             assert!(matches!(invocation.command, Command::Help(Topic::Control)));
             assert!(help(Topic::Control).contains(&format!("vibemuxctl {verb} ")));
@@ -416,6 +419,7 @@ mod tests {
         for arguments in [
             vec!["tasks", "list"],
             vec!["plugins", "status"],
+            vec!["capabilities"],
             vec!["terminal", "focus", binding],
         ] {
             let invocation = parse(arguments.into_iter().map(OsString::from)).unwrap();
@@ -425,6 +429,7 @@ mod tests {
             vec!["tasks"],
             vec!["tasks", "create"],
             vec!["plugins", "restart"],
+            vec!["capabilities", "extra"],
             vec!["terminal", "send", binding],
         ] {
             let error = parse(arguments.into_iter().map(OsString::from)).err();

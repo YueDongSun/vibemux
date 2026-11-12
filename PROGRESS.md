@@ -7836,8 +7836,8 @@ retained in the task's local validation artifact.
 - Full workspace gate on the integrated candidate:
   `cargo clippy --locked --workspace --all-targets --all-features -- -D
   warnings` passed in 49 s; `cargo test --locked --workspace --all-features`
-  passed **1702 tests, 0 failed, 2 ignored across 151 test targets**
-  (638.9 s cold, 363.6 s warm); `cargo deny check` reported advisories, bans,
+  passed **1708 tests, 0 failed, 2 ignored across 151 test targets**
+  (638.9 s cold, 493.7 s warm after the capability increment); `cargo deny check` reported advisories, bans,
   licenses, and sources ok. The managed core slot held 14.1 GB after this
   scope (including the Tauri desktop build).
 - Build comparison (same source, `cargo check -p vibemux_cli`, empty target
@@ -7849,3 +7849,40 @@ retained in the task's local validation artifact.
   AAG, Fusion, or native UI case ran. Windows execution and live vendor
   calls remain separate acceptance items.
 
+### 2026-11-12 — Additive v10 capability discovery (ADR 058)
+
+- Base: `feat/cloud-harness-framework` at `8cedcee`. The Hub could not
+  decide which VibeMux operations were available without encoding a fixed
+  revision list, and the control enum had no machine-readable registry.
+- Design constraint found during the review: `ControlClient::from_descriptor`
+  refuses any descriptor version the client does not know, and
+  `ControlDescriptor` is `deny_unknown_fields`, so a v11 stamp or an extra
+  descriptor field would disconnect every shipped v1-v10 client. The
+  capability operation is therefore **additive at v10**; the descriptor and
+  accepted request range are unchanged.
+- VibeMux: `ControlOperation::ALL` plus `wire_name`, `is_mutating`, and
+  `handler_group` form the single registry; `Capabilities` is added before
+  `Shutdown`; `ControlPayload::Capabilities` carries a content-free
+  `CapabilityCatalog` (schema version, `vibemux.control.v10`, operations, and
+  per-harness runtimes); `ControlClient::capabilities()` and the daemon
+  dispatch arm are wired; `vibemuxctl capabilities` is a new read-only verb
+  with `control_capabilities_unavailable` for a pre-operation daemon.
+- Hub: `local/adapters/vibemux.mjs` adds `capabilities` to the read allowlist
+  with minimum v10, uses the descriptor version for that operation while
+  keeping the legacy v5 cap for the old reads, validates the catalog as a
+  closed record (unknown family, unknown fields, duplicate names, unsupported
+  enablement all fail), and provides `try_read_vibemux_capabilities` that
+  returns `null` only for the precise "daemon predates the operation"
+  conditions. The read surface and MCP expose `vibemux_capabilities` /
+  `capabilities` with `discovery: capabilities | legacy | unconfigured`.
+- Tests added: daemon registry/catalog/content-free/dispatch (4),
+  CLI parse/help/missing-daemon, Hub adapter version/fallback/shape (5), Hub
+  read-surface states (1), MCP tool list and invocation.
+- Executed on macOS 15.6: `cargo test -p vibemuxd --all-features
+  capabilities` 4 passed; `cargo test -p vibemux_cli --all-features` 70 unit
+  + 12 integration passed; `cargo clippy -p vibemuxd -p vibemux_cli
+  --all-targets --all-features -D warnings` passed; Hub
+  `node --test tests/vibemux.test.mjs tests/mcp.test.mjs` 45 passed.
+- Limits: no live qualification is claimed (`qualified_actions` is empty);
+  C02+ still `not_run`; the descriptor remains v10 until a coordinated
+  cutover is planned.

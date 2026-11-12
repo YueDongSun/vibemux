@@ -39,6 +39,8 @@ use crate::terminal_observer::{TerminalBinding, TerminalObserver, TerminalSnapsh
 use crate::workflow::{WorkflowService, WorkflowServiceSettings};
 use crate::{CompatibilityLock, WriterError, WriterHealth, WriterWorker};
 use vibemux_harness::{HarnessDetection, HarnessRow, dispatch::route_config::DispatchCatalogEntry};
+#[path = "control_capabilities.rs"]
+mod capabilities_ops;
 #[path = "control_decision.rs"]
 mod decision_ops;
 #[path = "control_dsh_session.rs"]
@@ -53,6 +55,9 @@ pub use crate::dsh_session::{
 };
 #[path = "control_workflow.rs"]
 mod workflow_ops;
+pub use capabilities_ops::{
+    CapabilityAccess, CapabilityCatalog, CapabilityOperation, CapabilityRuntime,
+};
 pub use decision_ops::{
     DECISION_ADVISE_DEADLINE, DecisionAdviseArgument, DecisionDispatchArgument, DecisionListQuery,
     DecisionLookup, DecisionPage, DecisionView,
@@ -153,6 +158,7 @@ pub enum ControlOperation {
     DecisionList,
     DecisionShow,
     DecisionDispatchSubmit,
+    Capabilities,
     Shutdown,
 }
 
@@ -207,6 +213,157 @@ impl ControlOperation {
             | Self::DecisionList
             | Self::DecisionShow
             | Self::DecisionDispatchSubmit => CONTROL_PROTOCOL_V8,
+            Self::Capabilities => CONTROL_PROTOCOL_V10,
+        }
+    }
+
+    /// Every operation this daemon dispatches, in declaration order.
+    ///
+    /// `Capabilities` is additive at v10: the descriptor version is unchanged,
+    /// so v1-v10 clients keep connecting, and an older v10 daemon that does not
+    /// know the variant rejects it as an invalid frame. Consumers must treat
+    /// that rejection as "discovery unavailable" and fall back to the legacy
+    /// read operations.
+    pub const ALL: &'static [Self] = &[
+        Self::Health,
+        Self::PluginStatus,
+        Self::HarnessRefresh,
+        Self::HarnessSnapshot,
+        Self::HarnessSwitch,
+        Self::FrontendTasks,
+        Self::FrontendTask,
+        Self::TerminalInspect,
+        Self::TerminalLink,
+        Self::TerminalFocus,
+        Self::TerminalUnlink,
+        Self::HarnessDispatchCatalog,
+        Self::HarnessDispatchProbe,
+        Self::HarnessDispatchSubmit,
+        Self::HarnessDispatchStatus,
+        Self::HarnessDispatchOutput,
+        Self::HarnessDispatchCancel,
+        Self::DshSessionOpen,
+        Self::DshSessionPrompt,
+        Self::DshSessionPoll,
+        Self::DshSessionStatus,
+        Self::DshSessionCancel,
+        Self::DshSessionClose,
+        Self::WorkflowPrepare,
+        Self::WorkflowStart,
+        Self::WorkflowSupervisorStart,
+        Self::WorkflowSupervisorStatus,
+        Self::WorkflowContractEdit,
+        Self::WorkflowStatus,
+        Self::WorkflowPause,
+        Self::WorkflowCancel,
+        Self::WorkflowExport,
+        Self::WorkflowSlots,
+        Self::WorkflowShare,
+        Self::WorkflowSessionInspect,
+        Self::WorkflowSessionPrompt,
+        Self::WorkflowSessionAttach,
+        Self::WorkflowPolicyVersions,
+        Self::WorkflowPolicyEvaluate,
+        Self::WorkflowPolicyRollback,
+        Self::WorkflowPurgeContent,
+        Self::DecisionAdvise,
+        Self::DecisionList,
+        Self::DecisionShow,
+        Self::DecisionDispatchSubmit,
+        Self::Capabilities,
+        Self::Shutdown,
+    ];
+
+    /// The stable wire name from the serde representation.
+    #[must_use]
+    pub fn wire_name(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// Read operations have no state effect. Anything that writes, starts a
+    /// process, or changes a session is mutating; an unknown future variant
+    /// therefore defaults to the safer `true`.
+    #[must_use]
+    pub const fn is_mutating(&self) -> bool {
+        !matches!(
+            self,
+            Self::Health
+                | Self::PluginStatus
+                | Self::HarnessSnapshot
+                | Self::FrontendTasks
+                | Self::FrontendTask
+                | Self::TerminalInspect
+                | Self::HarnessDispatchCatalog
+                | Self::HarnessDispatchStatus
+                | Self::HarnessDispatchOutput
+                | Self::DshSessionPoll
+                | Self::DshSessionStatus
+                | Self::WorkflowStatus
+                | Self::WorkflowSupervisorStatus
+                | Self::WorkflowSlots
+                | Self::WorkflowSessionInspect
+                | Self::WorkflowPolicyVersions
+                | Self::DecisionList
+                | Self::DecisionShow
+                | Self::Capabilities
+        )
+    }
+
+    /// The module that owns the handler. Exhaustive so a new operation must
+    /// name its owner.
+    #[must_use]
+    pub const fn handler_group(&self) -> &'static str {
+        match self {
+            Self::Health
+            | Self::PluginStatus
+            | Self::HarnessRefresh
+            | Self::HarnessSnapshot
+            | Self::HarnessSwitch
+            | Self::FrontendTasks
+            | Self::FrontendTask
+            | Self::Capabilities
+            | Self::Shutdown => "control",
+            Self::TerminalInspect
+            | Self::TerminalLink
+            | Self::TerminalFocus
+            | Self::TerminalUnlink => "control_terminal",
+            Self::HarnessDispatchCatalog
+            | Self::HarnessDispatchProbe
+            | Self::HarnessDispatchSubmit
+            | Self::HarnessDispatchStatus
+            | Self::HarnessDispatchOutput
+            | Self::HarnessDispatchCancel => "control_harness_dispatch",
+            Self::DshSessionOpen
+            | Self::DshSessionPrompt
+            | Self::DshSessionPoll
+            | Self::DshSessionStatus
+            | Self::DshSessionCancel
+            | Self::DshSessionClose => "control_dsh_session",
+            Self::WorkflowPrepare
+            | Self::WorkflowStart
+            | Self::WorkflowSupervisorStart
+            | Self::WorkflowSupervisorStatus
+            | Self::WorkflowContractEdit
+            | Self::WorkflowStatus
+            | Self::WorkflowPause
+            | Self::WorkflowCancel
+            | Self::WorkflowExport
+            | Self::WorkflowSlots
+            | Self::WorkflowShare
+            | Self::WorkflowSessionInspect
+            | Self::WorkflowSessionPrompt
+            | Self::WorkflowSessionAttach
+            | Self::WorkflowPolicyVersions
+            | Self::WorkflowPolicyRollback
+            | Self::WorkflowPolicyEvaluate
+            | Self::WorkflowPurgeContent => "control_workflow",
+            Self::DecisionAdvise
+            | Self::DecisionList
+            | Self::DecisionShow
+            | Self::DecisionDispatchSubmit => "control_decision",
         }
     }
 }
@@ -300,6 +457,8 @@ pub enum ControlPayload {
     /// submission answers with `HarnessDispatchReceipt`.
     Decision(Box<DecisionView>),
     DecisionPage(DecisionPage),
+    /// Answer to the additive v10 `capabilities` read.
+    Capabilities(Box<CapabilityCatalog>),
     ShutdownAccepted,
 }
 
@@ -1822,6 +1981,17 @@ impl ControlClient {
         }
     }
 
+    pub async fn capabilities(&self) -> Result<CapabilityCatalog, ControlError> {
+        self.require_operation(ControlOperation::Capabilities)?;
+        match self
+            .request(ControlOperation::Capabilities, CONTROL_DEADLINE)
+            .await?
+        {
+            ControlPayload::Capabilities(catalog) => Ok(*catalog),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
     async fn request(
         &self,
         operation: ControlOperation,
@@ -2094,6 +2264,17 @@ where
         // Dispatch and decision-peer cancellation start now, so a connection
         // waiting on a probe or an external decision ends before the server
         // drains connections.
+        ControlOperation::Capabilities => {
+            let result =
+                capabilities_ops::dispatch(&state, request.operation, request.argument).await;
+            (
+                match result {
+                    Ok(payload) => ControlResponse::success(request_id, payload),
+                    Err(error) => ControlResponse::error(request_id, &error),
+                },
+                false,
+            )
+        }
         ControlOperation::Shutdown => {
             state.workflow.begin_shutdown();
             state.dispatch.begin_shutdown();
@@ -3000,6 +3181,43 @@ mod tests {
         }
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn capabilities_are_a_read_only_v10_addition() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("start control server");
+        let client =
+            ControlClient::from_descriptor(server.descriptor_path()).expect("control client");
+
+        let catalog = client.capabilities().await.expect("capability catalog");
+        assert_eq!(catalog.schema_version, 1);
+        assert_eq!(catalog.protocol_version, CONTROL_PROTOCOL_VERSION);
+        let capabilities = catalog
+            .operations
+            .iter()
+            .find(|operation| operation.name == "capabilities")
+            .expect("capabilities is registered");
+        assert_eq!(capabilities.access, CapabilityAccess::Read);
+        assert_eq!(capabilities.minimum_version, CONTROL_PROTOCOL_V10);
+        assert!(
+            catalog
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.harness == "claude")
+        );
+
+        // A v9 client is refused locally before any socket is opened.
+        let mut older = client.clone();
+        older.descriptor.version = CONTROL_PROTOCOL_V9;
+        assert_eq!(
+            older.capabilities().await.expect_err("v9 is refused"),
+            ControlError::UnsupportedVersion
+        );
+
+        server.shutdown().await.expect("clean shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn idle_client_does_not_block_other_control_traffic() {
         // Regression for serial accept: a client that connects and goes quiet
         // must not stop the server from answering health on another
@@ -3122,6 +3340,12 @@ mod tests {
             ControlOperation::WorkflowContractEdit.minimum_protocol_version(),
             CONTROL_PROTOCOL_V10
         );
+        assert_eq!(
+            ControlOperation::Capabilities.minimum_protocol_version(),
+            CONTROL_PROTOCOL_V10
+        );
+        assert_eq!(ControlOperation::Capabilities.wire_name(), "capabilities");
+        assert!(!ControlOperation::Capabilities.is_mutating());
         assert_eq!(
             ControlOperation::WorkflowSupervisorStart.minimum_protocol_version(),
             CONTROL_PROTOCOL_V9

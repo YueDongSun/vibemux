@@ -5,6 +5,7 @@
 
 pub mod application;
 mod argument_scan;
+pub mod capabilities_commands;
 pub mod command;
 pub mod decision_commands;
 pub mod dispatch_commands;
@@ -247,6 +248,10 @@ pub enum CliCommand {
     },
     /// The read-only `plugins status` verb.
     Plugins {
+        project_root: Option<PathBuf>,
+    },
+    /// The read-only capability catalog (additive Control v10 operation).
+    Capabilities {
         project_root: Option<PathBuf>,
     },
     /// The observation-only `terminal` verbs.
@@ -509,6 +514,9 @@ pub fn parse_cli_arguments(
     }
     if verb == "plugins" {
         return plugin_commands::parse_plugin_arguments(&arguments[1..]);
+    }
+    if verb == "capabilities" {
+        return capabilities_commands::parse_capability_arguments(&arguments[1..]);
     }
     if verb == "terminal" {
         return terminal_commands::parse_terminal_arguments(&arguments[1..]);

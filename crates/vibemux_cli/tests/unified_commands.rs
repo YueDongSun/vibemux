@@ -361,6 +361,7 @@ fn observation_verbs_report_a_missing_daemon_instead_of_starting_one() {
         vec!["tasks", "list"],
         vec!["tasks", "show", id],
         vec!["plugins", "status"],
+        vec!["capabilities"],
         vec!["terminal", "inspect", id, id],
         vec!["terminal", "focus", id],
     ] {

@@ -10,7 +10,7 @@ Capabilities that are not implemented stay `not_run` in the report.
 
 | Case | Requires | What it proves |
 |---|---|---|
-| `C01` | Built `vibemuxctl`/`vibemuxd`, Hub checkout, Node | The Hub's real descriptor reader and read-only IPC client authenticate to a real daemon and reject unknown versions/operations |
+| `C01` | Built `vibemuxctl`/`vibemuxd`, Hub checkout, Node | The Hub's real descriptor reader and read-only IPC client authenticate to a real daemon, complete the additive v10 `capabilities` discovery, and reject unknown versions, operations, contract families, and catalog shapes |
 | `A1` | Rust toolchain | The CLI graph is GUI-free; Web Push is opt-in |
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `HUB-GATES` | Hub checkout, npm | The Hub's own check/test/artifact gates pass |
@@ -89,11 +89,22 @@ fail the run. Select cases with `--cases C01,A1,A2`.
 Allowed statuses: `passed`, `failed`, `blocked`, `not_run`. `peak_bytes` stays
 `null` unless a measurement source provides it.
 
+## Capability discovery
+
+The daemon serves a read-only `capabilities` catalog at Control v10 (additive;
+the descriptor version is unchanged). It lists every operation with its stable
+name, minimum version, read/write access, schema ids, and handler group, plus
+one row per harness runtime with build-supported actions, operator
+configuration, probe observation, and enabled actions. The Hub adapter validates
+the catalog as a closed record and exposes `discovery: capabilities | legacy |
+unconfigured`; an older daemon falls back to the legacy read path. See
+[ADR 058](../adr/058_capability_discovery.md).
+
 ## What the cloud/Hub work must add
 
 | Case | Missing implementation |
 |---|---|
-| C02 | Hub goal submission, owner planning profile selection, capability discovery |
+| C02 | Hub goal submission and owner planning profile selection (capability discovery is complete; see C01) |
 | C03 | Hub original-operation lookup after an uncertain submit |
 | C04 | Hub event pagination and reconnect cursor |
 | C05 | Hub generation-scoped cancellation |

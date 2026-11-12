@@ -10,8 +10,10 @@ Cases implemented in this source revision:
 
 - ``C01``: a real VibeMux daemon publishes its descriptor; the real Hub
   ``local/adapters/vibemux.mjs`` reads it, performs an authenticated
-  ``health``/``frontend_tasks`` exchange, and rejects an unknown descriptor
-  version and an unknown operation with stable Hub error codes.
+  ``health``/``frontend_tasks`` exchange, completes the additive v10
+  ``capabilities`` discovery, rejects an unknown descriptor version, an unknown
+  operation, an unknown contract family, and an unknown catalog shape with
+  stable Hub error codes.
 - ``A1``: the CLI build graph excludes egui/eframe/Tauri; the default web
   build excludes the push-only ece/openssl/p256 stack.
 - ``A2``: ``scripts/build_storage.py inventory`` reports a valid state.
@@ -60,7 +62,7 @@ CASE_IDS: Final = (
 )
 
 NOT_RUN_REASONS: Final[dict[str, str]] = {
-    "C02": "Hub goal submission, owner planning profile selection, and daemon capability discovery are not implemented in this source revision.",
+    "C02": "Hub goal submission and owner planning profile selection are not implemented in this source revision; capability discovery itself is available and covered by C01.",
     "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
     "C04": "Requires the Hub event pagination and reconnect cursor consumer.",
     "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
@@ -95,6 +97,36 @@ try {
   };
   const check = await adapter.check_vibemux(connection);
   out.check = { status: check.status, projects: check.projects.length, tasks: check.tasks.length };
+  const catalog = await adapter.try_read_vibemux_capabilities(connection);
+  out.discovery = catalog ? 'capabilities' : 'legacy';
+  if (catalog) {
+    out.catalog = {
+      protocol_version: catalog.protocol_version,
+      operation_count: catalog.operations.length,
+      capability_access: catalog.operations.find((operation) => operation.name === 'capabilities')?.access ?? null,
+      runtime_count: catalog.runtimes.length,
+    };
+  }
+  const sample = {
+    schema_version: 1,
+    control_contract_id: 'vibemux.control.v10',
+    protocol_version: 10,
+    operations: [{ name: 'capabilities', minimum_version: 10, access: 'read',
+      request_schema: 'control.request.v1', response_schema: 'control.response.v1', handler: 'control' }],
+    runtimes: [],
+  };
+  try {
+    adapter.validate_capability_catalog({ ...sample, control_contract_id: 'other.control.v10' });
+    out.unknown_family_error = 'none';
+  } catch (error) {
+    out.unknown_family_error = error.code ?? String(error);
+  }
+  try {
+    adapter.validate_capability_catalog({ ...sample, extra: true });
+    out.unknown_shape_error = 'none';
+  } catch (error) {
+    out.unknown_shape_error = error.code ?? String(error);
+  }
   try {
     await adapter.ipc_request(connection, 'not_a_real_operation');
     out.unknown_operation_error = 'none';
@@ -290,11 +322,32 @@ def _run_c01(
             failures.append(f"unknown_operation={result.get('unknown_operation_error')}")
         if result.get("unknown_version_error") != "vibemux_ipc_version_mismatch":
             failures.append(f"unknown_version={result.get('unknown_version_error')}")
+        if result.get("discovery") != "capabilities":
+            failures.append(f"discovery={result.get('discovery')}")
+        catalog = result.get("catalog", {})
+        if catalog.get("protocol_version") != result.get("descriptor_version"):
+            failures.append(f"catalog_version={catalog.get('protocol_version')}")
+        if catalog.get("capability_access") != "read":
+            failures.append(f"capability_access={catalog.get('capability_access')}")
+        if (
+            not isinstance(catalog.get("operation_count"), int)
+            or catalog.get("operation_count", 0) < 1
+        ):
+            failures.append("catalog_operations_missing")
+        if not isinstance(catalog.get("runtime_count"), int):
+            failures.append("catalog_runtimes_missing")
+        if result.get("unknown_family_error") != "vibemux_contract_family_mismatch":
+            failures.append(f"unknown_family={result.get('unknown_family_error')}")
+        if result.get("unknown_shape_error") != "vibemux_contract_mismatch":
+            failures.append(f"unknown_shape={result.get('unknown_shape_error')}")
         detail = (
             f"descriptor_version={result.get('descriptor_version')} "
             f"project_id={result.get('listing', {}).get('project_id')} "
             f"tasks={result.get('listing', {}).get('task_count')} "
-            f"check={result.get('check', {}).get('status')}"
+            f"check={result.get('check', {}).get('status')} "
+            f"discovery={result.get('discovery')} "
+            f"operations={catalog.get('operation_count')} "
+            f"runtimes={catalog.get('runtime_count')}"
         )
         artifact = run_root / "c01-hub-probe.json"
         artifact.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

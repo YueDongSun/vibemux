@@ -180,6 +180,7 @@ Task, plugin, and terminal observation (pre-alpha, needs control protocol v4 for
 ```powershell
 .\target\debug\vibemuxctl.exe tasks list [--after <task_id>] [--limit <limit>] --project-root .
 .\target\debug\vibemuxctl.exe tasks show <task_id> --project-root .
+.\target\debug\vibemuxctl.exe capabilities --project-root .   # read-only v10 capability catalog (operations + runtime profiles)
 .\target\debug\vibemuxctl.exe plugins status --project-root .
 .\target\debug\vibemuxctl.exe terminal inspect <task_id> <run_id> --project-root .
 .\target\debug\vibemuxctl.exe terminal link <task_id> <run_id> --instance-id <id> --pane-id <pane_id> --project-root .
