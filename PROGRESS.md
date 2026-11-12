@@ -7958,3 +7958,17 @@ retained in the task's local validation artifact.
   2 skipped; clippy `-D warnings` passed.
 - Limits: full Hub projection pagination across the live UI is not
   implemented; C04 keeps that part `not_run` with the exact reason.
+
+### 2026-11-12 — Daemon restart over the same store (C07)
+
+- Added `C07-RESTART`: start the real daemon on a fixture project, read
+  health plus the 48-operation capability catalog, stop it, start it again,
+  and assert a new pid, the same health/capability results, and the same
+  store inode. This exercises the lineage/open path with an existing database
+  rather than a fresh one and confirms the daemon reopens instead of
+  recreating the store.
+- Executed on macOS 15.6: `C07-RESTART` passed; the combined frame
+  (`C01`, `A1`, `A2`, `C04-EVENTS`, `C07-RESTART`, `C11-SLOTS`,
+  `C13-LINEAGE`, `HUB-GATES`) passed all eight cases.
+- Limits: Hub restart recovery of suspended/interrupted tasks is not
+  implemented; C07 keeps that part `not_run`.

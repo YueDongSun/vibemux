@@ -47,6 +47,7 @@ CASE_IDS: Final = (
     "C11-SLOTS",
     "C13-LINEAGE",
     "C04-EVENTS",
+    "C07-RESTART",
     "HUB-GATES",
     "C02",
     "C03",
@@ -70,7 +71,7 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C04": "Paged event reads, retention-floor resynchronization, and reconnecting cursors are implemented and covered by C04-EVENTS; full Hub projection pagination across a live UI is not implemented.",
     "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
     "C06": "Requires a writable fixture worker candidate path and an independent verifier.",
-    "C07": "Requires Hub restart recovery over suspended/interrupted daemon records.",
+    "C07": "Daemon stop/restart over the same store is covered by C07-RESTART; Hub restart recovery of suspended/interrupted tasks is not implemented.",
     "C08": "Requires a second fixture harness adapter with native identity preservation.",
     "C09": "Requires the Hub skill_refs resolver and bounded context assembly.",
     "C10": "Requires the Hub read-only MCP tool and worker tool-call admission.",
@@ -839,6 +840,125 @@ def _cargo_passed(stdout: str) -> int:
     return 0
 
 
+def _run_c07_restart(*, vibemuxctl: Path, run_root: Path, timeout: float) -> dict[str, Any]:
+    """Stop and restart the daemon over the same project store.
+
+    Asserts the restarted daemon serves health and capability discovery, and
+    that it reopens the same store file instead of creating a new one. Hub
+    restart recovery of suspended tasks is not claimed by this case.
+    """
+    started = time.monotonic()
+    fixture = run_root / "c07"
+    descriptor = fixture / ".vibemux" / "control.json"
+    store = fixture / ".vibemux" / "vibemux_rust.sqlite3"
+    running = False
+
+    def start() -> None:
+        nonlocal running
+        result = _run(
+            [str(vibemuxctl), "daemon", "start", "--project-root", str(fixture)],
+            cwd=fixture,
+            timeout=timeout,
+        )
+        running = True
+        if result.returncode != 0:
+            raise VerificationError(f"daemon start failed: {_tail(result)}")
+        _wait_for_descriptor(descriptor, timeout)
+
+    def stop() -> None:
+        nonlocal running
+        result = _run(
+            [str(vibemuxctl), "daemon", "stop", "--project-root", str(fixture)],
+            cwd=fixture,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(f"daemon stop failed: {_tail(result)}")
+        running = False
+
+    def health() -> int:
+        result = _run(
+            [str(vibemuxctl), "--json", "daemon", "health", "--project-root", str(fixture)],
+            cwd=fixture,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(f"daemon health failed: {_tail(result)}")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise VerificationError(f"health emitted no JSON: {error}") from error
+        if value.get("ok") is not True:
+            raise VerificationError("health is not ok")
+        return int(value.get("process_id", 0))
+
+    def capabilities() -> int:
+        result = _run(
+            [str(vibemuxctl), "--json", "capabilities", "--project-root", str(fixture)],
+            cwd=fixture,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(f"capabilities failed: {_tail(result)}")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise VerificationError(f"capabilities emitted no JSON: {error}") from error
+        operations = value.get("capabilities", {}).get("operations", [])
+        if not operations:
+            raise VerificationError("capability catalog is empty")
+        return len(operations)
+
+    try:
+        _init_fixture_repo(fixture)
+        start()
+        first_pid = health()
+        first_operations = capabilities()
+        if not store.is_file():
+            raise VerificationError(f"store file missing at {store}")
+        first_inode = store.stat().st_ino
+        first_size = store.stat().st_size
+        stop()
+        start()
+        second_pid = health()
+        second_operations = capabilities()
+        second_inode = store.stat().st_ino
+        second_size = store.stat().st_size
+        if first_pid == second_pid:
+            raise VerificationError("restart reused the same process id")
+        if first_inode != second_inode:
+            raise VerificationError("restart replaced the store file instead of reopening it")
+        if second_size < first_size:
+            raise VerificationError("restart shrank the store")
+        if first_operations != second_operations:
+            raise VerificationError("capability catalog changed across restart")
+        return _case(
+            "C07-RESTART",
+            "passed",
+            evidence_class="daemon_restart_store_reuse",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"health and {second_operations} capabilities after restart; "
+                f"same store inode; pid {first_pid}->{second_pid}"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C07-RESTART",
+            "failed",
+            evidence_class="daemon_restart_store_reuse",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+    finally:
+        if running:
+            _run(
+                [str(vibemuxctl), "daemon", "stop", "--project-root", str(fixture)],
+                cwd=fixture,
+                timeout=timeout,
+            )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -987,6 +1107,24 @@ def main(argv: list[str] | None = None) -> int:
                         vibemux_root=vibemux_root,
                         build_state_root=build_state_root,
                         hub_root=hub_root,
+                        timeout=arguments.timeout_seconds,
+                    )
+                )
+        if "C07-RESTART" in selected:
+            if not vibemuxctl.is_file():
+                cases.append(
+                    _case(
+                        "C07-RESTART",
+                        "blocked",
+                        evidence_class="daemon_restart_store_reuse",
+                        detail=f"vibemuxctl not built at {vibemuxctl}",
+                    )
+                )
+            else:
+                cases.append(
+                    _run_c07_restart(
+                        vibemuxctl=vibemuxctl,
+                        run_root=run_root,
                         timeout=arguments.timeout_seconds,
                     )
                 )

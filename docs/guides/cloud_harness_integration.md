@@ -14,6 +14,7 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `A1` | Rust toolchain | The CLI graph is GUI-free; Web Push is opt-in |
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `C11-SLOTS` | Python 3.12, Git | Two owned worktrees compete for one managed build slot: serialization, ownership, release, and owned cleanup |
+| `C07-RESTART` | Built `vibemuxctl` | Daemon stop/restart reopens the same store and re-serves health and capability discovery |
 | `C04-EVENTS` | Rust toolchain, Node, Hub checkout | Paged task events with a sequence cursor, retention-floor resynchronization, and the Hub consumer |
 | `C13-LINEAGE` | Rust toolchain | Known store layouts are recognized and preserved: current v9, PR #52 reports schema 10, PR #49 chat schema 10 and 14, a foreign Python store, and future/incomplete markers |
 | `HUB-GATES` | Hub checkout, npm | The Hub's own check/test/artifact gates pass |
@@ -112,7 +113,7 @@ unconfigured`; an older daemon falls back to the legacy read path. See
 | C04 | Full Hub projection pagination across a live UI (the paged read and Hub cursor consumer are covered by C04-EVENTS) |
 | C05 | Hub generation-scoped cancellation |
 | C06 | Writable fixture worker + independent verifier |
-| C07 | Hub restart recovery over daemon records |
+| C07 | Hub restart recovery of suspended/interrupted tasks (daemon store reuse is covered by C07-RESTART) |
 | C08 | Second fixture harness adapter |
 | C09 | Hub `skill_refs` resolver |
 | C10 | Hub read-only MCP tool + worker tool admission |
