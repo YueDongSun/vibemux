@@ -25,7 +25,40 @@ members = [
     "crates/vibemux_terminal_observer",
     "crates/vibemuxd",
 ]
+# A bare `cargo build` / `cargo check` builds the daily core only. The GUI,
+# desktop, web, chat, and benchmark surfaces stay behind explicit -p/--workspace
+# selection so an ordinary validation round does not pull egui, Tauri, or the
+# npm asset build into the compile graph.
+default-members = [
+    "crates/vibemux_cli",
+    "crates/vibemuxd",
+    "crates/vibemux_probe",
+    "crates/vibemux_mcp",
+]
 resolver = "3"
+
+# Low-disk development profiles (see docs/guides/build_storage.md). Debug
+# assertions and overflow checks stay enabled; only debuginfo volume and
+# incremental caches are reduced. Use the `debugging` profile for variable-level
+# debugging. Environment variables (CARGO_INCREMENTAL) still take precedence.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = 2
+incremental = true
 
 [workspace.package]
 version = "0.2.0-alpha.1"
@@ -59,7 +92,7 @@ protoc-bin-vendored = "=3.2.0"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 reqwest = { version = "=0.13.1", default-features = false, features = ["json", "stream", "rustls"] }
 rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
-rustix = { version = "=1.1.4", default-features = false, features = ["process", "std"] }
+rustix = { version = "=1.1.6", default-features = false, features = ["process", "std"] }
 same-file = "=1.0.6"
 semver = "=1.0.28"
 serde = { version = "=1.0.229", features = ["derive"] }

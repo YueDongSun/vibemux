@@ -2,6 +2,8 @@
 //! Single operator-started process; no daemon autostart or canonical writes.
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{RwLock, watch};
+#[cfg(feature = "push")]
+use vibemux_web::push::PushService;
 use vibemux_web::{
     config::WebConfig,
     console_model::ConsoleSnapshot,
@@ -9,9 +11,17 @@ use vibemux_web::{
     control_bridge::{BridgePoller, BridgeSnapshot},
     local_page::LocalPageAccess,
     private_state::InstanceLease,
-    push::PushService,
     server::{RouterSettings, build_router},
 };
+
+struct Prepared {
+    config: WebConfig,
+    instance_token: String,
+    paths: vibemuxd::process::DaemonPaths,
+    lease: InstanceLease,
+    #[cfg(feature = "push")]
+    push: Arc<PushService>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,21 +38,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let instance_token = config.instance_token.resolve()?;
             let paths = vibemuxd::process::DaemonPaths::from_project_root(&project_root)?;
             let lease = InstanceLease::acquire(&project_root)?;
+            #[cfg(feature = "push")]
             let push = Arc::new(PushService::startup(
                 &lease.state_dir,
                 config.push_allowed_hosts.clone(),
                 config.vapid_subject.clone(),
                 &instance_token,
             )?);
-            Ok(Some((config, instance_token, paths, lease, push)))
+            Ok(Some(Prepared {
+                config,
+                instance_token,
+                paths,
+                lease,
+                #[cfg(feature = "push")]
+                push,
+            }))
         },
     )
     .await?
     .map_err(|_| "web_startup_failed")?;
-    let Some((config, instance_token, paths, _lease, push)) = prepared else {
+    let Some(prepared) = prepared else {
         eprintln!("web_disabled");
         return Ok(());
     };
+    let Prepared {
+        config,
+        instance_token,
+        paths,
+        lease: _lease,
+        #[cfg(feature = "push")]
+        push,
+    } = prepared;
     let snapshot_state = Arc::new(RwLock::new(BridgeSnapshot::default()));
     let console_state = Arc::new(RwLock::new(ConsoleSnapshot::waiting()));
     let listener = tokio::net::TcpListener::bind(config.bind_address)
@@ -60,10 +86,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let poller =
         BridgePoller::new(paths.clone(), poll_interval).with_task_links(config.task_links)?;
     let console_poller = ConsolePoller::new(paths, poll_interval);
+    #[cfg(feature = "push")]
     let router = build_router(
         snapshot_state.clone(),
         console_state.clone(),
         push.clone(),
+        RouterSettings {
+            instance_token,
+            enrollment_url: config.enrollment_url,
+            local_page,
+        },
+    );
+    #[cfg(not(feature = "push"))]
+    let router = build_router(
+        snapshot_state.clone(),
+        console_state.clone(),
         RouterSettings {
             instance_token,
             enrollment_url: config.enrollment_url,
@@ -77,6 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (stop_tx, stop_rx) = watch::channel(false);
     let bridge_task = tokio::spawn(poller.run(snapshot_state.clone(), stop_rx.clone()));
     let console_task = tokio::spawn(console_poller.run(console_state, stop_rx.clone()));
+    #[cfg(feature = "push")]
     let push_task = tokio::spawn(push.run(snapshot_state, stop_rx.clone()));
     let mut http_stop = stop_rx;
     let mut http_task = tokio::spawn(async move {
@@ -99,6 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let joined = tokio::time::timeout(Duration::from_secs(45), async {
         bridge_task.await.map_err(|_| "web_bridge_failed")?;
         console_task.await.map_err(|_| "web_console_failed")?;
+        #[cfg(feature = "push")]
         push_task.await.map_err(|_| "web_push_failed")?;
         if !http_finished {
             http_task

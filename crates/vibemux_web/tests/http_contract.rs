@@ -7,7 +7,7 @@ use vibemux_web::{
     local_page::LocalPageAccess,
     private_state::InstanceLease,
     push::PushService,
-    server::{API_ROUTES, CSP, OPENAPI, RouterSettings, build_router, mime_type},
+    server::{API_ROUTES, CSP, OPENAPI, PUSH_ROUTES, RouterSettings, build_router, mime_type},
 };
 const TEST_TOKEN: &str = "test_token_abcdefghijklmnopqrstuvwxyz_0123456789";
 
@@ -76,6 +76,7 @@ async fn every_route_and_fallback_rejects_anonymous_requests_with_security_heade
     let (_temp, _lease, url, stop, task) = fixture(BridgeSnapshot::default()).await;
     let client = reqwest::Client::new();
     let mut routes = API_ROUTES.to_vec();
+    routes.extend_from_slice(PUSH_ROUTES);
     routes.extend([
         ("get", "/"),
         ("get", "/sw.js"),
@@ -453,6 +454,7 @@ fn openapi_covers_all_registered_json_operations_and_no_canonical_writes() {
         }
     }
     let mut registered = API_ROUTES.to_vec();
+    registered.extend_from_slice(PUSH_ROUTES);
     registered.sort();
     documented.sort();
     assert_eq!(registered, documented);

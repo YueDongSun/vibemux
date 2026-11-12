@@ -398,11 +398,13 @@ identity checks. Watch and interact with the CLI in WezTerm; embedded terminal
 rendering and harness launch/input remain future work. See
 [terminal observation setup and protocol](docs/terminal_observer_protocol.md).
 
-Launch an existing build with `target/debug/vibemux_frontend.exe`, or use
-`cargo run -p vibemux_frontend --bin vibemux_frontend`. On Windows the GUI
-never opens a console window, in debug and release builds alike (like
-`pythonw`); a startup failure or a panic is written to `frontend_errors.log`
-next to the settings file (`%APPDATA%\vibemux\`).
+Build and launch the GUI with
+`cargo run -p vibemux_frontend --features gui --bin vibemux_frontend` (the
+`gui` feature is not part of the default build graph, so the CLI, TUI, dump,
+and dashboard binaries stay free of the egui/eframe windowing stack). On
+Windows the GUI never opens a console window, in debug and release builds alike
+(like `pythonw`); a startup failure or a panic is written to
+`frontend_errors.log` next to the settings file (`%APPDATA%\vibemux\`).
 
 The GUI observes one project folder at a time. **Open folder…** (in the
 sidebar's Folders list, the workspace menu, the collapsed rail, or Settings →
@@ -527,7 +529,7 @@ The following commands only execute launcher version checks, explicit endpoint p
 cargo run -p vibemux_probe --bin vibemux_probe
 cargo run -p vibemux_frontend --bin vibemux_frontend_dump
 cargo run -p vibemux_frontend --bin vibemux_frontend_tui
-cargo run -p vibemux_frontend --bin vibemux_frontend
+cargo run -p vibemux_frontend --features gui --bin vibemux_frontend
 ```
 
 `vibemux_probe` prints the versioned report JSON to stdout; pass `--write-cache --project-root <dir>` to additionally persist it atomically to `<dir>/.vibemux/probe_cache.json` (the trusted cache the daemon's `vibemuxctl harnesses`/`switch` surface reads; the stdout report is unchanged). `vibemux_frontend_dump` prints the ASCII snapshot and exits. `vibemux_frontend_tui` starts the interactive Ratatui debug dashboard; press `j`/`k` to select a harness, `r` to re-run the read-only probe, `t` to cycle themes, `c` to capture a snapshot, `q` / `Esc` to exit. `vibemux_frontend` opens the Supervisor Chat GUI described above. All eleven harnesses (Claude, Codex, OpenCode, Copilot, Grok, Qwen, iFlow, TRAE, CodeBuddy, Kimi, DSH) appear as TUI dashboard rows and GUI diagnostics; real PTY/ConPTY attach is not implemented and must not be treated as usable. DSH additionally has the live `vibemux_dsh_tui` session surface, which speaks DSH's own SDK protocol rather than attaching to a terminal.

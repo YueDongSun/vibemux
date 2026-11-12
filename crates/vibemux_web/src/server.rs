@@ -1,10 +1,11 @@
 //! Authenticated loopback HTTP surface. Security middleware includes fallback/errors.
+#[cfg(feature = "push")]
+use crate::push::{PushService, PushSubscription};
 use crate::{
     console_poller::ConsoleState,
     control_bridge::SnapshotState,
     enrollment::{AttemptLimiter, EnrollmentStore},
     local_page::LocalPageAccess,
-    push::{PushService, PushSubscription},
 };
 use axum::{
     Json, Router,
@@ -36,10 +37,15 @@ pub const API_ROUTES: &[(&str, &str)] = &[
     ("get", "/api/v1/tasks"),
     ("get", "/api/v1/tasks/{task_id}"),
     ("get", "/api/v1/console"),
-    ("get", "/api/v1/push/public_key"),
-    ("post", "/api/v1/push/subscriptions"),
     ("post", "/api/v1/enrollment"),
     ("post", "/api/v1/enrollment/create"),
+];
+
+/// Routes that exist only when the `push` feature is compiled in.
+#[cfg(feature = "push")]
+pub const PUSH_ROUTES: &[(&str, &str)] = &[
+    ("get", "/api/v1/push/public_key"),
+    ("post", "/api/v1/push/subscriptions"),
 ];
 
 struct HttpState {
@@ -49,6 +55,7 @@ struct HttpState {
     capacity: Arc<Semaphore>,
     enrollment: Mutex<EnrollmentStore>,
     enrollment_url: String,
+    #[cfg(feature = "push")]
     push: Arc<PushService>,
     local_page: Option<LocalPageAccess>,
 }
@@ -64,7 +71,7 @@ pub struct RouterSettings {
 pub fn build_router(
     snapshot_state: SnapshotState,
     console_state: ConsoleState,
-    push: Arc<PushService>,
+    #[cfg(feature = "push")] push: Arc<PushService>,
     settings: RouterSettings,
 ) -> Router {
     let RouterSettings {
@@ -79,14 +86,18 @@ pub fn build_router(
         capacity: Arc::new(Semaphore::new(MAX_HTTP_CONCURRENCY)),
         enrollment: Mutex::new(EnrollmentStore::default()),
         enrollment_url,
+        #[cfg(feature = "push")]
         push,
         local_page,
     });
     let service_routes = Router::new()
-        .route("/api/v1/push/public_key", get(public_key))
-        .route("/api/v1/push/subscriptions", post(subscribe))
         .route("/api/v1/enrollment", post(redeem))
-        .route("/api/v1/enrollment/create", post(invite))
+        .route("/api/v1/enrollment/create", post(invite));
+    #[cfg(feature = "push")]
+    let service_routes = service_routes
+        .route("/api/v1/push/public_key", get(public_key))
+        .route("/api/v1/push/subscriptions", post(subscribe));
+    let service_routes = service_routes
         .route("/openapi.json", get(openapi))
         .fallback(static_asset)
         .with_state(state.clone());
@@ -186,9 +197,11 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     response
 }
 
+#[cfg(feature = "push")]
 async fn public_key(State(state): State<Arc<HttpState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!({"public_key":state.push.public_key()}))
 }
+#[cfg(feature = "push")]
 async fn subscribe(
     State(state): State<Arc<HttpState>>,
     payload: Result<Json<PushSubscription>, axum::extract::rejection::JsonRejection>,

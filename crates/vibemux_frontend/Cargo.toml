@@ -18,13 +18,19 @@ required-features = ["gui_screenshot"]
 [[bin]]
 name = "vibemux_frontend"
 path = "src/bin/vibemux_frontend.rs"
+required-features = ["gui"]
 
 [features]
+# The egui/eframe central console. Off by default so the CLI, TUI, dump, and
+# dashboard binaries do not compile a windowing stack. Build the GUI with
+# `--features gui`, or use the workspace `full` recipe documented in
+# docs/guides/build_storage.md.
+gui = ["dep:egui", "dep:eframe"]
 # Forwards eframe's internal screenshot-test feature: with
 # `EFRAME_SCREENSHOT_TO=<path>.png` set, the GUI renders a couple of
 # frames and exits after saving the framebuffer to <path>. Used by
 # local verification scripts only; never enabled in normal builds.
-gui_screenshot = ["eframe/__screenshot", "dep:image"]
+gui_screenshot = ["gui", "eframe/__screenshot", "dep:image"]
 
 [[bin]]
 name = "vibemux_frontend_tui"
@@ -46,8 +52,8 @@ path = "src/bin/vibemux_dashboard.rs"
 crossterm.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
-egui.workspace = true
-eframe.workspace = true
+egui = { workspace = true, optional = true }
+eframe = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 vibemux_probe = { path = "../vibemux_probe" }
@@ -60,3 +66,8 @@ image = { version = "=0.25.9", default-features = false, features = ["png"], opt
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[[test]]
+name = "supervisor_ui"
+path = "tests/supervisor_ui.rs"
+required-features = ["gui"]

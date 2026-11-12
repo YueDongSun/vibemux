@@ -10,7 +10,10 @@ pub mod control_bridge;
 pub mod enrollment;
 pub mod local_page;
 pub mod private_state;
+#[cfg(feature = "push")]
 pub mod push;
+#[cfg(feature = "push")]
 mod push_message;
 pub mod server;
+#[cfg(feature = "push")]
 mod vapid;

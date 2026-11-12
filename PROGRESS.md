@@ -7760,3 +7760,49 @@ retained in the task's local validation artifact.
   not mount a real DOM, so unmount itself is not covered by an automated
   case. Live enrollment endpoints, real browser DOM races, and the Rust
   workspace were not run for this patch.
+
+### 2026-11-12 — Managed build storage, low-disk profiles, and split GUI/push features
+
+- Base: `main` at `a06a8c7`. The checkout held a 55 GiB `target` directory;
+  the root workspace had no `default-members` or profile overrides;
+  `vibemux_cli` pulled egui/eframe through `vibemux_frontend`; `vibemux_web`
+  always compiled `ece`, vendored OpenSSL, and `p256`; CI's
+  `dependency_policy` job failed on RUSTSEC-2026-0486 because the workspace
+  pinned `rustix = 1.1.4`.
+- Added `scripts/build_storage.py` with `inventory`, `run`, `plan-clean`, and
+  `apply-clean`; fixed reusable slots, OS advisory build/slot leases, a
+  per-slot budget, a filesystem reserve floor, process-tree termination, and
+  JSON measurements/plans. Only an idle, registered, task-owned slot
+  `target` can be planned for deletion, and `apply-clean` re-verifies the
+  path and lease before deleting. Unknown ownership is reported, never
+  claimed.
+- Added repository-wide `dev`/`test` profiles with line-tables-only debug
+  info, no incremental caches, and no dependency debug info; added a
+  `debugging` profile. Debug assertions and overflow checks are unchanged.
+- Added `default-members` for `vibemux_cli`, `vibemuxd`, `vibemux_probe`, and
+  `vibemux_mcp`. The frontend GUI is now the opt-in `gui` feature (modules,
+  binaries, and `tests/supervisor_ui.rs` are gated); Web Push is the opt-in
+  `push` feature (modules, routes, startup service, `http_contract` test,
+  and a `/api/v1/health` `push` flag).
+- Bumped `rustix` to `1.1.6` in the workspace pin and lockfile
+  (RUSTSEC-2026-0486).
+- MCP lifecycle fixture diagnostics now preserve the fixed shutdown stage
+  and the owner's real error instead of an opaque `assert!(unwrap().is_ok())`
+  panic.
+- Executed on macOS 15.6 (arm64), Rust 1.92.0, managed slot with the low-disk
+  profiles: `cargo check -p vibemux_frontend -p vibemux_cli` cold **46.7 s**;
+  `cargo check -p vibemux_frontend --features gui --all-targets` **24.2 s**;
+  `cargo check -p vibemux_web --all-targets` **14.7 s**;
+  `cargo test -p vibemux_mcp --features test_helpers --test lifecycle`
+  **22 passed / 0 failed**; `cargo test -p vibemux_harness -p
+  vibemux_harness_native --all-features` passed; `cargo test -p vibemux_web`
+  **27 passed** (push targets skipped) and `--features push` **56 passed**,
+  including 9 `http_contract` cases; `cargo metadata --locked` passed.
+- Dependency evidence: `cargo tree -p vibemux_cli` contains no
+  egui/eframe/winit/Tauri; `cargo tree -p vibemux_web` (default) contains no
+  ece/openssl/p256, while `--features push` contains them.
+- Scope and limits: no daemon, control protocol, store schema, or canonical
+  state change. Windows slot/junction/taskkill behavior and the full
+  workspace gate were not executed on this host; the Windows acceptance
+  script remains the follow-up.
+

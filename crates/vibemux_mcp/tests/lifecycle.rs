@@ -267,10 +267,13 @@ impl SessionFixture {
         }
         let responsive = timeout(RESPONSIVE_DEADLINE, &mut self.owner).await;
         let quickly = responsive.is_ok();
+        // Keep the fixed shutdown stage and the owner's own error visible. The
+        // old `assert!(result.unwrap().is_ok())` turned every macOS lifecycle
+        // failure into an opaque panic with no session/shutdown phase.
         match responsive {
-            Ok(result) => assert!(result.unwrap().is_ok()),
+            Ok(result) => finish_owner(result, "responsive shutdown"),
             Err(_) => match timeout(Duration::from_secs(6), &mut self.owner).await {
-                Ok(result) => assert!(result.unwrap().is_ok()),
+                Ok(result) => finish_owner(result, "delayed shutdown"),
                 Err(_) => {
                     self.owner.abort();
                     let _ = self.owner.await;
@@ -283,6 +286,17 @@ impl SessionFixture {
             messages.push(message);
         }
         (quickly, messages)
+    }
+}
+
+fn finish_owner<T, E: std::fmt::Debug>(
+    result: Result<Result<T, E>, tokio::task::JoinError>,
+    stage: &str,
+) {
+    match result {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => panic!("MCP session owner returned an error during {stage}: {error:?}"),
+        Err(join) => panic!("MCP session owner task failed during {stage}: {join:?}"),
     }
 }
 

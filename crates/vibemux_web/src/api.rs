@@ -47,6 +47,8 @@ pub struct HealthResponse {
     pub stale: bool,
     pub daemon: Option<crate::control_bridge::BridgeHealth>,
     pub dsh_status: Option<BridgeDshStatus>,
+    /// Whether this build serves the optional Web Push routes.
+    pub push: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -85,6 +87,7 @@ async fn health(State(snapshot_state): State<SnapshotState>) -> Json<HealthRespo
         stale: snapshot.stale,
         daemon: snapshot.daemon.clone(),
         dsh_status: snapshot.dsh_status.clone(),
+        push: cfg!(feature = "push"),
     })
 }
 

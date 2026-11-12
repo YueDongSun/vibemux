@@ -16,9 +16,13 @@
 
 pub mod dashboard;
 pub mod dsh_tui;
+#[cfg(feature = "gui")]
 pub mod gui;
+#[cfg(feature = "gui")]
 mod live_app;
+#[cfg(feature = "gui")]
 mod live_ask;
+#[cfg(feature = "gui")]
 mod live_console;
 #[cfg(feature = "gui_screenshot")]
 pub mod preview;
@@ -26,6 +30,7 @@ pub mod startup_log;
 pub mod theme;
 pub mod tui;
 
+#[cfg(feature = "gui")]
 use vibemux_client::workspace_inventory;
 pub use vibemux_client::{
     ask, daemon_control, probe_env, project_folder, quick_search, supervisor_client,

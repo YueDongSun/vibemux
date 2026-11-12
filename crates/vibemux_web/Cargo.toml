@@ -6,6 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Self-hosted Web Push delivery. Off by default: it is the only consumer of
+# ece, openssl-sys (vendored OpenSSL), and p256 in this crate, and the read-only
+# board works without it. Enable it for an installation that wants push.
+default = []
+push = ["dep:ece", "dep:openssl", "dep:p256"]
+
 [dependencies]
 axum.workspace = true
 base64.workspace = true
@@ -25,9 +32,9 @@ time.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 url.workspace = true
 uuid.workspace = true
-ece.workspace = true
-openssl.workspace = true
-p256.workspace = true
+ece = { workspace = true, optional = true }
+openssl = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
 vibemuxd = { path = "../vibemuxd" }
 vibemux_harness = { path = "../vibemux_harness" }
 vibemux_types = { path = "../vibemux_types" }
@@ -38,3 +45,8 @@ tempfile.workspace = true
 vibemux_store = { path = "../vibemux_store" }
 vibemuxd = { path = "../vibemuxd", features = ["test_helpers"] }
 vibemux_platform = { path = "../vibemux_platform", features = ["test_helpers"] }
+
+[[test]]
+name = "http_contract"
+path = "tests/http_contract.rs"
+required-features = ["push"]

@@ -562,6 +562,10 @@
                 "type": "null"
               }
             ]
+          },
+          "push": {
+            "type": "boolean",
+            "description": "Whether this build serves the optional Web Push routes."
           }
         },
         "required": [
@@ -569,7 +573,8 @@
           "observed_at",
           "stale",
           "daemon",
-          "dsh_status"
+          "dsh_status",
+          "push"
         ],
         "additionalProperties": false
       },
