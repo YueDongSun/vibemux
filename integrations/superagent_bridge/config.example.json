@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "executable": "C:\\Tools\\VibeMux\\vibemuxctl.exe",
+  "port": 4317,
+  "token_env": "VIBEMUX_BRIDGE_TOKEN",
+  "enable_writes": false,
+  "command_timeout_ms": 125000,
+  "max_output_bytes": 524288,
+  "max_concurrency": 4,
+  "allowed_origins": [],
+  "projects": [
+    {
+      "id": "example",
+      "label": "Example project",
+      "root": "C:\\Projects\\example",
+      "allow_import": false,
+      "allow_report_content": false,
+      "presets": []
+    }
+  ]
+}

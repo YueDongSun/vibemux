@@ -433,3 +433,22 @@ control descriptor, database writer, canonical Run state or harness execution.
 The read-only monitor and native desktop retain their existing boundaries.
 [ADR 056](adr/056_browser_local_chat.md) records storage, preview and provider
 limits; [the guide](conversational_web_ui.md) gives startup commands.
+
+## Optional process-external supervisor bridge
+
+`integrations/superagent_bridge` exposes authenticated loopback `/api/v1`
+routes to a separately authenticated application server. It maps configured
+project aliases to a fixed installed CLI and consumes only advertised command
+contracts. The daemon still owns canonical state, admission, duplicate handling
+and scheduling. The bridge stores no tasks, drafts, credentials in a browser, or
+mutation ledger; its only persistent operational input is private configuration.
+
+Task/detail/status reads support bounded activity inspection. Intake prepares
+only; follow-up carries an exact expected version, worker session and contract
+to the daemon. Intake/follow-up/reports remain unavailable on main until matching
+backend commands are installed. Historical attention claims do not establish
+unresolved state or completion. Capability advertisement is separate from
+daemon readiness and live gateway qualification. See
+[ADR 073](adr/073_process_external_superagent_bridge.md) and the
+[HTTP integration guide](../integrations/superagent_bridge/README.md).
+

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an optional process-external supervisor bridge under `integrations/superagent_bridge`: authenticated, bounded task/workflow reads and capability-gated intake/follow-up/report adapters, with fixed project aliases, prepared-only intake receipts, explicit unknown mutation outcomes and no automatic retries. It uses Node built-ins and the installed CLI; the daemon remains the sole canonical writer. Main does not gain the unmerged PR #52 operations, and live model qualification is unchanged.
+
 - Make the monitor's one-time enrollment QR request single-flight. A repeated "Create one-time QR" click no longer mints a second server-side one-time token, and the request owner is released on failure, sign-out, token installation, and unmount.
 - Update the locked `rusqlite` to 0.41.1 and `libsqlite3-sys` to 0.39.1 for RUSTSEC-2026-0459 (C SQLite CVE-2026-119375). rusqlite 0.41 removed its `u64` SQL conversions, so the store converts `u64` explicitly at the SQL boundary and fails closed on out-of-range values; the bundled SQLite engine also moves to the version shipped with libsqlite3-sys 0.39.1.
 - Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.
@@ -189,3 +191,4 @@
 
 - Establish the Windows-first Python package, domain models, SQLite event log, Git worktree, and terminal/harness adapters.
 - Add the CLI, cross-platform smoke, documentation, ADRs, and GitHub Actions matrix.
+

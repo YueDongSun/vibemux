@@ -7760,3 +7760,52 @@ retained in the task's local validation artifact.
   not mount a real DOM, so unmount itself is not covered by an automated
   case. Live enrollment endpoints, real browser DOM races, and the Rust
   workspace were not run for this patch.
+
+### 2026-11-12 — Optional process-external supervisor bridge
+
+- Base contract: main `a06a8c70a4e68bf78c160789d3b818e58f0a4ab1`.
+  New optional `integrations/superagent_bridge` uses Node built-ins and a fixed
+  installed CLI, with project aliases, loopback bearer authentication,
+  Host/Origin checks, bounded shell-free subprocesses and private input files.
+  No Rust code, canonical schema, Control version or existing monitor changed.
+- Implemented `/api/v1` task list/detail, workflow status, report/attention reads,
+  explicit pause/cancel, and capability-gated intake/follow-up. Capabilities
+  inspect actual help verbs; #49 Control v17 is not mistaken for #52 intake
+  support. No open PR was merged. Intake is prepare-only; follow-up preserves
+  exact expected versions, session/contract identity and event IDs. Uncertain
+  writes return `unknown` and are never automatically retried.
+- Attention is explicitly a page of historical worker claims. It does not own
+  unresolved state, treat `ready` as accepted/completed, or erase earlier
+  declarations when a later report arrives. Content remains opt-in. Task events
+  are bounded activity metadata rather than a complete workflow export.
+- Executed on Linux with Node 24.22.1:
+  `node --test tests/*.test.mjs` from the integration directory produced
+  **29 passed / 0 failed / 0 skipped**. Tests run actual loopback HTTP and Node
+  child processes with clearly marked synthetic CLI fixtures, covering main,
+  #49 and #52 capability differences, receipts, duplicates, unknown outcomes,
+  project isolation, permissions, auth/origin/host checks, size/time bounds,
+  shutdown and temporary-file cleanup.
+- An independent reviewer reran all 29 checks successfully. A separate
+  cross-repository smoke exercised the current Pixel Fastify
+  `registerSuperagentRoutes` implementation over real HTTP to this bridge and
+  the synthetic CLI: **3 passed / 0 failed**, covering projects/capabilities,
+  task limit 32/detail, workflow phase, report content/attention, prepared
+  intake, explicit duplicate follow-up, main's unsupported operation, and
+  unknown-write no-replay behavior. This is HTTP interoperability evidence,
+  not browser DOM or production-daemon qualification.
+- Development failures remain explicit: the first Host-rejection test used
+  fetch, which discarded its supplied Host value; it now exercises native HTTP
+  headers and also checks duplicate Authorization. An independent parallel run
+  exposed 150-ms Node-startup assumptions in output/timeout fixtures. Output
+  cases now use a normal command budget; the timeout case asserts unknown and
+  no replay without assuming the child read the request before its deadline.
+- Limits: no native Windows run, installed VibeMux binary/daemon call, Rust build,
+  or live provider execution was performed. The current AAG live attestation
+  refusal remains authoritative. Goal presets require the existing configured
+  daemon compiler; imported request/policy is the explicit alternative. No
+  natural-language compiler or production task simulation is claimed.
+- Cleanup: no dependencies or build products were installed. Each test removes
+  its exact owned temporary files/directories and closes its server/CLI children;
+  source fixtures and review evidence are retained. The read-only source snapshot
+  and comparison copies are handoff evidence, not release files.
+
