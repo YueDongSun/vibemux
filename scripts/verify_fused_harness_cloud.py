@@ -250,9 +250,11 @@ def _run_c01(
             cwd=fixture,
             timeout=timeout,
         )
+        # Stop in the finally block even if start reported a failure after
+        # publishing a process; the fixture project is task-owned.
+        daemon_started = True
         if start.returncode != 0:
             raise VerificationError(f"daemon start failed: {_tail(start)}")
-        daemon_started = True
         _wait_for_descriptor(descriptor, timeout)
         bad_descriptor = run_root / "unsupported-descriptor.json"
         payload = json.loads(descriptor.read_text(encoding="utf-8"))
