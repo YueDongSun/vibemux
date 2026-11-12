@@ -7932,3 +7932,29 @@ retained in the task's local validation artifact.
   ruff/mypy clean.
 - Limits: the forward merge of the recognized layouts into one current schema
   is not implemented; C13 keeps that part `not_run` with the exact reason.
+
+### 2026-11-12 — Paged task events and the Hub cursor consumer (C04)
+
+- Added the additive v10 `frontend_events` read: `FrontendEventsQuery`
+  (`task_id`, `after_sequence`, `limit`) returns one oldest-first page with
+  `next_after_sequence`, `has_more`, and the task's retained
+  `earliest_sequence`/`latest_sequence`. The cursor is the canonical event
+  sequence; a task-scoped stream may skip numbers when other tasks'
+  events interleave, so completeness is decided by the cursor and the
+  retention floor, never by consecutive arithmetic.
+- VibeMux: store paging (`SqliteStore::frontend_events`), writer request,
+  control operation/dispatch/client, and `vibemuxctl tasks events <task_id>
+  [--after-sequence <n>] [--limit <n>]`.
+- Hub: `read_vibemux_events` validates the page as a closed record (ascending
+  unique sequences, exact next cursor, bounded timestamps), the read surface
+  exposes `events()`, and `events_resynchronize_required` reports when the
+  cursor fell behind the retained floor. The legacy reads keep the v5 cap;
+  the paged read uses the descriptor version and requires v10+.
+- Added the `C04-EVENTS` verification case (store + control + Hub consumer in
+  one managed slot).
+- Executed on macOS 15.6: store frontend tests 9 passed, control paged-read
+  test passed, CLI event parser test passed, Hub adapter suite 34 passed;
+  full store/daemon/CLI suites passed; Hub `npm test` 2036 passed, 0 failed,
+  2 skipped; clippy `-D warnings` passed.
+- Limits: full Hub projection pagination across the live UI is not
+  implemented; C04 keeps that part `not_run` with the exact reason.

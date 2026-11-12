@@ -69,8 +69,8 @@ pub use harness_dispatch_ops::{
 use vibemux_types::{
     TaskId,
     frontend::{
-        FrontendTaskDetail, FrontendTaskQuery, FrontendTasksPage, FrontendTasksQuery,
-        MAX_FRONTEND_TASKS,
+        FrontendEventsPage, FrontendEventsQuery, FrontendTaskDetail, FrontendTaskQuery,
+        FrontendTasksPage, FrontendTasksQuery, MAX_FRONTEND_EVENT_PAGE, MAX_FRONTEND_TASKS,
     },
 };
 pub use workflow_ops::{
@@ -120,6 +120,7 @@ pub enum ControlOperation {
     HarnessSwitch,
     FrontendTasks,
     FrontendTask,
+    FrontendEvents,
     TerminalInspect,
     TerminalLink,
     TerminalFocus,
@@ -214,6 +215,7 @@ impl ControlOperation {
             | Self::DecisionShow
             | Self::DecisionDispatchSubmit => CONTROL_PROTOCOL_V8,
             Self::Capabilities => CONTROL_PROTOCOL_V10,
+            Self::FrontendEvents => CONTROL_PROTOCOL_V10,
         }
     }
 
@@ -232,6 +234,7 @@ impl ControlOperation {
         Self::HarnessSwitch,
         Self::FrontendTasks,
         Self::FrontendTask,
+        Self::FrontendEvents,
         Self::TerminalInspect,
         Self::TerminalLink,
         Self::TerminalFocus,
@@ -295,6 +298,7 @@ impl ControlOperation {
                 | Self::HarnessSnapshot
                 | Self::FrontendTasks
                 | Self::FrontendTask
+                | Self::FrontendEvents
                 | Self::TerminalInspect
                 | Self::HarnessDispatchCatalog
                 | Self::HarnessDispatchStatus
@@ -324,6 +328,7 @@ impl ControlOperation {
             | Self::HarnessSwitch
             | Self::FrontendTasks
             | Self::FrontendTask
+            | Self::FrontendEvents
             | Self::Capabilities
             | Self::Shutdown => "control",
             Self::TerminalInspect
@@ -440,6 +445,8 @@ pub enum ControlPayload {
     },
     FrontendTasks(FrontendTasksPage),
     FrontendTask(Option<FrontendTaskDetail>),
+    /// Answer to the additive v10 paged event read.
+    FrontendEvents(Box<FrontendEventsPage>),
     HarnessDispatchCatalog(Vec<DispatchCatalogEntry>),
     HarnessDispatchProbe(ProbeReport),
     HarnessDispatchReceipt(HarnessDispatchReceipt),
@@ -1981,6 +1988,28 @@ impl ControlClient {
         }
     }
 
+    pub async fn frontend_events(
+        &self,
+        query: FrontendEventsQuery,
+    ) -> Result<FrontendEventsPage, ControlError> {
+        self.require_operation(ControlOperation::FrontendEvents)?;
+        if query.limit == 0 || query.limit > MAX_FRONTEND_EVENT_PAGE {
+            return Err(ControlError::InvalidRequest);
+        }
+        let argument = serde_json::to_string(&query).map_err(|_| ControlError::InvalidRequest)?;
+        match self
+            .request_with_argument(
+                ControlOperation::FrontendEvents,
+                Some(argument),
+                CONTROL_DEADLINE,
+            )
+            .await?
+        {
+            ControlPayload::FrontendEvents(page) => Ok(*page),
+            _ => Err(ControlError::InvalidFrame),
+        }
+    }
+
     pub async fn capabilities(&self) -> Result<CapabilityCatalog, ControlError> {
         self.require_operation(ControlOperation::Capabilities)?;
         match self
@@ -2260,6 +2289,29 @@ where
                 ),
             }
         }
+        ControlOperation::FrontendEvents => {
+            let query = request
+                .argument
+                .as_deref()
+                .and_then(|argument| serde_json::from_str::<FrontendEventsQuery>(argument).ok())
+                .filter(|query| query.limit > 0 && query.limit <= MAX_FRONTEND_EVENT_PAGE);
+            match query {
+                Some(query) => match frontend_events(state.clone(), query).await {
+                    Ok(page) => (
+                        ControlResponse::success(
+                            request_id,
+                            ControlPayload::FrontendEvents(Box::new(page)),
+                        ),
+                        false,
+                    ),
+                    Err(error) => (ControlResponse::error(request_id, &error), false),
+                },
+                None => (
+                    ControlResponse::error(request_id, &ControlError::InvalidRequest),
+                    false,
+                ),
+            }
+        }
         // Acceptance only. The owner joins plugins before releasing the writer.
         // Dispatch and decision-peer cancellation start now, so a connection
         // waiting on a probe or an external decision ends before the server
@@ -2461,6 +2513,24 @@ async fn frontend_task(
             .ok_or(ControlError::ServerTerminated)?
             .handle()?;
         writer.frontend_task(task_id).map_err(ControlError::from)
+    })
+    .await
+    .map_err(|_| ControlError::ServerTerminated)?
+}
+
+async fn frontend_events(
+    state: Arc<ServerState>,
+    query: FrontendEventsQuery,
+) -> Result<FrontendEventsPage, ControlError> {
+    tokio::task::spawn_blocking(move || {
+        let writer = state
+            .writer
+            .lock()
+            .map_err(|_| ControlError::ServerTerminated)?
+            .as_ref()
+            .ok_or(ControlError::ServerTerminated)?
+            .handle()?;
+        writer.frontend_events(query).map_err(ControlError::from)
     })
     .await
     .map_err(|_| ControlError::ServerTerminated)?
@@ -3214,6 +3284,55 @@ mod tests {
             ControlError::UnsupportedVersion
         );
 
+        server.shutdown().await.expect("clean shutdown");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn frontend_events_are_a_paged_v10_read() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let server = DaemonControlServer::start(&temp.path().join("state.sqlite3"), temp.path())
+            .await
+            .expect("start control server");
+        let client =
+            ControlClient::from_descriptor(server.descriptor_path()).expect("control client");
+        let task_id = TaskId::new();
+        let page = client
+            .frontend_events(FrontendEventsQuery {
+                task_id,
+                after_sequence: None,
+                limit: 5,
+            })
+            .await
+            .expect("empty page");
+        assert_eq!(page.task_id, task_id);
+        assert!(page.events.is_empty());
+        assert!(!page.has_more);
+        assert_eq!(page.earliest_sequence, 0);
+        assert_eq!(page.latest_sequence, 0);
+        assert_eq!(
+            client
+                .frontend_events(FrontendEventsQuery {
+                    task_id,
+                    after_sequence: None,
+                    limit: 0,
+                })
+                .await
+                .expect_err("zero limit is refused"),
+            ControlError::InvalidRequest
+        );
+        let mut older = client.clone();
+        older.descriptor.version = CONTROL_PROTOCOL_V9;
+        assert_eq!(
+            older
+                .frontend_events(FrontendEventsQuery {
+                    task_id,
+                    after_sequence: None,
+                    limit: 5,
+                })
+                .await
+                .expect_err("v9 is refused"),
+            ControlError::UnsupportedVersion
+        );
         server.shutdown().await.expect("clean shutdown");
     }
 

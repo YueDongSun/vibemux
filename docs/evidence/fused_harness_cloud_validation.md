@@ -37,6 +37,7 @@ python scripts/verify_fused_harness_cloud.py \
 | A1 | passed | `source_dependency_graph` | CLI tree has no egui/eframe/winit/Tauri; default web tree has no ece/openssl/p256; `--features push` restores OpenSSL |
 | A2 | passed | `local_build_tooling` | `build_storage.py inventory` returned schema 1 with free-space and slot data |
 | C11-SLOTS | passed | `managed_build_slot_contention` | Two owned Git worktrees serialized on one `max-active=1` token; both task ids recorded in the slot owner; slot released; owned cleanup removed only `slots/c11/target` |
+| C04-EVENTS | passed | `event_pagination_contracts` | Store paging (31 events, cursor, retention floor), the v10 control read, and the Hub cursor consumer (34 Hub tests) |
 | C13-LINEAGE | passed | `store_migration_tests` | 5 lineage tests: current v9 recognized and idempotent on reopen; PR #52 reports schema 10 and PR #49 chat schema 10/14 recognized and preserved; foreign Python store, future marker, and incomplete current layout refused distinctly |
 | HUB-GATES | passed | `actual_hub_tests` | `npm run check`, `npm test` (2032 passed, 2 skipped, 0 failed), `npm run verify:artifacts` |
 | C02–C15 | not_run | `not_executed` | Reasons are recorded per case in the JSON report |
@@ -49,7 +50,7 @@ health.healthy=true
 check.status=connected
 discovery=capabilities
 catalog.control_contract_id=vibemux.control.v10
-catalog.operations=47 (capabilities: minimum_version=10, access=read)
+catalog.operations=48 (capabilities: minimum_version=10, access=read)
 catalog.runtimes=11
 frontend_tasks.tasks=[] (fresh fixture project)
 unknown_operation_error=vibemux_operation_not_allowed

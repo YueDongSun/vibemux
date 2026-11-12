@@ -8,7 +8,9 @@ use std::ffi::OsString;
 use serde_json::{Value, json};
 use vibemux_types::{
     TaskId,
-    frontend::{FrontendTasksQuery, MAX_FRONTEND_TASKS},
+    frontend::{
+        FrontendEventsQuery, FrontendTasksQuery, MAX_FRONTEND_EVENT_PAGE, MAX_FRONTEND_TASKS,
+    },
 };
 use vibemuxd::process::DaemonPaths;
 
@@ -35,6 +37,12 @@ pub enum TaskCommand {
     Show {
         task_id: TaskId,
     },
+    /// One page of the task's canonical events, oldest first.
+    Events {
+        task_id: TaskId,
+        after_sequence: Option<u64>,
+        limit: u32,
+    },
 }
 
 /// Parses the arguments after the `tasks` verb.
@@ -42,6 +50,8 @@ pub(crate) fn parse_task_arguments(arguments: &[OsString]) -> Result<CliCommand,
     let (action, rest) = split_action(arguments)?;
     let command_flags: &[&str] = if action == "list" {
         &["--after", "--limit"]
+    } else if action == "events" {
+        &["--after-sequence", "--limit"]
     } else {
         &[]
     };
@@ -61,6 +71,20 @@ pub(crate) fn parse_task_arguments(arguments: &[OsString]) -> Result<CliCommand,
             let [task_id] = tail.positionals()?;
             TaskCommand::Show {
                 task_id: parse_task_id(task_id)?,
+            }
+        }
+        "events" => {
+            let [task_id] = tail.positionals()?;
+            TaskCommand::Events {
+                task_id: parse_task_id(task_id)?,
+                after_sequence: match tail.flag("--after-sequence") {
+                    Some(text) => Some(parse_sequence(text)?),
+                    None => None,
+                },
+                limit: match tail.flag("--limit") {
+                    Some(text) => parse_event_limit(text)?,
+                    None => MAX_FRONTEND_EVENT_PAGE,
+                },
             }
         }
         _ => return Err(DaemonCliError::InvalidArguments),
@@ -106,6 +130,29 @@ pub async fn run_task(paths: &DaemonPaths, command: TaskCommand) -> Result<Value
                 "has_more_artifacts": detail.has_more_artifacts,
             }))
         }
+        TaskCommand::Events {
+            task_id,
+            after_sequence,
+            limit,
+        } => {
+            let page = client
+                .frontend_events(FrontendEventsQuery {
+                    task_id,
+                    after_sequence,
+                    limit,
+                })
+                .await
+                .map_err(map_dispatch_error)?;
+            Ok(json!({
+                "ok": true,
+                "task_id": page.task_id,
+                "events": page.events,
+                "next_after_sequence": page.next_after_sequence,
+                "has_more": page.has_more,
+                "earliest_sequence": page.earliest_sequence,
+                "latest_sequence": page.latest_sequence,
+            }))
+        }
     }
 }
 
@@ -117,6 +164,20 @@ fn parse_limit(text: &str) -> Result<u32, DaemonCliError> {
     text.parse::<u32>()
         .ok()
         .filter(|limit| (1..=MAX_FRONTEND_TASKS).contains(limit))
+        .ok_or(DaemonCliError::InvalidArguments)
+}
+
+fn parse_event_limit(text: &str) -> Result<u32, DaemonCliError> {
+    text.parse::<u32>()
+        .ok()
+        .filter(|limit| (1..=MAX_FRONTEND_EVENT_PAGE).contains(limit))
+        .ok_or(DaemonCliError::InvalidArguments)
+}
+
+fn parse_sequence(text: &str) -> Result<u64, DaemonCliError> {
+    text.parse::<u64>()
+        .ok()
+        .filter(|sequence| *sequence > 0)
         .ok_or(DaemonCliError::InvalidArguments)
 }
 
@@ -180,10 +241,39 @@ mod tests {
     }
 
     #[test]
+    fn events_take_a_task_id_cursor_and_limit() {
+        let task_id = TaskId::new();
+        assert_eq!(
+            task(&["events", &task_id.to_string()]),
+            TaskCommand::Events {
+                task_id,
+                after_sequence: None,
+                limit: MAX_FRONTEND_EVENT_PAGE,
+            }
+        );
+        assert_eq!(
+            task(&[
+                "events",
+                &task_id.to_string(),
+                "--after-sequence",
+                "7",
+                "--limit",
+                "5",
+            ]),
+            TaskCommand::Events {
+                task_id,
+                after_sequence: Some(7),
+                limit: 5,
+            }
+        );
+    }
+
+    #[test]
     fn malformed_arguments_are_refused() {
         let id = TaskId::new().to_string();
         let nil = uuid::Uuid::nil().to_string();
         let over_limit = (MAX_FRONTEND_TASKS + 1).to_string();
+        let over_event_limit = (MAX_FRONTEND_EVENT_PAGE + 1).to_string();
         for arguments in [
             &[][..],
             &["status"][..],
@@ -204,6 +294,14 @@ mod tests {
             &["show", &id, &id][..],
             &["show", &id, "--limit", "5"][..],
             &["show", &id, "--after", &id][..],
+            &["events"][..],
+            &["events", "not_a_uuid"][..],
+            &["events", &nil][..],
+            &["events", &id, "--after-sequence", "0"][..],
+            &["events", &id, "--after-sequence", "x"][..],
+            &["events", &id, "--after", &id][..],
+            &["events", &id, "--limit", "0"][..],
+            &["events", &id, "--limit", &over_event_limit][..],
         ] {
             assert_eq!(
                 parse(arguments).map(|_| ()),

@@ -292,6 +292,7 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
   vibemuxctl dsh status|cancel|close [--project-root <path>]
   vibemuxctl tasks list [--after <task_id>] [--limit <limit>] [--project-root <path>]
   vibemuxctl tasks show <task_id> [--project-root <path>]
+  vibemuxctl tasks events <task_id> [--after-sequence <n>] [--limit <n>] [--project-root <path>]
   vibemuxctl plugins status [--project-root <path>]
   vibemuxctl capabilities [--project-root <path>]
   vibemuxctl terminal inspect <task_id> <run_id> [--plugin-id <id>] [--project-root <path>]

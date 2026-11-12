@@ -8,6 +8,8 @@ pub const MAX_FRONTEND_TASKS: u32 = 32;
 pub const MAX_FRONTEND_RUNS: usize = 12;
 pub const MAX_FRONTEND_EVENTS: usize = 24;
 pub const MAX_FRONTEND_ARTIFACTS: usize = 24;
+/// Maximum number of events one paged event read returns.
+pub const MAX_FRONTEND_EVENT_PAGE: u32 = 32;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -77,6 +79,35 @@ pub struct FrontendEventSummary {
     pub event_type: String,
     pub at: String,
     pub run_id: Option<RunId>,
+}
+
+/// A paged event read for one task.
+///
+/// The cursor is the canonical event sequence of the last applied event. The
+/// page also reports the earliest and latest sequence the store still holds
+/// for the task, so a consumer can detect that its cursor fell behind the
+/// retention floor and resynchronize instead of assuming a missing event.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendEventsQuery {
+    pub task_id: TaskId,
+    pub after_sequence: Option<u64>,
+    pub limit: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendEventsPage {
+    pub task_id: TaskId,
+    pub events: Vec<FrontendEventSummary>,
+    pub next_after_sequence: Option<u64>,
+    pub has_more: bool,
+    /// Lowest event sequence the store still holds for this task; `0` when
+    /// the task has no events.
+    pub earliest_sequence: u64,
+    /// Highest event sequence the store holds for this task; `0` when the task
+    /// has no events.
+    pub latest_sequence: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

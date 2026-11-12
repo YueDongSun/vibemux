@@ -27,7 +27,10 @@ use vibemux_store::{
 use vibemux_types::{
     ProjectId, RunId, TaskId,
     a2a::{A2aRunRecord, A2aRunStart, A2aRunUpdate},
-    frontend::{FrontendTaskDetail, FrontendTasksPage, FrontendTasksQuery},
+    frontend::{
+        FrontendEventsPage, FrontendEventsQuery, FrontendTaskDetail, FrontendTasksPage,
+        FrontendTasksQuery,
+    },
 };
 
 /// Writer queue capacity: 64 absorbs burst commits from multiple CLI clients
@@ -216,6 +219,10 @@ enum WriterRequest {
     FrontendTask {
         task_id: TaskId,
         response: mpsc::Sender<Result<Option<FrontendTaskDetail>, WriterError>>,
+    },
+    FrontendEvents {
+        query: FrontendEventsQuery,
+        response: mpsc::Sender<Result<FrontendEventsPage, WriterError>>,
     },
     Health(mpsc::Sender<Result<WriterHealth, WriterError>>),
     /// O(1) `project_id()` accessor (typed `SELECT envelope_json ... LIMIT 1`
@@ -438,6 +445,15 @@ impl WriterHandle {
     ) -> Result<Option<FrontendTaskDetail>, WriterError> {
         let (response, receiver) = mpsc::channel();
         self.enqueue(WriterRequest::FrontendTask { task_id, response })?;
+        receive(receiver, self.response_timeout)
+    }
+
+    pub fn frontend_events(
+        &self,
+        query: FrontendEventsQuery,
+    ) -> Result<FrontendEventsPage, WriterError> {
+        let (response, receiver) = mpsc::channel();
+        self.enqueue(WriterRequest::FrontendEvents { query, response })?;
         receive(receiver, self.response_timeout)
     }
 
@@ -914,6 +930,12 @@ fn writer_loop(
             WriterRequest::FrontendTask { task_id, response } => {
                 let result = store
                     .frontend_task(task_id)
+                    .map_err(|error| store_error(error.code()));
+                let _ = response.send(result);
+            }
+            WriterRequest::FrontendEvents { query, response } => {
+                let result = store
+                    .frontend_events(&query)
                     .map_err(|error| store_error(error.code()));
                 let _ = response.send(result);
             }

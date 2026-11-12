@@ -8,9 +8,10 @@ use vibemux_types::{
     ProjectId, Run, Task, TaskId,
     a2a::A2aRunRecord,
     frontend::{
-        FrontendArtifactSummary, FrontendEventSummary, FrontendRunSummary, FrontendTaskDetail,
-        FrontendTaskSummary, FrontendTasksPage, FrontendTasksQuery, MAX_FRONTEND_ARTIFACTS,
-        MAX_FRONTEND_EVENTS, MAX_FRONTEND_RUNS, MAX_FRONTEND_TASKS,
+        FrontendArtifactSummary, FrontendEventSummary, FrontendEventsPage, FrontendEventsQuery,
+        FrontendRunSummary, FrontendTaskDetail, FrontendTaskSummary, FrontendTasksPage,
+        FrontendTasksQuery, MAX_FRONTEND_ARTIFACTS, MAX_FRONTEND_EVENT_PAGE, MAX_FRONTEND_EVENTS,
+        MAX_FRONTEND_RUNS, MAX_FRONTEND_TASKS,
     },
 };
 
@@ -327,6 +328,66 @@ impl SqliteStore {
             has_more_artifacts,
         }))
     }
+
+    /// One page of a task's canonical events, oldest first.
+    ///
+    /// The page is scoped to the task, so canonical sequences may skip numbers
+    /// when other tasks' events interleave; completeness is decided by the
+    /// cursor and the reported retention floor, never by consecutive numbers.
+    pub fn frontend_events(
+        &self,
+        query: &FrontendEventsQuery,
+    ) -> Result<FrontendEventsPage, StoreError> {
+        if query.limit == 0 || query.limit > MAX_FRONTEND_EVENT_PAGE {
+            return Err(StoreError::InvalidFrontendLimit);
+        }
+        let task_id = query.task_id.to_string();
+        let (earliest, latest): (Option<i64>, Option<i64>) = self.connection.query_row(
+            "SELECT MIN(sequence), MAX(sequence) FROM events \
+             WHERE json_extract(envelope_json, '$.task_id')=?1",
+            params![task_id.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let earliest_sequence = u64::try_from(earliest.unwrap_or(0)).unwrap_or(0);
+        let latest_sequence = u64::try_from(latest.unwrap_or(0)).unwrap_or(0);
+        let after = i64::try_from(query.after_sequence.unwrap_or(0)).unwrap_or(i64::MAX);
+        let mut statement = self.connection.prepare(
+            "SELECT envelope_json FROM events WHERE json_extract(envelope_json, '$.task_id')=?1 \
+             AND sequence > ?2 ORDER BY sequence ASC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![task_id.clone(), after, i64::from(query.limit) + 1],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut events = Vec::new();
+        let mut has_more = false;
+        for row in rows {
+            if events.len() == query.limit as usize {
+                row?;
+                has_more = true;
+                break;
+            }
+            let event = EventEnvelope::from_json_slice(row?.as_bytes())?;
+            if event.task_id() != Some(query.task_id) {
+                return Err(StoreError::FrontendProjectionMismatch);
+            }
+            events.push(FrontendEventSummary {
+                sequence: event.sequence().get(),
+                event_type: event.event_type().as_str().to_string(),
+                at: event.timestamp().to_string(),
+                run_id: event.run_id(),
+            });
+        }
+        let next_after_sequence = events.last().map(|event| event.sequence);
+        Ok(FrontendEventsPage {
+            task_id: query.task_id,
+            events,
+            next_after_sequence,
+            has_more,
+            earliest_sequence,
+            latest_sequence,
+        })
+    }
 }
 
 fn task_summary(
@@ -391,6 +452,91 @@ mod tests {
         };
         store.commit_task(&task, draft).expect("commit task");
         task
+    }
+
+    #[test]
+    fn event_pages_follow_the_cursor_and_report_the_retention_floor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut store = SqliteStore::open(&temp.path().join("state.sqlite3")).expect("store");
+        let project_id = store.project_id().expect("project").expect("seed project");
+        let task = commit_task(&mut store, project_id, "paged events".to_string());
+        for index in 0..30 {
+            let draft = EventDraft {
+                event_id: EventId::new(),
+                event_type: EventType::new("note").expect("type"),
+                project_id,
+                task_id: Some(task.task_id()),
+                run_id: None,
+                causation_id: None,
+                actor: ActorName::new("test").expect("actor"),
+                timestamp: time::OffsetDateTime::now_utc(),
+                idempotency_key: Some(format!("page-{index}-{}", task.task_id())),
+                payload: EventPayload::new(serde_json::json!({"index": index})).expect("payload"),
+            };
+            store.commit_task(&task, draft).expect("commit event");
+        }
+        let mut after = None;
+        let mut sequences = Vec::new();
+        loop {
+            let page = store
+                .frontend_events(&FrontendEventsQuery {
+                    task_id: task.task_id(),
+                    after_sequence: after,
+                    limit: 7,
+                })
+                .expect("page");
+            assert!(page.events.len() <= 7);
+            sequences.extend(page.events.iter().map(|event| event.sequence));
+            after = page.next_after_sequence;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(sequences.len(), 31);
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+        let mut unique = sequences.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), sequences.len());
+
+        let first = store
+            .frontend_events(&FrontendEventsQuery {
+                task_id: task.task_id(),
+                after_sequence: None,
+                limit: 5,
+            })
+            .expect("first page");
+        assert_eq!(first.earliest_sequence, sequences[0]);
+        assert_eq!(first.latest_sequence, *sequences.last().expect("last"));
+        assert!(first.has_more);
+
+        let exhausted = store
+            .frontend_events(&FrontendEventsQuery {
+                task_id: task.task_id(),
+                after_sequence: Some(u64::MAX),
+                limit: 5,
+            })
+            .expect("exhausted page");
+        assert!(exhausted.events.is_empty());
+        assert!(!exhausted.has_more);
+        assert_eq!(exhausted.next_after_sequence, None);
+        assert_eq!(exhausted.earliest_sequence, sequences[0]);
+    }
+
+    #[test]
+    fn event_page_limit_is_bounded() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = SqliteStore::open(&temp.path().join("state.sqlite3")).expect("store");
+        for limit in [0, MAX_FRONTEND_EVENT_PAGE + 1] {
+            assert!(matches!(
+                store.frontend_events(&FrontendEventsQuery {
+                    task_id: TaskId::new(),
+                    after_sequence: None,
+                    limit,
+                }),
+                Err(StoreError::InvalidFrontendLimit)
+            ));
+        }
     }
 
     #[test]

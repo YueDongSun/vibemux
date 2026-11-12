@@ -46,6 +46,7 @@ CASE_IDS: Final = (
     "A2",
     "C11-SLOTS",
     "C13-LINEAGE",
+    "C04-EVENTS",
     "HUB-GATES",
     "C02",
     "C03",
@@ -66,7 +67,7 @@ CASE_IDS: Final = (
 NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C02": "Hub goal submission and owner planning profile selection are not implemented in this source revision; capability discovery itself is available and covered by C01.",
     "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
-    "C04": "Requires the Hub event pagination and reconnect cursor consumer.",
+    "C04": "Paged event reads, retention-floor resynchronization, and reconnecting cursors are implemented and covered by C04-EVENTS; full Hub projection pagination across a live UI is not implemented.",
     "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
     "C06": "Requires a writable fixture worker candidate path and an independent verifier.",
     "C07": "Requires Hub restart recovery over suspended/interrupted daemon records.",
@@ -752,6 +753,92 @@ def _run_c13_lineage(
         )
 
 
+def _run_c04_events(
+    *, vibemux_root: Path, build_state_root: Path, hub_root: Path, timeout: float
+) -> dict[str, Any]:
+    """Paged event reads, retention-floor resync, and the Hub cursor consumer."""
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+
+    def cargo_test(package: str, filter_text: str) -> subprocess.CompletedProcess[str]:
+        return _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c04-events",
+                "--budget-bytes",
+                "8G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                package,
+                "--all-features",
+                "--lib",
+                filter_text,
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+
+    try:
+        store = cargo_test("vibemux_store", "frontend")
+        if store.returncode != 0:
+            raise VerificationError(f"store event tests failed: {_tail(store, 500)}")
+        control = cargo_test("vibemuxd", "frontend_events")
+        if control.returncode != 0:
+            raise VerificationError(f"control event test failed: {_tail(control, 500)}")
+        hub = _run(
+            ["node", "--test", "tests/vibemux.test.mjs"],
+            cwd=hub_root,
+            timeout=timeout,
+        )
+        if hub.returncode != 0:
+            raise VerificationError(f"Hub event tests failed: {_tail(hub, 500)}")
+        store_passed = _cargo_passed(store.stdout)
+        control_passed = _cargo_passed(control.stdout)
+        hub_passed = 0
+        for line in hub.stdout.splitlines():
+            if line.startswith("ℹ pass "):
+                hub_passed = int(line.rsplit(" ", 1)[-1])
+        return _case(
+            "C04-EVENTS",
+            "passed",
+            evidence_class="event_pagination_contracts",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"store={store_passed} control={control_passed} hub={hub_passed}; "
+                "cursor pages, retention-floor resync, and the Hub consumer verified"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C04-EVENTS",
+            "failed",
+            evidence_class="event_pagination_contracts",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
+def _cargo_passed(stdout: str) -> int:
+    for line in stdout.splitlines():
+        if line.startswith("test result: ok."):
+            fields = line.split()
+            if "passed;" in fields:
+                return int(fields[fields.index("passed;") - 1])
+    return 0
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -884,6 +971,25 @@ def main(argv: list[str] | None = None) -> int:
                     timeout=arguments.timeout_seconds,
                 )
             )
+        if "C04-EVENTS" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C04-EVENTS",
+                        "blocked",
+                        evidence_class="event_pagination_contracts",
+                        detail="--hub-root is required for the Hub cursor consumer",
+                    )
+                )
+            else:
+                cases.append(
+                    _run_c04_events(
+                        vibemux_root=vibemux_root,
+                        build_state_root=build_state_root,
+                        hub_root=hub_root,
+                        timeout=arguments.timeout_seconds,
+                    )
+                )
         if "HUB-GATES" in selected:
             if not arguments.hub_gates:
                 cases.append(
