@@ -1,0 +1,622 @@
+#!/usr/bin/env python3
+"""Cross-project verification entry point for the VibeMux + Personal Dev Hub harness.
+
+This script is the executable frame for the cloud integration cases. It runs
+only task-owned fixtures, a loopback/Unix-socket daemon, the local Hub adapter
+source, and offline checks. It never reads a provider token, never starts a
+model call, and never modifies either checkout.
+
+Cases implemented in this source revision:
+
+- ``C01``: a real VibeMux daemon publishes its descriptor; the real Hub
+  ``local/adapters/vibemux.mjs`` reads it, performs an authenticated
+  ``health``/``frontend_tasks`` exchange, and rejects an unknown descriptor
+  version and an unknown operation with stable Hub error codes.
+- ``A1``: the CLI build graph excludes egui/eframe/Tauri; the default web
+  build excludes the push-only ece/openssl/p256 stack.
+- ``A2``: ``scripts/build_storage.py inventory`` reports a valid state.
+- ``HUB-GATES`` (opt-in): the Hub's ``check``, ``test``, and
+  ``verify:artifacts`` gates pass on this host.
+
+Every other cloud case is emitted as ``not_run`` with the exact missing
+capability. A case is never promoted to ``passed`` because a file exists.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Final
+
+SCHEMA_VERSION: Final = 1
+HUB_ADAPTER_REL: Final = "local/adapters/vibemux.mjs"
+CASE_IDS: Final = (
+    "C01",
+    "A1",
+    "A2",
+    "HUB-GATES",
+    "C02",
+    "C03",
+    "C04",
+    "C05",
+    "C06",
+    "C07",
+    "C08",
+    "C09",
+    "C10",
+    "C11",
+    "C12",
+    "C13",
+    "C14",
+    "C15",
+)
+
+NOT_RUN_REASONS: Final[dict[str, str]] = {
+    "C02": "Hub goal submission, owner planning profile selection, and daemon capability discovery are not implemented in this source revision.",
+    "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
+    "C04": "Requires the Hub event pagination and reconnect cursor consumer.",
+    "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
+    "C06": "Requires a writable fixture worker candidate path and an independent verifier.",
+    "C07": "Requires Hub restart recovery over suspended/interrupted daemon records.",
+    "C08": "Requires a second fixture harness adapter with native identity preservation.",
+    "C09": "Requires the Hub skill_refs resolver and bounded context assembly.",
+    "C10": "Requires the Hub read-only MCP tool and worker tool-call admission.",
+    "C11": "Requires two writable worker slots competing for managed build slots.",
+    "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
+    "C13": "Requires the unified migration lineage recognizer for schema 9/10/14 layouts.",
+    "C14": "Requires the Fusion offline benchmark contracts and fixture runner.",
+    "C15": "Requires the shared native host bridge and the two chat layouts.",
+}
+
+NODE_PROBE: Final = r"""
+import { pathToFileURL } from 'node:url';
+
+const adapter = await import(pathToFileURL(process.env.VMX_HUB_ADAPTER).href);
+const descriptor_path = process.env.VMX_PROBE_DESCRIPTOR;
+const connection = { descriptor_path, project_root: process.env.VMX_PROBE_PROJECT_ROOT };
+const out = { ok: true };
+try {
+  const descriptor = await adapter.read_descriptor(descriptor_path);
+  out.descriptor_version = descriptor.version;
+  out.health = await adapter.ipc_request(connection, 'health');
+  const listing = await adapter.ipc_request(connection, 'frontend_tasks', JSON.stringify({ after: null, limit: 32 }));
+  out.listing = {
+    project_id: listing.project_id ?? null,
+    task_count: Array.isArray(listing.tasks) ? listing.tasks.length : null,
+    next_cursor: listing.next_cursor ?? null,
+  };
+  const check = await adapter.check_vibemux(connection);
+  out.check = { status: check.status, projects: check.projects.length, tasks: check.tasks.length };
+  try {
+    await adapter.ipc_request(connection, 'not_a_real_operation');
+    out.unknown_operation_error = 'none';
+  } catch (error) {
+    out.unknown_operation_error = error.code ?? String(error);
+  }
+  try {
+    await adapter.read_descriptor(process.env.VMX_PROBE_BAD_DESCRIPTOR);
+    out.unknown_version_error = 'none';
+  } catch (error) {
+    out.unknown_version_error = error.code ?? String(error);
+  }
+} catch (error) {
+  out.ok = false;
+  out.error = error.code ?? String(error);
+}
+console.log(JSON.stringify(out));
+"""
+
+
+class VerificationError(Exception):
+    pass
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _run(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout: float,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    process_env = dict(os.environ)
+    if env:
+        process_env.update(env)
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        env=process_env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise VerificationError(
+            f"{' '.join(command)} exited {result.returncode}: "
+            f"{(result.stderr or result.stdout).strip()[-400:]}"
+        )
+    return result
+
+
+def _directory_bytes(path: Path) -> int | None:
+    if not path.exists():
+        return 0
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path, followlinks=False):
+            for name in files:
+                entry = Path(root) / name
+                try:
+                    info = entry.lstat()
+                except OSError:
+                    return None
+                if not stat.S_ISLNK(info.st_mode):
+                    total += info.st_size
+    except OSError:
+        return None
+    return total
+
+
+def _free_bytes(path: Path) -> int | None:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
+
+
+def _case(
+    case_id: str,
+    status: str,
+    *,
+    evidence_class: str,
+    duration_ms: int = 0,
+    detail: str = "",
+    artifact_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": case_id,
+        "status": status,
+        "evidence_class": evidence_class,
+        "duration_ms": duration_ms,
+        "detail": detail,
+        "artifact_refs": artifact_refs or [],
+    }
+
+
+def _tail(result: subprocess.CompletedProcess[str], limit: int = 400) -> str:
+    text = (result.stderr or result.stdout).strip()
+    return text[-limit:]
+
+
+def _init_fixture_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    readme = path / "README.md"
+    readme.write_text("# VibeMux cloud fixture project\n", encoding="utf-8")
+    _run(["git", "init", "-q"], cwd=path, timeout=30, check=True)
+    _run(["git", "config", "user.email", "fixture@example.invalid"], cwd=path, timeout=10)
+    _run(["git", "config", "user.name", "VibeMux Fixture"], cwd=path, timeout=10)
+    _run(["git", "add", "README.md"], cwd=path, timeout=10, check=True)
+    _run(["git", "commit", "-qm", "fixture baseline"], cwd=path, timeout=30, check=True)
+
+
+def _wait_for_descriptor(path: Path, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return
+        time.sleep(0.1)
+    raise VerificationError(f"daemon descriptor was not published at {path}")
+
+
+def _run_c01(
+    *,
+    vibemuxctl: Path,
+    hub_root: Path,
+    run_root: Path,
+    timeout: float,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    fixture = run_root / "fixture-project"
+    _init_fixture_repo(fixture)
+    descriptor = fixture / ".vibemux" / "control.json"
+    probe_path = run_root / "hub_probe.mjs"
+    probe_path.write_text(NODE_PROBE, encoding="utf-8")
+    adapter = hub_root / HUB_ADAPTER_REL
+    if not adapter.is_file():
+        return _case(
+            "C01",
+            "blocked",
+            evidence_class="actual_daemon_hub_adapter",
+            detail=f"Hub adapter missing at {adapter}",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    daemon_started = False
+    try:
+        start = _run(
+            [str(vibemuxctl), "daemon", "start", "--project-root", str(fixture)],
+            cwd=fixture,
+            timeout=timeout,
+        )
+        if start.returncode != 0:
+            raise VerificationError(f"daemon start failed: {_tail(start)}")
+        daemon_started = True
+        _wait_for_descriptor(descriptor, timeout)
+        bad_descriptor = run_root / "unsupported-descriptor.json"
+        payload = json.loads(descriptor.read_text(encoding="utf-8"))
+        payload["version"] = 99
+        bad_descriptor.write_text(json.dumps(payload), encoding="utf-8")
+        probe = _run(
+            ["node", str(probe_path)],
+            cwd=hub_root,
+            env={
+                "VMX_HUB_ADAPTER": str(adapter),
+                "VMX_PROBE_DESCRIPTOR": str(descriptor),
+                "VMX_PROBE_PROJECT_ROOT": str(fixture),
+                "VMX_PROBE_BAD_DESCRIPTOR": str(bad_descriptor),
+            },
+            timeout=timeout,
+        )
+        if probe.returncode != 0:
+            raise VerificationError(f"Hub probe failed: {_tail(probe)}")
+        try:
+            result = json.loads(probe.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError) as error:
+            raise VerificationError(f"Hub probe emitted no JSON: {error}") from error
+        failures: list[str] = []
+        if result.get("ok") is not True:
+            failures.append(f"hub_error={result.get('error')}")
+        if result.get("health", {}).get("healthy") is not True:
+            failures.append("health_not_healthy")
+        if not isinstance(result.get("listing", {}).get("task_count"), int):
+            failures.append("task_listing_missing")
+        if result.get("check", {}).get("status") != "connected":
+            failures.append("check_not_connected")
+        if result.get("unknown_operation_error") != "vibemux_operation_not_allowed":
+            failures.append(f"unknown_operation={result.get('unknown_operation_error')}")
+        if result.get("unknown_version_error") != "vibemux_ipc_version_mismatch":
+            failures.append(f"unknown_version={result.get('unknown_version_error')}")
+        detail = (
+            f"descriptor_version={result.get('descriptor_version')} "
+            f"project_id={result.get('listing', {}).get('project_id')} "
+            f"tasks={result.get('listing', {}).get('task_count')} "
+            f"check={result.get('check', {}).get('status')}"
+        )
+        artifact = run_root / "c01-hub-probe.json"
+        artifact.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return _case(
+            "C01",
+            "failed" if failures else "passed",
+            evidence_class="actual_daemon_hub_adapter",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail="; ".join(failures) or detail,
+            artifact_refs=[str(artifact)],
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C01",
+            "failed",
+            evidence_class="actual_daemon_hub_adapter",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+    finally:
+        if daemon_started:
+            _run(
+                [str(vibemuxctl), "daemon", "stop", "--project-root", str(fixture)],
+                cwd=fixture,
+                timeout=timeout,
+            )
+
+
+def _run_a1(*, vibemux_root: Path, timeout: float) -> dict[str, Any]:
+    started = time.monotonic()
+    checks = [
+        (
+            ["cargo", "tree", "--locked", "-p", "vibemux_cli", "-e", "normal"],
+            ("egui", "eframe", "winit", "tauri"),
+            "cli_gui_dependency",
+        ),
+        (
+            ["cargo", "tree", "--locked", "-p", "vibemux_web", "-e", "normal"],
+            ("ece", "openssl", "p256"),
+            "web_default_push_dependency",
+        ),
+    ]
+    failures: list[str] = []
+    try:
+        for command, forbidden, label in checks:
+            tree = _run(command, cwd=vibemux_root, timeout=timeout)
+            if tree.returncode != 0:
+                failures.append(f"{label}: tree failed ({_tail(tree, 200)})")
+                continue
+            lowered = tree.stdout.lower()
+            hits = [name for name in forbidden if name in lowered]
+            if hits:
+                failures.append(f"{label}: {','.join(hits)}")
+        push_tree = _run(
+            [
+                "cargo",
+                "tree",
+                "--locked",
+                "-p",
+                "vibemux_web",
+                "-e",
+                "normal",
+                "--features",
+                "push",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if push_tree.returncode != 0 or "openssl" not in push_tree.stdout.lower():
+            failures.append("web_push_feature_missing_openssl")
+        return _case(
+            "A1",
+            "failed" if failures else "passed",
+            evidence_class="source_dependency_graph",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail="; ".join(failures) or "CLI GUI-free; web push opt-in",
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "A1",
+            "failed",
+            evidence_class="source_dependency_graph",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
+def _run_a2(*, vibemux_root: Path, state_root: Path, timeout: float) -> dict[str, Any]:
+    started = time.monotonic()
+    script = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        result = _run(
+            [sys.executable, str(script), "--state-root", str(state_root), "--json", "inventory"],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result))
+        report = json.loads(result.stdout)
+        if report.get("schema_version") != 1 or "filesystem_free_bytes" not in report:
+            raise VerificationError("inventory schema mismatch")
+        return _case(
+            "A2",
+            "passed",
+            evidence_class="local_build_tooling",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=f"free={report['filesystem_free_bytes']} slots={len(report['slots'])}",
+        )
+    except (VerificationError, OSError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "A2",
+            "failed",
+            evidence_class="local_build_tooling",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
+def _run_hub_gates(*, hub_root: Path, timeout: float) -> dict[str, Any]:
+    started = time.monotonic()
+    results: list[str] = []
+    failed = False
+    for command in (
+        ["npm", "run", "check"],
+        ["npm", "test"],
+        ["npm", "run", "verify:artifacts"],
+    ):
+        try:
+            result = _run(command, cwd=hub_root, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            results.append(f"{' '.join(command)}: {error}")
+            failed = True
+            continue
+        results.append(f"{' '.join(command)}: exit {result.returncode}")
+        if result.returncode != 0:
+            failed = True
+    return _case(
+        "HUB-GATES",
+        "failed" if failed else "passed",
+        evidence_class="actual_hub_tests",
+        duration_ms=int((time.monotonic() - started) * 1000),
+        detail="; ".join(results),
+    )
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="verify_fused_harness_cloud.py",
+        description=(
+            "Run the locally executable cloud-harness verification frame. "
+            "Only task-owned fixtures, a loopback daemon, the Hub adapter source, "
+            "and offline checks are used; no provider token or model call is read."
+        ),
+    )
+    parser.add_argument(
+        "--vibemux-root",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+        help="VibeMux checkout (default: this script's repository)",
+    )
+    parser.add_argument("--hub-root", type=Path, help="Personal Dev Hub checkout")
+    parser.add_argument(
+        "--vibemuxctl",
+        type=Path,
+        help="vibemuxctl binary (default: <vibemux-root>/target/debug/vibemuxctl)",
+    )
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        help="task-owned runtime root (default: a new temporary directory)",
+    )
+    parser.add_argument(
+        "--cases",
+        default=",".join(CASE_IDS),
+        help="comma-separated case ids (default: all known ids)",
+    )
+    parser.add_argument("--report", type=Path, help="write the JSON report to this path")
+    parser.add_argument("--timeout-seconds", type=float, default=180.0)
+    parser.add_argument(
+        "--hub-gates", action="store_true", help="run the Hub check/test/artifact gates"
+    )
+    parser.add_argument("--keep", action="store_true", help="keep the task-owned runtime root")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = _parse_args(argv)
+    vibemux_root = arguments.vibemux_root.resolve()
+    hub_root = arguments.hub_root.resolve() if arguments.hub_root else None
+    vibemuxctl = (
+        arguments.vibemuxctl.resolve()
+        if arguments.vibemuxctl
+        else vibemux_root / "target" / "debug" / "vibemuxctl"
+    )
+    created_root = arguments.state_root is None
+    run_root = (
+        Path(tempfile.mkdtemp(prefix="vmx-cloud-verify-")).resolve()
+        if created_root
+        else arguments.state_root.resolve()
+    )
+    run_root.mkdir(parents=True, exist_ok=True)
+    selected = [item.strip() for item in arguments.cases.split(",") if item.strip()]
+    unknown = [item for item in selected if item not in CASE_IDS]
+    if unknown:
+        print(f"unknown case ids: {', '.join(unknown)}", file=sys.stderr)
+        return 2
+
+    free_before = _free_bytes(run_root)
+    bytes_before = _directory_bytes(run_root)
+    bytes_after = bytes_before
+    free_after = free_before
+    cases: list[dict[str, Any]] = []
+    try:
+        if "C01" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C01",
+                        "blocked",
+                        evidence_class="actual_daemon_hub_adapter",
+                        detail="--hub-root is required for a real Hub adapter run",
+                    )
+                )
+            elif not vibemuxctl.is_file():
+                cases.append(
+                    _case(
+                        "C01",
+                        "blocked",
+                        evidence_class="actual_daemon_hub_adapter",
+                        detail=f"vibemuxctl not built at {vibemuxctl}",
+                    )
+                )
+            else:
+                cases.append(
+                    _run_c01(
+                        vibemuxctl=vibemuxctl,
+                        hub_root=hub_root,
+                        run_root=run_root,
+                        timeout=arguments.timeout_seconds,
+                    )
+                )
+        if "A1" in selected:
+            cases.append(_run_a1(vibemux_root=vibemux_root, timeout=arguments.timeout_seconds))
+        if "A2" in selected:
+            cases.append(
+                _run_a2(
+                    vibemux_root=vibemux_root,
+                    state_root=run_root / "build-storage",
+                    timeout=arguments.timeout_seconds,
+                )
+            )
+        if "HUB-GATES" in selected:
+            if not arguments.hub_gates:
+                cases.append(
+                    _case(
+                        "HUB-GATES",
+                        "not_run",
+                        evidence_class="actual_hub_tests",
+                        detail="pass --hub-gates to execute the Hub checks",
+                    )
+                )
+            elif hub_root is None:
+                cases.append(
+                    _case(
+                        "HUB-GATES",
+                        "blocked",
+                        evidence_class="actual_hub_tests",
+                        detail="--hub-root is required",
+                    )
+                )
+            else:
+                cases.append(_run_hub_gates(hub_root=hub_root, timeout=arguments.timeout_seconds))
+        for case_id in selected:
+            if case_id in NOT_RUN_REASONS:
+                cases.append(
+                    _case(
+                        case_id,
+                        "not_run",
+                        evidence_class="not_executed",
+                        detail=NOT_RUN_REASONS[case_id],
+                    )
+                )
+        bytes_after = _directory_bytes(run_root)
+        free_after = _free_bytes(run_root)
+    finally:
+        if created_root and not arguments.keep:
+            shutil.rmtree(run_root, ignore_errors=True)
+
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": _now(),
+        "environment": {
+            "os": sys.platform,
+            "runtime_mode": "fixture",
+            "rust": _version(["cargo", "--version"]),
+            "node": _version(["node", "--version"]),
+            "vibemux_root": str(vibemux_root),
+            "hub_root": str(hub_root) if hub_root else None,
+        },
+        "cases": cases,
+        "resources": {
+            "state_root": str(run_root),
+            "before_bytes": bytes_before,
+            "after_bytes": bytes_after,
+            "peak_bytes": None,
+            "filesystem_free_before": free_before,
+            "filesystem_free_after": free_after,
+        },
+    }
+    text = json.dumps(report, indent=2) + "\n"
+    if arguments.report:
+        arguments.report.parent.mkdir(parents=True, exist_ok=True)
+        arguments.report.write_text(text, encoding="utf-8")
+    print(text)
+    return 1 if any(case["status"] == "failed" for case in cases) else 0
+
+
+def _version(command: list[str]) -> str | None:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() or None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

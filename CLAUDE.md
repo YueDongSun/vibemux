@@ -115,6 +115,8 @@ MSRV is **Rust 1.92.0** (pinned in `rust-toolchain.toml`). Build with the pinned
 - GUI (egui/eframe, opens a window; the `gui` feature is off by default): `cargo run -p vibemux_frontend --features gui --bin vibemux_frontend`
 - Desktop app (ADR 043, opens a window): build the UI first with `npm ci && npm run build` in `crates/vibemux_desktop/ui` (Node 22), then `cargo run -p vibemux_desktop`. Hot reload: `npm run dev` in the UI directory plus `cargo run --no-default-features -p vibemux_desktop` (the default `custom-protocol` feature makes plain `cargo run` load the bundled `ui/dist` assets)
 - Browser chat workspace (ADR 056; opens in a browser, not a Cargo crate): `npm ci` and `npm run dev` in `crates/vibemux_chat/web` (Node 22.22.0; loopback `127.0.0.1:5182`); `npm test` runs network-free tests, `npm run build` writes `dist/`
+- Managed build slot (ADR 057): `python scripts/build_storage.py run --slot core -- cargo check`; a bare `cargo build` builds `default-members` only, the GUI needs `--features gui`, and Web Push needs `--features push` ([guide](docs/guides/build_storage.md))
+- Cross-project local frame: `python scripts/verify_fused_harness_cloud.py --hub-root <hub-checkout> --vibemuxctl <slot>/target/debug/vibemuxctl [--hub-gates]` ([guide](docs/guides/cloud_harness_integration.md)); native Windows entry point: `scripts/verify_fused_harness_windows.ps1 -HubRoot <hub-checkout>`
 
 ### Daemon + harness surface (Windows, pre-alpha)
 

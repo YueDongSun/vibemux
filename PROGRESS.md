@@ -7806,3 +7806,40 @@ retained in the task's local validation artifact.
   workspace gate were not executed on this host; the Windows acceptance
   script remains the follow-up.
 
+### 2026-11-12 — Cross-project verification frame and Hub macOS path repair
+
+- Base: the build-storage commit `2aa79d6` on
+  `feat/cloud-harness-framework`; Hub at `codex/work_cloud_v0_2_0`.
+- Added `scripts/verify_fused_harness_cloud.py`. It runs a real daemon on a
+  task-owned fixture Git project, imports the real Hub
+  `local/adapters/vibemux.mjs` by absolute path, performs authenticated
+  `health`/`frontend_tasks`, and checks unknown-operation and unknown-version
+  rejection (C01). It also checks the CLI/web dependency boundaries (A1),
+  managed storage inventory (A2), and optionally the Hub gates
+  (HUB-GATES). C02–C15 are emitted as `not_run` with exact missing
+  capabilities. No provider token or model call is read.
+- Added `scripts/verify_fused_harness_windows.ps1`: Windows prerequisite
+  checks, managed-slot build of daemon/CLI/probe/trampoline, Windows-only
+  crate tests, the cross-project frame, an explicit live-vendor refusal, and
+  a JSON summary. It was not executed on this macOS host.
+- Hub repair on branch `fix/macos-state-path-ancestor-links`, commit
+  `0d24222`: the session store and device client canonicalize the existing
+  prefix of a state root (macOS `/var` → `/private/var`) while still
+  refusing a symlinked root, managed child, or Windows junction. Two
+  integration export tests compare against the canonical root.
+- Executed on macOS 15.6 (arm64), Node 26.13.0:
+  `verify_fused_harness_cloud.py` C01/A1/A2/HUB-GATES **passed**; C01
+  observed descriptor v10, `health.healthy=true`, `check=connected`, and the
+  two stable Hub rejections. Hub `npm run check` passed; `npm test` **2026
+  passed / 0 failed / 2 skipped** (baseline before the Hub fix: 33 failing
+  local tests); `npm run verify:artifacts` passed.
+- Build comparison (same source, `cargo check -p vibemux_cli`, empty target
+  each): old debug/incremental profile **42.6 s / 737 MiB**; low-disk
+  profile **51.1 s / 478 MiB** (−35% disk, +20% cold time); warm 2.2 s
+  both. Managed `core` slot after the full local scope: 4.5 GB. Owned
+  cleanup of the two comparison slots freed 1.23 GB.
+- Limits: no Hub goal submission, planning profile, worker, migration,
+  AAG, Fusion, or native UI case ran. Windows execution and live vendor
+  calls remain separate acceptance items.
+
+

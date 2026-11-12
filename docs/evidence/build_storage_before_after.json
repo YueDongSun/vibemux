@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-11-12",
+  "host": {
+    "os": "macOS 15.6 (Darwin 25.6.0, arm64)",
+    "rust": "1.92.0",
+    "node": "26.13.0",
+    "filesystem_free_before_bytes": 181304131584
+  },
+  "baseline": {
+    "note": "The pre-existing checkout target accumulated many profiles and historical builds; it is reported for context, not as a like-for-like comparison.",
+    "legacy_repo_target_du": "55G",
+    "cli_tree_normal_packages": 1009,
+    "cli_tree_gui_package_hits": 11,
+    "web_tree_normal_packages": 783,
+    "web_tree_push_package_hits": 6
+  },
+  "after": {
+    "cli_tree_normal_packages": 801,
+    "web_default_tree_normal_packages": 681,
+    "default_members": ["vibemux_cli", "vibemuxd", "vibemux_probe", "vibemux_mcp"],
+    "managed_core_slot": {
+      "slot": "core",
+      "scope": "cli/frontend/daemon/web checks, GUI feature check, web push check, harness and MCP tests, debug binaries",
+      "logical_bytes": 4505883329,
+      "allocated_bytes": 4553289728,
+      "active_lease": false,
+      "owner_tasks": ["cloud-harness-framework"]
+    },
+    "cold_checks": [
+      {
+        "command": "cargo check --locked -p vibemux_frontend -p vibemux_cli",
+        "profile": "low-disk dev (line-tables-only, no incremental)",
+        "duration_ms": 46670,
+        "cargo_reported": "46.70s"
+      },
+      {
+        "command": "cargo check --locked -p vibemux_frontend --features gui --all-targets",
+        "profile": "low-disk dev, warm dependency cache",
+        "duration_ms": 25600,
+        "cargo_reported": "24.24s"
+      },
+      {
+        "command": "cargo check --locked -p vibemux_web --all-targets",
+        "profile": "low-disk dev, warm dependency cache",
+        "duration_ms": 15016,
+        "cargo_reported": "14.66s"
+      }
+    ],
+    "warm_check": {
+      "command": "cargo check --locked -p vibemux_cli",
+      "duration_ms": 4664,
+      "cargo_reported": "2.36s"
+    }
+  },
+  "controlled_profile_comparison": {
+    "command": "cargo check --locked -p vibemux_cli",
+    "same_source_revision": true,
+    "same_empty_target_per_slot": true,
+    "old_profile": {
+      "environment": {
+        "CARGO_PROFILE_DEV_DEBUG": "2",
+        "CARGO_INCREMENTAL": "1"
+      },
+      "cold_duration_ms": 42565,
+      "cold_cargo_reported": "41.73s",
+      "target_logical_bytes": 782827883,
+      "target_du": "737M",
+      "warm_duration_ms": 2217,
+      "warm_cargo_reported": "1.13s"
+    },
+    "low_disk_profile": {
+      "environment": {
+        "debug": "line-tables-only",
+        "incremental": false,
+        "third_party_debug": false
+      },
+      "cold_duration_ms": 51079,
+      "cold_cargo_reported": "49.91s",
+      "target_logical_bytes": 490262792,
+      "target_du": "478M",
+      "warm_duration_ms": 2184,
+      "warm_cargo_reported": "0.52s"
+    },
+    "target_size_change_percent": -35.1,
+    "cold_time_change_percent": 20.0,
+    "conclusion": "The low-disk profile trades about 20% more cold compile time for about 35% less target size; warm iterations are unchanged within wrapper overhead."
+  },
+  "cleanup": {
+    "plan": "plans/20261112T083919581704Z-clean.json",
+    "deleted_slots": ["profile-baseline", "lowdisk-compare"],
+    "reclaimable_logical_bytes": 1273090675,
+    "filesystem_free_delta_bytes": 1228632064,
+    "retained_slot": "core",
+    "retained_note": "The active core slot and its owner.json, measurements, plans, source, Git metadata, and .vibemux state were preserved."
+  },
+  "limits": {
+    "windows": "Not executed on this host; scripts/verify_fused_harness_windows.ps1 is the native entry point.",
+    "full_workspace_gate": "Not executed on this host; the affected crates, all-features clippy, and frontend/web tests were executed.",
+    "allocated_bytes": "Reported from st_blocks on POSIX. Windows allocation reporting remains unknown until the native run."
+  }
+}
