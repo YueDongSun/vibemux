@@ -7833,6 +7833,13 @@ retained in the task's local validation artifact.
   two stable Hub rejections. Hub `npm run check` passed; `npm test` **2026
   passed / 0 failed / 2 skipped** (baseline before the Hub fix: 33 failing
   local tests); `npm run verify:artifacts` passed.
+- Full workspace gate on the integrated candidate:
+  `cargo clippy --locked --workspace --all-targets --all-features -- -D
+  warnings` passed in 49 s; `cargo test --locked --workspace --all-features`
+  passed **1702 tests, 0 failed, 2 ignored across 151 test targets**
+  (638.9 s cold, 363.6 s warm); `cargo deny check` reported advisories, bans,
+  licenses, and sources ok. The managed core slot held 14.1 GB after this
+  scope (including the Tauri desktop build).
 - Build comparison (same source, `cargo check -p vibemux_cli`, empty target
   each): old debug/incremental profile **42.6 s / 737 MiB**; low-disk
   profile **51.1 s / 478 MiB** (−35% disk, +20% cold time); warm 2.2 s
@@ -7841,5 +7848,4 @@ retained in the task's local validation artifact.
 - Limits: no Hub goal submission, planning profile, worker, migration,
   AAG, Fusion, or native UI case ran. Windows execution and live vendor
   calls remain separate acceptance items.
-
 

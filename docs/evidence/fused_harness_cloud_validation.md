@@ -72,6 +72,24 @@ The fix (Hub commit `0d24222`):
 After the fix: `npm run check` passed, `npm test` reported **2026 passed, 0
 failed, 2 skipped**, and `npm run verify:artifacts` passed.
 
+## Additional VibeMux gates
+
+Executed on the same host and managed slot:
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | passed |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | passed (49 s) |
+| `cargo test --locked --workspace --all-features` | **1702 passed, 0 failed, 2 ignored, 151 targets** (638.9 s cold, 363.6 s warm) |
+| `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
+| `python -m pytest` | passed (2 skipped groups) |
+| `ruff check scripts tests`, `ruff format --check` | passed |
+| `mypy scripts/build_storage.py scripts/verify_fused_harness_cloud.py` | passed |
+| `python scripts/check_public_artifacts.py` | passed, 0 findings |
+
+The managed core slot held 14.1 GB after the full scope (including Tauri);
+the comparison slots were cleaned after measurement.
+
 ## What this evidence does and does not establish
 
 - It establishes that the current VibeMux daemon descriptor and read-only

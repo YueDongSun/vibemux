@@ -21,11 +21,29 @@
     "default_members": ["vibemux_cli", "vibemuxd", "vibemux_probe", "vibemux_mcp"],
     "managed_core_slot": {
       "slot": "core",
-      "scope": "cli/frontend/daemon/web checks, GUI feature check, web push check, harness and MCP tests, debug binaries",
-      "logical_bytes": 4505883329,
-      "allocated_bytes": 4553289728,
+      "scope": "cli/frontend/daemon/web checks, GUI feature check, web push check, harness/MCP/frontend tests, full-workspace all-features clippy and tests, Tauri desktop build, debug binaries",
+      "logical_bytes": 14050659151,
+      "allocated_bytes": 14357876736,
       "active_lease": false,
       "owner_tasks": ["cloud-harness-framework"]
+    },
+    "full_gate": {
+      "clippy": {
+        "command": "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+        "duration_ms": 49217,
+        "status": "passed"
+      },
+      "test": {
+        "command": "cargo test --locked --workspace --all-features",
+        "duration_ms_cold": 638884,
+        "duration_ms_warm": 363557,
+        "passed": 1702,
+        "failed": 0,
+        "ignored": 2,
+        "test_targets": 151,
+        "status": "passed"
+      },
+      "cargo_deny": "advisories ok, bans ok, licenses ok, sources ok"
     },
     "cold_checks": [
       {
@@ -96,7 +114,7 @@
   },
   "limits": {
     "windows": "Not executed on this host; scripts/verify_fused_harness_windows.ps1 is the native entry point.",
-    "full_workspace_gate": "Not executed on this host; the affected crates, all-features clippy, and frontend/web tests were executed.",
+    "full_workspace_gate": "Executed on macOS: clippy --workspace --all-targets --all-features -D warnings passed; cargo test --workspace --all-features passed 1702 tests (0 failed, 2 ignored, 151 targets).",
     "allocated_bytes": "Reported from st_blocks on POSIX. Windows allocation reporting remains unknown until the native run."
   }
 }
