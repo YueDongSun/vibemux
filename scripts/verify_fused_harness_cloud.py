@@ -45,6 +45,7 @@ CASE_IDS: Final = (
     "A1",
     "A2",
     "C11-SLOTS",
+    "C13-LINEAGE",
     "HUB-GATES",
     "C02",
     "C03",
@@ -74,7 +75,7 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C10": "Requires the Hub read-only MCP tool and worker tool-call admission.",
     "C11": "The worker/candidate merge half requires the workflow candidate path; the managed build-slot contention half is covered by C11-SLOTS.",
     "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
-    "C13": "Requires the unified migration lineage recognizer for schema 9/10/14 layouts.",
+    "C13": "Known layouts are recognized and preserved (reports schema 10, chat schema 10-14, foreign Python store, future and incomplete markers); merging those layouts forward into one current schema is not implemented.",
     "C14": "Requires the Fusion offline benchmark contracts and fixture runner.",
     "C15": "Requires the shared native host bridge and the two chat layouts.",
 }
@@ -680,6 +681,77 @@ def _run_c11_slots(*, vibemux_root: Path, state_root: Path, timeout: float) -> d
         )
 
 
+def _run_c13_lineage(
+    *, vibemux_root: Path, build_state_root: Path, timeout: float
+) -> dict[str, Any]:
+    """Recognize and preserve the known historical store layouts.
+
+    The case runs the store's lineage tests in a managed slot: a current
+    database, PR #52's reports schema 10, PR #49's chat schema 10 and 14, a
+    foreign Python store, a future marker, and an incomplete current layout.
+    """
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        result = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c13-lineage",
+                "--budget-bytes",
+                "8G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemux_store",
+                "--all-features",
+                "--lib",
+                "lineage",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 600))
+        passed = 0
+        for line in result.stdout.splitlines():
+            if line.startswith("test result: ok."):
+                for token in line.split():
+                    if token == "passed;":
+                        passed = int(line.split()[line.split().index("passed;") - 1])
+                        break
+        if passed < 5:
+            raise VerificationError(f"expected at least five lineage tests, saw {passed}")
+        return _case(
+            "C13-LINEAGE",
+            "passed",
+            evidence_class="store_migration_tests",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"{passed} lineage tests passed: current, reports schema 10, "
+                "chat schema 10 and 14, foreign Python store, future and incomplete"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C13-LINEAGE",
+            "failed",
+            evidence_class="store_migration_tests",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -705,6 +777,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--state-root",
         type=Path,
         help="task-owned runtime root (default: a new temporary directory)",
+    )
+    parser.add_argument(
+        "--build-state-root",
+        type=Path,
+        help="managed build root used by cases that compile (default: the frame state root)",
     )
     parser.add_argument(
         "--cases",
@@ -736,6 +813,11 @@ def main(argv: list[str] | None = None) -> int:
         else arguments.state_root.resolve()
     )
     run_root.mkdir(parents=True, exist_ok=True)
+    build_state_root = (
+        arguments.build_state_root.resolve()
+        if arguments.build_state_root
+        else run_root / "build-storage"
+    )
     selected = [item.strip() for item in arguments.cases.split(",") if item.strip()]
     unknown = [item for item in selected if item not in CASE_IDS]
     if unknown:
@@ -791,6 +873,14 @@ def main(argv: list[str] | None = None) -> int:
                 _run_c11_slots(
                     vibemux_root=vibemux_root,
                     state_root=run_root / "build-storage",
+                    timeout=arguments.timeout_seconds,
+                )
+            )
+        if "C13-LINEAGE" in selected:
+            cases.append(
+                _run_c13_lineage(
+                    vibemux_root=vibemux_root,
+                    build_state_root=build_state_root,
                     timeout=arguments.timeout_seconds,
                 )
             )

@@ -16,6 +16,7 @@ mod a2a;
 mod decision;
 mod frontend;
 mod harness_dispatch;
+pub mod lineage;
 mod sql_integer;
 mod workflow;
 pub use a2a::A2aCommitOutcome;
@@ -25,6 +26,7 @@ pub use harness_dispatch::{
     HarnessDispatchClaim, HarnessDispatchCommit, HarnessDispatchFinish, HarnessDispatchRecord,
     HarnessDispatchRecovery, QuarantinedDispatch,
 };
+pub use lineage::{SchemaInspection, SchemaLineage, inspect_database};
 pub use workflow::{
     AttemptPurpose, ContentEntry, ContentKind, ContentState, ContractEditAdmission,
     ContractEditCommit, ContractEditRecord, ControllerCommit, ControllerOutboxCommit,
@@ -126,6 +128,18 @@ pub enum StoreError {
     InvalidSequence,
     #[error("database schema {found} is newer than supported version {supported}")]
     NewerSchema { found: u32, supported: u32 },
+    #[error(
+        "recognized database lineage {lineage} at schema {found} is not openable by this binary (supported schema {supported}); the database was left unchanged"
+    )]
+    KnownLineage {
+        lineage: &'static str,
+        found: u32,
+        supported: u32,
+    },
+    #[error("database is not a Rust VibeMux store: {reason}; the database was left unchanged")]
+    UnsupportedDatabase { reason: &'static str },
+    #[error("store schema {found} is missing required objects: {missing}")]
+    SchemaIncomplete { found: u32, missing: String },
     #[error("harness snapshot state is invalid: {0}")]
     InvalidHarnessState(&'static str),
     #[error("unknown harness name: {0}")]
@@ -167,6 +181,9 @@ impl StoreError {
             Self::IdempotencyKeyRequired => "store_idempotency_key_required",
             Self::InvalidSequence => "store_invalid_sequence",
             Self::NewerSchema { .. } => "store_newer_schema",
+            Self::KnownLineage { .. } => "store_known_lineage",
+            Self::UnsupportedDatabase { .. } => "store_unsupported_database",
+            Self::SchemaIncomplete { .. } => "store_schema_incomplete",
             Self::InvalidHarnessState(code) => code,
             Self::UnknownHarness(_) => "store_unknown_harness",
             Self::InvalidFrontendLimit => "store_frontend_invalid_limit",
@@ -256,7 +273,6 @@ impl SqliteStore {
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MILLISECONDS))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
         let mut store = Self { connection };
         store.migrate()?;
         Ok(store)
@@ -667,26 +683,51 @@ impl SqliteStore {
     }
 
     fn migrate(&mut self) -> Result<(), StoreError> {
-        let table_exists: bool = self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
-            [],
-            |row| row.get(0),
-        )?;
-        let found: u32 = if table_exists {
-            self.connection.query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-                [],
-                |row| row.get(0),
-            )?
-        } else {
-            0
-        };
-        if found > STORE_SCHEMA_VERSION {
-            return Err(StoreError::NewerSchema {
-                found,
-                supported: STORE_SCHEMA_VERSION,
-            });
+        // Classify before writing anything: a recognized but unsupported
+        // lineage (reports schema 10, chat schema 10-14) and a foreign Python
+        // store are refused so the owner can upgrade them deliberately.
+        let inspection = lineage::inspect(&self.connection)?;
+        match inspection.lineage {
+            lineage::SchemaLineage::ReportsSchema10
+            | lineage::SchemaLineage::ChatSchema10
+            | lineage::SchemaLineage::ChatSchema11
+            | lineage::SchemaLineage::ChatSchema12
+            | lineage::SchemaLineage::ChatSchema13
+            | lineage::SchemaLineage::ChatSchema14 => {
+                return Err(StoreError::KnownLineage {
+                    lineage: inspection.lineage.as_str(),
+                    found: inspection.found_version,
+                    supported: STORE_SCHEMA_VERSION,
+                });
+            }
+            lineage::SchemaLineage::ForeignPython => {
+                return Err(StoreError::UnsupportedDatabase {
+                    reason: "events/projections do not match the Rust envelope schema",
+                });
+            }
+            lineage::SchemaLineage::Incomplete => {
+                return Err(StoreError::SchemaIncomplete {
+                    found: inspection.found_version,
+                    missing: inspection.missing_required.join(","),
+                });
+            }
+            lineage::SchemaLineage::Future => {
+                return Err(StoreError::NewerSchema {
+                    found: inspection.found_version,
+                    supported: STORE_SCHEMA_VERSION,
+                });
+            }
+            lineage::SchemaLineage::Unknown => {
+                return Err(StoreError::UnsupportedDatabase {
+                    reason: "unrecognized schema layout",
+                });
+            }
+            lineage::SchemaLineage::Empty
+            | lineage::SchemaLineage::LegacyRust
+            | lineage::SchemaLineage::Current => {}
         }
+        self.connection.pragma_update(None, "journal_mode", "WAL")?;
+        let found = inspection.found_version;
         if found == 0 {
             self.connection.execute_batch(INITIAL_SCHEMA)?;
         }
@@ -747,6 +788,7 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V9)?;
             transaction.commit()?;
         }
+        lineage::verify_current(&self.connection)?;
         Ok(())
     }
 

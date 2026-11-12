@@ -7905,3 +7905,30 @@ retained in the task's local validation artifact.
   verified); ruff/mypy clean.
 - Limits: the worker/candidate merge half of C11 remains `not_run`; it needs
   the workflow candidate path.
+
+### 2026-11-12 — Store lineage recognition (C13)
+
+- Problem found while mapping the history: `MAX(schema_migrations.version)` is
+  not a lineage identity. PR #52 and PR #49 both registered version 10 for
+  different DDL, the Python reference store uses the same `schema_migrations`
+  table with a different `events` shape, and a marker alone cannot prove that
+  the required objects exist (a v9 marker with dropped tables opened fine).
+- Added `crates/vibemux_store/src/lineage.rs`: `SchemaLineage`, a
+  `SchemaInspection` (found version, applied versions, table set, missing
+  required objects), and `inspect_database`, which opens a database
+  read-only.
+- `SqliteStore::open` now classifies before writing anything. A recognized but
+  unsupported lineage (reports schema 10, chat schema 10-14) fails with
+  `store_known_lineage`, a foreign Python store with
+  `store_unsupported_database`, a future marker with `store_newer_schema`, and
+  a current marker with missing objects with `store_schema_incomplete`; each
+  leaves the database unchanged. A current or older Rust layout continues
+  through the forward migrations and is verified afterwards.
+- Added the `C13-LINEAGE` verification case, which runs the lineage tests in a
+  managed slot; it reuses an existing managed root through
+  `--build-state-root` so no second target tree is created.
+- Executed on macOS 15.6: `cargo test -p vibemux_store --all-features`
+  passed (144 tests, including 5 new lineage tests); `C13-LINEAGE` passed;
+  ruff/mypy clean.
+- Limits: the forward merge of the recognized layouts into one current schema
+  is not implemented; C13 keeps that part `not_run` with the exact reason.

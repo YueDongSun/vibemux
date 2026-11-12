@@ -37,6 +37,7 @@ python scripts/verify_fused_harness_cloud.py \
 | A1 | passed | `source_dependency_graph` | CLI tree has no egui/eframe/winit/Tauri; default web tree has no ece/openssl/p256; `--features push` restores OpenSSL |
 | A2 | passed | `local_build_tooling` | `build_storage.py inventory` returned schema 1 with free-space and slot data |
 | C11-SLOTS | passed | `managed_build_slot_contention` | Two owned Git worktrees serialized on one `max-active=1` token; both task ids recorded in the slot owner; slot released; owned cleanup removed only `slots/c11/target` |
+| C13-LINEAGE | passed | `store_migration_tests` | 5 lineage tests: current v9 recognized and idempotent on reopen; PR #52 reports schema 10 and PR #49 chat schema 10/14 recognized and preserved; foreign Python store, future marker, and incomplete current layout refused distinctly |
 | HUB-GATES | passed | `actual_hub_tests` | `npm run check`, `npm test` (2032 passed, 2 skipped, 0 failed), `npm run verify:artifacts` |
 | C02–C15 | not_run | `not_executed` | Reasons are recorded per case in the JSON report |
 
@@ -87,12 +88,34 @@ failed, 2 skipped** (the count includes the new capability-discovery cases),
 and `npm run verify:artifacts` passed.
 
 ## Capability discovery increment
-
 The additive v10 `capabilities` operation and the Hub consumption landed after
 the first evidence capture (ADR 058). The C01 row and detail above are from the
 re-run against a real daemon and the real Hub adapter. The Hub suite grew from
 2026 to 2032 passing tests; the VibeMux side added 4 daemon tests, the CLI verb
 and its tests, and the C01 assertions.
+
+## Store lineage increment
+
+The store now classifies a database before writing to it (`crates/vibemux_store/src/lineage.rs`).
+`MAX(schema_migrations.version)` alone is not enough: PR #52 and PR #49 both
+used version 10 for different DDL, and the Python reference store shares the
+`schema_migrations` table with a different `events` shape. The recognizer
+combines the migration history with the table, column, and partial-index set
+and reports:
+
+| Layout | Result |
+|---|---|
+| Current v9 | opened; reopen is idempotent (no second migration) |
+| Rust v1-v8 | forward migration through v9, then a post-migration object check |
+| PR #52 reports schema 10 | `store_known_lineage`, database left unchanged |
+| PR #49 chat schema 10-14 | `store_known_lineage`, database left unchanged |
+| Python VibeMux store | `store_unsupported_database`, database left unchanged |
+| Marker newer than every lineage | `store_newer_schema` |
+| Current marker with missing objects | `store_schema_incomplete`, listing the missing objects |
+
+The forward merge of the recognized layouts into one current schema is not
+implemented; that is the remaining part of C13.
+
 
 ## Additional VibeMux gates
 

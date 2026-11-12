@@ -14,6 +14,7 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `A1` | Rust toolchain | The CLI graph is GUI-free; Web Push is opt-in |
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `C11-SLOTS` | Python 3.12, Git | Two owned worktrees compete for one managed build slot: serialization, ownership, release, and owned cleanup |
+| `C13-LINEAGE` | Rust toolchain | Known store layouts are recognized and preserved: current v9, PR #52 reports schema 10, PR #49 chat schema 10 and 14, a foreign Python store, and future/incomplete markers |
 | `HUB-GATES` | Hub checkout, npm | The Hub's own check/test/artifact gates pass |
 
 All other ids (`C02`–`C15`) are emitted with a precise missing-capability
@@ -116,7 +117,7 @@ unconfigured`; an older daemon falls back to the legacy read path. See
 | C10 | Hub read-only MCP tool + worker tool admission |
 | C11 | Worker/candidate merge half (the managed-slot contention half is C11-SLOTS) |
 | C12 | AAG real server source for v2 receipt interoperability |
-| C13 | Unified store migration lineage |
+| C13 | Forward merge of the recognized layouts (reports schema 10, chat schema 10-14) into one current schema; recognition and preservation are covered by C13-LINEAGE |
 | C14 | Fusion offline benchmark contracts |
 | C15 | Shared native host bridge and chat layouts |
 
