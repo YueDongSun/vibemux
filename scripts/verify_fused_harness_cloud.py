@@ -51,6 +51,8 @@ CASE_IDS: Final = (
     "C05-CANCEL",
     "C13-LINEAGE",
     "C04-EVENTS",
+    "C07-HUB",
+    "C04-UI",
     "C07-RESTART",
     "HUB-GATES",
     "C02",
@@ -72,9 +74,7 @@ CASE_IDS: Final = (
 NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C02": "Hub goal submission and owner planning profile selection are not implemented in this source revision; capability discovery itself is available and covered by C01.",
     "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
-    "C04": "Paged event reads, retention-floor resynchronization, and reconnecting cursors are implemented and covered by C04-EVENTS; full Hub projection pagination across a live UI is not implemented.",
     "C05": "Daemon dispatch cancellation is covered by C05-CANCEL; Hub generation-scoped cancellation is not implemented.",
-    "C07": "Daemon stop/restart over the same store is covered by C07-RESTART; Hub restart recovery of suspended/interrupted tasks is not implemented.",
     "C08": "Cross-track operator context sharing is covered by C08-HANDOFF; a second harness adapter taking over with its own native identity is not implemented.",
     "C10": "Both metadata services are covered by C10-MCP; a VibeMux worker calling Hub tools through an admitted broker is not implemented.",
     "C11": "Both halves are now covered by C11-SLOTS (build-slot contention) and C11-MERGE (two-worker candidate integration); this entry records no further C11 gap.",
@@ -1360,6 +1360,68 @@ def _run_c10_mcp(
         )
 
 
+def _run_node_case(
+    *,
+    id: str,
+    hub_root: Path,
+    timeout: float,
+    arguments: list[str],
+    minimum_passed: int,
+    evidence_class: str,
+    detail_prefix: str,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        result = _run(["node", *arguments], cwd=hub_root, timeout=timeout)
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 500))
+        passed = 0
+        for line in result.stdout.splitlines():
+            if line.startswith("ℹ pass "):
+                passed = int(line.rsplit(" ", 1)[-1])
+        if passed < minimum_passed:
+            raise VerificationError(f"expected at least {minimum_passed} tests, saw {passed}")
+        return _case(
+            id,
+            "passed",
+            evidence_class=evidence_class,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=f"{passed} tests: {detail_prefix}",
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            id,
+            "failed",
+            evidence_class=evidence_class,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
+def _run_c04_ui(*, hub_root: Path, timeout: float) -> dict[str, Any]:
+    return _run_node_case(
+        id="C04-UI",
+        hub_root=hub_root,
+        timeout=timeout,
+        arguments=["--test", "tests/workspaces_ui.test.mjs"],
+        minimum_passed=3,
+        evidence_class="hub_event_ui",
+        detail_prefix="paged history, exact next cursor, end marker, passive render",
+    )
+
+
+def _run_c07_hub(*, hub_root: Path, timeout: float) -> dict[str, Any]:
+    return _run_node_case(
+        id="C07-HUB",
+        hub_root=hub_root,
+        timeout=timeout,
+        arguments=["--test", "--test-name-pattern", "restarted Hub", "tests/vibemux.test.mjs"],
+        minimum_passed=1,
+        evidence_class="hub_restart_recheck",
+        detail_prefix="a restarted Hub reports not_checked and re-reads the daemon",
+    )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -1511,6 +1573,30 @@ def main(argv: list[str] | None = None) -> int:
                         timeout=arguments.timeout_seconds,
                     )
                 )
+        if "C04-UI" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C04-UI",
+                        "blocked",
+                        evidence_class="hub_event_ui",
+                        detail="--hub-root is required for the Workspaces view",
+                    )
+                )
+            else:
+                cases.append(_run_c04_ui(hub_root=hub_root, timeout=arguments.timeout_seconds))
+        if "C07-HUB" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C07-HUB",
+                        "blocked",
+                        evidence_class="hub_restart_recheck",
+                        detail="--hub-root is required for the Hub restart test",
+                    )
+                )
+            else:
+                cases.append(_run_c07_hub(hub_root=hub_root, timeout=arguments.timeout_seconds))
         if "C05-CANCEL" in selected:
             cases.append(
                 _run_c05_cancel(

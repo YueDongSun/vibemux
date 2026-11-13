@@ -15,6 +15,8 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `C11-SLOTS` | Python 3.12, Git | Two owned worktrees compete for one managed build slot: serialization, ownership, release, and owned cleanup |
 | `C07-RESTART` | Built `vibemuxctl` | Daemon stop/restart reopens the same store and re-serves health and capability discovery |
+| `C04-UI` | Node, Hub checkout | Workspaces paged event history with the exact next cursor, end marker, and passive render |
+| `C07-HUB` | Node, Hub checkout | A restarted Hub reports `not_checked` and re-reads the daemon instead of trusting a cache |
 | `C05-CANCEL` | Rust toolchain | A running dispatch reports live capture and cancels; a waiting probe is cancelled at shutdown |
 | `C08-HANDOFF` | Rust toolchain | An operator context share reaches the other track and survives restarts |
 | `C10-MCP` | Rust toolchain, Node, Hub checkout | Both read-only metadata services initialize and serve tools (worker-to-Hub tool calls are not claimed) |
@@ -117,10 +119,8 @@ unconfigured`; an older daemon falls back to the legacy read path. See
 |---|---|
 | C02 | Hub goal submission and owner planning profile selection (capability discovery is complete; see C01) |
 | C03 | Hub original-operation lookup after an uncertain submit |
-| C04 | Full Hub projection pagination across a live UI (the paged read and Hub cursor consumer are covered by C04-EVENTS) |
 | C05 | Hub generation-scoped cancellation (daemon dispatch cancellation is covered by C05-CANCEL) |
 | C06 | Out-of-process fixture worker on a stock daemon (the in-process fixture path is covered by C06) |
-| C07 | Hub restart recovery of suspended/interrupted tasks (daemon store reuse is covered by C07-RESTART) |
 | C08 | A second harness adapter taking over with its own native identity (cross-track sharing is covered by C08-HANDOFF) |
 | C09 | Planning-path consumption of resolved skills (the resolver and bundle are covered by C09) |
 | C10 | A VibeMux worker calling Hub tools through an admitted broker (both metadata services are covered by C10-MCP) |

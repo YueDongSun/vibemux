@@ -37,6 +37,8 @@ python scripts/verify_fused_harness_cloud.py \
 | A1 | passed | `source_dependency_graph` | CLI tree has no egui/eframe/winit/Tauri; default web tree has no ece/openssl/p256; `--features push` restores OpenSSL |
 | A2 | passed | `local_build_tooling` | `build_storage.py inventory` returned schema 1 with free-space and slot data |
 | C11-SLOTS | passed | `managed_build_slot_contention` | Two owned Git worktrees serialized on one `max-active=1` token; both task ids recorded in the slot owner; slot released; owned cleanup removed only `slots/c11/target` |
+| C04-UI | passed | `hub_event_ui` | 3 Hub tests: paged history, exact next cursor, end marker, passive render |
+| C07-HUB | passed | `hub_restart_recheck` | A restarted Hub reports not_checked and re-reads the daemon (1 test) |
 | C05-CANCEL | passed | `actual_daemon_dispatch_cancellation` | 3 tests: live capture, cancel, and shutdown of a waiting probe |
 | C08-HANDOFF | passed | `actual_daemon_context_handoff` | 2 tests: an operator share reaches the other track and survives restarts |
 | C10-MCP | passed | `metadata_services_fixture` | VibeMux MCP 3 tests + Hub MCP 15 tests; both services initialize and serve tools |

@@ -8081,3 +8081,18 @@ retained in the task's local validation artifact.
   C13-LINEAGE and C07-RESTART passed.
 - Limits: no live production database upgrade and no chat service code that
   writes the new tables in this branch.
+
+
+### 2026-11-13 — C04 Hub UI pagination and C07 Hub restart re-check
+
+- Hub `POST /api/vibemux/events` reuses the validated event projection with the
+  config-revision fence and a server-computed `resynchronize` flag. The
+  Workspaces view renders the newest detail events and a separate oldest-first
+  paged history with a Load more control; a resynchronize response replaces
+  the accumulated list, otherwise pages append de-duplicated by sequence.
+- A restarted Hub reports `not_checked` for VibeMux and re-reads the daemon on
+  the explicit connect action; it does not trust a persisted task cache.
+- Added `C04-UI` (3 UI tests) and `C07-HUB` (restart test) to the frame;
+  `C04`/`C07` no longer carry a not_run gap.
+- Executed on macOS 15.6: Hub `npm test` 2048 passed, 0 failed, 2 skipped;
+  check and verify:artifacts passed; C04-UI and C07-HUB passed.
