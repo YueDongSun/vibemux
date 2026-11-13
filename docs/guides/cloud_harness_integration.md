@@ -15,6 +15,7 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `C11-SLOTS` | Python 3.12, Git | Two owned worktrees compete for one managed build slot: serialization, ownership, release, and owned cleanup |
 | `C07-RESTART` | Built `vibemuxctl` | Daemon stop/restart reopens the same store and re-serves health and capability discovery |
+| `C02-PLAN` | Rust toolchain, Node, Hub checkout | Planning request identity: profile digest, retained request UUID, deterministic request key, and a content-free observation the Hub validator accepts |
 | `C04-UI` | Node, Hub checkout | Workspaces paged event history with the exact next cursor, end marker, and passive render |
 | `C07-HUB` | Node, Hub checkout | A restarted Hub reports `not_checked` and re-reads the daemon instead of trusting a cache |
 | `C05-CANCEL` | Rust toolchain | A running dispatch reports live capture and cancels; a waiting probe is cancelled at shutdown |
@@ -117,8 +118,8 @@ unconfigured`; an older daemon falls back to the legacy read path. See
 
 | Case | Missing implementation |
 |---|---|
-| C02 | Hub goal submission and owner planning profile selection (capability discovery is complete; see C01) |
-| C03 | Hub original-operation lookup after an uncertain submit |
+| C02 | Daemon planning-profile compiler and end-to-end Hub goal submission (the request/observation contract is covered by C02-PLAN) |
+| C03 | Lost-submit replay through a real Hub consumer (the retained-UUID request key is covered by C02-PLAN) |
 | C05 | Hub generation-scoped cancellation (daemon dispatch cancellation is covered by C05-CANCEL) |
 | C06 | Out-of-process fixture worker on a stock daemon (the in-process fixture path is covered by C06) |
 | C08 | A second harness adapter taking over with its own native identity (cross-track sharing is covered by C08-HANDOFF) |

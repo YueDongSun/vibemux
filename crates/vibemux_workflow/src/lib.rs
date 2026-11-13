@@ -28,6 +28,7 @@ pub mod model_call;
 pub mod native_controller;
 pub mod optimizer;
 pub mod path_authority;
+pub mod planning_contract;
 pub mod policy;
 pub mod receipts;
 pub mod renderer;

@@ -53,6 +53,7 @@ CASE_IDS: Final = (
     "C04-EVENTS",
     "C07-HUB",
     "C04-UI",
+    "C02-PLAN",
     "C07-RESTART",
     "HUB-GATES",
     "C02",
@@ -72,8 +73,8 @@ CASE_IDS: Final = (
 )
 
 NOT_RUN_REASONS: Final[dict[str, str]] = {
-    "C02": "Hub goal submission and owner planning profile selection are not implemented in this source revision; capability discovery itself is available and covered by C01.",
-    "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
+    "C02": "Request identity, profile digest, and the content-free observation are implemented and Hub-validated (C02-PLAN); the daemon planning-profile compiler and end-to-end Hub goal submission remain not implemented (requires the R&D planning modules).",
+    "C03": "The retained-UUID request key and observation contract are covered by C02-PLAN; lost-submit replay through a real Hub consumer is not implemented.",
     "C05": "Daemon dispatch cancellation is covered by C05-CANCEL; Hub generation-scoped cancellation is not implemented.",
     "C08": "Cross-track operator context sharing is covered by C08-HANDOFF; a second harness adapter taking over with its own native identity is not implemented.",
     "C10": "Both metadata services are covered by C10-MCP; a VibeMux worker calling Hub tools through an admitted broker is not implemented.",
@@ -1422,6 +1423,77 @@ def _run_c07_hub(*, hub_root: Path, timeout: float) -> dict[str, Any]:
     )
 
 
+def _run_c02_plan(
+    *, vibemux_root: Path, build_state_root: Path, hub_root: Path, timeout: float
+) -> dict[str, Any]:
+    """Planning request identity and the Hub-validated observation contract."""
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        rust = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c02-plan",
+                "--budget-bytes",
+                "8G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemux_workflow",
+                "--all-features",
+                "planning_contract",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if rust.returncode != 0:
+            raise VerificationError(f"planning contract tests failed: {_tail(rust, 500)}")
+        hub = _run(
+            ["node", "--test", "tests/planning_contract.test.mjs"], cwd=hub_root, timeout=timeout
+        )
+        if hub.returncode != 0:
+            raise VerificationError(f"Hub planning contract failed: {_tail(hub, 500)}")
+        rust_passed = _cargo_passed(rust.stdout)
+        hub_passed = 0
+        for line in hub.stdout.splitlines():
+            if line.startswith("ℹ pass "):
+                hub_passed = int(line.rsplit(" ", 1)[-1])
+        if rust_passed < 4 or hub_passed < 3:
+            raise VerificationError(
+                f"expected planning contract tests, saw {rust_passed}/{hub_passed}"
+            )
+        return _case(
+            "C02-PLAN",
+            "passed",
+            evidence_class="planning_contract_fixture",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"VibeMux={rust_passed} Hub={hub_passed}: profile digest, retained "
+                "request UUID, content-free observation; the daemon planning "
+                "compiler and end-to-end goal submission are not claimed"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C02-PLAN",
+            "failed",
+            evidence_class="planning_contract_fixture",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -1567,6 +1639,25 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 cases.append(
                     _run_c04_events(
+                        vibemux_root=vibemux_root,
+                        build_state_root=build_state_root,
+                        hub_root=hub_root,
+                        timeout=arguments.timeout_seconds,
+                    )
+                )
+        if "C02-PLAN" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C02-PLAN",
+                        "blocked",
+                        evidence_class="planning_contract_fixture",
+                        detail="--hub-root is required for the Hub planning validator",
+                    )
+                )
+            else:
+                cases.append(
+                    _run_c02_plan(
                         vibemux_root=vibemux_root,
                         build_state_root=build_state_root,
                         hub_root=hub_root,

@@ -8096,3 +8096,27 @@ retained in the task's local validation artifact.
   `C04`/`C07` no longer carry a not_run gap.
 - Executed on macOS 15.6: Hub `npm test` 2048 passed, 0 failed, 2 skipped;
   check and verify:artifacts passed; C04-UI and C07-HUB passed.
+
+
+### 2026-11-13 — Planning request contract (C02/C03 framework)
+
+- The R&D planning subsystem is not on this branch (the branch is 82 commits
+  ahead and adds planning.rs/planning_profile.rs plus BoundReceiptV2). A full
+  port is not a safe single increment, so this round lands the reusable
+  transport-neutral contract the Hub already consumes.
+- Added `vibemux_workflow::planning_contract`: `PlanningRequest`/`PlanningQuery`
+  closed records, profile-id and 64-hex digest validation, a 48 KiB request
+  bound, the deterministic `profile_<uuid>` request key, a domain-separated
+  profile digest binding profile/workflow/template/policy/execute permission,
+  and a `PlanningObservation` that always sets `retry_allowed: false`, carries
+  the content hash and never the request text. Four unit tests cover the
+  digest, key, validation, and observation invariants.
+- Added a Hub contract test that runs the existing
+  `validate_planning_observation` against the exact VibeMux shape; it accepts
+  a prepared and a not_observed observation and rejects mismatched
+  request/profile identity, execute, retry, workflow, or unknown fields.
+- `C02-PLAN` runs both suites (VibeMux 4, Hub 3) and reports
+  `planning_contract_fixture`.
+- Limits: the daemon planning-profile compiler, the model-compiler route, and
+  the end-to-end Hub goal submission remain not implemented; C02/C03 keep
+  those precise conditions.
