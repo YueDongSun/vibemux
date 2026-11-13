@@ -4,6 +4,7 @@
 
 - [Unified CLI guide](guides/unified_cli_guide.md): common commands, output, and dashboard.
 - [Managed build storage](guides/build_storage.md) and [ADR 057](adr/057_managed_build_storage.md): fixed build slots, low-disk profiles, and split GUI/push features.
+- [Fusion benchmark contracts](guides/fusion_benchmarks.md) and [ADR 059](adr/059_fusion_offline_contracts.md): offline Single/Cascade/Critique contracts; live runs opt-in and unverified.
 - [Capability discovery](adr/058_capability_discovery.md): additive v10 `capabilities` operation and the unified operation registry.
 - [Cloud harness integration](guides/cloud_harness_integration.md) and [local validation](evidence/fused_harness_cloud_validation.md): the executable VibeMux + Hub verification frame and what it does not yet cover.
 - [Harness core guide](guides/harness_core_guide.md): bounded native requests and capture.

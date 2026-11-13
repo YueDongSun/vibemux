@@ -7995,3 +7995,25 @@ retained in the task's local validation artifact.
 - Limits: a stock `vibemuxd` still cannot run a fixture worker (the fixture
   guard is deliberately test-only); C06's out-of-process half keeps that
   explicit condition.
+
+
+### 2026-11-12 — Offline Fusion benchmark contracts (C14)
+
+- Ported the `codex/copilot-fusion-benchmarks` example into
+  `vibemux_harness_native`: the plan/live entry point, the cases/config/
+  evidence/workflow modules, and the six disabled `examples/harness/fusion`
+  templates. The port adapts one sha2 0.11 detail (hex encoding of a digest)
+  and adds `time` as a dev-dependency; it introduces no new package.
+- The example keeps `--plan` as the default and requires
+  `--execute-live <config> <new-output-dir>` before any vendor launch. All
+  shipped templates disable execution. Evidence is a task-owned append-only
+  JSON file, not canonical state.
+- `cargo test -p vibemux_harness_native --example fusion_benchmark` passed
+  14 contract tests (configuration independence, bounded labels, hostile
+  candidate containment, completion rules, review bounds, scoring boundaries,
+  append-only evidence, and the default plan not counting as execution
+  evidence). Clippy `-D warnings` passed.
+- The `C14` verification case runs the suite in the managed `verify` slot and
+  reports `offline_fusion_contracts`.
+- Limits: no live Fusion measurement exists; the live path stays opt-in and
+  unverified.

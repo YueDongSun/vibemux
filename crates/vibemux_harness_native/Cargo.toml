@@ -35,3 +35,4 @@ vibemux_plugin_supervisor = { path = "../vibemux_plugin_supervisor" }
 
 [dev-dependencies]
 tempfile.workspace = true
+time.workspace = true

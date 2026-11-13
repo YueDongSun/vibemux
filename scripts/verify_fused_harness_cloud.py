@@ -77,7 +77,6 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C11": "The worker/candidate merge half requires the workflow candidate path; the managed build-slot contention half is covered by C11-SLOTS.",
     "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
     "C13": "Known layouts are recognized and preserved (reports schema 10, chat schema 10-14, foreign Python store, future and incomplete markers); merging those layouts forward into one current schema is not implemented.",
-    "C14": "Requires the Fusion offline benchmark contracts and fixture runner.",
     "C15": "Requires the shared native host bridge and the two chat layouts.",
 }
 
@@ -1025,6 +1024,69 @@ def _run_c06(*, vibemux_root: Path, build_state_root: Path, timeout: float) -> d
         )
 
 
+def _run_c14_fusion(
+    *, vibemux_root: Path, build_state_root: Path, timeout: float
+) -> dict[str, Any]:
+    """The ported Fusion benchmark contracts, offline and deterministic.
+
+    The example's tests cover the four modes' contracts, budgets, scoring,
+    cancellation, and append-only evidence without any provider call.
+    """
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        result = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c14-fusion",
+                "--budget-bytes",
+                "8G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemux_harness_native",
+                "--example",
+                "fusion_benchmark",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 700))
+        passed = _cargo_passed(result.stdout)
+        if passed < 14:
+            raise VerificationError(f"expected fourteen Fusion contract tests, saw {passed}")
+        return _case(
+            "C14",
+            "passed",
+            evidence_class="offline_fusion_contracts",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"{passed} offline contract tests: modes, budgets, scoring, "
+                "cancellation, and append-only evidence; no provider call"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C14",
+            "failed",
+            evidence_class="offline_fusion_contracts",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -1176,6 +1238,14 @@ def main(argv: list[str] | None = None) -> int:
                         timeout=arguments.timeout_seconds,
                     )
                 )
+        if "C14" in selected:
+            cases.append(
+                _run_c14_fusion(
+                    vibemux_root=vibemux_root,
+                    build_state_root=build_state_root,
+                    timeout=arguments.timeout_seconds,
+                )
+            )
         if "C06" in selected:
             cases.append(
                 _run_c06(

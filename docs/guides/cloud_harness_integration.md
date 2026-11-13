@@ -15,6 +15,7 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `C11-SLOTS` | Python 3.12, Git | Two owned worktrees compete for one managed build slot: serialization, ownership, release, and owned cleanup |
 | `C07-RESTART` | Built `vibemuxctl` | Daemon stop/restart reopens the same store and re-serves health and capability discovery |
+| `C14` | Rust toolchain | Fusion Single/Cascade/Critique contracts run offline with deterministic fixtures; no provider call |
 | `C06` | Rust toolchain | A real in-process daemon, store, Git worktrees and writable fixture worker: the independent trusted verifier rejects a wrong candidate while the reviewer passes it, and accepts the good candidate through the same path |
 | `C04-EVENTS` | Rust toolchain, Node, Hub checkout | Paged task events with a sequence cursor, retention-floor resynchronization, and the Hub consumer |
 | `C13-LINEAGE` | Rust toolchain | Known store layouts are recognized and preserved: current v9, PR #52 reports schema 10, PR #49 chat schema 10 and 14, a foreign Python store, and future/incomplete markers |
@@ -121,7 +122,7 @@ unconfigured`; an older daemon falls back to the legacy read path. See
 | C11 | Worker/candidate merge half (the managed-slot contention half is C11-SLOTS) |
 | C12 | AAG real server source for v2 receipt interoperability |
 | C13 | Forward merge of the recognized layouts (reports schema 10, chat schema 10-14) into one current schema; recognition and preservation are covered by C13-LINEAGE |
-| C14 | Fusion offline benchmark contracts |
+| C14 | Live Fusion measurement (offline contracts are covered by C14) |
 | C15 | Shared native host bridge and chat layouts |
 
 Each addition should keep the same report schema and `evidence_class`

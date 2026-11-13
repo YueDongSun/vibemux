@@ -37,6 +37,7 @@ python scripts/verify_fused_harness_cloud.py \
 | A1 | passed | `source_dependency_graph` | CLI tree has no egui/eframe/winit/Tauri; default web tree has no ece/openssl/p256; `--features push` restores OpenSSL |
 | A2 | passed | `local_build_tooling` | `build_storage.py inventory` returned schema 1 with free-space and slot data |
 | C11-SLOTS | passed | `managed_build_slot_contention` | Two owned Git worktrees serialized on one `max-active=1` token; both task ids recorded in the slot owner; slot released; owned cleanup removed only `slots/c11/target` |
+| C14 | passed | `offline_fusion_contracts` | 14 ported contract tests: modes, budgets, scoring, cancellation, append-only evidence; no provider call |
 | C06 | passed | `actual_daemon_fixture_worker_verifier` | Real in-process daemon + store + Git worktrees + writable fixture worker: reviewer passes, independent verifier rejects the wrong candidate (`gate_suite_failed`), integration stays empty, checkout clean; good candidate accepted |
 | C04-EVENTS | passed | `event_pagination_contracts` | Store paging (31 events, cursor, retention floor), the v10 control read, and the Hub cursor consumer (34 Hub tests) |
 | C07-RESTART | passed | `daemon_restart_store_reuse` | Daemon restart re-served health and 48 capabilities and reopened the same store inode; pid changed |
