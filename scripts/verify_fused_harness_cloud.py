@@ -70,7 +70,6 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
     "C04": "Paged event reads, retention-floor resynchronization, and reconnecting cursors are implemented and covered by C04-EVENTS; full Hub projection pagination across a live UI is not implemented.",
     "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
-    "C06": "Requires a writable fixture worker candidate path and an independent verifier.",
     "C07": "Daemon stop/restart over the same store is covered by C07-RESTART; Hub restart recovery of suspended/interrupted tasks is not implemented.",
     "C08": "Requires a second fixture harness adapter with native identity preservation.",
     "C09": "Requires the Hub skill_refs resolver and bounded context assembly.",
@@ -959,6 +958,73 @@ def _run_c07_restart(*, vibemuxctl: Path, run_root: Path, timeout: float) -> dic
             )
 
 
+def _run_c06(*, vibemux_root: Path, build_state_root: Path, timeout: float) -> dict[str, Any]:
+    """A wrong fixture candidate is rejected by the independent verifier.
+
+    The test starts a real in-process daemon, a real store, real Git
+    worktrees, a writable fixture worker, and the trusted TaskBoard suite.
+    The reviewer passes the candidate on purpose, so the rejection is
+    attributable to the verifier; a positive control accepts a good
+    candidate through the same path.
+    """
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        result = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c06-verifier",
+                "--budget-bytes",
+                "12G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemuxd",
+                "--features",
+                "test_helpers",
+                "--test",
+                "workflow_gates",
+                "c06_",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 700))
+        passed = _cargo_passed(result.stdout)
+        if passed < 2:
+            raise VerificationError(f"expected two C06 tests, saw {passed}")
+        return _case(
+            "C06",
+            "passed",
+            evidence_class="actual_daemon_fixture_worker_verifier",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"{passed} tests: wrong candidate rejected by the independent verifier; "
+                "good candidate accepted by the same path; checkout clean"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C06",
+            "failed",
+            evidence_class="actual_daemon_fixture_worker_verifier",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -1110,6 +1176,14 @@ def main(argv: list[str] | None = None) -> int:
                         timeout=arguments.timeout_seconds,
                     )
                 )
+        if "C06" in selected:
+            cases.append(
+                _run_c06(
+                    vibemux_root=vibemux_root,
+                    build_state_root=build_state_root,
+                    timeout=arguments.timeout_seconds,
+                )
+            )
         if "C07-RESTART" in selected:
             if not vibemuxctl.is_file():
                 cases.append(

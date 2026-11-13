@@ -232,3 +232,104 @@ async fn exhausted_repairs_fail_the_task() {
     assert_eq!(repairs, ["store/repair_2"]);
     fixture.shutdown().await;
 }
+
+/// C06: a wrong candidate is rejected by the independent verifier even
+/// though the reviewer passes it. The zero-repair policy makes the verifier
+/// failure terminal, so the rejection is attributable to the trusted suite
+/// and not to a repair turn or the review.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c06_wrong_candidate_is_rejected_by_the_independent_verifier() {
+    let fixture = WorkflowFixture::start(FixtureOptions::default()).await;
+    let script = json!({"steps": {
+        "store/implement_1": {"write": store_file(BLANK_TITLE_MUTANT)},
+        "store/review": review_pass(),
+    }});
+    fixture.write_script(&script);
+    let request = store_request(
+        "c06_wrong",
+        &fixture.head,
+        "cooperate",
+        &store_task(&STORE_SUITE),
+        false,
+    );
+    let mut zero_repairs = policy(&STORE_SUITE, 2, false);
+    zero_repairs["budget_caps"]["max_repairs"] = json!(0);
+    let prepared = fixture.prepare(request, zero_repairs).await;
+    let workflow = workflow_id(&prepared);
+    fixture.start_workflow(&prepared).await;
+    let status = fixture
+        .wait_phase(workflow, &["accepted", "failed", "blocked", "cancelled"])
+        .await;
+    assert_eq!(phase(&status), "failed", "status: {status:#}");
+    assert_eq!(
+        status["last_run"]["end"],
+        json!({"end": "failed", "code": "task_repairs_exhausted"})
+    );
+    let candidates = candidates(&status);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["admitted"], true);
+    assert_eq!(candidates[0]["origin"], "fixture_worker");
+    let reviews = status["receipts"]["reviews"].as_array().expect("reviews");
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0]["verdict"], "pass");
+    assert_eq!(reviews[0]["candidate_unchanged"], true);
+    assert_ne!(reviews[0]["reviewer_route"], candidates[0]["worker_route"]);
+    assert_ne!(
+        reviews[0]["reviewer_harness"],
+        candidates[0]["worker_harness"]
+    );
+    let verification = verification_of(&status, &candidates[0]["candidate_digest"]);
+    assert_eq!(verification["subject_unchanged"], true);
+    assert_eq!(verification["suites"][0]["status"], "failed");
+    assert!(
+        verification["suites"][0]["tests_failed"]
+            .as_u64()
+            .expect("tests_failed")
+            > 0
+    );
+    assert_eq!(status["tasks"][0]["accepted_candidate"], Value::Null);
+    assert!(status["receipts"]["integration"].is_null());
+    // The wrong candidate never reached the checkout.
+    assert_eq!(fixture.checkout_status(), "");
+    fixture.shutdown().await;
+}
+
+/// C06 positive control: the same worker and verifier accept the correct
+/// candidate, so the rejection above is specific to the defect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c06_good_candidate_is_accepted_by_the_same_verifier() {
+    let fixture = WorkflowFixture::start(FixtureOptions::default()).await;
+    let script = json!({"steps": {
+        "store/implement_1": {"write": store_file(GOOD_STORE)},
+        "store/review": review_pass(),
+    }});
+    fixture.write_script(&script);
+    let request = store_request(
+        "c06_good",
+        &fixture.head,
+        "cooperate",
+        &store_task(&STORE_SUITE),
+        false,
+    );
+    let mut zero_repairs = policy(&STORE_SUITE, 2, false);
+    zero_repairs["budget_caps"]["max_repairs"] = json!(0);
+    let prepared = fixture.prepare(request, zero_repairs).await;
+    let workflow = workflow_id(&prepared);
+    fixture.start_workflow(&prepared).await;
+    let status = fixture
+        .wait_phase(workflow, &["accepted", "failed", "blocked", "cancelled"])
+        .await;
+    fixture.assert_phase(&status, "accepted").await;
+    let candidates = candidates(&status);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["origin"], "fixture_worker");
+    let verification = verification_of(&status, &candidates[0]["candidate_digest"]);
+    assert_eq!(verification["suites"][0]["status"], "passed");
+    assert_eq!(
+        status["tasks"][0]["accepted_candidate"],
+        candidates[0]["candidate_digest"]
+    );
+    assert!(!status["receipts"]["integration"].is_null());
+    assert_eq!(fixture.checkout_status(), "");
+    fixture.shutdown().await;
+}

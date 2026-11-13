@@ -7972,3 +7972,26 @@ retained in the task's local validation artifact.
   `C13-LINEAGE`, `HUB-GATES`) passed all eight cases.
 - Limits: Hub restart recovery of suspended/interrupted tasks is not
   implemented; C07 keeps that part `not_run`.
+
+### 2026-11-12 — C06 wrong candidate rejected by the independent verifier
+
+- Added `c06_wrong_candidate_is_rejected_by_the_independent_verifier` and
+  `c06_good_candidate_is_accepted_by_the_same_verifier` to
+  `crates/vibemuxd/tests/workflow_gates.rs`. Both start the existing fixture:
+  a real in-process daemon, real store, real Git worktrees, a writable
+  fixture worker, and the trusted TaskBoard `store` suite.
+- The wrong-candidate run writes the `blank_title_accepted` mutant while the
+  reviewer deliberately returns `pass` and the policy allows zero repairs.
+  Assertions: candidate admitted with `origin=fixture_worker`; independent
+  reviewer route/harness; verification receipt for that candidate digest with
+  `status=failed` and `tests_failed>0`; `subject_unchanged` and
+  `candidate_unchanged`; no accepted candidate, no integration receipt, clean
+  checkout, terminal `task_repairs_exhausted`. The positive control accepts
+  the good candidate through the same worker and suite.
+- The `C06` verification case runs both tests in the managed `verify` slot and
+  reports the new `actual_daemon_fixture_worker_verifier` evidence class.
+- Executed on macOS 15.6: the full `workflow_gates` file passed 6/6 and the
+  C06 case passed.
+- Limits: a stock `vibemuxd` still cannot run a fixture worker (the fixture
+  guard is deliberately test-only); C06's out-of-process half keeps that
+  explicit condition.
