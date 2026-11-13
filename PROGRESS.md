@@ -8117,6 +8117,11 @@ retained in the task's local validation artifact.
   request/profile identity, execute, retry, workflow, or unknown fields.
 - `C02-PLAN` runs both suites (VibeMux 4, Hub 3) and reports
   `planning_contract_fixture`.
+- Final full workspace gate after schema 15 and the planning contract:
+  **1724 passed, 0 failed, 2 ignored, 151 targets** (373.9 s). A previous run
+  hit the 420 s `workflow_share` settle timeout under full-workspace load; the
+  file passes in isolation in 28 s, and the green rerun confirms a contention
+  flake rather than a regression.
 - Limits: the daemon planning-profile compiler, the model-compiler route, and
   the end-to-end Hub goal submission remain not implemented; C02/C03 keep
   those precise conditions.
