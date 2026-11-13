@@ -310,8 +310,10 @@ pub enum DaemonCliError {
     PromptUnavailable,
     #[error("dispatch prompt must be non-blank UTF-8 of at most 32 KiB")]
     InvalidPrompt,
-    #[error("planning document must be non-blank UTF-8 within its bound")]
-    WorkflowGoalInvalid,
+    #[error("planning document could not be read")]
+    PlanningDocumentUnavailable,
+    #[error("planning document must be non-blank UTF-8 JSON within its bound")]
+    PlanningDocumentInvalid,
     #[error("compiled workflow contract was rejected: {}", .0.join(", "))]
     ContractRejected(Vec<String>),
 }
@@ -339,7 +341,8 @@ impl DaemonCliError {
             Self::UnknownHarness(_) => "store_unknown_harness",
             Self::PromptUnavailable => "cli_prompt_unavailable",
             Self::InvalidPrompt => "harness_dispatch_invalid_prompt",
-            Self::WorkflowGoalInvalid => "workflow_planning_goal_invalid",
+            Self::PlanningDocumentUnavailable => "cli_planning_document_unavailable",
+            Self::PlanningDocumentInvalid => "workflow_planning_document_invalid",
             Self::ContractRejected(_) => "workflow_contract_rejected",
         }
     }

@@ -58,6 +58,8 @@ pub enum WorkflowError {
     EvaluationInvalid,
     #[error("planning request is invalid")]
     PlanningRequestInvalid,
+    #[error("planning request exceeds the workflow request bound once rendered")]
+    PlanningRequestTooLarge,
     #[error("planning profile is not configured")]
     PlanningProfileUnknown,
     #[error("planning profile digest does not match the pinned config")]
@@ -114,6 +116,7 @@ impl WorkflowError {
             Self::NativeTuiUnavailable => "workflow_native_tui_unavailable",
             Self::EvaluationInvalid => "workflow_evaluation_invalid",
             Self::PlanningRequestInvalid => "workflow_planning_request_invalid",
+            Self::PlanningRequestTooLarge => "workflow_planning_request_too_large",
             Self::PlanningProfileUnknown => "workflow_planning_profile_unknown",
             Self::PlanningProfileMismatch => "workflow_planning_profile_mismatch",
             Self::PlanningExecutionRefused => "workflow_planning_execution_refused",

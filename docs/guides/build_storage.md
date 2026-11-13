@@ -58,13 +58,20 @@ OS user cache directory).
 | `--poll-seconds S` | 2 | Storage sampling period |
 | `--allow-incremental` | off | Leave `CARGO_INCREMENTAL` unset for this call |
 | `--adopt` | off | Explicitly claim a non-empty unowned slot |
-| `--retain PATH` | — | Slot-relative path that cleanup must never delete |
+| `--retain PATH` | — | Slot-relative path that cleanup must never delete; any retained entry at or below `target/` excludes the whole managed target from cleanup, and later registrations merge (never shrink) the recorded retention |
 
 The wrapper validates explicit `--target-dir` arguments. A command that
 overrides the managed target is refused before any process starts. The child
 inherits the wrapper's `CARGO_TARGET_DIR`; Cargo's own precedence is
 `--target-dir` > `CARGO_TARGET_DIR` > `config.toml`, so the check covers the only
 higher-priority source.
+
+The budget compares allocated bytes where the platform reports them
+(`st_blocks`); where it cannot (Windows), it compares logical bytes so the
+soft guard is never silently inert. A child that exits in the same poll
+interval where a bound was crossed keeps its real exit code and outcome;
+the measurement records `stop_reason` with an `_after_exit` suffix instead
+of claiming a force-stop.
 
 A build token and a slot lease are both OS advisory locks. They are released
 automatically if the owning process dies. Touching the slot budget or the

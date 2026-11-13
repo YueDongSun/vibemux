@@ -121,9 +121,12 @@ pub fn request_key(request_id: Uuid) -> String {
     format!("profile_{request_id}")
 }
 
-/// The digest binds a profile to its workflow key, template, policy, and
-/// execution permission. The daemon compares the operator's configured digest
-/// with this value before any prepare.
+/// The digest of a *precompiled task-spec template*. This is the helper a
+/// template author uses to fingerprint compiled specs; it is NOT the
+/// config-pinned profile digest the daemon compares on the wire — that one
+/// is derived from the operator's workflow config (see the daemon's
+/// `PlanningProfileConfig::digest`), which binds the whole pinned profile
+/// including its policy and the config revision.
 #[must_use]
 pub fn profile_digest(
     profile_id: &str,
@@ -204,6 +207,28 @@ impl PlanningObservation {
             profile_digest: request.profile_digest.clone(),
             request_sha256: request.content_sha256(),
             execute: request.execute,
+            status,
+            retry_allowed: false,
+            workflow,
+            execution: None,
+        }
+    }
+
+    /// An observation for a digest-bound recovery query, which never
+    /// carries the request text: the content hash is the query's own.
+    #[must_use]
+    pub fn for_query(
+        query: &PlanningQuery,
+        status: PlanningStatus,
+        workflow: Option<PlanningWorkflowRef>,
+    ) -> Self {
+        Self {
+            schema_version: PLANNING_CONTRACT_SCHEMA_VERSION,
+            request_id: query.request_id,
+            profile_id: query.profile_id.clone(),
+            profile_digest: query.profile_digest.clone(),
+            request_sha256: query.request_sha256.clone(),
+            execute: query.execute,
             status,
             retry_allowed: false,
             workflow,

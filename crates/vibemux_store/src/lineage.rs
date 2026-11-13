@@ -514,6 +514,31 @@ VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
     }
 
     #[test]
+    fn an_interrupted_reconciliation_reopens_and_self_heals() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("interrupted.sqlite3");
+        reports_ten(&path);
+        // A crash between the reconciliation's chat-V10 commit and the
+        // marker-15 commit leaves chat tables and marker 10: the reopen
+        // reclassifies as chat-10 and must not brick on the reports DDL.
+        apply_sql(&path, crate::chat_migrations::MIGRATION_V10_CHAT_TABLES);
+        assert_eq!(
+            inspect_database(&path)
+                .expect("inspect interrupted")
+                .lineage,
+            SchemaLineage::ChatSchema10
+        );
+        let store = crate::SqliteStore::open(&path).expect("interrupted reconciliation reopens");
+        drop(store);
+        let inspection = inspect_database(&path).expect("inspect healed");
+        assert_eq!(inspection.lineage, SchemaLineage::Current);
+        assert_eq!(inspection.found_version, STORE_SCHEMA_VERSION);
+        assert!(inspection.missing_required.is_empty());
+        assert_eq!(count(&path, "schema_migrations"), 15);
+        crate::SqliteStore::open(&path).expect("reopen is idempotent");
+    }
+
+    #[test]
     fn foreign_python_store_is_refused_without_modification() {
         let temp = tempfile::tempdir().expect("temp");
         let path = temp.path().join("python.sqlite3");

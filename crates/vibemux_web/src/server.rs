@@ -316,8 +316,65 @@ fn asset_response(bytes: &'static [u8], mime: &'static str, request: &Request<Bo
     );
     response
 }
+/// The contract actually served: without the `push` feature the push routes
+/// are absent from the router, so the document must not advertise them.
+fn served_openapi_bytes() -> Result<Vec<u8>, &'static str> {
+    #[cfg(feature = "push")]
+    {
+        Ok(OPENAPI.as_bytes().to_vec())
+    }
+    #[cfg(not(feature = "push"))]
+    {
+        let mut document: serde_json::Value =
+            serde_json::from_str(OPENAPI).map_err(|_| "web_contract_invalid")?;
+        if let Some(paths) = document
+            .get_mut("paths")
+            .and_then(|paths| paths.as_object_mut())
+        {
+            paths.retain(|path, _| !path.starts_with("/api/v1/push/"));
+        }
+        serde_json::to_vec(&document).map_err(|_| "web_contract_invalid")
+    }
+}
+
 async fn openapi(request: Request<Body>) -> Response {
-    asset_response(OPENAPI.as_bytes(), "application/json", &request)
+    // Same ETag and caching behavior as a static asset, over bytes this
+    // build actually serves (the default build strips the push routes).
+    let bytes = match served_openapi_bytes() {
+        Ok(bytes) => bytes,
+        Err(code) => return error(StatusCode::INTERNAL_SERVER_ERROR, code),
+    };
+    let etag = format!("\"{}\"", URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes)));
+    let matches = request
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|header| header.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|candidate| {
+                let value = candidate
+                    .trim()
+                    .strip_prefix("W/")
+                    .unwrap_or(candidate.trim());
+                value == etag || value == "*"
+            })
+        });
+    let mut response = if matches {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        (
+            [(header::CONTENT_TYPE, "application/json")],
+            axum::body::Body::from(bytes),
+        )
+            .into_response()
+    };
+    if let Ok(etag) = HeaderValue::from_str(&etag) {
+        response.headers_mut().insert(header::ETAG, etag);
+    }
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
+    response
 }
 async fn static_asset(request: Request<Body>) -> Response {
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
@@ -349,5 +406,41 @@ async fn static_asset(request: Request<Body>) -> Response {
             &request,
         ),
         None => error(StatusCode::NOT_FOUND, "web_asset_not_found"),
+    }
+}
+
+#[cfg(test)]
+mod openapi_tests {
+    use super::*;
+
+    #[cfg(not(feature = "push"))]
+    #[test]
+    fn a_default_build_never_advertises_push_routes() {
+        let document: serde_json::Value =
+            serde_json::from_slice(&served_openapi_bytes().expect("served contract"))
+                .expect("valid JSON");
+        let paths = document["paths"].as_object().expect("paths");
+        assert!(
+            paths.keys().all(|path| !path.starts_with("/api/v1/push/")),
+            "the default build must not advertise push routes"
+        );
+        assert!(
+            paths.contains_key("/api/v1/enrollment"),
+            "non-push routes stay advertised"
+        );
+    }
+
+    #[cfg(feature = "push")]
+    #[test]
+    fn a_push_build_serves_the_full_contract() {
+        let document: serde_json::Value =
+            serde_json::from_slice(&served_openapi_bytes().expect("served contract"))
+                .expect("valid JSON");
+        assert!(
+            document["paths"]
+                .as_object()
+                .expect("paths")
+                .contains_key("/api/v1/push/subscriptions")
+        );
     }
 }

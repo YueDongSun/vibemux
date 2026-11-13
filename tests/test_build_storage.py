@@ -314,3 +314,122 @@ def test_plan_clean_skips_active_lease(tmp_path: Path) -> None:
         lease.release()
     assert plan["entries"] == []
     assert plan["skipped"] == [{"slot": "core", "reason": "active_lease"}]
+
+
+def test_retained_target_paths_are_excluded_from_cleanup(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    retained = layout.target_dir("kept")
+    retained.mkdir(parents=True)
+    build_storage._ensure_owner(
+        layout, "kept", "task-a", adopt_unknown=False, retained=[], note=""
+    )
+    (retained / "evidence.json").write_bytes(b"evidence")
+
+    # A later registration retains a path under target/; the plan and the
+    # re-verified apply both refuse to delete the slot's target.
+    build_storage._ensure_owner(
+        layout,
+        "kept",
+        "task-b",
+        adopt_unknown=False,
+        retained=["target/evidence"],
+        note="",
+    )
+    plan = build_storage.plan_clean(layout, task_id="task-b", slots=[])
+    assert plan["entries"] == []
+    assert {entry["slot"]: entry["reason"] for entry in plan["skipped"]} == {
+        "kept": "target_retained"
+    }
+
+    plan_path = tmp_path / "stale-plan.json"
+    entries = [
+        {
+            "slot": "kept",
+            "path": str(retained),
+            "logical_bytes": 8,
+            "allocated_bytes": 8,
+            "reason": "idle task-owned reproducible target",
+        }
+    ]
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema_version": build_storage.SCHEMA_VERSION,
+                "task_id": "task-b",
+                "entries": entries,
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = build_storage.apply_clean(layout, plan_path, task_id="task-b")
+    assert report["results"][0]["status"] == "skipped"
+    assert report["results"][0]["reason"] == "target_retained"
+    assert (retained / "evidence.json").exists()
+
+
+def test_budget_enforcement_falls_back_to_logical_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = _layout(tmp_path)
+    script = (
+        "import os, pathlib, time\n"
+        "target = pathlib.Path(os.environ['CARGO_TARGET_DIR'])\n"
+        "target.mkdir(parents=True, exist_ok=True)\n"
+        "(target / 'blob').write_bytes(b'x' * (2 * 1024 * 1024))\n"
+        "time.sleep(30)\n"
+    )
+    real_directory_size = build_storage._directory_size
+
+    def logical_only(path: Path) -> build_storage.DirectorySize:
+        size = real_directory_size(path)
+        return build_storage.DirectorySize(size.logical_bytes, None)
+
+    monkeypatch.setattr(build_storage, "_directory_size", logical_only)
+    code, measurement = build_storage.run_managed(
+        layout,
+        slot="core",
+        task_id="task-a",
+        command=[sys.executable, "-c", script],
+        cwd=tmp_path,
+        budget_bytes=1024 * 1024,
+        reserve_bytes=0,
+        max_active=1,
+        lease_timeout=0.1,
+        poll_seconds=0.02,
+        allow_incremental=False,
+        adopt_unknown=False,
+        retained=[],
+        note="",
+    )
+    assert code == build_storage.EXIT_RESOURCE_EXHAUSTED
+    assert measurement["stop_reason"] == "budget_exceeded"
+    assert measurement["after"]["allocated_bytes"] is None
+
+
+def test_budget_crossing_after_exit_keeps_the_child_outcome(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    script = (
+        "import os, pathlib\n"
+        "target = pathlib.Path(os.environ['CARGO_TARGET_DIR'])\n"
+        "target.mkdir(parents=True, exist_ok=True)\n"
+        "(target / 'blob').write_bytes(b'x' * (4 * 1024 * 1024))\n"
+    )
+    code, measurement = build_storage.run_managed(
+        layout,
+        slot="core",
+        task_id="task-a",
+        command=[sys.executable, "-c", script],
+        cwd=tmp_path,
+        budget_bytes=1024 * 1024,
+        reserve_bytes=0,
+        max_active=1,
+        lease_timeout=0.1,
+        poll_seconds=5.0,
+        allow_incremental=False,
+        adopt_unknown=False,
+        retained=[],
+        note="",
+    )
+    assert code == 0
+    assert measurement["status"] == "succeeded"
+    assert measurement["stop_reason"] == "budget_exceeded_after_exit"

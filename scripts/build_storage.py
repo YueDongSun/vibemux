@@ -372,8 +372,17 @@ def _ensure_owner(
             )
             _write_owner(layout, owner)
             return owner
+        changed = False
         if task_id not in owner.tasks:
             owner.tasks.append(task_id)
+            changed = True
+        # A later registration may retain more; never shrink the recorded
+        # retention.
+        additions = [entry for entry in retained if entry and entry not in owner.retained]
+        if additions:
+            owner.retained = [*owner.retained, *additions]
+            changed = True
+        if changed:
             _write_owner(layout, owner)
         return owner
     finally:
@@ -423,6 +432,15 @@ def _directory_size(path: Path) -> DirectorySize:
 
 def _free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
+
+
+def _enforced_bytes(size: DirectorySize) -> int:
+    # st_blocks is Unix-only; on Windows (and any filesystem that does not
+    # report it) allocated_bytes is None and the budget compares logical
+    # bytes instead of being silently inert.
+    if size.allocated_bytes is not None:
+        return size.allocated_bytes
+    return size.logical_bytes
 
 
 def _slot_report(layout: Layout, slot: str) -> dict[str, Any]:
@@ -591,8 +609,8 @@ def run_managed(
             "reserve_breached",
             f"{free_before} bytes free is below the {reserve_bytes}-byte reserve",
         )
-    existing = before_size.allocated_bytes
-    if existing is not None and existing > budget_bytes:
+    existing = _enforced_bytes(before_size)
+    if existing > budget_bytes:
         raise StorageError(
             "budget_already_exceeded",
             f"slot already holds {existing} bytes, above the {budget_bytes}-byte budget",
@@ -660,20 +678,25 @@ def run_managed(
             ):
                 peak = current
             free_now = _free_bytes(layout.state_root)
-            allocated = current.allocated_bytes
-            if allocated is not None and allocated > budget_bytes:
+            enforced = _enforced_bytes(current)
+            if enforced > budget_bytes:
                 stop_reason = "budget_exceeded"
             elif free_now < reserve_bytes:
                 stop_reason = "reserve_breached"
-            if stop_reason is not None:
+            if stop_reason is not None and code is None:
                 _terminate_tree(process)
                 process.wait()
                 status = "resource_exhausted"
                 exit_code = EXIT_RESOURCE_EXHAUSTED
                 break
             if code is not None:
+                # A child that already exited in the interval where the
+                # budget or reserve was crossed keeps its real outcome; the
+                # measurement records the crossing without claiming a stop.
                 exit_code = code if code >= 0 else 128 - code
                 status = "succeeded" if code == 0 else "failed"
+                if stop_reason is not None:
+                    stop_reason = f"{stop_reason}_after_exit"
                 break
             time.sleep(max(0.05, poll_seconds))
     finally:
@@ -720,6 +743,14 @@ def run_managed(
 # Cleanup
 
 
+def _target_retained(owner: SlotOwner) -> bool:
+    # apply-clean deletes the whole managed target, so any retained entry
+    # at or below target/ protects it.
+    return any(
+        entry == "target" or entry.startswith("target/") for entry in owner.retained if entry
+    )
+
+
 def plan_clean(layout: Layout, *, task_id: str, slots: Sequence[str] | None) -> dict[str, Any]:
     layout.ensure()
     entries: list[dict[str, Any]] = []
@@ -742,8 +773,7 @@ def plan_clean(layout: Layout, *, task_id: str, slots: Sequence[str] | None) -> 
             skipped.append({"slot": slot, "reason": "active_lease"})
             continue
         lease.release()
-        retained = {entry for entry in owner.retained if entry}
-        if "target" in retained:
+        if _target_retained(owner):
             skipped.append({"slot": slot, "reason": "target_retained"})
             continue
         size = _directory_size(target)
@@ -838,6 +868,10 @@ def apply_clean(layout: Layout, plan_path: Path, *, task_id: str) -> dict[str, A
             lease = _slot_lease(layout, slot)
             if not lease.try_acquire():
                 raise StorageError("active_lease", f"{slot} is in active use")
+            # Retention may have changed since the plan was written; the
+            # same exclusion applies under the lease.
+            if _target_retained(owner):
+                raise StorageError("target_retained", f"{slot} retains its target")
             size = _directory_size(path)
             shutil.rmtree(path)
             result.update(

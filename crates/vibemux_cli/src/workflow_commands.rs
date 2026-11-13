@@ -22,7 +22,7 @@ use vibemuxd::{
 
 use crate::{
     CliCommand, DaemonCliError, harness_client, map_control_error,
-    prompt_input::{PromptSource, read_prompt},
+    prompt_input::{PromptReadError, PromptSource, read_prompt},
 };
 
 /// Pages one export reads at most.
@@ -31,8 +31,11 @@ const MAX_EXPORT_PAGES: usize = 4096;
 const MAX_SESSION_PROMPTS: usize = 1024;
 /// File the export writes inside its output directory.
 pub const EXPORT_FILE_NAME: &str = "workflow_export.json";
-/// A planning request document: the 48 KiB request bound plus its envelope.
-const MAX_PLANNING_DOCUMENT_BYTES: usize = 64 * 1024;
+/// A planning request document: the contract's 48 KiB request bound plus
+/// its JSON envelope. The daemon re-bounds the rendered request; this only
+/// keeps the CLI read small.
+const MAX_PLANNING_DOCUMENT_BYTES: usize =
+    vibemuxd::workflow::planning_contract::MAX_PLANNING_REQUEST_BYTES + 4 * 1024;
 /// A planning query document: identity fields only, never the goal text.
 const MAX_PLANNING_QUERY_BYTES: usize = 1024;
 
@@ -161,7 +164,7 @@ pub(crate) fn parse_workflow_arguments(
                 flags.contract = Some(text_value(value)?.to_string());
                 2
             }
-            ("workflow", "start" | "supervisor_start" | "plan", "--request-id")
+            ("workflow", "start" | "supervisor_start", "--request-id")
                 if flags.request_id.is_none() =>
             {
                 flags.request_id = Some(parse_id(text_value(value)?)?);
@@ -456,8 +459,11 @@ async fn read_planning_document(path: &Path, max_bytes: usize) -> Result<Value, 
     };
     let text = read_prompt(source, max_bytes)
         .await
-        .map_err(|error| error.into_cli_error(DaemonCliError::WorkflowGoalInvalid))?;
-    serde_json::from_str(&text).map_err(|_| DaemonCliError::InvalidArguments)
+        .map_err(|error| match error {
+            PromptReadError::Unavailable => DaemonCliError::PlanningDocumentUnavailable,
+            PromptReadError::Invalid => DaemonCliError::PlanningDocumentInvalid,
+        })?;
+    serde_json::from_str(&text).map_err(|_| DaemonCliError::PlanningDocumentInvalid)
 }
 
 /// Reads every prompt of a session; the last one is the next prompt.

@@ -28,3 +28,4 @@ pub mod turns;
 pub(crate) mod verifier_runner;
 
 pub use service::{WorkflowService, WorkflowServiceSettings};
+pub use vibemux_workflow::planning_contract;

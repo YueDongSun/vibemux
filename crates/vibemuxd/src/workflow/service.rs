@@ -376,8 +376,13 @@ impl WorkflowService {
         }
         let policy =
             OperatorPolicy::parse(&policy_bytes).map_err(|_| WorkflowError::PolicyInvalid)?;
+        // Held through the prepare commit: two concurrent empty-spec
+        // requests under one request key must not both reach the compiler
+        // before either record exists. The record pre-check inside
+        // compile_missing_specs turns the second frame into a replay.
+        let mut compiler_permit = None;
         if request.task_specs.is_empty() {
-            let _compiler = self
+            let permit = self
                 .inner
                 .compiler_gate
                 .acquire()
@@ -392,6 +397,7 @@ impl WorkflowService {
                 &policy,
             )
             .await?;
+            compiler_permit = Some(permit);
         }
         let compile_setup = Arc::clone(&setup);
         let workflow_id = workflow_id_for(&request.request_key);
@@ -416,6 +422,14 @@ impl WorkflowService {
         })
         .await
         .map_err(|_| WorkflowError::Internal)??;
+        // The plan file is written before any database commit: a crash in
+        // the commit sequence must never leave an admitted record whose
+        // plan is unreadable. An orphan plan with no record is inert.
+        let state = setup.state.clone();
+        let plan = prepared.plan.clone();
+        tokio::task::spawn_blocking(move || state.write_plan(workflow_id, &plan))
+            .await
+            .map_err(|_| WorkflowError::Internal)??;
         let writer = self.inner.writer.clone();
         let record = prepared.record.clone();
         let contracts = prepared.contracts.clone();
@@ -427,6 +441,9 @@ impl WorkflowService {
             "store_workflow_request_conflict" => WorkflowError::RequestConflict,
             _ => WorkflowError::from(error),
         })?;
+        // The admitted record exists; concurrent compiler frames can now
+        // see it as a replay.
+        drop(compiler_permit);
         // A crash between preparation and this authority admission leaves the
         // workflow readable but unable to execute. Repeated binding is immutable.
         for contract in &prepared.contracts {
@@ -466,11 +483,6 @@ impl WorkflowService {
             )
         })
         .await?;
-        let state = setup.state.clone();
-        let plan = prepared.plan.clone();
-        tokio::task::spawn_blocking(move || state.write_plan(workflow_id, &plan))
-            .await
-            .map_err(|_| WorkflowError::Internal)??;
         let start_contract = start_binding(&commit.record, &prepared.plan)?;
         Ok(PrepareResponse {
             workflow_id,
@@ -983,9 +995,13 @@ impl WorkflowService {
     /// The planning entrypoint (ADR 031 planning contract): compile a goal
     /// through a pinned profile into a workflow through the normal prepare
     /// and start gates, and answer the content-free planning observation.
-    /// A repeated identical request replays the same workflow; a changed
-    /// goal under the same request UUID is refused, and no second compiler
-    /// call is made on replay.
+    /// A repeated identical request is answered read-only from the admitted
+    /// record — no second compiler call, no resume of a paused workflow, no
+    /// error after a terminal phase; only a never-started `prepared`
+    /// workflow may still start (an admission interrupted between prepare
+    /// and start completes its intended effect). A changed goal or profile
+    /// binding under the same request UUID, and a prepare-only replay of a
+    /// request that already executed, are refused.
     pub async fn plan_request(
         &self,
         request: serde_json::Value,
@@ -996,16 +1012,10 @@ impl WorkflowService {
             .validate()
             .map_err(|_| WorkflowError::PlanningRequestInvalid)?;
         let setup = self.inner.setup()?;
-        let profile = setup
-            .config
-            .config
-            .planning_profiles
-            .iter()
-            .find(|profile| profile.profile_id.as_str() == planning.profile_id)
-            .ok_or(WorkflowError::PlanningProfileUnknown)?;
-        if planning.profile_digest != profile.digest(setup.config.digest)?.to_hex() {
-            return Err(WorkflowError::PlanningProfileMismatch);
-        }
+        let profile = planning_profile(&setup, &planning.profile_id, &planning.profile_digest)?;
+        // `allow_execution` gates autonomous execution by this entrypoint;
+        // the operator's explicit `workflow start` with the returned
+        // contract remains the operator's own authority.
         if planning.execute && !profile.allow_execution {
             return Err(WorkflowError::PlanningExecutionRefused);
         }
@@ -1033,31 +1043,79 @@ impl WorkflowService {
             "assignments": assignments,
             "reviewer_slot": profile.reviewer_slot.to_string(),
         });
-        let prepared = self.prepare(request_json, profile.policy.clone()).await?;
-        let mut workflow = PlanningWorkflowRef {
-            workflow_id: prepared.workflow_id,
-            start_contract: prepared.start_contract.to_hex(),
-            phase: prepared.phase.as_str().to_string(),
-            version: PLANNING_CONTRACT_SCHEMA_VERSION,
+        // The rendered workflow request carries the goal inside its JSON
+        // envelope; refuse what the workflow request bound cannot hold
+        // before any compile or state change.
+        if serde_json::to_vec(&request_json)
+            .map_err(|_| WorkflowError::Internal)?
+            .len()
+            > super::request::MAX_WORKFLOW_REQUEST_BYTES
+        {
+            return Err(WorkflowError::PlanningRequestTooLarge);
+        }
+        let workflow_id =
+            super::turns::workflow_id_for(&planning_contract::request_key(planning.request_id));
+        let lookup = self.inner.writer.clone();
+        if let Some(record) = call_writer(move || lookup.workflow_record(workflow_id)).await? {
+            // Replay: verify the admitted workflow is exactly this
+            // profile's request, then answer from the record alone.
+            let plan = read_planning_plan(&setup, workflow_id).await?;
+            verify_planning_identity(profile, &planning.content_sha256(), &record, &plan)?;
+            let started = record.phase != WorkflowPhase::Prepared;
+            if started && !planning.execute {
+                return Err(WorkflowError::RequestConflict);
+            }
+            let start_contract = start_binding(&record, &plan)?;
+            if planning.execute && !started && record.phase == WorkflowPhase::Prepared {
+                self.start_workflow(start_contract, planning.request_id)
+                    .await?;
+            }
+            let record = self.record_for(workflow_id).await?;
+            let workflow = planning_workflow_ref(workflow_id, start_contract, &record)?;
+            return planning_observation_of(
+                planning.request_id,
+                &planning.profile_id,
+                &planning.profile_digest,
+                &planning.content_sha256(),
+                planning.execute,
+                workflow,
+            );
+        }
+        // First admission through the normal prepare/start gates.
+        let prepared = match self.prepare(request_json, profile.policy.clone()).await {
+            Ok(prepared) => prepared,
+            Err(WorkflowError::ContractRejected { .. }) => {
+                // The compiled candidates failed deterministic revalidation.
+                // The observation answers `rejected` rather than an error,
+                // so a lost submit stays recoverable and never wedges the
+                // consumer on an unadmitted workflow.
+                let observation =
+                    PlanningObservation::for_request(&planning, PlanningStatus::Rejected, None);
+                return serde_json::to_value(observation).map_err(|_| WorkflowError::Internal);
+            }
+            Err(error) => return Err(error),
         };
         if planning.execute {
-            let started = self
-                .start_workflow(prepared.start_contract, planning.request_id)
+            self.start_workflow(prepared.start_contract, planning.request_id)
                 .await?;
-            workflow.phase = started.phase.as_str().to_string();
         }
-        let observation =
-            PlanningObservation::for_request(&planning, PlanningStatus::Prepared, Some(workflow));
-        observation
-            .validate_against(&planning)
-            .map_err(|_| WorkflowError::Internal)?;
-        serde_json::to_value(observation).map_err(|_| WorkflowError::Internal)
+        let record = self.record_for(workflow_id).await?;
+        let workflow = planning_workflow_ref(workflow_id, prepared.start_contract, &record)?;
+        planning_observation_of(
+            planning.request_id,
+            &planning.profile_id,
+            &planning.profile_digest,
+            &planning.content_sha256(),
+            planning.execute,
+            workflow,
+        )
     }
 
     /// The digest-bound planning query (ADR 031 planning contract): recover
     /// the observation of an already-submitted request without resending
     /// the goal text. An unknown request answers `not_observed`; a query
-    /// whose content digest disagrees with the admitted plan is refused.
+    /// whose content digest or profile binding disagrees with the admitted
+    /// workflow is refused.
     pub async fn planning_observation(
         &self,
         query: PlanningQuery,
@@ -1066,62 +1124,42 @@ impl WorkflowService {
             .validate()
             .map_err(|_| WorkflowError::PlanningRequestInvalid)?;
         let setup = self.inner.setup()?;
-        let profile = setup
-            .config
-            .config
-            .planning_profiles
-            .iter()
-            .find(|profile| profile.profile_id.as_str() == query.profile_id)
-            .ok_or(WorkflowError::PlanningProfileUnknown)?;
-        if query.profile_digest != profile.digest(setup.config.digest)?.to_hex() {
-            return Err(WorkflowError::PlanningProfileMismatch);
-        }
+        let profile = planning_profile(&setup, &query.profile_id, &query.profile_digest)?;
         let workflow_id =
             super::turns::workflow_id_for(&planning_contract::request_key(query.request_id));
         let lookup = self.inner.writer.clone();
         let Some(record) = call_writer(move || lookup.workflow_record(workflow_id)).await? else {
-            let observation = PlanningObservation {
-                schema_version: PLANNING_CONTRACT_SCHEMA_VERSION,
-                request_id: query.request_id,
-                profile_id: query.profile_id.clone(),
-                profile_digest: query.profile_digest.clone(),
-                request_sha256: query.request_sha256.clone(),
-                execute: query.execute,
-                status: PlanningStatus::NotObserved,
-                retry_allowed: false,
-                workflow: None,
-                execution: None,
-            };
+            let observation =
+                PlanningObservation::for_query(&query, PlanningStatus::NotObserved, None);
             return serde_json::to_value(observation).map_err(|_| WorkflowError::Internal);
         };
-        let state = setup.state.clone();
-        let plan = tokio::task::spawn_blocking(move || state.read_plan(workflow_id))
-            .await
-            .map_err(|_| WorkflowError::Internal)??;
-        let expected = Sha256Digest::from_hex(&query.request_sha256)
-            .ok_or(WorkflowError::PlanningRequestInvalid)?;
-        if plan.request_sha256 != expected {
+        let plan = read_planning_plan(&setup, workflow_id).await?;
+        verify_planning_identity(profile, &query.request_sha256, &record, &plan)?;
+        let started = record.phase != WorkflowPhase::Prepared;
+        if started && !query.execute {
             return Err(WorkflowError::RequestConflict);
         }
         let start_contract = start_binding(&record, &plan)?;
-        let observation = PlanningObservation {
-            schema_version: PLANNING_CONTRACT_SCHEMA_VERSION,
-            request_id: query.request_id,
-            profile_id: query.profile_id.clone(),
-            profile_digest: query.profile_digest.clone(),
-            request_sha256: query.request_sha256.clone(),
-            execute: query.execute,
-            status: PlanningStatus::Prepared,
-            retry_allowed: false,
-            workflow: Some(PlanningWorkflowRef {
-                workflow_id,
-                start_contract: start_contract.to_hex(),
-                phase: record.phase.as_str().to_string(),
-                version: PLANNING_CONTRACT_SCHEMA_VERSION,
-            }),
-            execution: None,
-        };
-        serde_json::to_value(observation).map_err(|_| WorkflowError::Internal)
+        let workflow = planning_workflow_ref(workflow_id, start_contract, &record)?;
+        planning_observation_of(
+            query.request_id,
+            &query.profile_id,
+            &query.profile_digest,
+            &query.request_sha256,
+            query.execute,
+            workflow,
+        )
+    }
+
+    /// The admitted record behind a planning request, or why it is absent.
+    async fn record_for(
+        &self,
+        workflow_id: Uuid,
+    ) -> Result<vibemux_workflow::workflow_record::WorkflowRecord, WorkflowError> {
+        let lookup = self.inner.writer.clone();
+        call_writer(move || lookup.workflow_record(workflow_id))
+            .await?
+            .ok_or(WorkflowError::NotFound)
     }
 
     /// Content-free status of one workflow.
@@ -1717,4 +1755,112 @@ fn next_prompt(
         Ok(prompt) => (Some(prompt.text), None),
         Err(_) => (None, Some("render_failed")),
     }
+}
+
+/// The pinned profile behind a planning profile id and digest.
+fn planning_profile<'a>(
+    setup: &'a Arc<WorkflowSetup>,
+    profile_id: &str,
+    profile_digest: &str,
+) -> Result<&'a super::settings::PlanningProfileConfig, WorkflowError> {
+    let profile = setup
+        .config
+        .config
+        .planning_profiles
+        .iter()
+        .find(|profile| profile.profile_id.as_str() == profile_id)
+        .ok_or(WorkflowError::PlanningProfileUnknown)?;
+    if profile_digest != profile.digest(setup.config.digest)?.to_hex() {
+        return Err(WorkflowError::PlanningProfileMismatch);
+    }
+    Ok(profile)
+}
+
+/// Digest of the operator policy a planning profile pins.
+fn profile_policy_digest(
+    profile: &super::settings::PlanningProfileConfig,
+) -> Result<Sha256Digest, WorkflowError> {
+    let bytes = serde_json::to_vec(&profile.policy).map_err(|_| WorkflowError::ConfigInvalid)?;
+    OperatorPolicy::parse(&bytes)
+        .map_err(|_| WorkflowError::ConfigInvalid)?
+        .digest()
+        .map_err(|_| WorkflowError::PolicyInvalid)
+}
+
+/// An admitted workflow is exactly this profile's request: the content
+/// hash, workflow key, mode, reviewer, assignments, and pinned policy all
+/// bind. A cross-profile query, a changed goal, or a forged request key
+/// under the same UUID is refused instead of served.
+fn verify_planning_identity(
+    profile: &super::settings::PlanningProfileConfig,
+    request_sha256: &str,
+    record: &vibemux_workflow::workflow_record::WorkflowRecord,
+    plan: &super::prepare::WorkflowPlan,
+) -> Result<(), WorkflowError> {
+    let expected =
+        Sha256Digest::from_hex(request_sha256).ok_or(WorkflowError::PlanningRequestInvalid)?;
+    let assignments_match = plan.assignments.len() == profile.task_assignments.len()
+        && profile.task_assignments.iter().all(|assignment| {
+            plan.assignments
+                .get(&assignment.task_key)
+                .is_some_and(|slots| slots == &assignment.slots)
+        });
+    if plan.request_sha256 == expected
+        && record.workflow_key == profile.workflow_key
+        && record.mode == profile.mode
+        && plan.reviewer_slot == profile.reviewer_slot
+        && record.policy_digest == profile_policy_digest(profile)?
+        && assignments_match
+    {
+        Ok(())
+    } else {
+        Err(WorkflowError::RequestConflict)
+    }
+}
+
+/// The plan of a planning-originated workflow, read off the async runtime.
+async fn read_planning_plan(
+    setup: &Arc<WorkflowSetup>,
+    workflow_id: Uuid,
+) -> Result<super::prepare::WorkflowPlan, WorkflowError> {
+    let state = setup.state.clone();
+    tokio::task::spawn_blocking(move || state.read_plan(workflow_id))
+        .await
+        .map_err(|_| WorkflowError::Internal)?
+}
+
+fn planning_workflow_ref(
+    workflow_id: Uuid,
+    start_contract: Sha256Digest,
+    record: &vibemux_workflow::workflow_record::WorkflowRecord,
+) -> Result<PlanningWorkflowRef, WorkflowError> {
+    Ok(PlanningWorkflowRef {
+        workflow_id,
+        start_contract: start_contract.to_hex(),
+        phase: record.phase.as_str().to_string(),
+        version: u32::try_from(record.version).map_err(|_| WorkflowError::Internal)?,
+    })
+}
+
+fn planning_observation_of(
+    request_id: Uuid,
+    profile_id: &str,
+    profile_digest: &str,
+    request_sha256: &str,
+    execute: bool,
+    workflow: PlanningWorkflowRef,
+) -> Result<serde_json::Value, WorkflowError> {
+    let observation = PlanningObservation {
+        schema_version: PLANNING_CONTRACT_SCHEMA_VERSION,
+        request_id,
+        profile_id: profile_id.to_string(),
+        profile_digest: profile_digest.to_string(),
+        request_sha256: request_sha256.to_string(),
+        execute,
+        status: PlanningStatus::Prepared,
+        retry_allowed: false,
+        workflow: Some(workflow),
+        execution: None,
+    };
+    serde_json::to_value(observation).map_err(|_| WorkflowError::Internal)
 }

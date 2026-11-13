@@ -126,14 +126,18 @@ INSERT INTO schema_migrations(version,applied_at) VALUES(14,strftime('%Y-%m-%dT%
 "#;
 
 /// PR #52's worker report table, renumbered to the unified version 15.
+/// Idempotent: a crash between the reports-10 reconciliation's chat-V10
+/// commit and the marker-15 commit leaves the objects present with marker
+/// 10, so the reopen reclassifies as chat-10 and replays this step; plain
+/// CREATE would then brick every later open with "table already exists".
 pub(crate) const MIGRATION_V15_REPORTS: &str = r#"
-CREATE TABLE workflow_worker_reports (
+CREATE TABLE IF NOT EXISTS workflow_worker_reports (
     request_id TEXT PRIMARY KEY REFERENCES workflow_attempts(request_id),
     workflow_id TEXT NOT NULL REFERENCES workflows(workflow_id),
     record_json TEXT NOT NULL,
     created_sequence INTEGER NOT NULL UNIQUE REFERENCES events(sequence)
 );
-CREATE INDEX workflow_worker_reports_page ON workflow_worker_reports(workflow_id, created_sequence);
+CREATE INDEX IF NOT EXISTS workflow_worker_reports_page ON workflow_worker_reports(workflow_id, created_sequence);
 INSERT INTO schema_migrations(version, applied_at)
 VALUES (15, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#;

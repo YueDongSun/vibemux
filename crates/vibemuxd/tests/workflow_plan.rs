@@ -154,10 +154,53 @@ fn planning_profile() -> Value {
     })
 }
 
-fn planning_request(digest: &str, request_id: Uuid, goal: &str, execute: bool) -> Value {
+/// A second valid profile: same slots and suites, different workflow key
+/// and policy, so a request UUID cannot be observed across profiles.
+fn other_profile() -> Value {
+    let mut policy = policy(&STORE_SUITE, 2, false);
+    policy["policy_version"] = json!("fixture_policy_v2");
+    json!({
+        "profile_id": "fixture_other",
+        "workflow_key": "taskboard_other",
+        "mode": "cooperate",
+        "worker_slots": ["slot_a"],
+        "reviewer_slot": "review",
+        "integration_suites": ["store"],
+        "task_assignments": [{"task_key": "store", "slots": ["slot_a"]}],
+        "policy": policy,
+        "max_tasks": 1,
+        "allow_execution": true,
+        "fixture": true,
+    })
+}
+
+/// A profile whose autonomous execution is refused.
+fn frozen_profile() -> Value {
+    json!({
+        "profile_id": "fixture_frozen",
+        "workflow_key": "taskboard_lite",
+        "mode": "cooperate",
+        "worker_slots": ["slot_a"],
+        "reviewer_slot": "review",
+        "integration_suites": ["store"],
+        "task_assignments": [{"task_key": "store", "slots": ["slot_a"]}],
+        "policy": policy(&STORE_SUITE, 2, false),
+        "max_tasks": 1,
+        "allow_execution": false,
+        "fixture": true,
+    })
+}
+
+fn planning_request(
+    profile_id: &str,
+    digest: &str,
+    request_id: Uuid,
+    goal: &str,
+    execute: bool,
+) -> Value {
     json!({
         "schema_version": 1,
-        "profile_id": "fixture_store",
+        "profile_id": profile_id,
         "profile_digest": digest,
         "request_id": request_id,
         "request_text": goal,
@@ -167,33 +210,39 @@ fn planning_request(digest: &str, request_id: Uuid, goal: &str, execute: bool) -
 
 /// The digest-bound recovery query the Hub sends after a lost submit reply;
 /// it never carries the goal text.
-fn planning_query(digest: &str, request_id: Uuid, goal: &str) -> Value {
+fn planning_query(
+    profile_id: &str,
+    digest: &str,
+    request_id: Uuid,
+    goal: &str,
+    execute: bool,
+) -> Value {
     json!({
         "schema_version": 1,
-        "profile_id": "fixture_store",
+        "profile_id": profile_id,
         "profile_digest": digest,
         "request_id": request_id,
         "request_sha256": vibemux_workflow::planning_contract::request_sha256(goal),
-        "execute": true,
+        "execute": execute,
     })
 }
 
-async fn catalog_digest(client: &ControlClient) -> String {
+async fn catalog_digest(client: &ControlClient, profile_id: &str) -> String {
     let catalog = client.workflow_planning_profiles().await.expect("catalog");
     catalog["profiles"]
         .as_array()
         .expect("profiles")
         .iter()
-        .find(|entry| entry["profile_id"] == "fixture_store")
+        .find(|entry| entry["profile_id"] == profile_id)
         .and_then(|entry| entry["profile_digest"].as_str())
-        .expect("profile digest")
+        .unwrap_or_else(|| panic!("profile digest for {profile_id}"))
         .to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
     let mut fixture = WorkflowFixture::start(FixtureOptions {
-        planning_profiles: vec![planning_profile()],
+        planning_profiles: vec![planning_profile(), other_profile(), frozen_profile()],
         ..FixtureOptions::default()
     })
     .await;
@@ -243,11 +292,17 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
         "store/review": review_pass(),
     }}));
 
-    let digest = catalog_digest(&client).await;
+    let digest = catalog_digest(&client, "fixture_store").await;
     let request_id = Uuid::new_v4();
 
     let planned = client
-        .workflow_plan_request(planning_request(&digest, request_id, &goal, true))
+        .workflow_plan_request(planning_request(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            true,
+        ))
         .await
         .expect("plan through the pinned profile");
     assert_eq!(planned["schema_version"], json!(1));
@@ -276,7 +331,13 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
     // The lost-submit replay: the same request returns the same workflow
     // and never calls the compiler again.
     let replay = client
-        .workflow_plan_request(planning_request(&digest, request_id, &goal, true))
+        .workflow_plan_request(planning_request(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            true,
+        ))
         .await
         .expect("replay");
     assert_eq!(
@@ -306,7 +367,13 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
     // The digest-bound recovery query returns the same observation without
     // the goal text, and an unknown request answers not_observed.
     let recovered = client
-        .workflow_planning_observation(planning_query(&digest, request_id, &goal))
+        .workflow_planning_observation(planning_query(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            true,
+        ))
         .await
         .expect("recovery query");
     assert_eq!(recovered["status"], json!("prepared"));
@@ -321,7 +388,13 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
     assert!(recovered["execution"].is_null());
     assert!(!recovered.to_string().contains(&goal));
     let unknown = client
-        .workflow_planning_observation(planning_query(&digest, Uuid::new_v4(), &goal))
+        .workflow_planning_observation(planning_query(
+            "fixture_store",
+            &digest,
+            Uuid::new_v4(),
+            &goal,
+            true,
+        ))
         .await
         .expect("unknown query");
     assert_eq!(unknown["status"], json!("not_observed"));
@@ -343,6 +416,7 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
     // A changed goal under the same request UUID is refused.
     let changed = client
         .workflow_plan_request(planning_request(
+            "fixture_store",
             &digest,
             request_id,
             &format!("{goal} Also add an export button."),
@@ -352,9 +426,65 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
         .expect_err("a changed goal must not replay");
     assert_eq!(changed.code(), "workflow_request_conflict");
 
+    // A replay after a terminal phase is answered from the record, never
+    // an InvalidPhase error, and reports the advancing record version.
+    let terminal = client
+        .workflow_plan_request(planning_request(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            true,
+        ))
+        .await
+        .expect("terminal replay");
+    assert_eq!(
+        terminal["workflow"]["workflow_id"],
+        json!(workflow_id.to_string())
+    );
+    assert_eq!(terminal["workflow"]["phase"], json!("accepted"));
+    assert!(
+        terminal["workflow"]["version"].as_u64().expect("version") > 1,
+        "the observation must carry the record version, not a constant"
+    );
+    assert_eq!(gateway.calls().len(), 1, "no further compiler calls");
+
+    // A prepare-only replay of a request that already executed is an
+    // identity mismatch, on both the submit and the recovery query.
+    for refused in [
+        client
+            .workflow_plan_request(planning_request(
+                "fixture_store",
+                &digest,
+                request_id,
+                &goal,
+                false,
+            ))
+            .await
+            .err(),
+        client
+            .workflow_planning_observation(planning_query(
+                "fixture_store",
+                &digest,
+                request_id,
+                &goal,
+                false,
+            ))
+            .await
+            .err(),
+    ] {
+        assert_eq!(
+            refused
+                .expect("prepare-only replay of an executed request")
+                .code(),
+            "workflow_request_conflict"
+        );
+    }
+
     // A stale profile digest is refused before any prepare.
     let stale = client
         .workflow_plan_request(planning_request(
+            "fixture_store",
             &"a".repeat(64),
             Uuid::new_v4(),
             &goal,
@@ -364,6 +494,192 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
         .expect_err("a stale digest must not plan");
     assert_eq!(stale.code(), "workflow_planning_profile_mismatch");
     assert_eq!(gateway.calls().len(), 1, "no further compiler calls");
+
+    server.shutdown().await.expect("model daemon shutdown");
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn planning_refusals_and_prepare_only_admission() {
+    let mut fixture = WorkflowFixture::start(FixtureOptions {
+        planning_profiles: vec![planning_profile(), other_profile(), frozen_profile()],
+        ..FixtureOptions::default()
+    })
+    .await;
+    fixture.stop_server_for_test().await;
+    let seed = store_request(
+        "plan_refusal_seed",
+        &fixture.head,
+        "cooperate",
+        &store_task(&STORE_SUITE),
+        false,
+    );
+    let goal = seed["request_text"]
+        .as_str()
+        .expect("goal text")
+        .to_string();
+    let candidate = seed["task_specs"][0].clone();
+    let compiler_output =
+        serde_json::to_string(&json!({"task_specs": [candidate]})).expect("compiler JSON");
+    let gateway = FakeAagServer::start(
+        vec![
+            COMPILER_ALIAS.to_string(),
+            WORKER_A_ALIAS.to_string(),
+            WORKER_B_ALIAS.to_string(),
+            REVIEWER_ALIAS.to_string(),
+        ],
+        compiler_output,
+    )
+    .await;
+    install_gateway_config(&fixture, &gateway_config(gateway.origin()));
+    let fixture_guard = FixtureLaunchGuard::register_worker_copies(
+        &std::fs::canonicalize(workflow_support::WORKER_FIXTURE).expect("canonical built worker"),
+        &fixture.vendor_dir,
+        &[AgentKind::Codex, AgentKind::Claude],
+    )
+    .expect("registered copies of the built synthetic workers");
+    let factory: Arc<dyn WorkflowModelGatewayFactory> = Arc::new(FixtureGatewayFactory {
+        permit: gateway.permit(),
+    });
+    let (server, client) = start_fixture_daemon(&fixture, fixture_guard, factory).await;
+    fixture.write_script(&json!({"steps": {
+        "store/implement_1": {"write": good_files(&["src/store.mjs"])},
+        "store/review": review_pass(),
+    }}));
+
+    let digest = catalog_digest(&client, "fixture_store").await;
+    let other_digest = catalog_digest(&client, "fixture_other").await;
+    let frozen_digest = catalog_digest(&client, "fixture_frozen").await;
+
+    // Refusal codes the planning contract promises are pinned end to end.
+    let unknown = client
+        .workflow_plan_request(planning_request(
+            "fixture_absent",
+            &digest,
+            Uuid::new_v4(),
+            &goal,
+            false,
+        ))
+        .await
+        .expect_err("unknown profile");
+    assert_eq!(unknown.code(), "workflow_planning_profile_unknown");
+    let invalid = client
+        .workflow_plan_request(json!({
+            "schema_version": 2,
+            "profile_id": "fixture_store",
+            "profile_digest": digest,
+            "request_id": Uuid::new_v4(),
+            "request_text": goal,
+            "execute": false,
+        }))
+        .await
+        .expect_err("unsupported schema");
+    assert_eq!(invalid.code(), "workflow_planning_request_invalid");
+    let oversized = client
+        .workflow_plan_request(planning_request(
+            "fixture_store",
+            &digest,
+            Uuid::new_v4(),
+            &"a".repeat(48 * 1024),
+            false,
+        ))
+        .await
+        .expect_err("a full-bound goal cannot fit the rendered request");
+    assert_eq!(oversized.code(), "workflow_planning_request_too_large");
+    let frozen = client
+        .workflow_plan_request(planning_request(
+            "fixture_frozen",
+            &frozen_digest,
+            Uuid::new_v4(),
+            &goal,
+            true,
+        ))
+        .await
+        .expect_err("autonomous execution is refused");
+    assert_eq!(frozen.code(), "workflow_planning_execution_refused");
+    assert!(gateway.calls().is_empty(), "refusals precede any compile");
+
+    // A prepare-only admission compiles once and reports a prepared
+    // workflow; its observation stays prepare-only.
+    let request_id = Uuid::new_v4();
+    let prepared_only = client
+        .workflow_plan_request(planning_request(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            false,
+        ))
+        .await
+        .expect("prepare-only plan");
+    assert_eq!(prepared_only["status"], json!("prepared"));
+    assert_eq!(prepared_only["execute"], json!(false));
+    assert_eq!(prepared_only["workflow"]["phase"], json!("prepared"));
+    let workflow_id: Uuid = prepared_only["workflow"]["workflow_id"]
+        .as_str()
+        .and_then(|text| text.parse().ok())
+        .expect("workflow id");
+    let observed = client
+        .workflow_planning_observation(planning_query(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            false,
+        ))
+        .await
+        .expect("prepare-only observation");
+    assert_eq!(observed["workflow"]["phase"], json!("prepared"));
+
+    // The same request UUID cannot be observed through a different
+    // profile, even with the same goal.
+    let cross = client
+        .workflow_planning_observation(planning_query(
+            "fixture_other",
+            &other_digest,
+            request_id,
+            &goal,
+            false,
+        ))
+        .await
+        .expect_err("cross-profile observation");
+    assert_eq!(cross.code(), "workflow_request_conflict");
+
+    // Resubmitting with execute completes the interrupted admission: the
+    // prepared workflow starts and runs to acceptance.
+    let upgraded = client
+        .workflow_plan_request(planning_request(
+            "fixture_store",
+            &digest,
+            request_id,
+            &goal,
+            true,
+        ))
+        .await
+        .expect("execute upgrade of the prepared workflow");
+    assert_eq!(
+        upgraded["workflow"]["workflow_id"],
+        json!(workflow_id.to_string())
+    );
+    assert_eq!(
+        gateway.calls().len(),
+        1,
+        "no second compile for the upgrade"
+    );
+    let mut accepted = false;
+    for _ in 0..600 {
+        let status = client.workflow_status(workflow_id).await.expect("status");
+        if matches!(
+            status["phase"].as_str(),
+            Some("accepted" | "failed" | "blocked" | "cancelled")
+        ) {
+            assert_eq!(status["phase"], json!("accepted"), "{status:#}");
+            accepted = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(accepted, "upgraded workflow did not settle in time");
 
     server.shutdown().await.expect("model daemon shutdown");
     fixture.shutdown().await;

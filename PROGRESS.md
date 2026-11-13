@@ -8186,3 +8186,64 @@ retained in the task's local validation artifact.
   and stdin shapes this daemon now serves.
 - Still not implemented: the live model-compiler admission (BoundReceiptV2)
   and a live Hub-to-daemon run; C02/C03 keep those conditions.
+
+### 2026-11-14 — Pre-push review repairs across the branch
+
+Four independent review passes (planning slice, earlier integration
+commits, Hub consumer, and a follow-up sweep) confirmed twelve defects;
+all fixed with regression coverage before any push.
+
+- **Store (HIGH):** an interrupted reports-10 reconciliation (crash between
+  the chat-V10 commit and the marker-15 commit) left objects with marker 10,
+  reclassified as chat-10 on reopen, and the plain `CREATE TABLE
+  workflow_worker_reports` in step 15 then failed on every later open.
+  Step 15 is now idempotent (`IF NOT EXISTS`) and a lineage test replays the
+  interrupted state to a self-healed current schema.
+- **Planning replay (HIGH cluster):** replay after a terminal phase failed
+  with `workflow_invalid_phase`, replay of a paused workflow resumed it, and
+  replay after any new commit on the canonical branch failed
+  `workflow_base_commit_not_head`. `plan_request` now short-circuits an
+  already-admitted request: identity (content hash, workflow key, mode,
+  reviewer, assignments, pinned policy digest) is verified against the
+  record and plan, and the observation is answered read-only; only a
+  never-started `prepared` workflow may still start, which is also the
+  crash-between-prepare-and-start completion path.
+- **Planning identity:** the recovery query bound only the deterministic
+  workflow id and content hash, so one request UUID could be observed
+  through a different profile and a manually prepared `profile_<uuid>`
+  request key collided. The same identity check now runs on every
+  observation and submit replay.
+- **Execute binding:** `execute` was not part of replay identity and the
+  observation echoed it; a prepare-only replay of an executed request is
+  now refused, and `plan_request` serializes identical empty-spec requests
+  through the compiler gate until the record exists (no concurrent second
+  compiler call). The interrupted-admission window is closed structurally:
+  the plan file is written before any database commit, so an admitted
+  record always has a readable plan.
+- **Contract fidelity:** the observation carries the record's advancing
+  `version` (the Hub's monotonic producer guard was inert against a
+  constant 1), `for_query` replaces the duplicated literals, an
+  over-bound goal answers `workflow_planning_request_too_large` instead of
+  a generic invalid, compiled-candidate rejection answers
+  `status: rejected` (recoverable) instead of a bare error, and the CLI
+  gained coherent planning-document error codes, the contract-tied bound,
+  and its three verbs in `help control`.
+- **Build storage:** `--retain` entries at or below `target/` now exclude a
+  slot's target from plan/apply cleanup (re-verified under the lease, and
+  later registrations merge retention); the budget falls back to logical
+  bytes where the platform reports no `st_blocks` (Windows previously had
+  no budget enforcement and its CI test would fail); a child that exits in
+  the interval where a bound crossed keeps its real outcome with an
+  `_after_exit` stop reason. Three new pytest cases cover these.
+- **MCP:** shutdown retry progress (the successful terminate and the
+  retained process tree) is now written back into the shutdown state in
+  place, so a `shutdown()` future cancelled mid-cleanup resumes instead of
+  permanently reporting `reader_cleanup_failed`.
+- **Web:** a default (non-push) build no longer serves an OpenAPI document
+  advertising the push routes; the document is filtered per feature with
+  ETag/If-None-Match preserved, pinned by tests in both configurations.
+
+Validation: lineage 7/7, build-storage 15/15, MCP 48 targets green, web
+default (23) and push (43) suites, planning integration 2 tests including
+terminal replay, execute mismatch, cross-profile, too-large, frozen, and
+prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
