@@ -177,7 +177,7 @@ vendor output.
 .\target\debug\vibemuxctl.exe tasks list --project-root .
 .\target\debug\vibemuxctl.exe tasks list --limit 5 --after <task_id> --project-root .
 .\target\debug\vibemuxctl.exe tasks show <task_id> --project-root .
-vibemuxctl.exe tasks events <task_id> [--after-sequence <n>] [--limit <n>] --project-root .
+vibemuxctl.exe tasks events <task_id> [--after-sequence <n>] [--limit <limit>] --project-root .
 .\target\debug\vibemuxctl.exe capabilities --project-root .
 .\target\debug\vibemuxctl.exe plugins status --project-root .
 .\target\debug\vibemuxctl.exe terminal inspect <task_id> <run_id> --project-root .

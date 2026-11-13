@@ -175,9 +175,11 @@ fn parse_event_limit(text: &str) -> Result<u32, DaemonCliError> {
 }
 
 fn parse_sequence(text: &str) -> Result<u64, DaemonCliError> {
+    // `0` means "from the beginning"; the daemon keeps every sequence above
+    // the cursor, and a documented `<n>` placeholder resolves to `0`.
     text.parse::<u64>()
         .ok()
-        .filter(|sequence| *sequence > 0)
+        .filter(|sequence| *sequence < u64::MAX)
         .ok_or(DaemonCliError::InvalidArguments)
 }
 
@@ -256,13 +258,13 @@ mod tests {
                 "events",
                 &task_id.to_string(),
                 "--after-sequence",
-                "7",
+                "0",
                 "--limit",
                 "5",
             ]),
             TaskCommand::Events {
                 task_id,
-                after_sequence: Some(7),
+                after_sequence: Some(0),
                 limit: 5,
             }
         );
@@ -297,7 +299,6 @@ mod tests {
             &["events"][..],
             &["events", "not_a_uuid"][..],
             &["events", &nil][..],
-            &["events", &id, "--after-sequence", "0"][..],
             &["events", &id, "--after-sequence", "x"][..],
             &["events", &id, "--after", &id][..],
             &["events", &id, "--limit", "0"][..],
