@@ -69,9 +69,23 @@ impl SchemaLineage {
     }
 
     /// Layouts this binary may open (forward migration or already current).
+    ///
+    /// The reports-10 and chat-10..14 layouts are reconciled into the unified
+    /// schema 15: chat keeps 10-14 and reports move to 15.
     #[must_use]
     pub const fn is_openable(self) -> bool {
-        matches!(self, Self::Empty | Self::LegacyRust | Self::Current)
+        matches!(
+            self,
+            Self::Empty
+                | Self::LegacyRust
+                | Self::Current
+                | Self::ReportsSchema10
+                | Self::ChatSchema10
+                | Self::ChatSchema11
+                | Self::ChatSchema12
+                | Self::ChatSchema13
+                | Self::ChatSchema14
+        )
     }
 }
 
@@ -114,6 +128,18 @@ pub const REQUIRED_CURRENT_TABLES: &[&str] = &[
     "workflow_supervisor_rounds",
     "workflow_supervisor_actions",
     "workflow_contract_edits",
+    "chat_sessions",
+    "chat_turns",
+    "chat_content",
+    "chat_records",
+    "chat_operations",
+    "chat_execution_owners",
+    "chat_execution_attempts",
+    "chat_execution_records",
+    "chat_approvals",
+    "workspace_cleanups",
+    "workspace_cleanup_commands",
+    "workflow_worker_reports",
 ];
 
 /// Partial unique indexes whose absence changes runtime reservation semantics.
@@ -123,6 +149,15 @@ pub const REQUIRED_CURRENT_INDEXES: &[&str] = &[
     "workflow_leases_holding_slot",
     "workflow_leases_holding_worktree",
     "prompt_policy_versions_one_active",
+    "chat_active_turn",
+    "chat_active_resource",
+    "chat_owner_workspace_reservation",
+    "chat_execution_active_attempt",
+    "chat_approval_pending",
+    "workspace_cleanup_resource",
+    "workspace_cleanup_path",
+    "workspace_cleanup_branch",
+    "workflow_worker_reports_page",
 ];
 
 /// Inspect a closed database without writing to it.
@@ -167,25 +202,28 @@ pub fn inspect(connection: &Connection) -> Result<SchemaInspection, StoreError> 
         } else {
             SchemaLineage::Unknown
         }
-    } else if has("chat_sessions") {
-        match found_version {
-            10 => SchemaLineage::ChatSchema10,
-            11 => SchemaLineage::ChatSchema11,
-            12 => SchemaLineage::ChatSchema12,
-            13 => SchemaLineage::ChatSchema13,
-            14 => SchemaLineage::ChatSchema14,
-            _ => SchemaLineage::Unknown,
-        }
-    } else if found_version == 10 && has("workflow_worker_reports") {
-        SchemaLineage::ReportsSchema10
-    } else if found_version > STORE_SCHEMA_VERSION {
-        SchemaLineage::Future
     } else if found_version == STORE_SCHEMA_VERSION {
         if missing_required.is_empty() {
             SchemaLineage::Current
         } else {
             SchemaLineage::Incomplete
         }
+    } else if has("chat_sessions") && (10..=14).contains(&found_version) {
+        match found_version {
+            10 => SchemaLineage::ChatSchema10,
+            11 => SchemaLineage::ChatSchema11,
+            12 => SchemaLineage::ChatSchema12,
+            13 => SchemaLineage::ChatSchema13,
+            _ => SchemaLineage::ChatSchema14,
+        }
+    } else if found_version == 10 && has("workflow_worker_reports") {
+        SchemaLineage::ReportsSchema10
+    } else if found_version > STORE_SCHEMA_VERSION {
+        SchemaLineage::Future
+    } else if found_version >= 10 {
+        // Versions 10-14 belong to the chat family or the reports-10 branch;
+        // a marker in that range without either signature is not recognizable.
+        SchemaLineage::Unknown
     } else if found_version >= 1 {
         SchemaLineage::LegacyRust
     } else {
@@ -206,16 +244,6 @@ pub fn inspect(connection: &Connection) -> Result<SchemaInspection, StoreError> 
 /// opens the database for writing, so a refused file is not modified.
 pub(crate) fn refusal(inspection: &SchemaInspection) -> Option<StoreError> {
     match inspection.lineage {
-        SchemaLineage::ReportsSchema10
-        | SchemaLineage::ChatSchema10
-        | SchemaLineage::ChatSchema11
-        | SchemaLineage::ChatSchema12
-        | SchemaLineage::ChatSchema13
-        | SchemaLineage::ChatSchema14 => Some(StoreError::KnownLineage {
-            lineage: inspection.lineage.as_str(),
-            found: inspection.found_version,
-            supported: STORE_SCHEMA_VERSION,
-        }),
         SchemaLineage::ForeignPython => Some(StoreError::UnsupportedDatabase {
             reason: "events/projections do not match the Rust envelope schema",
         }),
@@ -230,7 +258,15 @@ pub(crate) fn refusal(inspection: &SchemaInspection) -> Option<StoreError> {
         SchemaLineage::Unknown => Some(StoreError::UnsupportedDatabase {
             reason: "unrecognized schema layout",
         }),
-        SchemaLineage::Empty | SchemaLineage::LegacyRust | SchemaLineage::Current => None,
+        SchemaLineage::Empty
+        | SchemaLineage::LegacyRust
+        | SchemaLineage::Current
+        | SchemaLineage::ReportsSchema10
+        | SchemaLineage::ChatSchema10
+        | SchemaLineage::ChatSchema11
+        | SchemaLineage::ChatSchema12
+        | SchemaLineage::ChatSchema13
+        | SchemaLineage::ChatSchema14 => None,
     }
 }
 
@@ -337,13 +373,36 @@ mod tests {
         assert_eq!(count(&path, "schema_migrations"), before);
     }
 
-    #[test]
-    fn reports_schema_ten_is_recognized_and_preserved() {
-        let temp = tempfile::tempdir().expect("temp");
-        let path = temp.path().join("reports.sqlite3");
-        current_database(&path);
+    fn v9_base(path: &Path) {
+        current_database(path);
+        let connection = Connection::open(path).expect("open");
+        connection
+            .execute_batch(
+                "DROP TABLE IF EXISTS workspace_cleanup_commands;
+                 DROP TABLE IF EXISTS workspace_cleanups;
+                 DROP TABLE IF EXISTS chat_approvals;
+                 DROP TABLE IF EXISTS chat_execution_records;
+                 DROP TABLE IF EXISTS chat_execution_attempts;
+                 DROP TABLE IF EXISTS chat_execution_owners;
+                 DROP TABLE IF EXISTS chat_operations;
+                 DROP TABLE IF EXISTS chat_records;
+                 DROP TABLE IF EXISTS chat_content;
+                 DROP TABLE IF EXISTS chat_turns;
+                 DROP TABLE IF EXISTS chat_sessions;
+                 DROP TABLE IF EXISTS workflow_worker_reports;
+                 DELETE FROM schema_migrations WHERE version >= 10;",
+            )
+            .expect("strip to v9");
+        assert_eq!(
+            inspect_database(path).expect("inspect v9").lineage,
+            SchemaLineage::LegacyRust
+        );
+    }
+
+    fn reports_ten(path: &Path) {
+        v9_base(path);
         apply_sql(
-            &path,
+            path,
             r#"
 CREATE TABLE workflow_worker_reports (
     request_id TEXT PRIMARY KEY REFERENCES workflow_attempts(request_id),
@@ -356,102 +415,102 @@ INSERT INTO schema_migrations(version, applied_at)
 VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#,
         );
-        let inspection = inspect_database(&path).expect("inspect");
-        assert_eq!(inspection.lineage, SchemaLineage::ReportsSchema10);
-        let before = fs::read(&path).expect("read before refusal");
-        let error = crate::SqliteStore::open(&path)
-            .err()
-            .expect("known lineage is refused");
-        assert!(matches!(
-            error,
-            StoreError::KnownLineage {
-                lineage: "reports_schema10",
-                found: 10,
-                ..
-            }
-        ));
         assert_eq!(
-            fs::read(&path).expect("read after refusal"),
-            before,
-            "a refused lineage must not modify the database"
+            inspect_database(path).expect("inspect reports").lineage,
+            SchemaLineage::ReportsSchema10
         );
-        assert_eq!(count(&path, "schema_migrations"), 10);
-        assert_eq!(count(&path, "workflow_worker_reports"), 0);
-        assert!(
-            inspect_database(&path).expect("still inspectable").lineage
-                == SchemaLineage::ReportsSchema10
+    }
+
+    fn chat_ten(path: &Path) {
+        v9_base(path);
+        apply_sql(path, crate::chat_migrations::MIGRATION_V10_CHAT_TABLES);
+        apply_sql(
+            path,
+            "INSERT INTO schema_migrations(version, applied_at)
+             VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));",
+        );
+        assert_eq!(
+            inspect_database(path).expect("inspect chat10").lineage,
+            SchemaLineage::ChatSchema10
         );
     }
 
     #[test]
-    fn chat_schema_ten_and_fourteen_are_recognized_and_preserved() {
+    fn reports_schema_ten_is_reconciled_into_the_unified_schema() {
         let temp = tempfile::tempdir().expect("temp");
-        let path = temp.path().join("chat10.sqlite3");
-        current_database(&path);
-        apply_sql(
-            &path,
-            r#"
-CREATE TABLE chat_sessions(
- chat_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, state TEXT NOT NULL,
- generation INTEGER NOT NULL, version INTEGER NOT NULL, resource_key TEXT NOT NULL,
- owner_fence TEXT, record_json TEXT NOT NULL,
- updated_sequence INTEGER NOT NULL REFERENCES events(sequence)
-);
-CREATE TABLE chat_turns(
- request_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES chat_sessions(chat_id),
- turn_id TEXT NOT NULL UNIQUE, task_id TEXT NOT NULL UNIQUE, run_id TEXT NOT NULL UNIQUE,
- generation INTEGER NOT NULL, version INTEGER NOT NULL, phase TEXT NOT NULL,
- resource_key TEXT NOT NULL, send_claimed INTEGER NOT NULL, send_fence TEXT,
- binding_json TEXT NOT NULL, finish_json TEXT, record_json TEXT NOT NULL,
- admitted_sequence INTEGER NOT NULL REFERENCES events(sequence),
- updated_sequence INTEGER NOT NULL REFERENCES events(sequence)
-);
-CREATE TABLE chat_content(blob_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES chat_sessions(chat_id));
-CREATE TABLE chat_records(record_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES chat_sessions(chat_id));
-CREATE TABLE chat_operations(operation_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL REFERENCES chat_sessions(chat_id));
-INSERT INTO schema_migrations(version, applied_at)
-VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-"#,
-        );
-        assert_eq!(
-            inspect_database(&path).expect("inspect").lineage,
-            SchemaLineage::ChatSchema10
-        );
-        let error = crate::SqliteStore::open(&path)
-            .err()
-            .expect("chat lineage is refused");
-        assert!(matches!(
-            error,
-            StoreError::KnownLineage {
-                lineage: "chat_schema10",
-                found: 10,
-                ..
-            }
-        ));
+        let path = temp.path().join("reports.sqlite3");
+        reports_ten(&path);
+        let store = crate::SqliteStore::open(&path).expect("reports-10 opens");
+        drop(store);
+        let inspection = inspect_database(&path).expect("inspect after");
+        assert_eq!(inspection.lineage, SchemaLineage::Current);
+        assert_eq!(inspection.found_version, STORE_SCHEMA_VERSION);
+        assert!(inspection.missing_required.is_empty());
+        // The reports table survived and the chat family was added once.
+        assert_eq!(count(&path, "workflow_worker_reports"), 0);
         assert_eq!(count(&path, "chat_sessions"), 0);
+        assert_eq!(count(&path, "schema_migrations"), 15);
+        crate::SqliteStore::open(&path).expect("reopen is idempotent");
+        assert_eq!(count(&path, "schema_migrations"), 15);
+    }
+
+    #[test]
+    fn chat_schema_ten_and_fourteen_are_upgraded_to_the_unified_schema() {
+        let temp = tempfile::tempdir().expect("temp");
+        let ten = temp.path().join("chat10.sqlite3");
+        chat_ten(&ten);
+        crate::SqliteStore::open(&ten).expect("chat-10 opens");
+        let inspection = inspect_database(&ten).expect("inspect after");
+        assert_eq!(inspection.lineage, SchemaLineage::Current);
+        assert_eq!(inspection.found_version, STORE_SCHEMA_VERSION);
+        assert!(inspection.missing_required.is_empty());
+        assert_eq!(count(&ten, "chat_sessions"), 0);
+        assert_eq!(count(&ten, "workflow_worker_reports"), 0);
 
         let fourteen = temp.path().join("chat14.sqlite3");
-        fs::copy(&path, &fourteen).expect("copy fixture");
-        apply_sql(
-            &fourteen,
-            "INSERT INTO schema_migrations(version, applied_at) VALUES
-             (11,'x'),(12,'x'),(13,'x'),(14,'x');",
+        chat_ten(&fourteen);
+        for migration in [
+            crate::chat_migrations::MIGRATION_V11,
+            crate::chat_migrations::MIGRATION_V12,
+            crate::chat_migrations::MIGRATION_V13,
+            crate::chat_migrations::MIGRATION_V14,
+        ] {
+            apply_sql(&fourteen, migration);
+        }
+        assert_eq!(
+            inspect_database(&fourteen).expect("inspect v14").lineage,
+            SchemaLineage::ChatSchema14
         );
-        let inspection = inspect_database(&fourteen).expect("inspect v14");
-        assert_eq!(inspection.found_version, 14);
-        assert_eq!(inspection.lineage, SchemaLineage::ChatSchema14);
-        let error = crate::SqliteStore::open(&fourteen)
+        crate::SqliteStore::open(&fourteen).expect("chat-14 opens");
+        let inspection = inspect_database(&fourteen).expect("inspect after v14");
+        assert_eq!(inspection.lineage, SchemaLineage::Current);
+        assert_eq!(inspection.found_version, STORE_SCHEMA_VERSION);
+        assert!(inspection.missing_required.is_empty());
+        assert_eq!(count(&fourteen, "workflow_worker_reports"), 0);
+    }
+
+    #[test]
+    fn a_failed_reconciliation_rolls_back_to_the_original_layout() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("conflict.sqlite3");
+        reports_ten(&path);
+        // The chat V10 DDL would create this index; an occupied name makes the
+        // reconciliation fail after the first statements.
+        apply_sql(&path, "CREATE INDEX chat_active_turn ON events(sequence);");
+        let error = crate::SqliteStore::open(&path)
             .err()
-            .expect("chat v14 is refused");
-        assert!(matches!(
-            error,
-            StoreError::KnownLineage {
-                lineage: "chat_schema14",
-                found: 14,
-                ..
-            }
-        ));
-        assert_eq!(count(&fourteen, "schema_migrations"), 14);
+            .expect("conflicting index fails the migration");
+        assert!(matches!(error, StoreError::Database(_)));
+        let inspection = inspect_database(&path).expect("inspect unchanged");
+        assert_eq!(inspection.lineage, SchemaLineage::ReportsSchema10);
+        assert_eq!(inspection.found_version, 10);
+        assert!(
+            !inspection
+                .tables
+                .iter()
+                .any(|table| table == "chat_sessions")
+        );
+        assert_eq!(count(&path, "schema_migrations"), 10);
     }
 
     #[test]
@@ -494,7 +553,7 @@ CREATE TABLE runs(run_id TEXT PRIMARY KEY);
         current_database(&future);
         apply_sql(
             &future,
-            "INSERT INTO schema_migrations(version, applied_at) VALUES (15,'future');",
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (16,'future');",
         );
         assert_eq!(
             inspect_database(&future).expect("inspect").lineage,
@@ -504,7 +563,7 @@ CREATE TABLE runs(run_id TEXT PRIMARY KEY);
             crate::SqliteStore::open(&future)
                 .err()
                 .expect("future refused"),
-            StoreError::NewerSchema { found: 15, .. }
+            StoreError::NewerSchema { found: 16, .. }
         ));
 
         let incomplete = temp.path().join("incomplete.sqlite3");

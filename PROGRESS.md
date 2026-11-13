@@ -8056,3 +8056,28 @@ retained in the task's local validation artifact.
 - Final full workspace gate after C06/C09/C14: **1719 passed, 0 failed,
   2 ignored, 151 targets** (583 s); the Fusion example tests run separately
   through `--example fusion_benchmark`.
+
+
+### 2026-11-13 — Unified store schema 15 (C13 forward merge)
+
+- The two historical branches collided on version 10: PR #49 used 10-14 for
+  chat and PR #52 used 10 for `workflow_worker_reports`. The unified current
+  schema keeps chat at 10-14 and moves reports to 15 (`STORE_SCHEMA_VERSION =
+  15`, ADR 060).
+- Added `chat_migrations.rs` with the chat 10-14 DDL from PR #49 and the
+  reports table renumbered to 15. For a reports-10 database the chat tables
+  are created without a second marker 10, chat 11-14 follow, and version 15
+  is recorded without recreating the reports table.
+- `open` still classifies read-only first. Reports-10 and chat-10..14 are now
+  openable and forward-migrated; foreign Python stores, unknown layouts, and
+  future markers are refused with their distinct codes. A failed
+  reconciliation rolls back to the original layout (tested with an occupied
+  index name).
+- Updated the schema pin in the supervisor test and the v6 fixture in the
+  model-call ledger test to strip the new tables; docs and CLAUDE.md now say
+  schema 15.
+- Executed on macOS 15.6: `cargo test -p vibemux_store --all-features` 147
+  passed (6 lineage tests); store/daemon/CLI suites and clippy passed;
+  C13-LINEAGE and C07-RESTART passed.
+- Limits: no live production database upgrade and no chat service code that
+  writes the new tables in this branch.

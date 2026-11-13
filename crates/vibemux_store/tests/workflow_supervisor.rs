@@ -769,13 +769,13 @@ fn assignments_are_task_scoped_and_cannot_be_completed_without_dispatch_evidence
 }
 
 #[test]
-fn schema_eight_adds_owned_tables_and_survives_reopen() {
+fn schema_fifteen_adds_unified_tables_and_survives_reopen() {
     let fixture = Fixture::new();
     let workflow_id = fixture.start.workflow_id;
     let path = fixture.file.path().to_path_buf();
     drop(fixture.store);
-    let store = SqliteStore::open(&path).expect("reopen schema eight");
-    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 9);
+    let store = SqliteStore::open(&path).expect("reopen schema fifteen");
+    assert_eq!(vibemux_store::STORE_SCHEMA_VERSION, 15);
     assert_eq!(
         store
             .supervisor_status(workflow_id)

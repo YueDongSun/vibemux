@@ -23,7 +23,7 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `C14` | Rust toolchain | Fusion Single/Cascade/Critique contracts run offline with deterministic fixtures; no provider call |
 | `C06` | Rust toolchain | A real in-process daemon, store, Git worktrees and writable fixture worker: the independent trusted verifier rejects a wrong candidate while the reviewer passes it, and accepts the good candidate through the same path |
 | `C04-EVENTS` | Rust toolchain, Node, Hub checkout | Paged task events with a sequence cursor, retention-floor resynchronization, and the Hub consumer |
-| `C13-LINEAGE` | Rust toolchain | Known store layouts are recognized and preserved: current v9, PR #52 reports schema 10, PR #49 chat schema 10 and 14, a foreign Python store, and future/incomplete markers |
+| `C13-LINEAGE` | Rust toolchain | Unified schema 15: PR #52 reports-10 is reconciled in place, PR #49 chat-10/14 is upgraded, current v15 reopens idempotently, and foreign/future/incomplete layouts are refused without modification |
 | `HUB-GATES` | Hub checkout, npm | The Hub's own check/test/artifact gates pass |
 
 All other ids (`C02`–`C15`) are emitted with a precise missing-capability

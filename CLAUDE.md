@@ -47,7 +47,7 @@ crates/vibemux_harness/            # AgentKind/LauncherKind/ProbeState + harness
 crates/vibemux_workflow/           # dual-track workflow contracts: TaskSpec validation, renderer, gates, broker rules, leases, optimizer (pure logic, no I/O; ADR 031)
 crates/vibemux_decision/           # decision port: questions, facts, answer validation, local rules, fallback resolver, config, records, peer wire (pure logic, no I/O; ADR 034)
 crates/vibemux_decision_peer/      # one-shot out-of-process decision peer: the only decision-API network client (TypeSafe Jev; ADR 034)
-crates/vibemux_store/              # SQLite migrations (schema 9: + harness projections, harness dispatch records, decision records, and the supervised-workflow records of ADRs 031/036-039) + repositories (bundled)
+crates/vibemux_store/              # SQLite migrations (schema 15: main 1-9, chat 10-14 from PR #49, worker reports 15 from PR #52) + repositories (bundled)
 crates/vibemux_platform/           # Windows/POSIX process, IPC, and process-tree containment primitives + launch trampoline logic
 crates/vibemux_a2a/                # official A2A Rust SDK adapter (loopback only)
 crates/vibemux_plugin_protocol/    # M4.0 Protobuf v1 wire + manifest (+ optional terminal observation payload)

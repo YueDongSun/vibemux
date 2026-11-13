@@ -409,6 +409,18 @@ fn a_v6_marker_without_ledger_tables_migrates_forward_when_reopened() {
              DROP TABLE workflow_contract_authorities; \
              DROP TABLE workflow_model_calls; \
              DROP TABLE workflow_model_call_owners; \
+             DROP TABLE workspace_cleanup_commands; \
+             DROP TABLE workspace_cleanups; \
+             DROP TABLE chat_approvals; \
+             DROP TABLE chat_execution_records; \
+             DROP TABLE chat_execution_attempts; \
+             DROP TABLE chat_execution_owners; \
+             DROP TABLE chat_operations; \
+             DROP TABLE chat_records; \
+             DROP TABLE chat_content; \
+             DROP TABLE chat_turns; \
+             DROP TABLE chat_sessions; \
+             DROP TABLE workflow_worker_reports; \
              DELETE FROM schema_migrations WHERE version >= 7;",
         )
         .expect("restore the owned fixture to the v6 schema marker");

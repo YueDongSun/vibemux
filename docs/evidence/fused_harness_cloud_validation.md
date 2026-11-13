@@ -46,7 +46,7 @@ python scripts/verify_fused_harness_cloud.py \
 | C06 | passed | `actual_daemon_fixture_worker_verifier` | Real in-process daemon + store + Git worktrees + writable fixture worker: reviewer passes, independent verifier rejects the wrong candidate (`gate_suite_failed`), integration stays empty, checkout clean; good candidate accepted |
 | C04-EVENTS | passed | `event_pagination_contracts` | Store paging (31 events, cursor, retention floor), the v10 control read, and the Hub cursor consumer (34 Hub tests) |
 | C07-RESTART | passed | `daemon_restart_store_reuse` | Daemon restart re-served health and 48 capabilities and reopened the same store inode; pid changed |
-| C13-LINEAGE | passed | `store_migration_tests` | 5 lineage tests: current v9 recognized and idempotent on reopen; PR #52 reports schema 10 and PR #49 chat schema 10/14 recognized and preserved; foreign Python store, future marker, and incomplete current layout refused distinctly |
+| C13-LINEAGE | passed | `store_migration_tests` | 6 lineage tests: unified schema 15; reports-10 reconciled without a duplicate marker; chat-10/14 upgraded; failed reconciliation rolls back; foreign/future/incomplete refused |
 | HUB-GATES | passed | `actual_hub_tests` | `npm run check`, `npm test` (2032 passed, 2 skipped, 0 failed), `npm run verify:artifacts` |
 | C02–C15 | not_run | `not_executed` | Reasons are recorded per case in the JSON report |
 

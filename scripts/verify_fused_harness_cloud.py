@@ -79,7 +79,7 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C10": "Both metadata services are covered by C10-MCP; a VibeMux worker calling Hub tools through an admitted broker is not implemented.",
     "C11": "Both halves are now covered by C11-SLOTS (build-slot contention) and C11-MERGE (two-worker candidate integration); this entry records no further C11 gap.",
     "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
-    "C13": "Known layouts are recognized and preserved (reports schema 10, chat schema 10-14, foreign Python store, future and incomplete markers); merging those layouts forward into one current schema is not implemented.",
+    "C13": "Known layouts are recognized and forward-merged into unified schema 15 (reports-10 reconciled, chat 10-14 upgraded); a production upgrade of a live historical database and the chat service code that would use the new tables remain outside this case.",
     "C15": "Requires the shared native host bridge and the two chat layouts.",
 }
 
@@ -741,8 +741,8 @@ def _run_c13_lineage(
             evidence_class="store_migration_tests",
             duration_ms=int((time.monotonic() - started) * 1000),
             detail=(
-                f"{passed} lineage tests passed: current, reports schema 10, "
-                "chat schema 10 and 14, foreign Python store, future and incomplete"
+                f"{passed} lineage tests passed: current v15, reports-10 "
+                "reconciled, chat-10/14 upgraded, foreign/future/incomplete refused"
             ),
         )
     except (VerificationError, OSError, subprocess.TimeoutExpired) as error:

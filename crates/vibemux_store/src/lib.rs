@@ -13,6 +13,7 @@ use vibemux_harness::{
 use vibemux_types::{ProjectId, Run, Task};
 
 mod a2a;
+mod chat_migrations;
 mod decision;
 mod frontend;
 mod harness_dispatch;
@@ -40,7 +41,7 @@ pub use workflow::{
     WorkflowSnapshot,
 };
 
-pub const STORE_SCHEMA_VERSION: u32 = 9;
+pub const STORE_SCHEMA_VERSION: u32 = 15;
 pub const SQLITE_BUSY_TIMEOUT_MILLISECONDS: u64 = 5_000;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -761,6 +762,65 @@ impl SqliteStore {
             transaction.execute_batch(workflow::MIGRATION_V9)?;
             transaction.commit()?;
         }
+        // Unified lineage: chat keeps versions 10-14 (PR #49); worker reports
+        // move to 15 (PR #52). A reports-10 database already carries marker 10,
+        // so its chat tables are created without a second marker.
+        let reports_only_ten = inspection.lineage == lineage::SchemaLineage::ReportsSchema10;
+        if found < 10 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat_migrations::MIGRATION_V10_CHAT_TABLES)?;
+            mark_migration(&transaction, 10)?;
+            transaction.commit()?;
+        } else if reports_only_ten {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat_migrations::MIGRATION_V10_CHAT_TABLES)?;
+            transaction.commit()?;
+        }
+        if found < 11 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat_migrations::MIGRATION_V11)?;
+            transaction.commit()?;
+        }
+        if found < 12 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat_migrations::MIGRATION_V12)?;
+            transaction.commit()?;
+        }
+        if found < 13 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat_migrations::MIGRATION_V13)?;
+            transaction.commit()?;
+        }
+        if found < 14 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(chat_migrations::MIGRATION_V14)?;
+            transaction.commit()?;
+        }
+        if found < 15 {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if reports_only_ten {
+                // The reports table and its index already exist; only the
+                // unified marker is missing.
+                mark_migration(&transaction, 15)?;
+            } else {
+                transaction.execute_batch(chat_migrations::MIGRATION_V15_REPORTS)?;
+            }
+            transaction.commit()?;
+        }
         lineage::verify_current(&self.connection)?;
         Ok(())
     }
@@ -961,6 +1021,15 @@ fn seed_harness_projections(transaction: &Transaction<'_>) -> Result<(), StoreEr
             config_json,
             raw_sequence,
         ],
+    )?;
+    Ok(())
+}
+
+fn mark_migration(transaction: &Transaction<'_>, version: u32) -> Result<(), StoreError> {
+    transaction.execute(
+        "INSERT INTO schema_migrations(version, applied_at) \
+         VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        params![version],
     )?;
     Ok(())
 }
