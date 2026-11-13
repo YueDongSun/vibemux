@@ -1501,9 +1501,7 @@ def _run_c02_plan(
             timeout=timeout,
         )
         if daemon.returncode != 0:
-            raise VerificationError(
-                f"planning daemon tests failed: {_tail(daemon, 500)}"
-            )
+            raise VerificationError(f"planning daemon tests failed: {_tail(daemon, 500)}")
         hub = _run(
             ["node", "--test", "tests/planning_contract.test.mjs"], cwd=hub_root, timeout=timeout
         )
@@ -1513,9 +1511,7 @@ def _run_c02_plan(
             ["node", "--test", "tests/rd_planning.test.mjs"], cwd=hub_root, timeout=timeout
         )
         if hub_adapter.returncode != 0:
-            raise VerificationError(
-                f"Hub planning adapter tests failed: {_tail(hub_adapter, 500)}"
-            )
+            raise VerificationError(f"Hub planning adapter tests failed: {_tail(hub_adapter, 500)}")
         rust_passed = _cargo_passed(rust.stdout)
         daemon_passed = _cargo_sum_passed(daemon.stdout)
 
@@ -1527,12 +1523,7 @@ def _run_c02_plan(
 
         hub_passed = _node_passed(hub.stdout)
         adapter_passed = _node_passed(hub_adapter.stdout)
-        if (
-            rust_passed < 5
-            or daemon_passed < 3
-            or hub_passed < 3
-            or adapter_passed < 12
-        ):
+        if rust_passed < 5 or daemon_passed < 3 or hub_passed < 3 or adapter_passed < 12:
             raise VerificationError(
                 "expected planning tests, saw "
                 f"{rust_passed}/{daemon_passed}/{hub_passed}/{adapter_passed}"
