@@ -471,6 +471,13 @@ impl RunContext {
         deliveries: &[Delivery],
     ) -> Result<TurnResult, WorkflowError> {
         let spec = &plan.spec;
+        super::service::qualification::check_turn_qualification(
+            &self.writer,
+            &self.dispatch,
+            &self.setup,
+            &spec.lease.slot_id,
+        )
+        .await?;
         let task_spec = self
             .plan
             .specs

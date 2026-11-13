@@ -26,6 +26,9 @@ use super::aag_gateway::{Aag_Call_Class, Aag_Call_Request, Aag_Model_Gateway};
 const CANCELLED_BEFORE_SUBMIT: &str = "model_call_cancelled_before_submit";
 const OUTCOME_UNKNOWN: &str = "model_call_outcome_unknown";
 const DEADLINE_EXCEEDED: &str = "model_call_deadline_exceeded";
+/// Gives a contained native adapter time to kill, reap and drain its child.
+/// No output arriving after cancellation is accepted as a completed call.
+pub const MODEL_CALL_CLEANUP_GRACE: Duration = Duration::from_secs(5);
 
 /// A gateway completion carries response text only in process; the receipt
 /// itself is content-free and persisted before the text is returned.
@@ -377,25 +380,37 @@ pub async fn run_model_call<G: ModelGateway + ?Sized>(
         return Err(ModelCallRuntimeError::OutcomeUnknown);
     }
     let timeout = Duration::from_millis(admission.identity.timeout_ms.min(remaining_ms));
-    let gateway_cancellation = cancellation.clone();
+    let (gateway_cancel, gateway_cancellation) = watch::channel(false);
+    let completion = gateway.complete(
+        call_id,
+        submitted.calls_used,
+        &request,
+        gateway_cancellation,
+    );
+    tokio::pin!(completion);
     let response = tokio::select! {
         biased;
         _ = wait_for_cancellation(&mut cancellation) => {
-            finish_record(writer, call_id, None, Some(OUTCOME_UNKNOWN.to_string())).await?;
-            return Err(ModelCallRuntimeError::OutcomeUnknown);
+            None
         }
-        result = tokio::time::timeout(timeout, gateway.complete(
-            call_id,
-            submitted.calls_used,
-            &request,
-            gateway_cancellation,
-        )) => match result {
-            Ok(result) => result,
-            Err(_) => {
-                finish_record(writer, call_id, None, Some(OUTCOME_UNKNOWN.to_string())).await?;
-                return Err(ModelCallRuntimeError::OutcomeUnknown);
-            }
-        }
+        _ = tokio::time::sleep(timeout) => None,
+        result = &mut completion => Some(result),
+    };
+    let Some(response) = response else {
+        // Keep polling the same owned future so an adapter can observe cancel
+        // and finish its process cleanup. Dropping at the deadline would only
+        // kill-on-drop and could neither join nor prove cleanup.
+        let _ = gateway_cancel.send(true);
+        let settled = tokio::time::timeout(MODEL_CALL_CLEANUP_GRACE, &mut completion)
+            .await
+            .is_ok();
+        let code = if settled {
+            OUTCOME_UNKNOWN
+        } else {
+            "model_call_cleanup_timeout"
+        };
+        finish_record(writer, call_id, None, Some(code.to_string())).await?;
+        return Err(ModelCallRuntimeError::OutcomeUnknown);
     };
 
     match response {

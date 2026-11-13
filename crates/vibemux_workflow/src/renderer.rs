@@ -338,10 +338,14 @@ pub fn render_worker_contract(
         out.line(&format!(
             "End your final message with exactly one fenced block whose info string is {CHECKPOINT_INFO_STRING}, containing one JSON object with these fields:"
         ));
+        let structured_report = inputs.template.base.template_version == "worker_v2";
         out.line(&format!(
-            "schema_version (1), task_spec_digest (\"{}\"), changed_files (paths), development_tests (objects with command and outcome: passed, failed, or not_run), unresolved_issues (strings), context_refs_consumed (bundle ids), messages (objects with kind, to, and text), summary (string).",
-            inputs.task_spec_digest
+            "schema_version ({}), task_spec_digest (\"{}\"), changed_files (paths), development_tests (objects with command and outcome: passed, failed, or not_run), unresolved_issues (strings), context_refs_consumed (bundle ids), messages (objects with kind, to, and text), summary (string).",
+            if structured_report { 2 } else { 1 }, inputs.task_spec_digest
         ));
+        if structured_report {
+            out.line("Also include worker_report (object with state, summary, and optional human_action). Summary must be non-empty and at most 4096 UTF-8 bytes; human_action at most 1000 UTF-8 bytes. Waiting or blocked requires a concrete human_action. Ready never marks the workflow accepted.");
+        }
     }
 
     out.section("communication");

@@ -206,8 +206,14 @@ async fn execute(
             )
             .await;
             let grace = Duration::from_millis(limits.shutdown_grace_ms);
-            let (exit, stderr_bytes) = process.finish(end.force, Instant::now() + grace).await;
-            (end.result, exit, stderr_bytes)
+            match process.finish(end.force, Instant::now() + grace).await {
+                Ok((exit, stderr_bytes)) => (end.result, exit, stderr_bytes),
+                Err(cleanup_error) => (
+                    end.result.and(Err(cleanup_error)),
+                    process.unverified_exit(),
+                    process.stderr_diagnostic().bytes,
+                ),
+            }
         }
     };
     ExecutionEvidence {
@@ -425,5 +431,101 @@ async fn write_input(mut stdin: ChildStdin, mut receiver: mpsc::Receiver<Vec<u8>
         if stdin.write_all(&bytes).await.is_err() || stdin.flush().await.is_err() {
             return;
         }
+    }
+}
+
+#[cfg(all(test, feature = "test_helpers"))]
+mod tests {
+    use super::super::native_process::{
+        TEST_TERMINATE,
+        tests::{fixture_plan, termination_failure_after_cleanup},
+    };
+    use super::*;
+    use std::path::Path;
+    use vibemux_harness::{
+        AgentKind,
+        dispatch::{AttemptOutcome, DispatchRoute},
+    };
+
+    fn execution_plan(directory: &Path, mode: &str) -> ExecutionPlan {
+        let launch = fixture_plan(directory, &["exec", "--json", "--fixture_mode", mode]);
+        let route: DispatchRoute = serde_json::from_value(serde_json::json!({
+            "harness": AgentKind::Codex,
+            "protocol": NativeProtocol::CodexExec,
+            "executable": launch.executable,
+            "enabled": true,
+            "allow_execution": true,
+        }))
+        .expect("route");
+        let limits = DispatchLimits {
+            deadline_ms: 5_000,
+            shutdown_grace_ms: 2_000,
+            ..DispatchLimits::default()
+        };
+        ExecutionPlan {
+            launch,
+            session: ProtocolSession::for_execution(
+                &route,
+                "synthetic cleanup prompt".into(),
+                "synthetic".into(),
+            )
+            .expect("session"),
+            budget: CaptureBudget::new(route.protocol, &limits).expect("budget"),
+            limits,
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_cannot_complete_correlated_success() {
+        let directory = tempfile::tempdir().expect("scratch");
+        let (_signal, mut cancel) = watch::channel(false);
+        let control = execute(
+            execution_plan(directory.path(), "normal"),
+            RecordSink::Discard,
+            &mut cancel,
+        )
+        .await;
+        assert_eq!(control.decision.outcome, AttemptOutcome::Completed);
+        assert_eq!(control.process.exit_code, Some(0));
+        assert!(!control.process.forced_termination);
+
+        let evidence = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                execute(
+                    execution_plan(directory.path(), "normal"),
+                    RecordSink::Discard,
+                    &mut cancel,
+                ),
+            )
+            .await;
+        assert_eq!(evidence.decision.outcome, AttemptOutcome::Failed);
+        assert_eq!(
+            evidence.decision.error_code,
+            Some(DispatchError::ContainmentFailed)
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_preserves_an_existing_protocol_error() {
+        let directory = tempfile::tempdir().expect("scratch");
+        let (_signal, mut cancel) = watch::channel(false);
+        let evidence = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                execute(
+                    execution_plan(directory.path(), "oversized"),
+                    RecordSink::Discard,
+                    &mut cancel,
+                ),
+            )
+            .await;
+        assert_eq!(evidence.decision.outcome, AttemptOutcome::Failed);
+        assert_eq!(
+            evidence.decision.error_code,
+            Some(DispatchError::FrameTooLarge)
+        );
+        assert_eq!(evidence.process.exit_code, None);
+        assert!(evidence.process.forced_termination);
     }
 }

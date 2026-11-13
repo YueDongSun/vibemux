@@ -20,8 +20,8 @@
 | Rust workspace version | `0.2.0-alpha.1` (MSRV and pinned compiler 1.92) |
 | Product target | Windows 10/11 first; WSL2/Linux development and compatibility |
 | Current implementation | Python 3.12 behavior-reference CLI plus a Rust 2024 pre-alpha core workspace |
-| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041) |
-| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10) |
+| Current Rust scope | Typed domain/events, SQLite store, single-writer daemon, authenticated local IPC/lifecycle, authenticated local stateful A2A and supervisor workflow, read-only probe/frontend shell, plugin protocol v1 foundation, plugin supervisor, and daemon-owned registry with bounded recovery and read-only IPC v2 status, plus opt-in daemon-owned harness dispatch (ADR 029: Codex/Claude one-shot turns, ACP initialize-only probes, store schema 4, Control v5; fixture evidence plus live initialize-only probes on native Windows), and offline-only dual-track coding workflows (ADR 031: `cooperate`/`compare` over owned worktrees with review, verifier, and integration gates, store schema 5, Control v6; fixture workers only), and the DSH SDK session substrate (ADR 032: pure session state machine, shared driver, daemon service, Control v7, CLI and terminal UI; no live vendor or persistence evidence), and the advisory decision port with per-task harness routing (ADR 034: pure `vibemux_decision`, one-shot `vibemux_decision_peer` for TypeSafe Jev, local rules, store schema 6, Control v8; fixture peers and a loopback test server only, no live Jev call), plus runtime authority/gateway/controller foundations (ADR 036: schema 7), an explicit model supervisor driver (ADR 037: schema 8, Control v9, offline fixtures; live and native acceptance incomplete), scoped supervisor context actions (ADR 038), and operator contract edits (ADR 039: schema 9, Control v10), operator intake/follow-ups and structured worker reports (ADR 057: schema 10, Control v11, offline fixture evidence), plus the standalone native harness crate `vibemux_harness_native` (ADR 040: bounded Codex/Claude/ACP request dispatch with Job Object containment; no daemon, store, or Task/Run binding) and the unified `vibemuxctl` command tree with a read-only workspace inventory and navigable dashboard (ADR 041) |
+| Current default entry point | Python `vibemux` for the complete prototype workflow; Rust `vibemuxctl` for daemon lifecycle, the harness registry/switch surface (control protocol v3), harness dispatch (control protocol v5), and dual-track workflows (control protocol v6), DSH sessions (control protocol v7), and advisory decisions (control protocol v8), plus explicit model-supervisor start/status (control protocol v9) and operator semantic contract edits (control protocol v10), and operator intake/follow-ups/report reads (control protocol v11) |
 | Current maturity | M3 is `VERIFIED`; M4.0/M4.1 foundations and the M4.2 registry/status slice have bounded verification; M4.2 and M7.1/M8.0 local supervisor evidence is native Windows only; **not yet a functional multi-harness alpha** |
 | Current release posture | Pre-alpha; no stable CLI, schema, protocol, or plugin compatibility guarantee |
 | Development container | Optional [frontend profile](.devcontainer/vibemux_frontend/readme.md) configured for Node 22.22.0 and all three npm lockfiles; container-build and native-platform acceptance remain unverified |
@@ -7760,3 +7760,126 @@ retained in the task's local validation artifact.
   not mount a real DOM, so unmount itself is not covered by an automated
   case. Live enrollment endpoints, real browser DOM races, and the Rust
   workspace were not run for this patch.
+
+### 2026-11-12 — Optional process-external supervisor bridge
+
+- Base contract: main `a06a8c70a4e68bf78c160789d3b818e58f0a4ab1`.
+  New optional `integrations/superagent_bridge` uses Node built-ins and a fixed
+  installed CLI, with project aliases, loopback bearer authentication,
+  Host/Origin checks, bounded shell-free subprocesses and private input files.
+  No Rust code, canonical schema, Control version or existing monitor changed.
+- Implemented `/api/v1` task list/detail, workflow status, report/attention reads,
+  explicit pause/cancel, and capability-gated intake/follow-up. Capabilities
+  inspect actual help verbs; #49 Control v17 is not mistaken for #52 intake
+  support. No open PR was merged. Intake is prepare-only; follow-up preserves
+  exact expected versions, session/contract identity and event IDs. Uncertain
+  writes return `unknown` and are never automatically retried.
+- Attention is explicitly a page of historical worker claims. It does not own
+  unresolved state, treat `ready` as accepted/completed, or erase earlier
+  declarations when a later report arrives. Content remains opt-in. Task events
+  are bounded activity metadata rather than a complete workflow export.
+- Executed on Linux with Node 24.22.1:
+  `node --test tests/*.test.mjs` from the integration directory produced
+  **29 passed / 0 failed / 0 skipped**. Tests run actual loopback HTTP and Node
+  child processes with clearly marked synthetic CLI fixtures, covering main,
+  #49 and #52 capability differences, receipts, duplicates, unknown outcomes,
+  project isolation, permissions, auth/origin/host checks, size/time bounds,
+  shutdown and temporary-file cleanup.
+- An independent reviewer reran all 29 checks successfully. A separate
+  cross-repository smoke exercised the current Pixel Fastify
+  `registerSuperagentRoutes` implementation over real HTTP to this bridge and
+  the synthetic CLI: **3 passed / 0 failed**, covering projects/capabilities,
+  task limit 32/detail, workflow phase, report content/attention, prepared
+  intake, explicit duplicate follow-up, main's unsupported operation, and
+  unknown-write no-replay behavior. This is HTTP interoperability evidence,
+  not browser DOM or production-daemon qualification.
+- Development failures remain explicit: the first Host-rejection test used
+  fetch, which discarded its supplied Host value; it now exercises native HTTP
+  headers and also checks duplicate Authorization. An independent parallel run
+  exposed 150-ms Node-startup assumptions in output/timeout fixtures. Output
+  cases now use a normal command budget; the timeout case asserts unknown and
+  no replay without assuming the child read the request before its deadline.
+- Limits: no native Windows run, installed VibeMux binary/daemon call, Rust build,
+  or live provider execution was performed. The current AAG live attestation
+  refusal remains authoritative. Goal presets require the existing configured
+  daemon compiler; imported request/policy is the explicit alternative. No
+  natural-language compiler or production task simulation is claimed.
+- Cleanup: no dependencies or build products were installed. Each test removes
+  its exact owned temporary files/directories and closes its server/CLI children;
+  source fixtures and review evidence are retained. The read-only source snapshot
+  and comparison copies are handoff evidence, not release files.
+
+
+### 2026-11-09 — Operator intake, follow-ups and structured worker reports (ADR 057)
+
+**Scope:** adapt the selected behaviors from DeepSeek's `dsh-superagent-prototype`
+commit `8c32a9dc5d72c033816c6a8110b37f40cf94fba4` in the existing Rust workflow.
+
+**Implemented:**
+- Control v11 and `vibemuxctl workflow intake|followup|reports`. Explicit local
+  operator intake derives an event-bound request key and reuses workflow
+  prepare admission, immutable contracts and the existing explicit start gate.
+- Version/contract/session-bound operator follow-ups through the existing
+  broker, finite queue admission, exact duplicate suppression and turn-boundary
+  delivery. Context cannot change the mandate or revive terminal work.
+- Opt-in `worker_v2` checkpoint schema 2 with structured progress/waiting/ready/
+  blocked/failed/dropped claims and concrete human questions. `worker_v1`
+  template/rendered bytes remain unchanged. Invalid required checkpoints block
+  progress. Ready remains subject to review and trusted verification.
+- Store schema 10 appends immutable content-free report rows and their events
+  atomically. Stored readiness/attention claims fence acceptance across
+  restarts. Report text requires per-workflow opt-in retention, verified
+  ownership/digests and an explicit content query; purge preserves metadata.
+
+**Evidence:** five new real-IPC fixture scenarios and 644 applicable regression
+tests passed on native macOS with Rust 1.92.0 and `TMPDIR=/private/tmp`; two
+legacy browser cases were explicitly filtered because the verifier does not
+discover the macOS browser path. Workspace Clippy, formatting and the privacy
+scan passed. Full workspace tests failed at three MCP lifecycle cases, reproduced
+on the clean baseline. Final commands and outcomes are recorded in
+[the validation record](docs/evidence/superagent_workflow_validation.md).
+
+**Status and limits:** `PARTIAL — OFFLINE FIXTURE EVIDENCE`. These changes do not
+certify writable live routes, change the canonical Task/Run state machine,
+install GitHub/Feishu sources, perform inferred admission, send external
+replies, add source subscriptions/hand-back or bridge approvals. Windows,
+Linux/WSL, live terminal and hosted CI coverage remain unverified. Nextest,
+deny and audit were attempted but are unavailable on this host.
+
+**Artifacts:** [ADR 057](docs/adr/057_superagent_workflow_intake.md),
+[operator guide](docs/guides/superagent_workflow.md), updated architecture,
+README and changelog, and pure/store/CLI/daemon regression tests.
+
+
+### 2026-11-13 — Durable goal execution boundary (ADR 074)
+
+**Implemented:** integrated PR 52 intake/follow-ups/reports on the current bridge
+base while retaining main fixes; added schema-15 operation receipts, Control-v18
+goal submit/lookup/index/readiness, bounded owned preparation and deterministic
+start, conservative unknown outcomes and restart recovery. Added an explicit
+native Codex compiler route with the existing model-call ledger and cooperative
+cleanup grace. Native worker route opt-in requires explicit Claude qualification; two
+owned canary turns prove the exact profile, successful tool results and safe
+owned cleanup before recording one hour of config/binary-bound evidence.
+Readiness and every native turn invalidate stale qualifications. Selected three
+PR 56 execution cleanup fixes, added a process-ID-fenced daemon stop and updated
+rustix to 1.1.6. Native-session branch formats are refused rather than reinterpreted.
+
+**Executed evidence (managed Linux, Rust 1.92):** affected daemon/CLI all-target
+check passed; store-operation suite 6/6, goal service integration 3/3 across
+two runs, model-runtime suite 4/4, workflow unit prefix 40/40, qualification
+suite 7/7, native compiler parser/profile 6/6, CLI workflow 5/5 and owner-stop
+1/1, Control version/docs 3/3 and child cleanup 3/3 passed. Scoped all-target,
+all-feature Clippy passed without suppressions. The goal test uses a real writer, fixture child
+processes, independent Git worktrees, reviewer and verifier, and reaches accepted;
+it does not simulate a canonical accepted state. The additional raw-goal test
+starts with empty task_specs, records a completed compiler call exactly once,
+and reaches verified workflow acceptance. Native-provider parsing and test
+fixtures remain distinct from live model completion. Original IPC tests are retained; this
+host denies AF_UNIX socket creation; one existing IPC round-trip test was
+attempted and failed at server start with EndpointUnavailable. Native Windows, live vendor execution,
+qualification and full CI/release gates are not established by these checks.
+Commands, result meanings and remaining gates are recorded in
+[the validation record](docs/evidence/durable_goal_operations_validation.md).
+The two existing supervisor/ledger migration fixtures were also updated for
+schema 15 and their focused reopen/migration checks passed (1/1 each).

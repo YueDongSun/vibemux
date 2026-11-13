@@ -1,0 +1,23 @@
+name: Supervisor bridge
+
+on:
+  push:
+    paths: ["integrations/superagent_bridge/**", ".github/workflows/superagent_bridge.yml"]
+  pull_request:
+    paths: ["integrations/superagent_bridge/**", ".github/workflows/superagent_bridge.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+      - name: Run bridge contract tests
+        run: node --test tests/*.test.mjs
+        working-directory: integrations/superagent_bridge

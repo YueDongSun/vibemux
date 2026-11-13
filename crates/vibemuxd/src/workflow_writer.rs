@@ -29,6 +29,81 @@ use vibemux_workflow::{
 use crate::{WriterError, WriterHandle};
 
 impl WriterHandle {
+    pub fn workflow_operation(
+        &self,
+        event_id: Uuid,
+    ) -> Result<Option<vibemux_store::WorkflowOperationRecord>, WriterError> {
+        self.with_store(move |store| store.workflow_operation(event_id))
+    }
+
+    pub fn admit_workflow_operation(
+        &self,
+        event_id: Uuid,
+        fingerprint: Sha256Digest,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::WorkflowOperationCommit, WriterError> {
+        self.with_store(move |store| {
+            store.admit_workflow_operation(event_id, fingerprint, timestamp)
+        })
+    }
+
+    pub fn finish_workflow_operation(
+        &self,
+        event_id: Uuid,
+        state: vibemux_store::WorkflowOperationState,
+        workflow_id: Option<Uuid>,
+        start_contract: Option<Sha256Digest>,
+        code: Option<String>,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::WorkflowOperationRecord, WriterError> {
+        self.with_store(move |store| {
+            store.finish_workflow_operation(
+                event_id,
+                state,
+                workflow_id,
+                start_contract,
+                code,
+                timestamp,
+            )
+        })
+    }
+
+    pub fn recover_workflow_operations(
+        &self,
+        timestamp: OffsetDateTime,
+    ) -> Result<usize, WriterError> {
+        self.with_store(move |store| store.recover_workflow_operations(timestamp))
+    }
+    pub fn record_workflow_worker_report(
+        &self,
+        request_id: Uuid,
+        fence: vibemux_store::LeaseFence,
+        report: vibemux_workflow::worker_report::WorkerReport,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_workflow::worker_report::WorkerReportRecord, WriterError> {
+        self.with_store(move |store| {
+            store.record_workflow_worker_report(request_id, fence, &report, timestamp)
+        })
+    }
+
+    pub fn workflow_worker_reports(
+        &self,
+        workflow_id: Uuid,
+        after: u64,
+    ) -> Result<vibemux_store::WorkerReportPage, WriterError> {
+        self.with_store(move |store| store.workflow_worker_reports(workflow_id, after))
+    }
+
+    pub fn admit_workflow_followup(
+        &self,
+        envelope: vibemux_workflow::messages::MessageEnvelope,
+        expected_version: u64,
+        timestamp: OffsetDateTime,
+    ) -> Result<vibemux_store::MessageCommit, WriterError> {
+        self.with_store(move |store| {
+            store.admit_workflow_followup(&envelope, expected_version, timestamp)
+        })
+    }
     pub fn record_supervisor_context_read(
         &self,
         action_id: Uuid,

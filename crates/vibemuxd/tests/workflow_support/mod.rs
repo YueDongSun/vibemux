@@ -547,6 +547,188 @@ impl ProjectPaths {
     }
 }
 
+async fn prepared_fixture(options: FixtureOptions) -> (tempfile::TempDir, ProjectPaths, String) {
+    let node = require_node();
+    let git = find_on_path("git").expect("git must be on PATH for the workflow tests");
+    let temp = tempfile::tempdir().expect("temp");
+    // The fixture guard intentionally refuses linked ancestors. Resolve
+    // the system's temporary-root alias before creating our owned tree.
+    let root = temp.path().canonicalize().expect("canonical fixture root");
+    let project_root = root.join("project");
+    let paths = ProjectPaths {
+        state_dir: project_root.join(".vibemux"),
+        project_root,
+        vendor_dir: root.join("vendor"),
+        runtime_dir: root.join("runtime"),
+        git,
+        git_home: root.join("git_home"),
+    };
+    let verifier_dir = root.join("verifier");
+    copy_tree(&Path::new(TASKBOARD_DIR).join("base"), &paths.project_root);
+    copy_tree(&Path::new(TASKBOARD_DIR).join("verifier"), &verifier_dir);
+    std::fs::write(
+        verifier_dir.join(SYNTAX_SUITE_FILE_NAME),
+        SYNTAX_SUITE_SOURCE,
+    )
+    .expect("syntax suite");
+    for directory in [
+        &paths.state_dir,
+        &paths.vendor_dir,
+        &paths.runtime_dir,
+        &paths.git_home,
+    ] {
+        std::fs::create_dir_all(directory).expect("directory");
+    }
+    paths.git(&["init", "-q"]);
+    paths.git(&["add", "-A"]);
+    paths.git(&["commit", "-q", "-m", "TaskBoard Lite base"]);
+    let head = paths.git(&["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(
+        paths.project_root.join(".git").join("info").join("exclude"),
+        ".vibemux/\n",
+    )
+    .expect("exclude state directory");
+    paths.install_harnesses(&options);
+    paths.write_workflow_config(&options, &node, &verifier_dir);
+    let mut detected = vec![AgentKind::Codex, AgentKind::Claude];
+    if options.acp_route {
+        detected.push(AgentKind::OpenCode);
+    }
+    if options.dsh_route {
+        detected.push(AgentKind::Dsh);
+    }
+    record_detection(&paths.database(), &detected).await;
+    write_json(
+        &paths.vendor_dir.join(SCRIPT_FILE_NAME),
+        &json!({"steps": {}}),
+    );
+    (temp, paths, head)
+}
+
+/// Direct service acceptance fixture, in addition to the existing IPC tests.
+/// Exercises the same writer, owned child processes, worktrees and verifier
+/// without claiming that a socket or browser transport was tested.
+pub struct InProcessWorkflowFixture {
+    pub service: vibemuxd::workflow::WorkflowService,
+    pub head: String,
+    pub project_root: PathBuf,
+    dispatch: vibemuxd::harness_dispatch::HarnessDispatchService,
+    writer: Option<WriterWorker>,
+    paths: ProjectPaths,
+    _temp: tempfile::TempDir,
+}
+
+impl InProcessWorkflowFixture {
+    pub async fn start() -> Self {
+        Self::start_inner(None).await
+    }
+
+    pub async fn start_with_compiler(
+        factory: std::sync::Arc<
+            dyn vibemuxd::workflow::model_compiler::WorkflowModelGatewayFactory,
+        >,
+        gateway: Value,
+    ) -> Self {
+        Self::start_inner(Some((factory, gateway))).await
+    }
+
+    async fn start_inner(
+        compiler: Option<(
+            std::sync::Arc<dyn vibemuxd::workflow::model_compiler::WorkflowModelGatewayFactory>,
+            Value,
+        )>,
+    ) -> Self {
+        let (temp, paths, head) = prepared_fixture(FixtureOptions::default()).await;
+        if let Some((_, gateway)) = &compiler {
+            let path = paths.state_dir.join(WORKFLOW_CONFIG_FILE_NAME);
+            let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            config["gateway"] = gateway.clone();
+            write_json(&path, &config);
+        }
+        let database = paths.database();
+        let writer = tokio::task::spawn_blocking(move || WriterWorker::start(&database))
+            .await
+            .unwrap()
+            .unwrap();
+        let handle = writer.handle().unwrap();
+        let guard = vibemux_harness::dispatch::FixtureLaunchGuard::register_worker_copies(
+            &std::fs::canonicalize(WORKER_FIXTURE).unwrap(),
+            &paths.vendor_dir,
+            &[AgentKind::Codex, AgentKind::Claude],
+        )
+        .unwrap()
+        .with_development_runtime(&std::fs::canonicalize(require_node()).unwrap())
+        .unwrap();
+        let dispatch =
+            vibemuxd::harness_dispatch::HarnessDispatchService::start_with_fixture_guard(
+                handle.clone(),
+                DispatchServiceSettings {
+                    project_root: paths.project_root.clone(),
+                    config_path: paths.state_dir.join(DISPATCH_CONFIG_FILE_NAME),
+                    trampoline: Some(PathBuf::from(TRAMPOLINE)),
+                },
+                guard,
+            )
+            .await;
+        let mut service = vibemuxd::workflow::WorkflowService::start(
+            handle,
+            dispatch.clone(),
+            WorkflowServiceSettings::for_project(&paths.project_root, &paths.state_dir),
+        )
+        .await;
+        if let Some((factory, _)) = compiler {
+            service = service.with_model_factory(factory).unwrap();
+        }
+        Self {
+            service,
+            head,
+            project_root: paths.project_root.clone(),
+            dispatch,
+            writer: Some(writer),
+            paths,
+            _temp: temp,
+        }
+    }
+
+    pub fn write_script(&self, script: &Value) {
+        write_json(&self.paths.vendor_dir.join(SCRIPT_FILE_NAME), script);
+    }
+
+    pub fn model_call(&self, call_id: Uuid) -> vibemux_workflow::model_call::ModelCallRecord {
+        self.writer
+            .as_ref()
+            .unwrap()
+            .handle()
+            .unwrap()
+            .model_call(call_id)
+            .unwrap()
+            .unwrap()
+    }
+
+    pub async fn wait_operation(&self, event: Uuid) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let response =
+                serde_json::to_value(self.service.operation(event).await.unwrap()).unwrap();
+            if !matches!(response["state"].as_str(), Some("accepted" | "preparing")) {
+                return response;
+            }
+            assert!(Instant::now() < deadline, "goal did not settle: {response}");
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    pub async fn shutdown(mut self) {
+        self.service.shutdown().await;
+        self.dispatch.shutdown().await;
+        let writer = self.writer.take().unwrap();
+        tokio::task::spawn_blocking(move || writer.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
 /// A running control server over a committed TaskBoard Lite project.
 pub struct WorkflowFixture {
     server: Option<DaemonControlServer>,
@@ -562,60 +744,7 @@ pub struct WorkflowFixture {
 
 impl WorkflowFixture {
     pub async fn start(options: FixtureOptions) -> Self {
-        let node = require_node();
-        let git = find_on_path("git").expect("git must be on PATH for the workflow tests");
-        let temp = tempfile::tempdir().expect("temp");
-        // The fixture guard intentionally refuses linked ancestors. Resolve
-        // the system's temporary-root alias before creating our owned tree.
-        let root = temp.path().canonicalize().expect("canonical fixture root");
-        let project_root = root.join("project");
-        let paths = ProjectPaths {
-            state_dir: project_root.join(".vibemux"),
-            project_root,
-            vendor_dir: root.join("vendor"),
-            runtime_dir: root.join("runtime"),
-            git,
-            git_home: root.join("git_home"),
-        };
-        let verifier_dir = root.join("verifier");
-        copy_tree(&Path::new(TASKBOARD_DIR).join("base"), &paths.project_root);
-        copy_tree(&Path::new(TASKBOARD_DIR).join("verifier"), &verifier_dir);
-        std::fs::write(
-            verifier_dir.join(SYNTAX_SUITE_FILE_NAME),
-            SYNTAX_SUITE_SOURCE,
-        )
-        .expect("syntax suite");
-        for directory in [
-            &paths.state_dir,
-            &paths.vendor_dir,
-            &paths.runtime_dir,
-            &paths.git_home,
-        ] {
-            std::fs::create_dir_all(directory).expect("directory");
-        }
-        paths.git(&["init", "-q"]);
-        paths.git(&["add", "-A"]);
-        paths.git(&["commit", "-q", "-m", "TaskBoard Lite base"]);
-        let head = paths.git(&["rev-parse", "HEAD"]).trim().to_string();
-        std::fs::write(
-            paths.project_root.join(".git").join("info").join("exclude"),
-            ".vibemux/\n",
-        )
-        .expect("exclude state directory");
-        paths.install_harnesses(&options);
-        paths.write_workflow_config(&options, &node, &verifier_dir);
-        let mut detected = vec![AgentKind::Codex, AgentKind::Claude];
-        if options.acp_route {
-            detected.push(AgentKind::OpenCode);
-        }
-        if options.dsh_route {
-            detected.push(AgentKind::Dsh);
-        }
-        record_detection(&paths.database(), &detected).await;
-        write_json(
-            &paths.vendor_dir.join(SCRIPT_FILE_NAME),
-            &json!({"steps": {}}),
-        );
+        let (temp, paths, head) = prepared_fixture(options).await;
         let (server, client) = paths.start_server().await;
         Self {
             server: Some(server),

@@ -31,6 +31,32 @@ pub const EXPORT_FILE_NAME: &str = "workflow_export.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowCommand {
+    Submit {
+        request_file: PathBuf,
+    },
+    Operation {
+        event_id: Uuid,
+    },
+    List {
+        after: Option<Uuid>,
+        limit: usize,
+    },
+    Readiness,
+    Qualify {
+        slot_id: String,
+        event_id: Uuid,
+    },
+    Intake {
+        request_file: PathBuf,
+    },
+    Followup {
+        request_file: PathBuf,
+    },
+    Reports {
+        workflow_id: Uuid,
+        after_sequence: u64,
+        include_content: bool,
+    },
     Prepare {
         request_file: PathBuf,
         policy_file: PathBuf,
@@ -88,6 +114,12 @@ pub enum WorkflowCommand {
 /// Flags one invocation may carry.
 #[derive(Default)]
 struct Flags {
+    slot_id: Option<String>,
+    event_id: Option<Uuid>,
+    after: Option<Uuid>,
+    limit: Option<usize>,
+    after_sequence: Option<u64>,
+    include_content: bool,
     project_root: Option<PathBuf>,
     request_file: Option<PathBuf>,
     policy_file: Option<PathBuf>,
@@ -124,11 +156,21 @@ pub(crate) fn parse_workflow_arguments(
                 .ok_or(DaemonCliError::InvalidArguments)
         };
         let step = match (verb, action, token) {
+            ("workflow", "qualify", "--slot") if flags.slot_id.is_none() => {
+                flags.slot_id = Some(text_value(value)?.to_string());
+                2
+            }
+            ("workflow", "qualify", "--event-id") if flags.event_id.is_none() => {
+                flags.event_id = Some(parse_id(text_value(value)?)?);
+                2
+            }
             (_, _, "--project-root") if flags.project_root.is_none() => {
                 flags.project_root = Some(path()?);
                 2
             }
-            ("workflow", "prepare", "--request-file") if flags.request_file.is_none() => {
+            ("workflow", "prepare" | "intake" | "followup" | "submit", "--request-file")
+                if flags.request_file.is_none() =>
+            {
                 flags.request_file = Some(path()?);
                 2
             }
@@ -155,6 +197,32 @@ pub(crate) fn parse_workflow_arguments(
             ("workflow", "export", "--out") if flags.out.is_none() => {
                 flags.out = Some(path()?);
                 2
+            }
+            ("workflow", "reports", "--after-sequence") if flags.after_sequence.is_none() => {
+                flags.after_sequence = Some(
+                    text_value(value)?
+                        .parse()
+                        .map_err(|_| DaemonCliError::InvalidArguments)?,
+                );
+                2
+            }
+            ("workflow", "list", "--after") if flags.after.is_none() => {
+                flags.after = Some(parse_id(text_value(value)?)?);
+                2
+            }
+            ("workflow", "list", "--limit") if flags.limit.is_none() => {
+                let limit = text_value(value)?
+                    .parse()
+                    .map_err(|_| DaemonCliError::InvalidArguments)?;
+                if !(1..=32).contains(&limit) {
+                    return Err(DaemonCliError::InvalidArguments);
+                }
+                flags.limit = Some(limit);
+                2
+            }
+            ("workflow", "reports", "--include-content") if !flags.include_content => {
+                flags.include_content = true;
+                1
             }
             ("context", "share", "--bundle") if flags.bundle.is_none() => {
                 flags.bundle = Some(parse_id(text_value(value)?)?);
@@ -197,6 +265,48 @@ pub(crate) fn parse_workflow_arguments(
         }
     };
     let command = match (verb, action) {
+        ("workflow", "submit") => {
+            none(positional.is_some())?;
+            WorkflowCommand::Submit {
+                request_file: flags.request_file.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("workflow", "operation") => WorkflowCommand::Operation { event_id: id()? },
+        ("workflow", "list") => {
+            none(positional.is_some())?;
+            WorkflowCommand::List {
+                after: flags.after,
+                limit: flags.limit.unwrap_or(32),
+            }
+        }
+        ("workflow", "readiness") => {
+            none(positional.is_some())?;
+            WorkflowCommand::Readiness
+        }
+        ("workflow", "qualify") => {
+            none(positional.is_some())?;
+            let slot_id = flags.slot_id.ok_or(DaemonCliError::InvalidArguments)?;
+            let event_id = flags.event_id.ok_or(DaemonCliError::InvalidArguments)?;
+            serde_json::from_value::<vibemuxd::workflow::service::QualificationRequest>(json!({
+                "slot_id":slot_id,"event_id":event_id,
+            }))
+            .map_err(|_| DaemonCliError::InvalidArguments)?;
+            WorkflowCommand::Qualify { slot_id, event_id }
+        }
+        ("workflow", "intake" | "followup") => {
+            none(positional.is_some())?;
+            let request_file = flags.request_file.ok_or(DaemonCliError::InvalidArguments)?;
+            if action == "intake" {
+                WorkflowCommand::Intake { request_file }
+            } else {
+                WorkflowCommand::Followup { request_file }
+            }
+        }
+        ("workflow", "reports") => WorkflowCommand::Reports {
+            workflow_id: id()?,
+            after_sequence: flags.after_sequence.unwrap_or(0),
+            include_content: flags.include_content,
+        },
         ("workflow", "prepare") => {
             none(positional.is_some())?;
             WorkflowCommand::Prepare {
@@ -282,6 +392,16 @@ pub async fn run_workflow(
     command: WorkflowCommand,
 ) -> Result<Value, DaemonCliError> {
     let documents = match &command {
+        WorkflowCommand::Intake { request_file }
+        | WorkflowCommand::Followup { request_file }
+        | WorkflowCommand::Submit { request_file } => Some((
+            read_document(
+                request_file.clone(),
+                MAX_WORKFLOW_REQUEST_BYTES + MAX_POLICY_BYTES,
+            )
+            .await?,
+            Value::Null,
+        )),
         WorkflowCommand::Prepare {
             request_file,
             policy_file,
@@ -297,6 +417,37 @@ pub async fn run_workflow(
     };
     let client = harness_client(paths).await?;
     let answer = match command {
+        WorkflowCommand::Submit { .. } => {
+            let (request, _) = documents.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"operation":client.workflow_submit(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Operation { event_id } => {
+            json!({"ok":true,"operation":client.workflow_operation(event_id).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::List { after, limit } => {
+            json!({"ok":true,"workflow_index":client.workflow_list(after, limit).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Readiness => {
+            json!({"ok":true,"readiness":client.workflow_readiness().await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Qualify { slot_id, event_id } => {
+            json!({"ok":true,"qualification":client.workflow_qualify(json!({"slot_id":slot_id,"event_id":event_id})).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Intake { .. } => {
+            let (request, _) = documents.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"intake":client.workflow_intake(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Followup { .. } => {
+            let (request, _) = documents.ok_or(DaemonCliError::InvalidArguments)?;
+            json!({"ok":true,"followup":client.workflow_followup(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::Reports {
+            workflow_id,
+            after_sequence,
+            include_content,
+        } => {
+            json!({"ok":true,"worker_reports":client.workflow_reports(workflow_id, after_sequence, include_content).await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::Prepare { .. } => {
             let (request, policy) = documents.ok_or(DaemonCliError::InvalidArguments)?;
             let prepared = client
@@ -570,6 +721,135 @@ mod tests {
         match parse_workflow_arguments(verb, &arguments)? {
             CliCommand::Workflow { command, .. } => Ok(command),
             _ => Err(DaemonCliError::InvalidArguments),
+        }
+    }
+
+    #[test]
+    fn goal_queries_and_submission_have_bounded_unambiguous_arguments() {
+        let event = Uuid::new_v4();
+        let text = event.to_string();
+        assert_eq!(
+            parse("workflow", &["operation", &text]).unwrap(),
+            WorkflowCommand::Operation { event_id: event }
+        );
+        assert_eq!(
+            parse("workflow", &["list"]).unwrap(),
+            WorkflowCommand::List {
+                after: None,
+                limit: 32
+            }
+        );
+        assert_eq!(
+            parse("workflow", &["list", "--after", &text, "--limit", "2"]).unwrap(),
+            WorkflowCommand::List {
+                after: Some(event),
+                limit: 2
+            }
+        );
+        assert_eq!(
+            parse("workflow", &["readiness"]).unwrap(),
+            WorkflowCommand::Readiness
+        );
+        assert_eq!(
+            parse(
+                "workflow",
+                &["qualify", "--slot", "claude_worker", "--event-id", &text]
+            )
+            .unwrap(),
+            WorkflowCommand::Qualify {
+                slot_id: "claude_worker".into(),
+                event_id: event,
+            }
+        );
+        assert_eq!(
+            parse("workflow", &["submit", "--request-file", "goal.json"]).unwrap(),
+            WorkflowCommand::Submit {
+                request_file: PathBuf::from("goal.json")
+            }
+        );
+        for invalid in [
+            vec!["list", "--limit", "0"],
+            vec!["list", "--limit", "33"],
+            vec!["list", "--limit", "2", "--limit", "3"],
+            vec!["readiness", "--after", &text],
+            vec!["qualify", "--slot", "claude_worker"],
+            vec!["qualify", "--event-id", &text],
+            vec!["qualify", "--slot", "../escape", "--event-id", &text],
+            vec![
+                "qualify",
+                "--slot",
+                "claude_worker",
+                "--event-id",
+                &text,
+                "unexpected",
+            ],
+            vec![
+                "qualify",
+                "--slot",
+                "claude_worker",
+                "--event-id",
+                "00000000-0000-0000-0000-000000000000",
+            ],
+            vec!["submit", "goal.json"],
+            vec!["operation", "00000000-0000-0000-0000-000000000000"],
+            vec![
+                "submit",
+                "--request-file",
+                "goal.json",
+                "--contract",
+                "extra",
+            ],
+        ] {
+            assert!(parse("workflow", &invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn intake_followups_and_report_reads_use_strict_document_arguments() {
+        assert_eq!(
+            parse("workflow", &["intake", "--request-file", "intake.json"]).expect("intake"),
+            WorkflowCommand::Intake {
+                request_file: PathBuf::from("intake.json")
+            }
+        );
+        assert_eq!(
+            parse("workflow", &["followup", "--request-file", "followup.json"]).expect("followup"),
+            WorkflowCommand::Followup {
+                request_file: PathBuf::from("followup.json")
+            }
+        );
+        let id = Uuid::new_v4();
+        let id_text = id.to_string();
+        assert_eq!(
+            parse(
+                "workflow",
+                &[
+                    "reports",
+                    &id.to_string(),
+                    "--after-sequence",
+                    "42",
+                    "--include-content"
+                ]
+            )
+            .expect("reports"),
+            WorkflowCommand::Reports {
+                workflow_id: id,
+                after_sequence: 42,
+                include_content: true
+            }
+        );
+        for args in [
+            vec!["intake"],
+            vec!["followup", "--prompt", "untrusted"],
+            vec!["reports", &id_text, "--after-sequence", "-1"],
+            vec![
+                "reports",
+                &id_text,
+                "--include-content",
+                "--include-content",
+            ],
+        ] {
+            assert!(parse("workflow", &args).is_err());
         }
     }
 

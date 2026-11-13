@@ -20,6 +20,7 @@ pub mod native_process;
 #[cfg(not(feature = "test_helpers"))]
 pub(crate) mod native_process;
 mod output_page;
+pub(crate) mod qualification;
 mod transcript_store;
 
 use std::{
@@ -279,7 +280,9 @@ impl HarnessDispatchService {
     }
 
     #[cfg(feature = "test_helpers")]
-    pub(crate) async fn start_with_fixture_guard(
+    /// In-process integration fixture entry. The opaque guard accepts only
+    /// owned copies of the built worker fixture, never an arbitrary vendor.
+    pub async fn start_with_fixture_guard(
         writer: WriterHandle,
         settings: DispatchServiceSettings,
         guard: vibemux_harness::dispatch::fixture_guard::FixtureLaunchGuard,

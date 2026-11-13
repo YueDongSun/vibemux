@@ -385,7 +385,9 @@ impl Aag_Model_Gateway {
             GatewayProtocol::AnthropicMessages => http_request
                 .header("x-api-key", &self.credential.0)
                 .header("anthropic-version", "2023-06-01"),
-            GatewayProtocol::OpenaiResponses => unreachable!("checked above"),
+            GatewayProtocol::OpenaiResponses | GatewayProtocol::NativeCodexExec => {
+                return Aag_Call_Result::blocked(Aag_Gateway_Error::UnsupportedProtocol, None);
+            }
         };
         let sent = bounded(http_request.send(), deadline, &mut cancel).await;
         let mut response = match sent {

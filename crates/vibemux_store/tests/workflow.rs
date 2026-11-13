@@ -127,6 +127,192 @@ fn derived_negative_control_is_auditable_but_cannot_become_a_candidate() {
 
 const BASE: &str = "0123456789abcdef0123456789abcdef01234567";
 
+#[test]
+fn worker_reports_require_a_settled_owned_attempt_and_commit_only_content_free_claims() {
+    use vibemux_workflow::worker_report::{WorkerReport, WorkerReportState};
+    let (file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let lease = lease(&mut store, &workflow, "track_a", "slot_a", "report_worker");
+    let admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &lease,
+        "report_worker",
+        AttemptPurpose::Implement,
+    );
+    let attempt = store
+        .admit_workflow_attempt(&admission)
+        .expect("attempt")
+        .attempt;
+    let fence = LeaseFence {
+        lease_id: lease.lease_id,
+        generation: lease.generation,
+    };
+    let report = WorkerReport {
+        state: WorkerReportState::Blocked,
+        summary: "PRIVATE report summary".into(),
+        human_action: Some("PRIVATE question".into()),
+    };
+    let before = store.events().expect("events").len();
+    assert_eq!(
+        store
+            .record_workflow_worker_report(attempt.request_id, fence, &report, at(4))
+            .expect_err("unsettled")
+            .code(),
+        "workflow_worker_report_attempt_unsettled"
+    );
+    assert_eq!(store.events().expect("events").len(), before);
+    finish_clean(&mut store, attempt.request_id);
+    let invalid = LeaseFence {
+        generation: lease.generation + 1,
+        ..fence
+    };
+    assert!(
+        store
+            .record_workflow_worker_report(attempt.request_id, invalid, &report, at(6))
+            .is_err()
+    );
+    let record = store
+        .record_workflow_worker_report(attempt.request_id, fence, &report, at(6))
+        .expect("report");
+    assert_eq!(record.session_id, attempt.session_id);
+    assert!(record.needs_attention);
+    let before = store.events().expect("events").len();
+    assert_eq!(
+        store
+            .record_workflow_worker_report(attempt.request_id, fence, &report, at(7))
+            .expect("duplicate"),
+        record
+    );
+    assert_eq!(store.events().expect("events").len(), before);
+    let mut altered = report;
+    altered.summary = "different".into();
+    assert_eq!(
+        store
+            .record_workflow_worker_report(attempt.request_id, fence, &altered, at(7))
+            .expect_err("conflict")
+            .code(),
+        "workflow_worker_report_conflict"
+    );
+    assert_eq!(store.events().expect("events").len(), before);
+    for event in store.events().expect("events") {
+        assert!(
+            !serde_json::to_string(&event)
+                .expect("event")
+                .contains("PRIVATE")
+        );
+    }
+    drop(store);
+    let store = SqliteStore::open(file.path()).expect("restart");
+    let page = store
+        .workflow_worker_reports(workflow.workflow_id, 0)
+        .expect("page");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].1, record);
+    assert!(!page.more);
+    assert!(
+        store
+            .workflow_worker_reports(workflow.workflow_id, page.next)
+            .expect("next")
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .workflow_worker_reports(workflow.workflow_id, u64::MAX)
+            .expect_err("cursor")
+            .code(),
+        "workflow_worker_report_cursor_invalid"
+    );
+}
+
+#[test]
+fn an_attention_report_fences_candidate_acceptance_after_restart() {
+    use vibemux_workflow::worker_report::{WorkerReport, WorkerReportState};
+    let (file, mut store) = open_store();
+    let workflow = running_workflow(&mut store, &["track_a"]);
+    let lease = lease(&mut store, &workflow, "track_a", "slot_a", "report_gate");
+    let admission = attempt_admission(
+        &store,
+        workflow.workflow_id,
+        &lease,
+        "report_gate",
+        AttemptPurpose::Implement,
+    );
+    let attempt = store
+        .admit_workflow_attempt(&admission)
+        .expect("attempt")
+        .attempt;
+    finish_clean(&mut store, attempt.request_id);
+    store
+        .record_workflow_worker_report(
+            attempt.request_id,
+            LeaseFence {
+                lease_id: lease.lease_id,
+                generation: lease.generation,
+            },
+            &WorkerReport {
+                state: WorkerReportState::Blocked,
+                summary: "Needs clarification".into(),
+                human_action: Some("Which interface?".into()),
+            },
+            at(6),
+        )
+        .expect("report");
+    let receipt = candidate_receipt(&store, workflow.workflow_id, &lease, &attempt, "server");
+    store
+        .record_workflow_receipt(
+            workflow.workflow_id,
+            &WorkflowReceipt::Candidate(receipt.clone()),
+            fence(&lease),
+            at(6),
+        )
+        .expect("candidate");
+    drop(store);
+    let mut store = SqliteStore::open(file.path()).expect("restart");
+    let version = current(&store, workflow.workflow_id).version;
+    assert_eq!(
+        store
+            .accept_workflow_candidate(
+                workflow.workflow_id,
+                version,
+                &id("track_a"),
+                receipt.candidate.candidate_digest,
+                at(7)
+            )
+            .expect_err("attention gates precede optimistic acceptance")
+            .code(),
+        "workflow_worker_report_attention_required"
+    );
+    drop(store);
+    // Corrupt only this test-owned projection; its immutable audit event stays
+    // unchanged. A forged readiness flag must fail closed on read and gate.
+    let connection = rusqlite::Connection::open(file.path()).expect("test database");
+    connection.execute("UPDATE workflow_worker_reports SET record_json=json_set(record_json,'$.needs_attention',json('false'),'$.state','ready')", []).expect("fault injection");
+    drop(connection);
+    let mut store = SqliteStore::open(file.path()).expect("reopen");
+    assert_eq!(
+        store
+            .workflow_worker_reports(workflow.workflow_id, 0)
+            .expect_err("report audit mismatch")
+            .code(),
+        "workflow_worker_report_projection_mismatch"
+    );
+    assert_eq!(
+        store
+            .accept_workflow_candidate(
+                workflow.workflow_id,
+                version,
+                &id("track_a"),
+                receipt.candidate.candidate_digest,
+                at(8)
+            )
+            .expect_err("forged projection cannot enable acceptance")
+            .code(),
+        "workflow_worker_report_projection_mismatch"
+    );
+}
+
 fn id(value: &str) -> SpecIdentifier {
     SpecIdentifier::new(value).expect("identifier")
 }

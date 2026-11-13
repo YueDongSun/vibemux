@@ -18,6 +18,8 @@ use crate::workflow::error::WorkflowError;
 /// Deadline of the operations that compile, read Git, or create
 /// worktrees.
 pub const WORKFLOW_SLOW_DEADLINE: Duration = Duration::from_secs(120);
+/// Explicit qualification may run two bounded native turns plus owned cleanup.
+pub const WORKFLOW_QUALIFICATION_DEADLINE: Duration = Duration::from_secs(240);
 /// Deadline of a prompt evaluation, which runs whole fixture workflows.
 pub const WORKFLOW_EVALUATION_DEADLINE: Duration = Duration::from_secs(3600);
 /// Bound on every argument except a prepare's, which the frame bounds.
@@ -48,6 +50,29 @@ pub struct WorkflowStartArgument {
 #[serde(deny_unknown_fields)]
 pub struct WorkflowLookup {
     pub workflow_id: Uuid,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowIndexQuery {
+    pub after: Option<Uuid>,
+    pub limit: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowOperationLookup {
+    pub event_id: Uuid,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowReportsQuery {
+    pub workflow_id: Uuid,
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(default)]
+    pub include_content: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,6 +114,83 @@ pub struct WorkflowEvaluateArgument {
 }
 
 impl ControlClient {
+    pub async fn workflow_submit(&self, submission: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowSubmit,
+            Some(&submission),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_operation(&self, event_id: Uuid) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowOperation,
+            Some(&WorkflowOperationLookup { event_id }),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_list(
+        &self,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowList,
+            Some(&WorkflowIndexQuery { after, limit }),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
+    pub async fn workflow_readiness(&self) -> Result<Value, ControlError> {
+        self.workflow_request::<Value>(ControlOperation::WorkflowReadiness, None, CONTROL_DEADLINE)
+            .await
+    }
+
+    pub async fn workflow_qualify(&self, qualification: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowQualify,
+            Some(&qualification),
+            WORKFLOW_QUALIFICATION_DEADLINE,
+        )
+        .await
+    }
+    pub async fn workflow_intake(&self, intake: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowIntake,
+            Some(&intake),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+    pub async fn workflow_followup(&self, followup: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowFollowup,
+            Some(&followup),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+    pub async fn workflow_reports(
+        &self,
+        workflow_id: Uuid,
+        after_sequence: u64,
+        include_content: bool,
+    ) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowReports,
+            Some(&WorkflowReportsQuery {
+                workflow_id,
+                after_sequence,
+                include_content,
+            }),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
     pub async fn workflow_contract_edit(&self, edit: Value) -> Result<Value, ControlError> {
         self.workflow_request(
             ControlOperation::WorkflowContractEdit,
@@ -331,6 +433,54 @@ pub(super) async fn dispatch(
 ) -> Result<ControlPayload, ControlError> {
     let service = &state.workflow;
     let value = match operation {
+        ControlOperation::WorkflowSubmit => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let submission =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.submit_goal(submission).await)?
+        }
+        ControlOperation::WorkflowOperation => {
+            let query: WorkflowOperationLookup = parse_lookup(argument)?;
+            encode(service.operation(query.event_id).await)?
+        }
+        ControlOperation::WorkflowList => {
+            let query: WorkflowIndexQuery = parse_lookup(argument)?;
+            encode(service.index(query.after, query.limit).await)?
+        }
+        ControlOperation::WorkflowReadiness => {
+            if argument.is_some() {
+                return Err(ControlError::InvalidRequest);
+            }
+            encode(service.readiness().await)?
+        }
+        ControlOperation::WorkflowQualify => {
+            let qualification = parse_lookup(argument)?;
+            encode(service.qualify(qualification).await)?
+        }
+        ControlOperation::WorkflowIntake => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let intake =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.intake(intake).await)?
+        }
+        ControlOperation::WorkflowFollowup => {
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let followup =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.followup(followup).await)?
+        }
+        ControlOperation::WorkflowReports => {
+            let query: WorkflowReportsQuery = parse_lookup(argument)?;
+            encode(
+                service
+                    .worker_reports(
+                        query.workflow_id,
+                        query.after_sequence,
+                        query.include_content,
+                    )
+                    .await,
+            )?
+        }
         ControlOperation::WorkflowContractEdit => {
             let argument = argument.ok_or(ControlError::InvalidRequest)?;
             let edit: Value =

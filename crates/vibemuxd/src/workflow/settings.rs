@@ -68,6 +68,13 @@ pub struct WorkflowConfig {
     pub verifier: VerifierConfig,
     #[serde(default)]
     pub gateway: Option<GatewayConfig>,
+    /// Explicit compiler-only native route. It never qualifies writable slots.
+    #[serde(default)]
+    pub native_compiler: Option<super::native_provider::NativeProviderConfig>,
+    /// Use locally configured native worker routes after explicit live
+    /// qualification. Default false retains the existing AAG route contract.
+    #[serde(default)]
+    pub native_workers: bool,
     pub heartbeat_ms: u64,
     pub candidate_limits: CandidateLimits,
     /// Opt-in private content retention; `None` keeps no content.
@@ -146,11 +153,17 @@ impl LoadedWorkflowConfig {
             .find(|slot| &slot.slot_id == slot_id)
     }
 
-    /// The route a slot's model traffic is bound to: the explicit AAG
-    /// binding of its role, or the fixture label when no gateway exists
-    /// (only fixture-class configs may omit the gateway).
+    /// The explicit native route, AAG role binding, or fixture label.
+    /// A native label is an operator route choice, not provider attestation.
     #[must_use]
     pub fn route_label(&self, slot: &SlotConfig) -> String {
+        if self.config.native_workers {
+            return format!(
+                "native:{}:{}",
+                slot.harness.command_name(),
+                slot.route_role.as_str()
+            );
+        }
         match self
             .config
             .gateway
@@ -187,6 +200,14 @@ pub fn load_workflow_config(
     let git_executable = trusted_file(&config.git_executable, canonical_root)?;
     let verifier_executable = trusted_file(&config.verifier.executable, canonical_root)?;
     let verifier_directory = trusted_directory(&config.verifier.directory, canonical_root)?;
+    if let Some(native) = &config.native_compiler {
+        trusted_file(&native.executable, canonical_root)?;
+        trusted_file(&native.trampoline, canonical_root)?;
+        trusted_directory(&native.working_directory, canonical_root)?;
+        native
+            .validate()
+            .map_err(|_| WorkflowError::ConfigInvalid)?;
+    }
     let verifier_digest = verifier_digest(&verifier_directory, &config.verifier)?;
     let digest = Sha256Digest::of_fields(CONFIG_DIGEST_DOMAIN, &[&bytes]);
     Ok(LoadedWorkflowConfig {
@@ -226,9 +247,13 @@ fn validate(config: &WorkflowConfig) -> Result<(), WorkflowError> {
     {
         return Err(invalid());
     }
-    // Live evidence needs every slot's model traffic bound to an explicit
-    // AAG route; only fixture workers may run without a gateway.
-    if config.evidence_class == EvidenceClass::Live && config.gateway.is_none() {
+    // Native workers are an explicit independent route class. This config
+    // alone never qualifies a slot; the live probe must still pass.
+    if (config.evidence_class == EvidenceClass::Live
+        && config.gateway.is_none()
+        && !config.native_workers)
+        || (config.native_workers && config.evidence_class != EvidenceClass::Live)
+    {
         return Err(invalid());
     }
     let limits = config.candidate_limits;
@@ -278,9 +303,12 @@ fn validate(config: &WorkflowConfig) -> Result<(), WorkflowError> {
         // Every slot's role must be bound: a slot never falls back to a
         // gateway default.
         for slot in &config.slots {
-            if gateway.binding(slot.route_role).is_none() {
+            if !config.native_workers && gateway.binding(slot.route_role).is_none() {
                 return Err(invalid());
             }
+        }
+        if config.native_compiler.is_some() && gateway.binding(RouteRole::Compiler).is_some() {
+            return Err(invalid());
         }
     }
     Ok(())

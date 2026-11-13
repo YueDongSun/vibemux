@@ -11,7 +11,7 @@ use crate::{
     plugin_commands::run_plugin_status,
     probe,
     recovery::{inspect_runtime, recover_runtime},
-    start_daemon, stop_daemon,
+    start_daemon, stop_daemon_if_owner,
     task_commands::run_task,
     terminal_commands::run_terminal,
     workflow_commands::run_workflow,
@@ -214,9 +214,12 @@ async fn run_control(command: CliCommand) -> Result<Value, DaemonCliError> {
             let paths = paths(project_root).await?;
             Ok(health_json("running", &daemon_health(&paths).await?))
         }
-        CliCommand::DaemonStop { project_root } => {
+        CliCommand::DaemonStop {
+            project_root,
+            expected_process_id,
+        } => {
             let paths = paths(project_root).await?;
-            let health = stop_daemon(&paths).await?;
+            let health = stop_daemon_if_owner(&paths, expected_process_id).await?;
             Ok(json!({"ok":true,"status":"stopped","process_id":health.process_id}))
         }
         CliCommand::DaemonInspect { project_root } => {

@@ -50,6 +50,8 @@ pub enum WorkflowError {
     Gateway,
     #[error("context share is invalid")]
     ShareInvalid,
+    #[error("workflow follow-up is malformed or exceeds its authority")]
+    FollowupInvalid,
     #[error("session is not known")]
     SessionNotFound,
     #[error("native terminal sessions are not available")]
@@ -102,6 +104,7 @@ impl WorkflowError {
             Self::Verifier => "workflow_verifier_failed",
             Self::Gateway => "workflow_gateway_failed",
             Self::ShareInvalid => "workflow_share_invalid",
+            Self::FollowupInvalid => "workflow_followup_invalid",
             Self::SessionNotFound => "workflow_session_not_found",
             Self::NativeTuiUnavailable => "workflow_native_tui_unavailable",
             Self::EvaluationInvalid => "workflow_evaluation_invalid",

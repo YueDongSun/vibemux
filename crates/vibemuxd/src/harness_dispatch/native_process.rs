@@ -85,8 +85,11 @@ pub(crate) fn resolve_environment(
 }
 
 pub(crate) struct NativeProcess {
-    child: Child,
+    // The group must be released before dropping a child can reap its leader.
     tree: ProcessTree,
+    child: Child,
+    forced_termination: bool,
+    finished: Option<(ProcessExit, u64)>,
     /// `None` once closed.
     pub stdin: Option<ChildStdin>,
     pub stdout: ChildStdout,
@@ -152,8 +155,10 @@ impl NativeProcess {
             Arc::clone(&stderr_flags),
         ));
         let mut process = Self {
-            child,
             tree,
+            child,
+            forced_termination: false,
+            finished: None,
             stdin: Some(stdin),
             stdout,
             stderr_bytes,
@@ -161,7 +166,7 @@ impl NativeProcess {
             stderr_drain,
         };
         if process.release().await.is_err() {
-            process.finish(true, Instant::now()).await;
+            process.finish(true, Instant::now()).await?;
             return Err(DispatchError::PipeFailed);
         }
         Ok(process)
@@ -197,17 +202,21 @@ impl NativeProcess {
 
     /// Ends the process and reports how. Unless `force` is set, the
     /// trampoline may exit on its own until `exit_deadline`; after that, or
-    /// with `force`, the tree is killed. Either way the tree is terminated
-    /// before the trampoline is reaped, which removes any member it left
-    /// behind. Returns the exit and the stderr byte count.
+    /// with `force`, the tree is killed. Exit evidence is returned only after
+    /// tree termination succeeds. An error leaves the owner unreaped on POSIX
+    /// so the caller can retry cleanup; a completed finish is idempotent.
     pub(crate) async fn finish(
         &mut self,
         force: bool,
         exit_deadline: Instant,
-    ) -> (ProcessExit, u64) {
+    ) -> Result<(ProcessExit, u64), DispatchError> {
+        if let Some(finished) = self.finished {
+            return Ok(finished);
+        }
         self.close_stdin();
         let exited_naturally = !force && self.await_natural_exit(exit_deadline).await;
-        let _ = self.tree.terminate();
+        self.forced_termination |= !exited_naturally;
+        self.terminate_tree()?;
         let exit_code = self.reap().await;
         if timeout(REAP_DEADLINE, &mut self.stderr_drain)
             .await
@@ -217,9 +226,18 @@ impl NativeProcess {
         }
         let exit = ProcessExit {
             exit_code,
-            forced_termination: !exited_naturally,
+            forced_termination: self.forced_termination,
         };
-        (exit, self.stderr_diagnostic().bytes)
+        let finished = (exit, self.stderr_diagnostic().bytes);
+        self.finished = Some(finished);
+        Ok(finished)
+    }
+
+    pub(crate) fn unverified_exit(&self) -> ProcessExit {
+        ProcessExit {
+            exit_code: None,
+            forced_termination: self.forced_termination,
+        }
     }
 
     /// Windows: the job holds its members by handle, so the trampoline may
@@ -246,6 +264,18 @@ impl NativeProcess {
                 _ => return false,
             }
         }
+    }
+
+    fn terminate_tree(&mut self) -> Result<(), DispatchError> {
+        // Per-task fault injection exercises every caller without changing
+        // platform primitives or introducing a runtime configuration switch.
+        #[cfg(test)]
+        if let Ok(terminate) = TEST_TERMINATE.try_with(|terminate| *terminate) {
+            return terminate(&mut self.tree).map_err(|_| DispatchError::ContainmentFailed);
+        }
+        self.tree
+            .terminate()
+            .map_err(|_| DispatchError::ContainmentFailed)
     }
 
     async fn reap(&mut self) -> Option<i32> {
@@ -309,6 +339,152 @@ async fn drain_stderr(mut stderr: ChildStderr, counter: Arc<AtomicU64>, flags: A
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_TERMINATE:
+        fn(&mut ProcessTree) -> Result<(), vibemux_platform::PlatformError>;
+}
+
+#[cfg(all(test, feature = "test_helpers"))]
+pub(crate) mod tests {
+    use super::*;
+    use std::path::Path;
+    use vibemux_platform::{PlatformError, ProcessTreeOperation};
+
+    pub(crate) fn fixture_plan(directory: &Path, arguments: &[&str]) -> LaunchPlan {
+        let current = std::env::current_exe().expect("test executable");
+        let binaries = current.parent().expect("deps").parent().expect("profile");
+        let binary = |name| binaries.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        let executable = binary("vibemux_native_fixture");
+        let trampoline = binary("vibemux_launch_trampoline");
+        assert!(
+            executable.is_file(),
+            "build the native fixture in this profile"
+        );
+        assert!(trampoline.is_file(), "build the trampoline in this profile");
+        LaunchPlan {
+            trampoline,
+            executable: executable.clone(),
+            spec: LaunchSpec {
+                executable,
+                arguments: arguments
+                    .iter()
+                    .map(|argument| (*argument).to_string())
+                    .collect(),
+                environment_names: Vec::new(),
+            },
+            working_directory: directory.to_path_buf(),
+        }
+    }
+
+    pub(crate) fn termination_failure_after_cleanup(
+        tree: &mut ProcessTree,
+    ) -> Result<(), PlatformError> {
+        // Attempt fixture cleanup even when exercising a caller that ignores
+        // errors. An actual cleanup failure is already the requested failure.
+        tree.terminate()?;
+        Err(PlatformError::ProcessTree {
+            operation: ProcessTreeOperation::Terminate,
+            os_code: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_retains_the_owner_for_a_verified_retry() {
+        let directory = tempfile::tempdir().expect("scratch");
+        let plan = fixture_plan(directory.path(), &["--fixture_mode", "echo_stdin"]);
+        let mut process = NativeProcess::spawn(&plan, Vec::new())
+            .await
+            .expect("spawn");
+        let failed = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                process.finish(false, Instant::now() + Duration::from_secs(5)),
+            )
+            .await;
+        assert!(matches!(failed, Err(DispatchError::ContainmentFailed)));
+        assert!(!process.unverified_exit().is_clean());
+        assert!(process.finished.is_none());
+        #[cfg(unix)]
+        assert!(
+            process
+                .tree
+                .leader_exited()
+                .expect("leader remains unreaped")
+        );
+
+        let finished = process
+            .finish(false, Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("verified retry");
+        assert!(finished.0.is_clean());
+        let repeated = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                process.finish(true, Instant::now()),
+            )
+            .await
+            .expect("finished cleanup is idempotent");
+        assert_eq!(repeated, finished);
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_retry_preserves_a_forced_finish() {
+        let directory = tempfile::tempdir().expect("scratch");
+        let plan = fixture_plan(directory.path(), &["--fixture_mode", "echo_stdin"]);
+        let mut process = NativeProcess::spawn(&plan, Vec::new())
+            .await
+            .expect("spawn");
+        let failed = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                process.finish(true, Instant::now()),
+            )
+            .await;
+        assert!(matches!(failed, Err(DispatchError::ContainmentFailed)));
+        assert!(process.unverified_exit().forced_termination);
+        let (exit, _) = process
+            .finish(false, Instant::now() + Duration::from_secs(5))
+            .await
+            .expect("verified forced cleanup");
+        assert!(exit.forced_termination);
+        assert!(!exit.is_clean());
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_is_returned_by_browser_probe() {
+        let directory = tempfile::tempdir().expect("scratch");
+        let fixture = fixture_plan(directory.path(), &[]);
+        let executable = directory
+            .path()
+            .join(format!("probe_fixture{}", std::env::consts::EXE_SUFFIX));
+        std::fs::copy(&fixture.executable, &executable).expect("copy fixture");
+        std::fs::write(
+            directory.path().join("fixture_mode.json"),
+            br#"{"mode":"echo_stdin"}"#,
+        )
+        .expect("fixture mode");
+        let result = TEST_TERMINATE
+            .scope(
+                termination_failure_after_cleanup,
+                run_browser_lifecycle_probe(BrowserProbePlan {
+                    trampoline: fixture.trampoline,
+                    node: executable,
+                    script: directory.path().join("synthetic_probe.js"),
+                    browser: fixture.executable,
+                    scratch: directory.path().to_path_buf(),
+                    environment_names: Vec::new(),
+                    hold_after_attach: false,
+                }),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(DispatchError::ContainmentFailed)),
+            "{result:?}"
+        );
     }
 }
 
@@ -445,7 +621,9 @@ pub async fn run_browser_lifecycle_probe(
         }
     }
     let force = held || !eof || result.output_truncated;
-    let (exit, _) = process.finish(force, Instant::now() + REAP_DEADLINE).await;
+    let (exit, _) = process
+        .finish(force, Instant::now() + REAP_DEADLINE)
+        .await?;
     result.exit = exit;
     result.native_stderr = process.stderr_diagnostic();
     #[cfg(windows)]

@@ -10,7 +10,13 @@
 //! retained text of a session explicitly.
 
 mod contract_edit;
+mod operations;
+pub use operations::{GoalSubmission, OperationResponse};
+pub(crate) mod qualification;
+pub use qualification::{QualificationRequest, QualificationResponse};
+mod superagent;
 pub use contract_edit::{ContractEditRequest, ContractEditResponse, EditDisposition};
+pub use superagent::{FollowupRequest, FollowupResponse, IntakeRequest, ReportsResponse};
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -63,7 +69,7 @@ use crate::{
 /// Page size for contract, bundle, and session lookup.
 const WORKFLOW_PAGE_SIZE: usize = 256;
 /// How long shutdown waits for coordinators to reach a turn boundary.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(8);
 /// Heartbeat used for lease changes when the config is missing.
 const FALLBACK_HEARTBEAT_MS: u64 = 30_000;
 const RECOVERED_LEASE_CODE: &str = "workflow_recovered_attempt_settled";
@@ -230,6 +236,8 @@ struct ServiceInner {
     evaluation: tokio::sync::Mutex<()>,
     model_factory: Option<Arc<dyn super::model_compiler::WorkflowModelGatewayFactory>>,
     compiler_gate: tokio::sync::Semaphore,
+    goal_gate: Arc<tokio::sync::Semaphore>,
+    shutdown_signal: watch::Sender<bool>,
 }
 
 struct RunRegistry {
@@ -264,8 +272,10 @@ impl ServiceInner {
 }
 
 impl WorkflowService {
+    /// Installs an explicit fixture-only compiler owner before the service
+    /// is shared. Production builds expose no factory replacement operation.
     #[cfg(feature = "test_helpers")]
-    pub(crate) fn with_model_factory(
+    pub fn with_model_factory(
         mut self,
         factory: Arc<dyn super::model_compiler::WorkflowModelGatewayFactory>,
     ) -> Result<Self, WorkflowError> {
@@ -282,6 +292,11 @@ impl WorkflowService {
         dispatch: HarnessDispatchService,
         settings: WorkflowServiceSettings,
     ) -> Self {
+        let operation_writer = writer.clone();
+        let operation_recovery = call_writer(move || {
+            operation_writer.recover_workflow_operations(OffsetDateTime::now_utc())
+        })
+        .await;
         let loader = dispatch.clone();
         let mut setup = tokio::task::spawn_blocking(move || {
             load_setup(&settings.project_root, &settings.state_dir, &loader)
@@ -299,6 +314,9 @@ impl WorkflowService {
         });
         if let Err(error) = reconcile(&writer, heartbeat_ms).await {
             setup = Err(error);
+        }
+        if let Err(error) = operation_recovery {
+            setup = Err(error.into());
         }
         Self::with_setup(writer, dispatch, setup)
     }
@@ -330,6 +348,8 @@ impl WorkflowService {
                 evaluation: tokio::sync::Mutex::new(()),
                 model_factory: None,
                 compiler_gate: tokio::sync::Semaphore::new(1),
+                goal_gate: operations::goal_gate(),
+                shutdown_signal: watch::channel(false).0,
             }),
         }
     }
@@ -386,6 +406,7 @@ impl WorkflowService {
                 self.inner.model_factory.as_ref(),
                 &mut request,
                 &policy,
+                self.inner.shutdown_signal.subscribe(),
             )
             .await?;
         }
@@ -784,6 +805,7 @@ impl WorkflowService {
     ) -> Result<ParallelismPlan, WorkflowError> {
         let writer = self.inner.writer.clone();
         let mut slots = call_writer(move || writer.workflow_slots()).await?;
+        self.check_qualified_routes(setup, &mut slots).await?;
         let snapshot = self.snapshot(record.workflow_id).await?;
         let own: BTreeSet<&SpecIdentifier> = snapshot
             .leases
@@ -999,7 +1021,8 @@ impl WorkflowService {
     pub async fn slots(&self) -> Result<SlotsResponse, WorkflowError> {
         let setup = self.inner.setup()?;
         let writer = self.inner.writer.clone();
-        let slots = call_writer(move || writer.workflow_slots()).await?;
+        let mut slots = call_writer(move || writer.workflow_slots()).await?;
+        self.check_qualified_routes(&setup, &mut slots).await?;
         let writable = evaluate_eligibility(
             &slots,
             EligibilityRequest {
@@ -1257,6 +1280,7 @@ impl WorkflowService {
     /// Stops admission and asks every coordinator to stop at its next turn
     /// boundary, without waiting.
     pub fn begin_shutdown(&self) {
+        self.inner.shutdown_signal.send_replace(true);
         let mut runs = self.inner.runs();
         runs.accepting = false;
         for active in runs.active.values() {

@@ -211,6 +211,7 @@ pub enum CliCommand {
     },
     DaemonStop {
         project_root: Option<PathBuf>,
+        expected_process_id: Option<u32>,
     },
     DaemonInspect {
         project_root: Option<PathBuf>,
@@ -380,10 +381,21 @@ pub async fn daemon_health(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCl
 }
 
 pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliError> {
+    stop_daemon_if_owner(paths, None).await
+}
+
+/// A launcher may stop only the daemon process it owns. Health and shutdown
+/// use one immutable descriptor (generation + secret), so a replacement
+/// daemon cannot receive the authenticated shutdown after the health check.
+pub async fn stop_daemon_if_owner(
+    paths: &DaemonPaths,
+    expected_process_id: Option<u32>,
+) -> Result<DaemonHealth, DaemonCliError> {
     let selection = select_runtime(paths)?;
     validate_selected_runtime(paths, &selection)?;
     let client = control_client(&selection)?;
     let health = client.health().await.map_err(map_control_error)?;
+    check_expected_process_id(expected_process_id, health.process_id)?;
     client.shutdown().await.map_err(map_control_error)?;
     let deadline = Instant::now() + DEFAULT_SHUTDOWN_TIMEOUT;
     while select_runtime(paths)?.has_artifacts {
@@ -412,6 +424,15 @@ pub async fn stop_daemon(paths: &DaemonPaths) -> Result<DaemonHealth, DaemonCliE
         }
     }
     Ok(health)
+}
+
+fn check_expected_process_id(expected: Option<u32>, actual: u32) -> Result<(), DaemonCliError> {
+    if expected.is_some_and(|expected| expected == 0 || expected != actual) {
+        return Err(DaemonCliError::Control {
+            code: "daemon_owner_mismatch".into(),
+        });
+    }
+    Ok(())
 }
 
 /// Return a connected control client for the harness surface.
@@ -537,6 +558,7 @@ pub fn parse_cli_arguments(
     let mut project_root = None;
     let mut daemon_executable = None;
     let mut confirmation = None;
+    let mut expected_process_id = None;
     let mut index = 2;
     while index < arguments.len() {
         let flag = arguments[index]
@@ -551,6 +573,17 @@ pub fn parse_cli_arguments(
             }
             "--daemon-executable" if action == "start" && daemon_executable.is_none() => {
                 daemon_executable = Some(PathBuf::from(value));
+            }
+            "--expected-process-id" if action == "stop" && expected_process_id.is_none() => {
+                let process_id: u32 = value
+                    .to_str()
+                    .ok_or(DaemonCliError::InvalidArguments)?
+                    .parse()
+                    .map_err(|_| DaemonCliError::InvalidArguments)?;
+                if process_id == 0 {
+                    return Err(DaemonCliError::InvalidArguments);
+                }
+                expected_process_id = Some(process_id);
             }
             "--confirmation" if action == "recover" && confirmation.is_none() => {
                 confirmation = Some(
@@ -570,7 +603,10 @@ pub fn parse_cli_arguments(
             daemon_executable,
         }),
         "health" if daemon_executable.is_none() => Ok(CliCommand::DaemonHealth { project_root }),
-        "stop" if daemon_executable.is_none() => Ok(CliCommand::DaemonStop { project_root }),
+        "stop" if daemon_executable.is_none() => Ok(CliCommand::DaemonStop {
+            project_root,
+            expected_process_id,
+        }),
         "inspect" if daemon_executable.is_none() && confirmation.is_none() => {
             Ok(CliCommand::DaemonInspect { project_root })
         }
@@ -933,6 +969,29 @@ fn validate_bootstrap_config(config: &DaemonBootstrapConfig) -> Result<(), Daemo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expected_daemon_owner_is_fenced_before_shutdown() {
+        assert!(super::check_expected_process_id(None, 44).is_ok());
+        assert!(super::check_expected_process_id(Some(44), 44).is_ok());
+        for expected in [0, 45] {
+            assert!(
+                matches!(super::check_expected_process_id(Some(expected), 44),
+                Err(super::DaemonCliError::Control { code }) if code == "daemon_owner_mismatch")
+            );
+        }
+        let parse = |values: &[&str]| {
+            super::parse_cli_arguments(values.iter().map(std::ffi::OsString::from))
+        };
+        assert!(matches!(
+            parse(&["daemon", "stop", "--expected-process-id", "44"]),
+            Ok(super::CliCommand::DaemonStop {
+                expected_process_id: Some(44),
+                ..
+            })
+        ));
+        assert!(parse(&["daemon", "stop", "--expected-process-id", "0"]).is_err());
+        assert!(parse(&["daemon", "health", "--expected-process-id", "44"]).is_err());
+    }
     #[cfg(windows)]
     use vibemuxd::control::DaemonControlServer;
 

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add durable daemon-owned goal submission, operation lookup, workflow pagination and readiness (Control v18, store schema 15); preserve unknown outcomes across restart and reject incompatible native-session database lineage. Add an explicit contained native Codex compiler protocol while retaining worker qualification and AAG attestation gates.
+- Fix native child/verifier success reporting when cleanup fails, and add `daemon stop --expected-process-id` for launchers that must stop only their owned daemon.
+- Add explicit native Claude worker qualification with owned canaries, correlated successful tool results, expiring CLI/config-bound evidence and stale-route downgrades. Preserve subscription authentication with writable profile v2 (`--safe-mode`); live vendor qualification remains a target-host validation step.
+- Update pinned rustix from 1.1.4 to 1.1.6 for RUSTSEC-2026-0486 without changing dependency policy.
+
+- Add an optional process-external supervisor bridge under `integrations/superagent_bridge`: authenticated, bounded task/workflow reads and capability-gated intake/follow-up/report adapters, with fixed project aliases, prepared-only intake receipts, explicit unknown mutation outcomes and no automatic retries. It uses Node built-ins and the installed CLI; the daemon remains the sole canonical writer. Capabilities depend on the installed backend command contract.
+
 - Make the monitor's one-time enrollment QR request single-flight. A repeated "Create one-time QR" click no longer mints a second server-side one-time token, and the request owner is released on failure, sign-out, token installation, and unmount.
 - Update the locked `rusqlite` to 0.41.1 and `libsqlite3-sys` to 0.39.1 for RUSTSEC-2026-0459 (C SQLite CVE-2026-119375). rusqlite 0.41 removed its `u64` SQL conversions, so the store converts `u64` explicitly at the SQL boundary and fails closed on out-of-range values; the bundled SQLite engine also moves to the version shipped with libsqlite3-sys 0.39.1.
 - Fix DSH lifetime cleanup: gate startup on containment, terminate remaining descendants before close succeeds, bound blocked writes, and propagate cleanup failures without forgetting daemon ownership. Standalone DSH builds must include the bundled launch trampoline.
@@ -18,6 +25,12 @@
 - Contain workspace Git filters and their descendants through completion, output overflow, timeout, and cancellation. Workspace Git now requires the bundled `vibemux_launch_trampoline` beside its executable on every platform; build/install both together. Normalize extended Windows UNC worktree inventory paths without losing the network root.
 - Protect browser-local chat history with an exclusive writer lease and stale-record checks; checkpoint streaming conversations at least once per second while timers run, with immediate submit/completion/cancellation and page-lifecycle saves. Existing version-1 records need no migration. Reload older tabs after upgrading; saving requires Web Locks on localhost/loopback or HTTPS.
 - Save desktop settings through uniquely and exclusively created sibling files, preserving unrelated temporary files and symlinks. Bound settings reads and writes to 64 KiB; independent app instances still use last-writer-wins complete snapshots.
+- Add operator `workflow intake`, contract-bound `workflow followup`, and
+  `workflow reports` (ADR 057, Control v11, store schema 10). An opt-in
+  `worker_v2` checkpoint carries bounded structured reports and concrete
+  human questions; immutable claims fence acceptance across restarts.
+  Report text remains private and opt-in. Existing `worker_v1` contracts
+  retain their rendered bytes; live vendor certification is unchanged.
 
 - Add the optional browser-local conversational workspace (ADR 056), with switchable Claude and Codex presentations, persistent history, streaming Anthropic chat, attachments, a context inspector and artifact previews. It remains separate from the monitor, native desktop and daemon state.
 
@@ -189,3 +202,4 @@
 
 - Establish the Windows-first Python package, domain models, SQLite event log, Git worktree, and terminal/harness adapters.
 - Add the CLI, cross-platform smoke, documentation, ADRs, and GitHub Actions matrix.
+

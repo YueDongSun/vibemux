@@ -1,0 +1,189 @@
+{
+  "purpose": "Format reference only. The example request, paths, suite, identifiers and budgets do not grant authority or describe the actual task.",
+  "rules": [
+    "Return exactly one TaskSpec for each assignments task key, using the actual workflow_key, mode, original_request_ref, base_commit and operator_policy.policy_version.",
+    "Use the source_clauses byte offsets and exact quoted text. Offsets count UTF-8 bytes, not characters. Preserve literals and prohibitions in every affected task.",
+    "Every requirement refers to at least one acceptance check. Existing verifier suites must come from operator_policy.verifier_suites; their verifier_suite is a suite_id. Other check kinds use verifier_suite:null.",
+    "Owned and read paths are relative slash-separated literals or a directory followed by /**. Use only task-relevant ownership inside policy writable_roots. Include protected_paths in forbidden_paths. Do not use shell globs or absolute paths.",
+    "Use template_version worker_v1. Keep required completion levels and both output-contract booleans from the format example. Resource limits must not exceed budget_caps.",
+    "Never copy example requirements, paths or suites into the actual result. Keep uncertainty in unresolved_questions; it will block execution rather than widen authority."
+  ],
+  "enum_values": {
+    "source_language": [
+      "zh",
+      "en",
+      "mixed",
+      "other"
+    ],
+    "force": [
+      "must",
+      "must_not",
+      "should",
+      "may"
+    ],
+    "check_kind": [
+      "existing_verifier_suite",
+      "proposed_test",
+      "review_criterion"
+    ],
+    "role": [
+      "backend_domain",
+      "frontend",
+      "store_component",
+      "reviewer",
+      "integrator",
+      "generic"
+    ],
+    "permitted_tools": [
+      "read_files",
+      "search_files",
+      "edit_files",
+      "write_files",
+      "run_dev_tests"
+    ],
+    "exclusion_reason": [
+      "background_context",
+      "example_data",
+      "addressed_to_other_task"
+    ],
+    "media_type": [
+      "text_markdown",
+      "text_plain",
+      "application_json",
+      "javascript"
+    ]
+  },
+  "optional_shapes": {
+    "assumptions": [
+      {
+        "assumption_id": "a1",
+        "statement": "An explicitly non-normative inference.",
+        "rationale": "Why this inference was considered."
+      }
+    ],
+    "source_exclusions": [
+      {
+        "span": {
+          "start": 0,
+          "end": 1,
+          "quoted": "x"
+        },
+        "reason": "background_context"
+      }
+    ],
+    "artifacts": [
+      {
+        "artifact_id": "artifact1",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "byte_count": 1,
+        "media_type": "text_plain"
+      }
+    ],
+    "contract_excerpts": [
+      {
+        "artifact_id": "artifact1",
+        "quoted": "Exact text from a provided immutable shared contract."
+      }
+    ]
+  },
+  "example_request_text": "Create `src/result.txt` containing `ready`.",
+  "example_candidate": {
+    "schema_version": 1,
+    "workflow_key": "example_workflow",
+    "task_key": "example_task",
+    "contract_version": 1,
+    "original_request_ref": "4bee12132505fe182d0e560ab6f44065c434e58fc88f9c1cc6d035db7278d5dd",
+    "source_language": "en",
+    "requirements": [
+      {
+        "requirement_id": "r1",
+        "statement": "Create the requested file with the exact requested content.",
+        "force": "must",
+        "source_refs": [
+          {
+            "start": 0,
+            "end": 43,
+            "quoted": "Create `src/result.txt` containing `ready`."
+          }
+        ],
+        "contract_excerpts": [],
+        "literals": [
+          "src/result.txt",
+          "ready"
+        ],
+        "acceptance_check_ids": [
+          "c1"
+        ]
+      }
+    ],
+    "objective": "Deliver the requested file.",
+    "non_goals": [],
+    "assumptions": [],
+    "unresolved_questions": [],
+    "source_exclusions": [],
+    "base_commit": "0000000000000000000000000000000000000000",
+    "input_artifacts": [],
+    "shared_contract_refs": [],
+    "owned_paths": [
+      "src/result.txt"
+    ],
+    "read_scopes": [
+      "src/**"
+    ],
+    "forbidden_paths": [],
+    "dependencies": [],
+    "required_capabilities": [
+      "structured_turn",
+      "writable_worktree"
+    ],
+    "permitted_tools": [
+      "read_files",
+      "search_files",
+      "edit_files",
+      "write_files"
+    ],
+    "acceptance_checks": [
+      {
+        "check_id": "c1",
+        "kind": "existing_verifier_suite",
+        "description": "The operator-declared content suite passes.",
+        "verifier_suite": "content"
+      }
+    ],
+    "output_contract": {
+      "checkpoint_report_required": true,
+      "changes_within_owned_paths": true
+    },
+    "completion_definition": {
+      "required_levels": [
+        "candidate_artifact_collected",
+        "independent_review_passed",
+        "local_verifier_passed"
+      ]
+    },
+    "communication_policy": {
+      "may_message": [],
+      "max_messages_per_turn": 0,
+      "auto_authorized_kinds": []
+    },
+    "context_policy": {
+      "max_bundle_bytes": 8192,
+      "retrieval_order": [
+        "verifier_receipts",
+        "candidate_snapshot",
+        "contract_text"
+      ],
+      "allow_public_excerpts": false
+    },
+    "resource_budget": {
+      "max_turns": 4,
+      "max_repairs": 1,
+      "max_elapsed_seconds": 300,
+      "max_model_requests": 8
+    },
+    "role": "generic",
+    "workflow_mode": "cooperate",
+    "template_version": "worker_v1",
+    "policy_version": "example_policy"
+  }
+}

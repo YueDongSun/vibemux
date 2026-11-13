@@ -264,7 +264,7 @@ fn usage() -> Failure {
     Failure::new("cli_invalid_arguments")
 }
 
-const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n  vibemuxctl harnesses [--cached] [--project-root <path>]\n  vibemuxctl switch <harness> [--project-root <path>]
+const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>] [--expected-process-id <pid>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n  vibemuxctl harnesses [--cached] [--project-root <path>]\n  vibemuxctl switch <harness> [--project-root <path>]
   vibemuxctl dispatch catalog [--project-root <path>]
   vibemuxctl dispatch probe <harness> [--project-root <path>]
   vibemuxctl dispatch submit <harness> --prompt-file <path|-> [--request-id <uuid>] [--project-root <path>]
@@ -276,6 +276,13 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
   vibemuxctl decisions list [--after-sequence <n>] [--limit <n>] [--project-root <path>]
   vibemuxctl decisions show <decision_id> [--project-root <path>]
   vibemuxctl workflow prepare --request-file <path> --policy-file <path> [--project-root <path>]
+  vibemuxctl workflow intake|followup --request-file <path> [--project-root <path>]
+  vibemuxctl workflow submit --request-file <path> [--project-root <path>]
+  vibemuxctl workflow operation <event_id> [--project-root <path>]
+  vibemuxctl workflow list [--after <workflow_id>] [--limit <1..32>] [--project-root <path>]
+  vibemuxctl workflow readiness [--project-root <path>]
+  vibemuxctl workflow qualify --slot <slot_id> --event-id <uuid> [--project-root <path>]
+  vibemuxctl workflow reports <workflow_id> [--after-sequence <n>] [--include-content] [--project-root <path>]
   vibemuxctl workflow start --contract <sha256> --request-id <uuid> [--project-root <path>]
   vibemuxctl workflow status|pause|cancel|purge <workflow_id> [--project-root <path>]
   vibemuxctl workflow export <workflow_id> --out <new-or-empty-dir> [--project-root <path>]
@@ -300,7 +307,7 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
 pub fn help(topic: Topic) -> String {
     match topic {
         Topic::Harness => vibemux_harness_native::cli::help("vibemuxctl harness"),
-        Topic::Daemon => "Daemon lifecycle (explicit operations)\n\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n\nNo daemon starts automatically. Recovery remains confirmation-gated.\n".to_string(),
+        Topic::Daemon => "Daemon lifecycle (explicit operations)\n\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>] [--expected-process-id <pid>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n\nNo daemon starts automatically. Recovery remains confirmation-gated.\n".to_string(),
         Topic::Workspace => "Workspace inventory (read-only)\n\n  vibemuxctl workspace status [--project-root <path>]\n  vibemuxctl status [--project-root <path>]\n\nShows local branches, worktrees, and cached-ref ancestry; no fetch, merge, or cleanup.\nGlobal output flags go before the command: --format text|json|auto.\n".to_string(),
         Topic::Probe => "Diagnostic metadata\n\n  vibemuxctl probe [--report <saved_report.json>]\n\nSaved reports are bounded, validated and redacted. Without --report, fixed local\nread-only probes run. Authentication and inference are separate, untested claims.\n".to_string(),
         Topic::Ui => "Read-only console (ADR 042)\n\n  vibemuxctl ui [--report <saved_report.json>] [--project-root <path>]\n  vibemuxctl --format text ui --once [--report <file>] [--width <40..240>] [--height <12..80>]\n\n1-7: views (Overview, Harnesses, Workspace, Tasks, Daemon, Sessions, Decisions)\nTab: next view, or next pane | L: layouts (single, split, grid) | z: zoom\nj/k/arrows: selection | Enter: open task or details | /: filter | r: refresh\nt: theme | ?: help | q/Esc: quit\nThe live console polls the running daemon's content-free state every 5 s;\n--once renders the probe and workspace views only.\nNo native TUI attach, daemon start, or model request is performed.\n".to_string(),
