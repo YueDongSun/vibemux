@@ -264,6 +264,26 @@ Workers run in separate owned worktrees. Each candidate is collected by the daem
 
 **Evidence so far is offline only.** Workers are fixture processes. No model, AAG gateway, or vendor CLI has been contacted, and a `live` config cannot make a slot eligible to code yet. See [ADR 031](docs/adr/031_dual_track_workflow.md) for the design and its limitations.
 
+Operator work intake, follow-ups and structured worker reports are available
+through `workflow intake`, `workflow followup` and `workflow reports`
+([ADR 057](docs/adr/057_superagent_workflow_intake.md), Control v11). The opt-in
+`worker_v2` template supports concrete human questions and immutable reports;
+follow-ups keep the admitted scope and reach the worker at a turn boundary.
+`workflow submit` now admits an event-bound operation and asynchronously prepares
+and starts the existing coordinator. `workflow operation`, `workflow list` and
+`workflow readiness` make receipts, the project index and execution blockers
+queryable (Control v18, [ADR 074](docs/adr/074_durable_goal_operations.md)).
+An optional native Codex compiler is separate from writable-worker qualification.
+Live native workers are an explicit `native_workers: true` route choice and need
+`workflow qualify --slot <slot_id> --event-id <uuid>` on the actual host. This
+bounded operation may consume two native Claude turns; it is never run by
+readiness. Readiness/configuration alone does not prove authentication or model
+completion. See ADR 074 for profile, expiry and retained-worktree semantics.
+
+See the [operator guide](docs/guides/superagent_workflow.md) for request shapes
+and retained-content reads. These functions use existing workflow admission
+and gates; GitHub/Feishu watchers and external replies are not installed.
+
 The workflow service needs `.vibemux/workflow_config.json` (schema 1; read once at daemon start) and harness dispatch routes for the slots' harnesses. Without the config, every workflow command answers `workflow_unconfigured`. The config requires:
 
 - `evidence_class`: `fixture` or `live`;

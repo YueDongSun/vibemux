@@ -73,7 +73,7 @@ impl ModelCallAdmission {
     pub fn validate(&self) -> Result<(), ModelCallError> {
         if self.deadline_unix_ms == 0
             || !(1..=MAX_MODEL_CALLS_PER_OWNER).contains(&self.max_calls)
-            || !self.identity.protocol.adapter_supported()
+            || !self.identity.protocol.model_call_supported()
             || self.identity.requested_alias.is_empty()
             || self.identity.requested_alias.len() > crate::gateway::MAX_ALIAS_BYTES
             || self

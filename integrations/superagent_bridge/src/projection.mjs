@@ -1,6 +1,8 @@
 import { BridgeError, object, safeInteger, uuid } from './errors.mjs';
 
 const REPORT_STATES = new Set(['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped']);
+const OPERATION_STATES = new Set(['accepted', 'preparing', 'prepared', 'running', 'blocked', 'failed', 'unknown']);
+const CODE = /^[a-z0-9_]{1,96}$/;
 
 function valid(condition) {
   if (!condition) throw new BridgeError('cli_invalid_output', 502, 'rejected');
@@ -68,6 +70,44 @@ export function workflowView(value, projectId, requestedId) {
       'verifier_digest', 'blocked_reason', 'start_contract', 'running_here',
       'tasks', 'sessions', 'leases', 'messages', 'receipts', 'last_run',
     ]),
+  };
+}
+
+export function workflowIndex(value, projectId) {
+  const page = value.workflow_index;
+  valid(value.ok === true && object(page) && page.schema_version === 1
+    && (page.next === null || uuid(page.next)) && typeof page.more === 'boolean'
+    && (!page.more || page.next !== null));
+  const workflows = rows(page.workflows, 32).map((workflow) => {
+    valid(uuid(workflow.workflow_id) && typeof workflow.workflow_key === 'string'
+      && typeof workflow.phase === 'string' && safeInteger(workflow.version, 1)
+      && typeof workflow.evidence_class === 'string' && safeInteger(workflow.updated_at_ms)
+      && (workflow.failure_code === null || (typeof workflow.failure_code === 'string'
+        && CODE.test(workflow.failure_code))));
+    return pick(workflow, ['workflow_id', 'workflow_key', 'phase', 'version',
+      'evidence_class', 'updated_at_ms', 'failure_code']);
+  });
+  return { ok: true, project_id: projectId, workflow_index: {
+    schema_version: 1, workflows, next: page.next, more: page.more,
+  } };
+}
+
+export function operationView(value, projectId, eventId, mutation = false) {
+  const operation = value.operation;
+  const malformed = () => { throw new BridgeError('cli_invalid_output', 502,
+    mutation ? 'unknown' : 'rejected'); };
+  if (value.ok !== true || !object(operation) || operation.schema_version !== 1
+    || !uuid(operation.event_id) || operation.event_id.toLowerCase() !== eventId.toLowerCase()
+    || operation.kind !== 'goal' || !OPERATION_STATES.has(operation.state)
+    || (operation.workflow_id !== null && !uuid(operation.workflow_id))
+    || (operation.start_contract !== null && (typeof operation.start_contract !== 'string'
+      || !/^[a-f0-9]{64}$/.test(operation.start_contract)))
+    || (operation.code !== null && (typeof operation.code !== 'string' || !CODE.test(operation.code)))
+    || typeof operation.duplicate !== 'boolean' || !safeInteger(operation.updated_at_ms)) malformed();
+  return {
+    ok: true, project_id: projectId, event_id: eventId,
+    operation: pick(operation, ['schema_version', 'event_id', 'kind', 'state',
+      'workflow_id', 'start_contract', 'code', 'duplicate', 'updated_at_ms']),
   };
 }
 

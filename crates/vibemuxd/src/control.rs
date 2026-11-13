@@ -74,7 +74,12 @@ pub use workflow_ops::{
     WorkflowStartArgument,
 };
 
-pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V10;
+pub const CONTROL_PROTOCOL_VERSION: u32 = CONTROL_PROTOCOL_V18;
+/// V18 adds durable async goals, operation lookup, index and readiness.
+/// Versions 12–17 belong to an incompatible, unmerged native-session branch.
+pub const CONTROL_PROTOCOL_V18: u32 = 18;
+/// V11 adds operator intake, follow-ups, and structured worker report reads.
+pub const CONTROL_PROTOCOL_V11: u32 = 11;
 /// V10 adds explicit operator contract-edit successor admission.
 pub const CONTROL_PROTOCOL_V10: u32 = 10;
 /// V9 adds explicit model-supervisor start and bounded supervisor status.
@@ -132,6 +137,14 @@ pub enum ControlOperation {
     DshSessionCancel,
     DshSessionClose,
     WorkflowPrepare,
+    WorkflowIntake,
+    WorkflowFollowup,
+    WorkflowReports,
+    WorkflowSubmit,
+    WorkflowOperation,
+    WorkflowList,
+    WorkflowReadiness,
+    WorkflowQualify,
     WorkflowStart,
     WorkflowSupervisorStart,
     WorkflowSupervisorStatus,
@@ -188,6 +201,14 @@ impl ControlOperation {
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V9,
             Self::WorkflowContractEdit => CONTROL_PROTOCOL_V10,
+            Self::WorkflowSubmit
+            | Self::WorkflowOperation
+            | Self::WorkflowList
+            | Self::WorkflowReadiness
+            | Self::WorkflowQualify => CONTROL_PROTOCOL_V18,
+            Self::WorkflowIntake | Self::WorkflowFollowup | Self::WorkflowReports => {
+                CONTROL_PROTOCOL_V11
+            }
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -1967,6 +1988,14 @@ where
             )
         }
         operation @ (ControlOperation::WorkflowPrepare
+        | ControlOperation::WorkflowIntake
+        | ControlOperation::WorkflowFollowup
+        | ControlOperation::WorkflowReports
+        | ControlOperation::WorkflowSubmit
+        | ControlOperation::WorkflowOperation
+        | ControlOperation::WorkflowList
+        | ControlOperation::WorkflowReadiness
+        | ControlOperation::WorkflowQualify
         | ControlOperation::WorkflowStart
         | ControlOperation::WorkflowSupervisorStart
         | ControlOperation::WorkflowSupervisorStatus
@@ -2563,6 +2592,8 @@ fn supported_control_version(version: u32) -> bool {
             | CONTROL_PROTOCOL_V8
             | CONTROL_PROTOCOL_V9
             | CONTROL_PROTOCOL_V10
+            | CONTROL_PROTOCOL_V11
+            | CONTROL_PROTOCOL_V18
     )
 }
 
@@ -3103,7 +3134,7 @@ mod tests {
     }
 
     #[test]
-    fn control_contract_accepts_v1_through_v8() {
+    fn control_contract_accepts_compatible_versions_and_refuses_foreign_lineage() {
         // The accepted protocol version set is the ground truth for both
         // server dispatch and client gating; pin it here so an accidental
         // change is caught at test time.
@@ -3115,9 +3146,30 @@ mod tests {
         assert!(supported_control_version(CONTROL_PROTOCOL_V6));
         assert!(supported_control_version(CONTROL_PROTOCOL_V7));
         assert!(supported_control_version(CONTROL_PROTOCOL_V8));
-        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V10);
+        assert_eq!(CONTROL_PROTOCOL_VERSION, CONTROL_PROTOCOL_V18);
+        assert!(supported_control_version(CONTROL_PROTOCOL_V18));
+        for foreign_version in 12..18 {
+            assert!(!supported_control_version(foreign_version));
+        }
+        for operation in [
+            ControlOperation::WorkflowSubmit,
+            ControlOperation::WorkflowOperation,
+            ControlOperation::WorkflowList,
+            ControlOperation::WorkflowReadiness,
+            ControlOperation::WorkflowQualify,
+        ] {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V18);
+        }
         assert!(supported_control_version(CONTROL_PROTOCOL_V9));
         assert!(supported_control_version(CONTROL_PROTOCOL_V10));
+        assert!(supported_control_version(CONTROL_PROTOCOL_V11));
+        for operation in [
+            ControlOperation::WorkflowIntake,
+            ControlOperation::WorkflowFollowup,
+            ControlOperation::WorkflowReports,
+        ] {
+            assert_eq!(operation.minimum_protocol_version(), CONTROL_PROTOCOL_V11);
+        }
         assert_eq!(
             ControlOperation::WorkflowContractEdit.minimum_protocol_version(),
             CONTROL_PROTOCOL_V10
@@ -3185,7 +3237,7 @@ mod tests {
     }
 
     /// The protocol-boundaries IPC bullet names the current version, the
-    /// accepted range, and what each accepted version added, so a version
+    /// accepted versions, and what each accepted version added, so a version
     /// bump fails here until the documentation follows.
     #[test]
     fn protocol_boundaries_ipc_bullet_states_every_accepted_version() {
@@ -3199,15 +3251,19 @@ mod tests {
             "stale current version"
         );
         assert!(
-            bullet.contains(&format!("accepts v1–v{CONTROL_PROTOCOL_VERSION} requests")),
-            "stale accepted range"
+            bullet.contains("accepts v1–v11 and v18 requests"),
+            "stale accepted version set"
         );
         for version in LEGACY_CONTROL_PROTOCOL_VERSION..=CONTROL_PROTOCOL_VERSION {
-            assert!(supported_control_version(version));
-            assert!(
-                bullet.contains(&format!(" v{version} ")),
-                "v{version} additions are not documented"
-            );
+            if supported_control_version(version) {
+                assert!(
+                    bullet.contains(&format!(" v{version} ")),
+                    "v{version} additions are not documented"
+                );
+            } else {
+                assert!((12..18).contains(&version));
+                assert!(bullet.contains("v12–v17 remain reserved"));
+            }
         }
     }
 
@@ -3233,6 +3289,14 @@ mod tests {
             ControlOperation::WorkflowSupervisorStart,
             ControlOperation::WorkflowSupervisorStatus,
             ControlOperation::WorkflowContractEdit,
+            ControlOperation::WorkflowIntake,
+            ControlOperation::WorkflowFollowup,
+            ControlOperation::WorkflowReports,
+            ControlOperation::WorkflowSubmit,
+            ControlOperation::WorkflowOperation,
+            ControlOperation::WorkflowList,
+            ControlOperation::WorkflowReadiness,
+            ControlOperation::WorkflowQualify,
         ] {
             assert!(operation.minimum_protocol_version() > CONTROL_PROTOCOL_V6);
             let name = serde_json::to_value(&operation).expect("encode operation");

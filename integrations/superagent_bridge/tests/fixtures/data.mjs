@@ -6,6 +6,7 @@ export const EVENT = '00000000-0000-4000-8000-000000000004';
 export const RUN = '00000000-0000-4000-8000-000000000005';
 export const MESSAGE = '00000000-0000-4000-8000-000000000006';
 export const CONTRACT = 'a'.repeat(64);
+export const SECOND_WORKFLOW = '00000000-0000-4000-8000-000000000011';
 
 export const task = {
   task_id: TASK, project_id: '00000000-0000-4000-8000-000000000010',
@@ -62,3 +63,15 @@ export const reports = [
   },
   content: { state, summary: 'Synthetic worker report.', human_action: null },
 }));
+
+export const workflowSummaries = [
+  {
+    workflow_id: WORKFLOW, workflow_key: 'fixture_workflow', phase: 'prepared',
+    version: 7, evidence_class: 'fixture', updated_at_ms: 1794441600000, failure_code: null,
+  },
+  {
+    workflow_id: SECOND_WORKFLOW, workflow_key: 'fixture_blocked', phase: 'blocked',
+    version: 3, evidence_class: 'fixture', updated_at_ms: 1794441600001,
+    failure_code: 'fixture_requires_attention',
+  },
+];

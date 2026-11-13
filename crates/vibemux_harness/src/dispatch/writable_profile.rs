@@ -20,7 +20,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const CLAUDE_WRITABLE_PROFILE: &str = "claude_stream_json_writable_v1";
+pub const CLAUDE_WRITABLE_PROFILE: &str = "claude_stream_json_writable_v2";
 
 /// The exact abstract tools granted to one workflow turn.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -105,7 +105,12 @@ pub fn build_writable_launch_spec(
                 allowed.push("Bash(node --test:*)");
             }
             let mut arguments = owned(&[
-                "--bare",
+                // Safe mode suppresses customizations while preserving native
+                // subscription authentication. Bare mode rejects OAuth/keychain
+                // login (recorded in harness_dispatch_validation.md).
+                // Restricted mode below still excludes user/project settings;
+                // managed policy remains authoritative.
+                "--safe-mode",
                 "-p",
                 "--input-format",
                 "stream-json",
@@ -199,6 +204,7 @@ mod tests {
             )
         );
         for required in [
+            "--safe-mode",
             "dontAsk",
             "--strict-mcp-config",
             "--restricted",
@@ -210,6 +216,7 @@ mod tests {
             );
         }
         assert!(!spec.arguments.iter().any(|argument| argument == "--tools="));
+        assert!(!spec.arguments.iter().any(|argument| argument == "--bare"));
         assert!(
             !spec
                 .arguments

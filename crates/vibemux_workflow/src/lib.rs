@@ -38,6 +38,7 @@ pub mod source_request;
 pub mod supervisor;
 pub mod task_spec;
 pub mod templates;
+pub mod worker_report;
 pub mod workflow_record;
 
 pub use identifiers::{IdentifierError, PathPattern, SpecIdentifier};

@@ -6,6 +6,13 @@ import { BridgeError, assert, object } from './errors.mjs';
 import { MAX_REQUEST_BYTES } from './config.mjs';
 
 const CODE = /^[a-z0-9_]{1,96}$/;
+const ERROR_HTTP_STATUS = new Map([
+  ['workflow_operation_not_found', 404],
+  ['workflow_operation_conflict', 409],
+  ['workflow_operation_capacity', 429],
+  ['workflow_operation_invalid', 400],
+  ['cli_invalid_arguments', 501],
+]);
 const DEFINITE_REFUSALS = new Set([
   'cli_invalid_arguments', 'workflow_request_invalid', 'workflow_followup_invalid',
   'workflow_contract_mismatch', 'control_invalid_request', 'control_unsupported_version',
@@ -13,6 +20,7 @@ const DEFINITE_REFUSALS = new Set([
   'workflow_request_conflict', 'workflow_policy_invalid', 'workflow_compiler_unavailable',
   'workflow_contract_rejected', 'workflow_slot_unavailable', 'workflow_config_invalid',
   'workflow_untrusted_executable', 'workflow_verifier_changed', 'workflow_invalid_phase',
+  'workflow_operation_conflict', 'workflow_operation_capacity', 'workflow_operation_invalid',
   'store_workflow_version_mismatch', 'store_workflow_followup_invalid',
   'store_workflow_contract_mismatch', 'store_workflow_idempotency_conflict',
 ]);
@@ -45,7 +53,8 @@ function errorFromResult(result, mutation) {
   const code = payload?.ok === false && CODE.test(payload.error_code)
     ? payload.error_code : 'cli_failed';
   const outcome = mutation && !DEFINITE_REFUSALS.has(code) ? 'unknown' : 'rejected';
-  return new BridgeError(code, code === 'cli_invalid_arguments' ? 501 : 502, outcome);
+  const status = ERROR_HTTP_STATUS.get(code) ?? 502;
+  return new BridgeError(code, status, outcome);
 }
 
 export class CliTransport {

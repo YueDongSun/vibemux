@@ -38,6 +38,8 @@ pub enum GatewayProtocol {
     AnthropicMessages,
     /// Served by AAG, but this adapter has no certified mapping for it.
     OpenaiResponses,
+    /// Local contained Codex stdio calls. Never routed to an AAG HTTP endpoint.
+    NativeCodexExec,
 }
 
 impl GatewayProtocol {
@@ -47,12 +49,19 @@ impl GatewayProtocol {
             Self::OpenaiChatCompletions => "/v1/chat/completions",
             Self::AnthropicMessages => "/v1/messages",
             Self::OpenaiResponses => "/v1/responses",
+            Self::NativeCodexExec => "",
         }
     }
 
     #[must_use]
     pub const fn adapter_supported(self) -> bool {
-        !matches!(self, Self::OpenaiResponses)
+        matches!(self, Self::OpenaiChatCompletions | Self::AnthropicMessages)
+    }
+
+    /// The durable model-call ledger also owns explicitly configured native calls.
+    #[must_use]
+    pub const fn model_call_supported(self) -> bool {
+        self.adapter_supported() || matches!(self, Self::NativeCodexExec)
     }
 }
 
@@ -373,6 +382,13 @@ pub fn request_body(binding: &RouteBinding, system: &str, user: &str) -> Value {
             "temperature": 0,
             "stream": false,
         }),
+        GatewayProtocol::NativeCodexExec => json!({
+            "protocol": "native_codex_exec",
+            "model": binding.model_alias,
+            "system": system,
+            "user": user,
+            "max_output_tokens": binding.max_output_tokens,
+        }),
     }
 }
 
@@ -503,7 +519,9 @@ pub fn parse_completion(
                 tool_call_requested,
             }
         }
-        GatewayProtocol::OpenaiResponses => return Err(ResponseError::Malformed),
+        GatewayProtocol::OpenaiResponses | GatewayProtocol::NativeCodexExec => {
+            return Err(ResponseError::Malformed);
+        }
     };
     if parsed.text.trim().is_empty() && !parsed.tool_call_requested {
         return Err(ResponseError::Empty);

@@ -2,9 +2,14 @@ import { createHash } from 'node:crypto';
 import { BridgeError, assert, exactKeys, object, safeInteger, uuid } from './errors.mjs';
 import { MAX_REQUEST_BYTES } from './config.mjs';
 import { Capabilities } from './capabilities.mjs';
-import { taskPage, taskDetail, workflowView, reportPage, attentionView } from './projection.mjs';
+import { Readiness } from './readiness.mjs';
+import { taskPage, taskDetail, workflowView, workflowIndex, operationView,
+  reportPage, attentionView } from './projection.mjs';
 
 const ID = /^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/;
+// Internal response metadata; Symbols cannot be supplied by request JSON and
+// are omitted from the serialized body.
+export const HTTP_STATUS = Symbol('bridge_http_status');
 
 function byteLength(value) { return Buffer.byteLength(JSON.stringify(value)); }
 
@@ -55,6 +60,7 @@ export class BridgeService {
     this.config = config;
     this.transport = transport;
     this.capabilities = new Capabilities(transport);
+    this.readiness = new Readiness(transport, this.capabilities);
   }
 
   writeAllowed() {
@@ -95,6 +101,15 @@ export class BridgeService {
     return envelope;
   }
 
+  goalDocument(project, body) {
+    assert(object(body));
+    const { auto_start: autoStart = true, ...intake } = body;
+    assert(typeof autoStart === 'boolean');
+    const document = { ...this.intakeDocument(project, intake), auto_start: autoStart };
+    assert(byteLength(document) <= MAX_REQUEST_BYTES, 'body_too_large', 413);
+    return document;
+  }
+
   async route(method, url, body) {
     const pieces = url.pathname.split('/').filter(Boolean).map((part) => {
       try { return decodeURIComponent(part); } catch { throw new BridgeError('invalid_request'); }
@@ -114,6 +129,38 @@ export class BridgeService {
     if (method === 'GET' && resource === 'capabilities' && !id) {
       query(url, []);
       return this.capabilities.view(this.config, project);
+    }
+    if (method === 'GET' && resource === 'readiness' && !id) {
+      query(url, []);
+      return this.readiness.get(project);
+    }
+    if (method === 'GET' && resource === 'workflows' && !id) {
+      query(url, ['after', 'limit']);
+      const limit = numberQuery(url, 'limit', 20, 1, 32);
+      const after = url.searchParams.get('after');
+      assert(after === null || uuid(after));
+      await this.capabilities.require('workflow.list');
+      const args = ['workflow', 'list', '--limit', String(limit)];
+      if (after) args.push('--after', after);
+      return workflowIndex(await this.transport.command(project, args), project.id);
+    }
+    if (method === 'GET' && resource === 'operations' && id && !action) {
+      query(url, []);
+      const eventId = checkedWorkflowId(id);
+      await this.capabilities.require('workflow.operation');
+      return operationView(await this.transport.command(project, ['workflow', 'operation', eventId]),
+        project.id, eventId);
+    }
+    if (method === 'POST' && resource === 'goals' && !id) {
+      query(url, []);
+      this.writeAllowed();
+      const document = this.goalDocument(project, body);
+      await this.capabilities.require('workflow.submit');
+      const result = await this.transport.document(project, 'submit', document);
+      return {
+        ...operationView(result, project.id, body.event_id, true),
+        [HTTP_STATUS]: 202,
+      };
     }
     if (method === 'GET' && resource === 'tasks' && !action) {
       if (!id) {

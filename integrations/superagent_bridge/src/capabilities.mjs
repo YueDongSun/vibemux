@@ -3,7 +3,7 @@ import { BridgeError } from './errors.mjs';
 export function advertisedCommands(help) {
   const commands = new Set();
   for (const line of help.split(/\r?\n/)) {
-    const match = /^\s*vibemuxctl\s+(workflow|tasks)\s+([a-z_]+(?:\|[a-z_]+)*)\b/.exec(line);
+    const match = /^\s*vibemuxctl\s+(workflow|tasks|daemon|slots)\s+([a-z][a-z0-9_-]*(?:\|[a-z][a-z0-9_-]*)*)(?=\s|$)/.exec(line);
     if (match) {
       for (const verb of match[2].split('|')) commands.add(match[1] + '.' + verb);
     }
@@ -50,6 +50,12 @@ export class Capabilities {
       capabilities: {
         tasks: has('tasks.list'), task_detail: has('tasks.show'),
         workflow_status: has('workflow.status'),
+        workflow_index: has('workflow.list'),
+        goals: config.enableWrites && has('workflow.submit'),
+        operation_lookup: has('workflow.operation'),
+        runtime_readiness: has('workflow.readiness'),
+        // Historical worker reports are not a canonical unresolved inbox.
+        current_attention: false,
         intake: config.enableWrites && has('workflow.intake'),
         followup: config.enableWrites && has('workflow.followup'),
         reports: has('workflow.reports'),

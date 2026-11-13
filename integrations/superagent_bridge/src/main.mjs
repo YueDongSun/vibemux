@@ -18,10 +18,20 @@ async function main() {
   process.stdout.write('VibeMux supervisor bridge listening on loopback port ' + config.port + '.\n');
   let closing;
   const close = () => {
-    closing ??= bridge.close().catch(() => { process.exitCode = 1; });
+    closing ??= bridge.close().catch(() => { process.exitCode = 1; })
+      .finally(() => { if (process.connected) process.disconnect(); });
   };
   process.once('SIGINT', close);
   process.once('SIGTERM', close);
+  // Only a Node parent that created this IPC channel can use it. There is no
+  // browser route, process-id file, or network shutdown capability.
+  if (process.send) {
+    process.on('message', (message) => {
+      if (message?.type === 'superagent:shutdown') close();
+    });
+    process.once('disconnect', close);
+    process.send({ type: 'superagent:ready', pid: process.pid, port: config.port }, () => {});
+  }
 }
 
 main().catch((error) => {

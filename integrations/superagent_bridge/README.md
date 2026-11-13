@@ -19,6 +19,7 @@ The adapter was checked against these source contracts:
 | Main `a06a8c70a4e68bf78c160789d3b818e58f0a4ab1` | Task list/detail, workflow status, explicit pause/cancel |
 | Native chat PR #49, `b80e04192fada79a69f7314fafc69824f01f38ad` | No intake/follow-up/report capability inferred from Control v17 |
 | Superagent PR #52, `f91f0feb0060a4df346fee3c7828a83e112c90af` | Intake/follow-up/reports only when those verbs are actually advertised |
+| Daemon async-operation increment | Goals, receipt lookup, workflow index and readiness only when the corresponding CLI verbs are advertised |
 
 The bridge probes `vibemuxctl --format text workflow --help`, caches the
 advertisement for five seconds, and checks an operation before invoking it.
@@ -33,6 +34,12 @@ Source checks and synthetic CLI/HTTP tests do not establish a working model
 backend. In the cited main revision, the production AAG gateway refuses live
 calls with `LiveAttestationUnavailable` before submission. This bridge does not
 change that gate or make a model supervisor production-qualified.
+
+The [daemon operations guide](docs/daemon_operations.md) describes the additive
+async-goal, receipt-lookup, workflow-index and runtime-readiness contract.
+These routes preserve daemon ownership: HTTP 202 acknowledges durable goal
+admission, and a later read observes the daemon's operation. Runtime qualification
+comes from the matching daemon rather than an inferred Control version.
 
 ## Run locally
 
@@ -55,6 +62,10 @@ are no packages to install. Run the CLI and daemon as the same OS user.
 
    In native PowerShell, pass the private Windows config path to the same Node
    entry point. The server binds only to `127.0.0.1`, on port 4317 by default.
+   A trusted Node parent can create an IPC channel: the bridge sends
+   `{type:"superagent:ready",pid,port}`, accepts a `superagent:shutdown` message,
+   and closes when that parent disconnects. This is process-local lifecycle
+   support for a foreground stack launcher, not an HTTP shutdown route.
 4. For an authenticated Pixel server on the same host, set
    `PIXEL_SUPERAGENT_BRIDGE_URL=http://127.0.0.1:4317` and set
    `PIXEL_SUPERAGENT_BRIDGE_TOKEN` to the same secret. Pixel's server-side
@@ -80,6 +91,10 @@ command names, provider credentials, or executable arguments.
 | --- | --- |
 | `GET /projects` | `{ok:true,projects:[{id,label}]}` |
 | `GET /projects/:id/capabilities` | Effective CLI/write capabilities and public server policy |
+| `GET /projects/:id/readiness` | Layered CLI, daemon and workflow execution diagnostics |
+| `GET /projects/:id/workflows?limit=20&after=<workflow_uuid>` | `{ok,project_id,workflow_index:{schema_version:1,workflows,next,more}}` |
+| `GET /projects/:id/operations/:eventId` | Read-only goal operation lookup; unknown results are never replayed |
+| `POST /projects/:id/goals` | Durable daemon goal admission, HTTP 202; optional `auto_start` defaults to true |
 | `GET /projects/:id/tasks?limit=20&after=<task_uuid>` | `{ok,project_id,canonical_project_id,tasks,next_cursor}`; limit 1–32 |
 | `GET /projects/:id/tasks/:taskId` | `{ok,project_id,task,runs,events,artifacts,has_more_runs,has_more_events,has_more_artifacts}` |
 | `GET /projects/:id/workflows/:workflowId` | `{ok,project_id,workflow}`; workflow status schema 2 |
@@ -108,7 +123,9 @@ An illustrative capability response, not a production observation:
   "capabilities": {
     "tasks": true, "task_detail": true, "workflow_status": true,
     "intake": false, "followup": false, "reports": false,
-    "pause": false, "cancel": false
+    "pause": false, "cancel": false,
+    "goals": false, "workflow_index": false, "operation_lookup": false,
+    "runtime_readiness": false, "current_attention": false
   },
   "server_config": {
     "allow_import": false, "allow_report_content": false, "presets": []

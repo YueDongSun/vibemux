@@ -2,11 +2,14 @@
 import { appendFile, readFile, writeFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { taskPage, taskDetail, workflow, reports, WORKFLOW, MESSAGE, CONTRACT } from './data.mjs';
+import { taskPage, taskDetail, workflow, reports, workflowSummaries,
+  WORKFLOW, MESSAGE, CONTRACT } from './data.mjs';
 
 const [scenario, directory, ...args] = process.argv.slice(2);
 const receiptFile = path.join(directory, 'receipt.json');
+const operationsFile = path.join(directory, 'operations.json');
 const journal = path.join(directory, 'calls.jsonl');
+const nextBackend = scenario.startsWith('next');
 const print = (value) => process.stdout.write(JSON.stringify(value));
 const fail = (error_code, error = '/synthetic/private/path raw diagnostic must not escape') => {
   process.stderr.write(JSON.stringify({ ok: false, error_code, error }));
@@ -20,11 +23,19 @@ if (args.join(' ') === '--format text workflow --help') {
     '  vibemuxctl workflow status|pause|cancel|purge <workflow_id> [--project-root <path>]',
     '  vibemuxctl tasks list [--after <task_id>] [--limit <limit>] [--project-root <path>]',
     '  vibemuxctl tasks show <task_id> [--project-root <path>]',
+    '  vibemuxctl daemon health [--project-root <path>]',
+    '  vibemuxctl slots list [--project-root <path>]',
     ...(['main', 'native17'].includes(scenario) ? [] : [
       '  vibemuxctl workflow intake --request-file <path> [--project-root <path>]',
       '  vibemuxctl workflow followup --request-file <path> [--project-root <path>]',
       '  vibemuxctl workflow reports <workflow_id> [--after-sequence <n>] [--include-content] [--project-root <path>]',
     ]),
+    ...(nextBackend ? [
+      '  vibemuxctl workflow list [--limit <n>] [--after <uuid>] [--project-root <path>]',
+      '  vibemuxctl workflow operation <event_id> [--project-root <path>]',
+      '  vibemuxctl workflow submit --request-file <path> [--project-root <path>]',
+      '  vibemuxctl workflow readiness [--project-root <path>]',
+    ] : []),
   ].join('\n'));
 } else if (args[0] !== '--format' || args[1] !== 'json'
   || args.at(-2) !== '--project-root' || !path.isAbsolute(args.at(-1))) {
@@ -32,7 +43,7 @@ if (args.join(' ') === '--format text workflow --help') {
 } else {
   const [group, verb] = args.slice(2);
   let document;
-  if (['intake', 'followup'].includes(verb)) {
+  if (['intake', 'followup', 'submit'].includes(verb)) {
     const filename = args[args.indexOf('--request-file') + 1];
     document = JSON.parse(await readFile(filename, 'utf8'));
     const mode = (await stat(filename)).mode & 0o777;
@@ -50,6 +61,61 @@ if (args.join(' ') === '--format text workflow --help') {
     fail('workflow_contract_mismatch');
   } else if (scenario === 'malformed_receipt' && document) {
     print({ ok: true, intake: { event_id: document.event_id, schema_version: 1 } });
+  } else if (group === 'daemon' && verb === 'health') {
+    if (scenario === 'next_daemon_down') fail('daemon_not_running');
+    else print({ ok: true, status: 'running', healthy: true, process_id: 123,
+      store_schema_version: nextBackend ? 11 : 9, queue_capacity: 64,
+      queue_depth: 0, queue_high_watermark: 0, queue_saturated: false });
+  } else if (group === 'slots' && verb === 'list') {
+    if (scenario === 'legacy_unconfigured') fail('workflow_unconfigured');
+    else print({ ok: true, slots: { evidence_class: 'fixture', slots: [], routes: [], writable: {} } });
+  } else if (group === 'workflow' && verb === 'readiness') {
+    if (scenario === 'next_incompatible') fail('control_unsupported_version');
+    else if (scenario === 'next_daemon_down') fail('daemon_not_running');
+    else print({ ok: true, readiness: {
+      schema_version: 1, configured: scenario !== 'next_unconfigured',
+      compiler_available: !['next_live_blocked', 'next_unconfigured'].includes(scenario),
+      start_ready: !['next_live_blocked', 'next_unconfigured'].includes(scenario),
+      blockers: scenario === 'next_unconfigured' ? ['workflow_unconfigured']
+        : scenario === 'next_live_blocked' ? ['gateway_live_attestation_unavailable'] : [],
+      slots: null,
+    } });
+  } else if (group === 'workflow' && verb === 'list') {
+    const limit = Number(args[args.indexOf('--limit') + 1]);
+    const after = args.includes('--after') ? args[args.indexOf('--after') + 1] : null;
+    const start = after ? workflowSummaries.findIndex((entry) => entry.workflow_id === after) + 1 : 0;
+    const page = workflowSummaries.slice(start, start + limit);
+    const more = start + page.length < workflowSummaries.length;
+    print({ ok: true, workflow_index: {
+      schema_version: 1, workflows: page, next: more ? page.at(-1).workflow_id : null, more,
+    } });
+  } else if (group === 'workflow' && ['operation', 'submit'].includes(verb)) {
+    let operations = {};
+    try { operations = JSON.parse(await readFile(operationsFile, 'utf8')); } catch { /* First fixture admission. */ }
+    const eventId = (document?.event_id ?? args[4]).toLowerCase();
+    const existing = operations[eventId];
+    if (verb === 'operation') {
+      if (existing) print({ ok: true, operation: existing.operation });
+      else fail('workflow_operation_not_found');
+    } else {
+      const normalized = { ...document, event_id: eventId };
+      if (existing && JSON.stringify(existing.document) !== JSON.stringify(normalized)) {
+        fail('workflow_operation_conflict');
+      } else {
+        const operation = existing?.operation ?? {
+          schema_version: 1, event_id: eventId, kind: 'goal', state: 'accepted',
+          workflow_id: null, start_contract: null, code: null,
+          duplicate: false, updated_at_ms: 1794441600000,
+        };
+        operations[eventId] = { document: normalized, operation };
+        await writeFile(operationsFile, JSON.stringify(operations));
+        if (scenario === 'next_unknown') fail('control_timeout');
+        else print({ ok: true, operation: {
+          ...operation, duplicate: Boolean(existing),
+          ...(scenario === 'next_mismatch' ? { event_id: MESSAGE } : {}),
+        } });
+      }
+    }
   } else if (group === 'tasks' && verb === 'list') {
     print(taskPage);
   } else if (group === 'tasks' && verb === 'show') {

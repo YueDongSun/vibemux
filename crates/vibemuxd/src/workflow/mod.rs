@@ -12,6 +12,7 @@ pub mod integration;
 pub mod model_compiler;
 pub mod model_runtime;
 pub(crate) mod model_supervisor;
+pub mod native_provider;
 pub mod native_runtime;
 pub mod prepare;
 pub mod request;

@@ -30,6 +30,109 @@ struct CompletedReceiptFailureGateway {
     calls: AtomicUsize,
 }
 
+struct CleanupGateway {
+    calls: AtomicUsize,
+    started: tokio::sync::Notify,
+    cleaned: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl ModelGateway for CleanupGateway {
+    async fn complete(
+        &self,
+        _call_id: Uuid,
+        _attempt: u32,
+        _request: &ModelCallRequest,
+        mut cancellation: watch::Receiver<bool>,
+    ) -> Result<ModelGatewayCompletion, ModelGatewayFailure> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        while !*cancellation.borrow() {
+            cancellation.changed().await.unwrap();
+        }
+        // An adapter must be allowed to await child cleanup after cancellation.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        self.cleaned.store(true, Ordering::SeqCst);
+        Err(ModelGatewayFailure {
+            error_code: "native_call_cancelled",
+            receipt: None,
+        })
+    }
+}
+
+async fn cancellation_case(use_deadline: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = WriterWorker::start(&directory.path().join("calls.sqlite3")).unwrap();
+    let writer = worker.handle().unwrap();
+    let gateway = CleanupGateway {
+        calls: AtomicUsize::new(0),
+        started: tokio::sync::Notify::new(),
+        cleaned: std::sync::atomic::AtomicBool::new(false),
+    };
+    let request = ModelCallRequest {
+        role: RouteRole::Compiler,
+        requested_alias: "compiler_fixture".into(),
+        protocol: GatewayProtocol::NativeCodexExec,
+        max_output_tokens: 1024,
+        timeout_ms: if use_deadline { 1_000 } else { 10_000 },
+        config_sha256: Sha256Digest::of(b"fixture"),
+        observation_digest: None,
+        system_prompt: "bounded fixture".into(),
+        user_prompt: "no real provider called".into(),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let admission = ModelCallAdmission {
+        call_id: Uuid::new_v4(),
+        owner_key: SpecIdentifier::new("cleanup_fixture").unwrap(),
+        workflow_id: None,
+        identity: request.identity().unwrap(),
+        deadline_unix_ms: now + 10_000,
+        max_calls: 1,
+    };
+    let (sender, receiver) = watch::channel(false);
+    let request_future = run_model_call(
+        &writer,
+        &gateway,
+        request.clone(),
+        admission.clone(),
+        receiver.clone(),
+    );
+    let cancel = async {
+        gateway.started.notified().await;
+        if !use_deadline {
+            sender.send(true).unwrap();
+        }
+    };
+    let (result, ()) = tokio::join!(request_future, cancel);
+    assert!(matches!(result, Err(ModelCallRuntimeError::OutcomeUnknown)));
+    assert!(
+        gateway.cleaned.load(Ordering::SeqCst),
+        "completion was dropped before its cleanup finished"
+    );
+    let record = writer.model_call(admission.call_id).unwrap().unwrap();
+    assert_eq!(record.state, ModelCallState::Unknown);
+    assert_eq!(record.calls_used, 1);
+    // Use a fresh, uncancelled receiver. The durable call state must fence replay.
+    let (_keep, fresh) = watch::channel(false);
+    let replay = run_model_call(&writer, &gateway, request, admission, fresh).await;
+    assert!(matches!(replay, Err(ModelCallRuntimeError::NotReplayable)));
+    assert_eq!(gateway.calls.load(Ordering::SeqCst), 1);
+    worker.shutdown().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_signals_and_joins_gateway_cleanup_before_returning_unknown() {
+    cancellation_case(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deadline_signals_and_joins_gateway_cleanup_before_returning_unknown() {
+    cancellation_case(true).await;
+}
+
 #[async_trait]
 impl ModelGateway for OversizedGateway {
     async fn complete(

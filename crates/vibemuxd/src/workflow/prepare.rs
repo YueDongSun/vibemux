@@ -133,6 +133,9 @@ pub(crate) fn compile(
     policy
         .validate()
         .map_err(|_| WorkflowError::PolicyInvalid)?;
+    if context.config.config.native_workers && policy.aag_only {
+        return Err(WorkflowError::PolicyInvalid);
+    }
     let policy_digest = policy.digest().map_err(|_| WorkflowError::PolicyInvalid)?;
     let source = SourceRequest::new(request.request_text.as_bytes().to_vec())
         .map_err(|_| WorkflowError::RequestInvalid)?;

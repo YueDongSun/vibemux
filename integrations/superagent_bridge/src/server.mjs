@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { BridgeError, errorBody, object, uuid } from './errors.mjs';
 import { MAX_REQUEST_BYTES } from './config.mjs';
 import { CliTransport } from './cli.mjs';
-import { BridgeService } from './service.mjs';
+import { BridgeService, HTTP_STATUS } from './service.mjs';
 
 const MAX_HTTP_REQUESTS = 24;
 const JSON_TYPE = /^application\/json(?:\s*;\s*charset=utf-8)?$/i;
@@ -117,7 +117,8 @@ export function createBridgeServer(config, { transport = new CliTransport(config
       if (url.origin !== 'http://127.0.0.1') throw new BridgeError('invalid_request', 400);
       const body = request.method === 'POST' ? await readJson(request) : undefined;
       if (uuid(body?.event_id)) eventId = body.event_id;
-      send(response, 200, await service.route(request.method, url, body));
+      const result = await service.route(request.method, url, body);
+      send(response, result[HTTP_STATUS] ?? 200, result);
     } catch (error) {
       send(response, error instanceof BridgeError ? error.status : 500, errorBody(error, eventId));
     } finally {
