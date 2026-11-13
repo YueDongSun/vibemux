@@ -42,7 +42,13 @@ pub(crate) enum WorkerLaunch {
 
 enum ShutdownState {
     Live,
-    Waiting { deadline: Instant, terminated: bool },
+    Waiting {
+        deadline: Instant,
+        terminated: bool,
+        /// Owned only while termination still failed: the leader is unreaped,
+        /// so its process-group id cannot be reused and a retry is safe.
+        tree: Option<ProcessTree>,
+    },
     Complete(Result<(), &'static str>),
 }
 
@@ -218,10 +224,9 @@ impl ReaderProcess {
         self.input.take();
         self.output.take();
         let deadline = Instant::now() + SHUTDOWN_DEADLINE;
-        let terminated = if let Some(mut tree) = self.tree.take() {
-            let result = tree.terminate();
-            drop(tree); // Explicit termination and drop precede every reap.
-            result.is_ok()
+        let mut tree = self.tree.take();
+        let mut terminated = if let Some(tree) = tree.as_mut() {
+            tree.terminate().is_ok()
         } else {
             // Same-executable children receive no input on failed containment;
             // they cannot create descendants before this cleanup.
@@ -231,23 +236,46 @@ impl ReaderProcess {
             let _ = self.child.start_kill();
         }
         #[cfg(feature = "test_helpers")]
-        let terminated = terminated && !self.fail_cleanup;
+        if self.fail_cleanup {
+            terminated = false;
+            tree = None;
+        }
         self.shutdown = ShutdownState::Waiting {
             deadline,
             terminated,
+            tree,
         };
     }
 
     pub(crate) async fn shutdown(&mut self) -> Result<(), &'static str> {
         self.begin_shutdown();
-        let (deadline, terminated) = match self.shutdown {
+        let (deadline, mut terminated, mut tree) = match &mut self.shutdown {
             ShutdownState::Waiting {
                 deadline,
                 terminated,
-            } => (deadline, terminated),
-            ShutdownState::Complete(result) => return result,
+                tree,
+            } => (*deadline, *terminated, tree.take()),
+            ShutdownState::Complete(result) => return *result,
             ShutdownState::Live => return Err("reader_cleanup_failed"),
         };
+        // A failed signal is often a transient race with an exiting leader.
+        // The leader is still unreaped, which keeps the group id reserved, so
+        // retry until the same absolute deadline instead of failing cleanup
+        // on the first error.
+        while !terminated {
+            let Some(tree_ref) = tree.as_mut() else {
+                break;
+            };
+            if Instant::now() >= deadline {
+                break;
+            }
+            if tree_ref.terminate().is_ok() {
+                terminated = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        drop(tree); // Explicit termination precedes every reap.
         // The future borrows this retained child. Losing a select branch neither
         // drops ownership nor resets the absolute cleanup deadline.
         timeout_at(deadline, async {
