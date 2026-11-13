@@ -46,6 +46,9 @@ CASE_IDS: Final = (
     "A2",
     "C11-SLOTS",
     "C11-MERGE",
+    "C10-MCP",
+    "C08-HANDOFF",
+    "C05-CANCEL",
     "C13-LINEAGE",
     "C04-EVENTS",
     "C07-RESTART",
@@ -70,10 +73,10 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C02": "Hub goal submission and owner planning profile selection are not implemented in this source revision; capability discovery itself is available and covered by C01.",
     "C03": "Requires C02 plus Hub original-operation lookup after a lost submit response.",
     "C04": "Paged event reads, retention-floor resynchronization, and reconnecting cursors are implemented and covered by C04-EVENTS; full Hub projection pagination across a live UI is not implemented.",
-    "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
+    "C05": "Daemon dispatch cancellation is covered by C05-CANCEL; Hub generation-scoped cancellation is not implemented.",
     "C07": "Daemon stop/restart over the same store is covered by C07-RESTART; Hub restart recovery of suspended/interrupted tasks is not implemented.",
-    "C08": "Requires a second fixture harness adapter with native identity preservation.",
-    "C10": "Requires the Hub read-only MCP tool and worker tool-call admission.",
+    "C08": "Cross-track operator context sharing is covered by C08-HANDOFF; a second harness adapter taking over with its own native identity is not implemented.",
+    "C10": "Both metadata services are covered by C10-MCP; a VibeMux worker calling Hub tools through an admitted broker is not implemented.",
     "C11": "Both halves are now covered by C11-SLOTS (build-slot contention) and C11-MERGE (two-worker candidate integration); this entry records no further C11 gap.",
     "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
     "C13": "Known layouts are recognized and preserved (reports schema 10, chat schema 10-14, foreign Python store, future and incomplete markers); merging those layouts forward into one current schema is not implemented.",
@@ -1189,6 +1192,174 @@ def _run_c09_skills(*, hub_root: Path, timeout: float) -> dict[str, Any]:
         )
 
 
+def _run_cargo_case(
+    *,
+    id: str,
+    vibemux_root: Path,
+    build_state_root: Path,
+    timeout: float,
+    package: str,
+    test_target: str,
+    minimum_passed: int,
+    evidence_class: str,
+    detail_prefix: str,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        result = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                id.lower(),
+                "--budget-bytes",
+                "12G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                package,
+                "--features",
+                "test_helpers",
+                "--test",
+                test_target,
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 700))
+        passed = _cargo_passed(result.stdout)
+        if passed < minimum_passed:
+            raise VerificationError(f"expected at least {minimum_passed} tests, saw {passed}")
+        return _case(
+            id,
+            "passed",
+            evidence_class=evidence_class,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=f"{passed} tests: {detail_prefix}",
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            id,
+            "failed",
+            evidence_class=evidence_class,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
+def _run_c05_cancel(
+    *, vibemux_root: Path, build_state_root: Path, timeout: float
+) -> dict[str, Any]:
+    return _run_cargo_case(
+        id="C05-CANCEL",
+        vibemux_root=vibemux_root,
+        build_state_root=build_state_root,
+        timeout=timeout,
+        package="vibemuxd",
+        test_target="control_harness_dispatch",
+        minimum_passed=2,
+        evidence_class="actual_daemon_dispatch_cancellation",
+        detail_prefix="live capture, cancel, and shutdown of a waiting probe",
+    )
+
+
+def _run_c08_handoff(
+    *, vibemux_root: Path, build_state_root: Path, timeout: float
+) -> dict[str, Any]:
+    return _run_cargo_case(
+        id="C08-HANDOFF",
+        vibemux_root=vibemux_root,
+        build_state_root=build_state_root,
+        timeout=timeout,
+        package="vibemuxd",
+        test_target="workflow_share",
+        minimum_passed=2,
+        evidence_class="actual_daemon_context_handoff",
+        detail_prefix="operator share reaches the other track and survives restarts",
+    )
+
+
+def _run_c10_mcp(
+    *, vibemux_root: Path, build_state_root: Path, hub_root: Path, timeout: float
+) -> dict[str, Any]:
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        rust = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c10-mcp",
+                "--budget-bytes",
+                "12G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemux_mcp",
+                "--features",
+                "test_helpers",
+                "--test",
+                "ipc",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if rust.returncode != 0:
+            raise VerificationError(f"VibeMux MCP tests failed: {_tail(rust, 500)}")
+        hub = _run(["node", "--test", "tests/mcp.test.mjs"], cwd=hub_root, timeout=timeout)
+        if hub.returncode != 0:
+            raise VerificationError(f"Hub MCP tests failed: {_tail(hub, 500)}")
+        rust_passed = _cargo_passed(rust.stdout)
+        hub_passed = 0
+        for line in hub.stdout.splitlines():
+            if line.startswith("ℹ pass "):
+                hub_passed = int(line.rsplit(" ", 1)[-1])
+        if rust_passed < 3 or hub_passed < 1:
+            raise VerificationError(
+                f"expected VibeMux MCP tests and Hub MCP tests, saw {rust_passed}/{hub_passed}"
+            )
+        return _case(
+            "C10-MCP",
+            "passed",
+            evidence_class="metadata_services_fixture",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"VibeMux MCP={rust_passed} Hub MCP={hub_passed}; both read-only "
+                "metadata services initialize and serve tools; a worker calling "
+                "Hub tools is not claimed"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C10-MCP",
+            "failed",
+            evidence_class="metadata_services_fixture",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -1334,6 +1505,41 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 cases.append(
                     _run_c04_events(
+                        vibemux_root=vibemux_root,
+                        build_state_root=build_state_root,
+                        hub_root=hub_root,
+                        timeout=arguments.timeout_seconds,
+                    )
+                )
+        if "C05-CANCEL" in selected:
+            cases.append(
+                _run_c05_cancel(
+                    vibemux_root=vibemux_root,
+                    build_state_root=build_state_root,
+                    timeout=arguments.timeout_seconds,
+                )
+            )
+        if "C08-HANDOFF" in selected:
+            cases.append(
+                _run_c08_handoff(
+                    vibemux_root=vibemux_root,
+                    build_state_root=build_state_root,
+                    timeout=arguments.timeout_seconds,
+                )
+            )
+        if "C10-MCP" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C10-MCP",
+                        "blocked",
+                        evidence_class="metadata_services_fixture",
+                        detail="--hub-root is required for the Hub MCP service",
+                    )
+                )
+            else:
+                cases.append(
+                    _run_c10_mcp(
                         vibemux_root=vibemux_root,
                         build_state_root=build_state_root,
                         hub_root=hub_root,

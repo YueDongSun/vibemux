@@ -8038,3 +8038,18 @@ retained in the task's local validation artifact.
 - Limits: the Hub planning path does not yet consume resolved skills; C09
   keeps that explicit condition. C11 now has both halves covered by
   C11-SLOTS and C11-MERGE.
+
+
+### 2026-11-13 — C05 cancel, C08 context handoff, C10 metadata services
+
+- `C05-CANCEL` runs the daemon's cancel tests: a running dispatch reports
+  live capture and cancels, and a waiting probe is cancelled at shutdown.
+- `C08-HANDOFF` runs the workflow share tests: an operator share reaches the
+  other track and survives restarts (2 tests).
+- `C10-MCP` runs both metadata services — VibeMux MCP 3 tests and Hub MCP 15
+  tests — and reports that a worker calling Hub tools through an admitted
+  broker is not claimed.
+- All three are supporting cases; the full prompt cases C05, C08, and C10
+  keep their remaining conditions in the not_run reasons (Hub generation
+  cancellation, a second native harness handoff, and worker-to-Hub tools).
+- Executed on macOS 15.6: all three cases passed.
