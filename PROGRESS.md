@@ -8151,3 +8151,38 @@ retained in the task's local validation artifact.
   (VibeMux 4, daemon 2, Hub 3).
 - Still not implemented: the planning compiler, the model-compiler route, and
   the end-to-end Hub goal submission; C02/C03 keep those conditions.
+
+### 2026-11-14 — Planning compile, submission, and lost-submit replay (C02/C03 fixture class)
+
+- Profiles now pin the full planning shape: `task_assignments` (every worker
+  slot covered exactly once) and the operator `policy` every planned request
+  is admitted through, both validated at config load; the profile digest
+  still binds the entry to the pinned config digest.
+- New additive v10 ops `WorkflowPlanRequest` (mutating) and
+  `WorkflowPlanningObservation` (read-only); the catalog now serves
+  51 operations. `vibemuxctl workflow plan_request --request-file <path|->`
+  submits the planning request; `workflow planning_observation --query-file
+  <path|->` recovers an observation without the goal text.
+- `plan_request` validates the contract, fences the profile digest, renders
+  the deterministic request (key `profile_<uuid>`), and runs the existing
+  prepare/start gates with `task_specs: []`, so compilation goes through the
+  configured compiler route — the fixture gateway in tests, and
+  `gateway_live_attestation_unavailable` without one (live model admission
+  is not claimed). The observation carries the Hub's closed wire shape
+  including `execution: null`.
+- Lost-submit replay: an identical repeated request returns the same
+  workflow with no second compiler call; a changed goal under the same
+  request UUID is refused (`workflow_request_conflict`); the digest-bound
+  query returns the same observation without the goal text, `not_observed`
+  for an unknown request, and refuses a disagreeing content digest.
+- Tests: `workflow_plan` daemon integration (compile through the fixture
+  gateway, acceptance through the real gates, replay, query recovery,
+  not_observed, mismatch refusals, one compiler call total), contract
+  wire-shape unit test (keys exactly match the Hub closed record),
+  settings validation for assignments/policy, CLI parse tests for both
+  verbs. `C02-PLAN` now runs VibeMux contract (5) + daemon (3) + Hub
+  contract (3) + Hub planning adapter boundary (17); the Hub's owner
+  adapter tests pin the exact `plan_request`/`planning_observation` argv
+  and stdin shapes this daemon now serves.
+- Still not implemented: the live model-compiler admission (BoundReceiptV2)
+  and a live Hub-to-daemon run; C02/C03 keep those conditions.

@@ -143,6 +143,8 @@ pub enum ControlOperation {
     WorkflowSupervisorStatus,
     WorkflowContractEdit,
     WorkflowPlanningProfiles,
+    WorkflowPlanRequest,
+    WorkflowPlanningObservation,
     WorkflowStatus,
     WorkflowPause,
     WorkflowCancel,
@@ -195,7 +197,10 @@ impl ControlOperation {
             | Self::DshSessionCancel
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V9,
-            Self::WorkflowContractEdit | Self::WorkflowPlanningProfiles => CONTROL_PROTOCOL_V10,
+            Self::WorkflowContractEdit
+            | Self::WorkflowPlanningProfiles
+            | Self::WorkflowPlanRequest
+            | Self::WorkflowPlanningObservation => CONTROL_PROTOCOL_V10,
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -258,6 +263,8 @@ impl ControlOperation {
         Self::WorkflowSupervisorStatus,
         Self::WorkflowContractEdit,
         Self::WorkflowPlanningProfiles,
+        Self::WorkflowPlanRequest,
+        Self::WorkflowPlanningObservation,
         Self::WorkflowStatus,
         Self::WorkflowPause,
         Self::WorkflowCancel,
@@ -313,6 +320,7 @@ impl ControlOperation {
                 | Self::WorkflowSessionInspect
                 | Self::WorkflowPolicyVersions
                 | Self::WorkflowPlanningProfiles
+                | Self::WorkflowPlanningObservation
                 | Self::DecisionList
                 | Self::DecisionShow
                 | Self::Capabilities
@@ -356,6 +364,8 @@ impl ControlOperation {
             | Self::WorkflowSupervisorStatus
             | Self::WorkflowContractEdit
             | Self::WorkflowPlanningProfiles
+            | Self::WorkflowPlanRequest
+            | Self::WorkflowPlanningObservation
             | Self::WorkflowStatus
             | Self::WorkflowPause
             | Self::WorkflowCancel
@@ -2175,6 +2185,8 @@ where
         | ControlOperation::WorkflowSupervisorStatus
         | ControlOperation::WorkflowContractEdit
         | ControlOperation::WorkflowPlanningProfiles
+        | ControlOperation::WorkflowPlanRequest
+        | ControlOperation::WorkflowPlanningObservation
         | ControlOperation::WorkflowStatus
         | ControlOperation::WorkflowPause
         | ControlOperation::WorkflowCancel

@@ -73,8 +73,8 @@ CASE_IDS: Final = (
 )
 
 NOT_RUN_REASONS: Final[dict[str, str]] = {
-    "C02": "Request identity, profile digest, the content-free observation, and the daemon planning-profile catalog are implemented and Hub-validated (C02-PLAN); the planning compiler and end-to-end Hub goal submission remain not implemented (requires the R&D planning modules).",
-    "C03": "The retained-UUID request key, the observation contract, and the pinned profile catalog are covered by C02-PLAN; lost-submit replay through a real Hub consumer is not implemented.",
+    "C02": "Request identity, the pinned profile catalog, and the fixture-class planning compiler and submission (daemon plan_request through the normal gates) are implemented and Hub-boundary-tested (C02-PLAN); the live model-compiler admission (BoundReceiptV2) and a live Hub-to-daemon run remain not implemented.",
+    "C03": "Lost-submit replay is implemented in fixture class (plan_request replay plus the digest-bound planning_observation query; Hub adapter boundary pinned by tests) under C02-PLAN; a live Hub consumer replay against a real daemon is not executed.",
     "C05": "Daemon dispatch cancellation is covered by C05-CANCEL; Hub generation-scoped cancellation is not implemented.",
     "C08": "Cross-track operator context sharing is covered by C08-HANDOFF; a second harness adapter taking over with its own native identity is not implemented.",
     "C10": "Both metadata services are covered by C10-MCP; a VibeMux worker calling Hub tools through an admitted broker is not implemented.",
@@ -842,6 +842,17 @@ def _cargo_passed(stdout: str) -> int:
     return 0
 
 
+def _cargo_sum_passed(stdout: str) -> int:
+    """Total passed across every test-target summary in one cargo run."""
+    total = 0
+    for line in stdout.splitlines():
+        if line.startswith("test result: ok."):
+            fields = line.split()
+            if "passed;" in fields:
+                total += int(fields[fields.index("passed;") - 1])
+    return total
+
+
 def _run_c07_restart(*, vibemuxctl: Path, run_root: Path, timeout: float) -> dict[str, Any]:
     """Stop and restart the daemon over the same project store.
 
@@ -1442,7 +1453,7 @@ def _run_c02_plan(
                 "--task-id",
                 "c02-plan",
                 "--budget-bytes",
-                "8G",
+                "12G",
                 "--reserve-bytes",
                 "4G",
                 "--",
@@ -1471,7 +1482,7 @@ def _run_c02_plan(
                 "--task-id",
                 "c02-plan",
                 "--budget-bytes",
-                "8G",
+                "12G",
                 "--reserve-bytes",
                 "4G",
                 "--",
@@ -1483,28 +1494,48 @@ def _run_c02_plan(
                 "--all-features",
                 "--test",
                 "workflow_planning_profiles",
+                "--test",
+                "workflow_plan",
             ],
             cwd=vibemux_root,
             timeout=timeout,
         )
         if daemon.returncode != 0:
             raise VerificationError(
-                f"planning profile catalog tests failed: {_tail(daemon, 500)}"
+                f"planning daemon tests failed: {_tail(daemon, 500)}"
             )
         hub = _run(
             ["node", "--test", "tests/planning_contract.test.mjs"], cwd=hub_root, timeout=timeout
         )
         if hub.returncode != 0:
             raise VerificationError(f"Hub planning contract failed: {_tail(hub, 500)}")
-        rust_passed = _cargo_passed(rust.stdout)
-        daemon_passed = _cargo_passed(daemon.stdout)
-        hub_passed = 0
-        for line in hub.stdout.splitlines():
-            if line.startswith("ℹ pass "):
-                hub_passed = int(line.rsplit(" ", 1)[-1])
-        if rust_passed < 4 or daemon_passed < 2 or hub_passed < 3:
+        hub_adapter = _run(
+            ["node", "--test", "tests/rd_planning.test.mjs"], cwd=hub_root, timeout=timeout
+        )
+        if hub_adapter.returncode != 0:
             raise VerificationError(
-                f"expected planning tests, saw {rust_passed}/{daemon_passed}/{hub_passed}"
+                f"Hub planning adapter tests failed: {_tail(hub_adapter, 500)}"
+            )
+        rust_passed = _cargo_passed(rust.stdout)
+        daemon_passed = _cargo_sum_passed(daemon.stdout)
+
+        def _node_passed(stdout: str) -> int:
+            for line in stdout.splitlines():
+                if line.startswith("ℹ pass "):
+                    return int(line.rsplit(" ", 1)[-1])
+            return 0
+
+        hub_passed = _node_passed(hub.stdout)
+        adapter_passed = _node_passed(hub_adapter.stdout)
+        if (
+            rust_passed < 5
+            or daemon_passed < 3
+            or hub_passed < 3
+            or adapter_passed < 12
+        ):
+            raise VerificationError(
+                "expected planning tests, saw "
+                f"{rust_passed}/{daemon_passed}/{hub_passed}/{adapter_passed}"
             )
         return _case(
             "C02-PLAN",
@@ -1512,10 +1543,11 @@ def _run_c02_plan(
             evidence_class="planning_contract_fixture",
             duration_ms=int((time.monotonic() - started) * 1000),
             detail=(
-                f"VibeMux={rust_passed} daemon={daemon_passed} Hub={hub_passed}: "
-                "profile digest, retained request UUID, content-free observation, "
-                "pinned daemon catalog; the planning compiler and end-to-end "
-                "goal submission are not claimed"
+                f"VibeMux={rust_passed} daemon={daemon_passed} Hub={hub_passed} "
+                f"adapter={adapter_passed}: profile digest, retained request UUID, "
+                "content-free observation, pinned catalog, fixture compile through "
+                "the normal gates, lost-submit replay, and the Hub CLI boundary; "
+                "live model admission and a live Hub run are not claimed"
             ),
         )
     except (VerificationError, OSError, subprocess.TimeoutExpired) as error:

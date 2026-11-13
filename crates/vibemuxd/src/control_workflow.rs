@@ -204,6 +204,28 @@ impl ControlClient {
         .await
     }
 
+    /// Plans a goal through a pinned profile (planning contract). The
+    /// frame bounds the argument; the service bounds the request text.
+    pub async fn workflow_plan_request(&self, request: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowPlanRequest,
+            Some(&request),
+            WORKFLOW_SLOW_DEADLINE,
+        )
+        .await
+    }
+
+    /// Recovers the observation of an already-submitted planning request
+    /// from its digest-bound query, without the goal text.
+    pub async fn workflow_planning_observation(&self, query: Value) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowPlanningObservation,
+            Some(&query),
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
     pub async fn workflow_slots(&self) -> Result<Value, ControlError> {
         self.workflow_request(
             ControlOperation::WorkflowSlots,
@@ -373,6 +395,18 @@ pub(super) async fn dispatch(
                 return Err(ControlError::InvalidRequest);
             }
             encode(service.planning_profiles().await)?
+        }
+        ControlOperation::WorkflowPlanRequest => {
+            // The frame already bounds the argument; the service bounds the
+            // planning request and its text.
+            let argument = argument.ok_or(ControlError::InvalidRequest)?;
+            let request: Value =
+                serde_json::from_str(&argument).map_err(|_| ControlError::InvalidRequest)?;
+            encode(service.plan_request(request).await)?
+        }
+        ControlOperation::WorkflowPlanningObservation => {
+            let query: vibemux_workflow::planning_contract::PlanningQuery = parse_lookup(argument)?;
+            encode(service.planning_observation(query).await)?
         }
         ControlOperation::WorkflowStatus => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;

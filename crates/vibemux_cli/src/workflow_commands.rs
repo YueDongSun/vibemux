@@ -20,7 +20,10 @@ use vibemuxd::{
     workflow::request::{MAX_POLICY_BYTES, MAX_WORKFLOW_REQUEST_BYTES},
 };
 
-use crate::{CliCommand, DaemonCliError, harness_client, map_control_error};
+use crate::{
+    CliCommand, DaemonCliError, harness_client, map_control_error,
+    prompt_input::{PromptSource, read_prompt},
+};
 
 /// Pages one export reads at most.
 const MAX_EXPORT_PAGES: usize = 4096;
@@ -28,6 +31,10 @@ const MAX_EXPORT_PAGES: usize = 4096;
 const MAX_SESSION_PROMPTS: usize = 1024;
 /// File the export writes inside its output directory.
 pub const EXPORT_FILE_NAME: &str = "workflow_export.json";
+/// A planning request document: the 48 KiB request bound plus its envelope.
+const MAX_PLANNING_DOCUMENT_BYTES: usize = 64 * 1024;
+/// A planning query document: identity fields only, never the goal text.
+const MAX_PLANNING_QUERY_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkflowCommand {
@@ -84,6 +91,12 @@ pub enum WorkflowCommand {
     PromptVersions,
     PromptRollback,
     PlanningProfiles,
+    PlanRequest {
+        request_file: PathBuf,
+    },
+    PlanningObservation {
+        query_file: PathBuf,
+    },
 }
 
 /// Flags one invocation may carry.
@@ -99,6 +112,7 @@ struct Flags {
     to: Option<Uuid>,
     candidate: Option<String>,
     suite: Option<String>,
+    query_file: Option<PathBuf>,
     prompts: bool,
 }
 
@@ -147,7 +161,7 @@ pub(crate) fn parse_workflow_arguments(
                 flags.contract = Some(text_value(value)?.to_string());
                 2
             }
-            ("workflow", "start" | "supervisor_start", "--request-id")
+            ("workflow", "start" | "supervisor_start" | "plan", "--request-id")
                 if flags.request_id.is_none() =>
             {
                 flags.request_id = Some(parse_id(text_value(value)?)?);
@@ -175,6 +189,14 @@ pub(crate) fn parse_workflow_arguments(
             }
             ("prompt", "evaluate", "--suite") if flags.suite.is_none() => {
                 flags.suite = Some(text_value(value)?.to_string());
+                2
+            }
+            ("workflow", "plan_request", "--request-file") if flags.request_file.is_none() => {
+                flags.request_file = Some(path()?);
+                2
+            }
+            ("workflow", "planning_observation", "--query-file") if flags.query_file.is_none() => {
+                flags.query_file = Some(path()?);
                 2
             }
             _ if !token.starts_with("--") && positional.is_none() => {
@@ -216,6 +238,18 @@ pub(crate) fn parse_workflow_arguments(
         ("workflow", "planning_profiles") => {
             none(positional.is_some())?;
             WorkflowCommand::PlanningProfiles
+        }
+        ("workflow", "plan_request") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PlanRequest {
+                request_file: flags.request_file.ok_or(DaemonCliError::InvalidArguments)?,
+            }
+        }
+        ("workflow", "planning_observation") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PlanningObservation {
+                query_file: flags.query_file.ok_or(DaemonCliError::InvalidArguments)?,
+            }
         }
         ("workflow", "supervisor_start") => {
             none(positional.is_some())?;
@@ -353,6 +387,17 @@ pub async fn run_workflow(
         WorkflowCommand::PlanningProfiles => {
             json!({"ok": true, "planning": client.workflow_planning_profiles().await.map_err(map_workflow_error)?})
         }
+        WorkflowCommand::PlanRequest { request_file } => {
+            // The request document carries the pinned profile digest; the
+            // daemon refuses a stale one before any prepare.
+            let request =
+                read_planning_document(&request_file, MAX_PLANNING_DOCUMENT_BYTES).await?;
+            json!({"ok": true, "planning": client.workflow_plan_request(request).await.map_err(map_workflow_error)?})
+        }
+        WorkflowCommand::PlanningObservation { query_file } => {
+            let query = read_planning_document(&query_file, MAX_PLANNING_QUERY_BYTES).await?;
+            json!({"ok": true, "planning": client.workflow_planning_observation(query).await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::SlotsList => {
             json!({"ok": true, "slots": client.workflow_slots().await.map_err(map_workflow_error)?})
         }
@@ -399,6 +444,20 @@ pub async fn run_workflow(
         }
     };
     Ok(answer)
+}
+
+/// Reads one planning document (request or query) from a file or `-`
+/// (stdin), bounded before any byte reaches the daemon.
+async fn read_planning_document(path: &Path, max_bytes: usize) -> Result<Value, DaemonCliError> {
+    let source = if path.as_os_str() == "-" {
+        PromptSource::Stdin
+    } else {
+        PromptSource::File(path.to_path_buf())
+    };
+    let text = read_prompt(source, max_bytes)
+        .await
+        .map_err(|error| error.into_cli_error(DaemonCliError::WorkflowGoalInvalid))?;
+    serde_json::from_str(&text).map_err(|_| DaemonCliError::InvalidArguments)
 }
 
 /// Reads every prompt of a session; the last one is the next prompt.
@@ -623,6 +682,35 @@ mod tests {
             parse("workflow", &["status", &text]),
             Ok(WorkflowCommand::Status { workflow_id: id })
         );
+        assert_eq!(
+            parse("workflow", &["planning_profiles"]),
+            Ok(WorkflowCommand::PlanningProfiles)
+        );
+        assert!(parse("workflow", &["planning_profiles", "extra"]).is_err());
+        assert_eq!(
+            parse("workflow", &["plan_request", "--request-file", "-"]),
+            Ok(WorkflowCommand::PlanRequest {
+                request_file: PathBuf::from("-")
+            })
+        );
+        assert!(parse("workflow", &["plan_request"]).is_err());
+        assert!(
+            parse(
+                "workflow",
+                &["plan_request", "--request-file", "-", "extra"]
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse(
+                "workflow",
+                &["planning_observation", "--query-file", "query.json"]
+            ),
+            Ok(WorkflowCommand::PlanningObservation {
+                query_file: PathBuf::from("query.json")
+            })
+        );
+        assert!(parse("workflow", &["planning_observation", "extra"]).is_err());
         assert_eq!(
             parse("workflow", &["export", &text, "--out", "dir"]),
             Ok(WorkflowCommand::Export {

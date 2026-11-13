@@ -56,6 +56,14 @@ pub enum WorkflowError {
     NativeTuiUnavailable,
     #[error("prompt evaluation input is invalid")]
     EvaluationInvalid,
+    #[error("planning request is invalid")]
+    PlanningRequestInvalid,
+    #[error("planning profile is not configured")]
+    PlanningProfileUnknown,
+    #[error("planning profile digest does not match the pinned config")]
+    PlanningProfileMismatch,
+    #[error("planning profile does not allow execution")]
+    PlanningExecutionRefused,
     /// The private workflow state could not be restricted to the daemon's
     /// user.
     #[error("workflow state directory is not private to the daemon user")]
@@ -105,6 +113,10 @@ impl WorkflowError {
             Self::SessionNotFound => "workflow_session_not_found",
             Self::NativeTuiUnavailable => "workflow_native_tui_unavailable",
             Self::EvaluationInvalid => "workflow_evaluation_invalid",
+            Self::PlanningRequestInvalid => "workflow_planning_request_invalid",
+            Self::PlanningProfileUnknown => "workflow_planning_profile_unknown",
+            Self::PlanningProfileMismatch => "workflow_planning_profile_mismatch",
+            Self::PlanningExecutionRefused => "workflow_planning_execution_refused",
             Self::StateUnprotected => "workflow_state_unprotected",
             Self::Optimizer { code } => code,
             Self::ShuttingDown => "workflow_shutting_down",

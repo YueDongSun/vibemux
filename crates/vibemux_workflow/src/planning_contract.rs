@@ -79,6 +79,11 @@ pub struct PlanningObservation {
     pub status: PlanningStatus,
     pub retry_allowed: bool,
     pub workflow: Option<PlanningWorkflowRef>,
+    /// The correlated live-execution observation. Always `None` in this
+    /// revision: the R&D start-observation surface is not present, and a
+    /// consumer must not treat planning alone as execution authority.
+    #[serde(default)]
+    pub execution: Option<serde_json::Value>,
 }
 
 #[must_use]
@@ -202,6 +207,7 @@ impl PlanningObservation {
             status,
             retry_allowed: false,
             workflow,
+            execution: None,
         }
     }
 
@@ -328,6 +334,45 @@ mod tests {
         assert!(
             serde_json::from_str::<PlanningRequest>(r#"{"schema_version":1,"profile_id":"a","profile_digest":"b","request_id":"00000000-0000-0000-0000-000000000001","request_text":"x","execute":false,"extra":1}"#).is_err()
         );
+    }
+
+    #[test]
+    fn observation_wire_keys_match_the_hub_closed_record() {
+        let request = request();
+        let observation = PlanningObservation::for_request(
+            &request,
+            PlanningStatus::Prepared,
+            Some(PlanningWorkflowRef {
+                workflow_id: Uuid::from_u128(0x99),
+                start_contract: "c".repeat(64),
+                phase: "prepared".to_string(),
+                version: 1,
+            }),
+        );
+        let value = serde_json::to_value(&observation).expect("encode");
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "execute",
+                "execution",
+                "profile_digest",
+                "profile_id",
+                "request_id",
+                "request_sha256",
+                "retry_allowed",
+                "schema_version",
+                "status",
+                "workflow"
+            ]
+        );
+        assert!(value["execution"].is_null());
     }
 
     #[test]

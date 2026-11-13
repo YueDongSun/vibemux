@@ -27,7 +27,7 @@ use serde_json::json;
 use vibemux_harness::AgentKind;
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier, canonical_json::canonical_digest, gateway::GatewayConfig,
-    gateway::RouteRole, slots::EvidenceClass, task_spec::WorkflowMode,
+    gateway::RouteRole, policy::OperatorPolicy, slots::EvidenceClass, task_spec::WorkflowMode,
 };
 
 use super::error::WorkflowError;
@@ -83,8 +83,10 @@ pub const MAX_PLANNING_TASKS: usize = 8;
 const MAX_PLANNING_WORKER_SLOTS: usize = 8;
 const PLANNING_PROFILE_DIGEST_DOMAIN: &str = "vibemux.workflow.planning_profile.v1";
 
-/// One pinned planning profile. It names slots, suites, and an execution
-/// permission; request text and request UUIDs arrive only with a request.
+/// One pinned planning profile. It names slots, suites, the task
+/// assignment shape, the operator policy every planned request is admitted
+/// under, and an execution permission; request text and request UUIDs
+/// arrive only with a request.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningProfileConfig {
@@ -94,11 +96,25 @@ pub struct PlanningProfileConfig {
     pub worker_slots: Vec<SpecIdentifier>,
     pub reviewer_slot: SpecIdentifier,
     pub integration_suites: Vec<SpecIdentifier>,
+    /// Task key to the worker slot(s) that run it. Cooperative tasks name
+    /// one slot each; the single compare task names every competitor.
+    pub task_assignments: Vec<PlanningTaskAssignment>,
+    /// The operator policy every request under this profile is admitted
+    /// through. The profile digest (via the config digest) pins it, so a
+    /// replayed request can never be admitted under a changed policy.
+    pub policy: serde_json::Value,
     pub max_tasks: usize,
     pub allow_execution: bool,
     /// This revision admits fixture planning only: the live model-compiler
     /// admission (BoundReceiptV2) is not present on this branch.
     pub fixture: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningTaskAssignment {
+    pub task_key: SpecIdentifier,
+    pub slots: Vec<SpecIdentifier>,
 }
 
 #[derive(Serialize)]
@@ -383,6 +399,63 @@ fn validate(config: &WorkflowConfig) -> Result<(), WorkflowError> {
                 return Err(invalid());
             }
         }
+        validate_planning_profile_shape(profile)?;
+    }
+    Ok(())
+}
+
+/// Assignment and pinned-policy shape shared by every profile.
+fn validate_planning_profile_shape(profile: &PlanningProfileConfig) -> Result<(), WorkflowError> {
+    if profile.task_assignments.is_empty() || profile.task_assignments.len() > profile.max_tasks {
+        return Err(WorkflowError::ConfigInvalid);
+    }
+    let mut task_keys: Vec<&SpecIdentifier> = profile
+        .task_assignments
+        .iter()
+        .map(|assignment| &assignment.task_key)
+        .collect();
+    task_keys.sort();
+    task_keys.dedup();
+    if task_keys.len() != profile.task_assignments.len() {
+        return Err(WorkflowError::ConfigInvalid);
+    }
+    let mut used_slots: Vec<&SpecIdentifier> = Vec::new();
+    for assignment in &profile.task_assignments {
+        if assignment.slots.is_empty() {
+            return Err(WorkflowError::ConfigInvalid);
+        }
+        let mut slots = assignment.slots.clone();
+        slots.sort();
+        slots.dedup();
+        if slots.len() != assignment.slots.len() {
+            return Err(WorkflowError::ConfigInvalid);
+        }
+        for slot in &assignment.slots {
+            if !profile.worker_slots.contains(slot) {
+                return Err(WorkflowError::ConfigInvalid);
+            }
+            used_slots.push(slot);
+        }
+    }
+    // Every declared worker slot runs exactly one planned task.
+    used_slots.sort();
+    used_slots.dedup();
+    if used_slots.len() != profile.worker_slots.len() {
+        return Err(WorkflowError::ConfigInvalid);
+    }
+    // The pinned policy must parse and must declare every integration suite
+    // as a trusted verifier suite.
+    let policy_bytes =
+        serde_json::to_vec(&profile.policy).map_err(|_| WorkflowError::ConfigInvalid)?;
+    let policy = OperatorPolicy::parse(&policy_bytes).map_err(|_| WorkflowError::ConfigInvalid)?;
+    for suite in &profile.integration_suites {
+        if !policy
+            .verifier_suites
+            .iter()
+            .any(|declared| &declared.suite_id == suite)
+        {
+            return Err(WorkflowError::ConfigInvalid);
+        }
     }
     Ok(())
 }
@@ -574,20 +647,45 @@ mod tests {
         assert!(serde_json::from_value::<WorkflowConfig>(value).is_err());
     }
 
-    #[test]
-    fn planning_profile_digest_binds_the_profile_to_the_config() {
-        let profile: PlanningProfileConfig = serde_json::from_value(json!({
+    fn profile_policy() -> serde_json::Value {
+        json!({
+            "schema_version": 1,
+            "policy_version": "fixture_policy_v1",
+            "writable_roots": ["src/**", "tests/worker_store/**"],
+            "protected_paths": ["package.json", "CONTRACT.md"],
+            "allowed_tools": ["read_files", "search_files", "edit_files", "write_files",
+                "run_dev_tests"],
+            "verifier_suites": [{"suite_id": "api", "description": "Trusted api suite."}],
+            "budget_caps": {"max_turns": 6, "max_repairs": 2, "max_elapsed_seconds": 1800,
+                "max_model_requests": 40},
+            "max_parallel_slots": 2,
+            "max_supervisor_decisions": 16,
+            "max_optimizer_candidates": 4,
+            "content_store_opt_in": false,
+            "aag_only": true,
+        })
+    }
+
+    fn planning_profile() -> serde_json::Value {
+        json!({
             "profile_id": "fixture_small",
             "workflow_key": "taskboard",
             "mode": "cooperate",
             "worker_slots": ["slot_a"],
             "reviewer_slot": "review",
             "integration_suites": ["api"],
+            "task_assignments": [{"task_key": "store", "slots": ["slot_a"]}],
+            "policy": profile_policy(),
             "max_tasks": 1,
             "allow_execution": true,
             "fixture": true,
-        }))
-        .expect("shape");
+        })
+    }
+
+    #[test]
+    fn planning_profile_digest_binds_the_profile_to_the_config() {
+        let profile: PlanningProfileConfig =
+            serde_json::from_value(planning_profile()).expect("shape");
         let config_a = Sha256Digest::of(b"config-a");
         let config_b = Sha256Digest::of(b"config-b");
         let digest = profile.digest(config_a).expect("digest");
@@ -603,17 +701,7 @@ mod tests {
     fn planning_profiles_must_pin_fixture_roles_and_known_suites() {
         let outside = tempfile::tempdir().expect("outside");
         let executable = outside.path().join("tool.exe");
-        let profile = json!({
-            "profile_id": "fixture_small",
-            "workflow_key": "taskboard",
-            "mode": "cooperate",
-            "worker_slots": ["slot_a"],
-            "reviewer_slot": "review",
-            "integration_suites": ["api"],
-            "max_tasks": 1,
-            "allow_execution": true,
-            "fixture": true,
-        });
+        let profile = planning_profile();
         let with_profile = |mutate: &dyn Fn(&mut serde_json::Value)| {
             let mut value = config_json(outside.path(), &executable);
             let mut entry = profile.clone();
@@ -626,6 +714,25 @@ mod tests {
 
         let mut rejected: Vec<serde_json::Value> = vec![
             with_profile(&|entry| entry["fixture"] = json!(false)),
+            with_profile(&|entry| entry["task_assignments"] = json!([])),
+            with_profile(&|entry| {
+                entry["task_assignments"] = json!([
+                    {"task_key": "store", "slots": ["slot_a"]},
+                    {"task_key": "extra", "slots": ["slot_a"]},
+                ])
+            }),
+            with_profile(&|entry| {
+                entry["task_assignments"] = json!([
+                    {"task_key": "store", "slots": []},
+                ])
+            }),
+            with_profile(&|entry| {
+                entry["task_assignments"] = json!([
+                    {"task_key": "store", "slots": ["review"]},
+                ])
+            }),
+            with_profile(&|entry| entry["policy"] = json!({"schema_version": 2})),
+            with_profile(&|entry| entry["policy"]["verifier_suites"] = json!([])),
             with_profile(&|entry| entry["worker_slots"] = json!(["review"])),
             with_profile(&|entry| entry["reviewer_slot"] = json!("slot_a")),
             with_profile(&|entry| entry["integration_suites"] = json!(["unknown"])),

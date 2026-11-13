@@ -147,6 +147,21 @@ Executed on the same host and managed slot:
 The managed core slot held 14.1 GB after the full scope (including Tauri);
 the comparison slots were cleaned after measurement.
 
+## 2026-11-14 addendum — planning compile and lost-submit replay
+
+`workflow plan_request` (mutating) and `workflow planning_observation`
+(read-only) were added at v10; the catalog now reports **51 operations**.
+Re-run on the same host:
+
+- `C02-PLAN`: passed, `VibeMux=5 daemon=3 Hub=3 adapter=17` — the planning
+  contract, the daemon catalog, the fixture-compiled `plan_request` that
+  runs the real prepare/start gates to acceptance, the lost-submit replay
+  (no second compiler call), the digest-bound recovery query, and the Hub's
+  owner-adapter boundary tests that pin the exact CLI argv/stdin shapes.
+- Fixture class only: the compiler route is the fixture gateway, and the
+  live model-compiler admission plus a live Hub-to-daemon run are not
+  claimed.
+
 ## 2026-11-13 addendum — planning profile catalog
 
 After the 2026-11-12 record above, the additive v10 operation
