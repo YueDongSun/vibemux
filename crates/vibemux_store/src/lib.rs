@@ -270,6 +270,15 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        // Classify an existing database through a read-only connection first:
+        // a refused lineage must not be modified, not even by the read-write
+        // open that would otherwise run before the check.
+        if path.exists() {
+            let inspection = lineage::inspect_database(path)?;
+            if let Some(error) = lineage::refusal(&inspection) {
+                return Err(error);
+            }
+        }
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MILLISECONDS))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -687,44 +696,8 @@ impl SqliteStore {
         // lineage (reports schema 10, chat schema 10-14) and a foreign Python
         // store are refused so the owner can upgrade them deliberately.
         let inspection = lineage::inspect(&self.connection)?;
-        match inspection.lineage {
-            lineage::SchemaLineage::ReportsSchema10
-            | lineage::SchemaLineage::ChatSchema10
-            | lineage::SchemaLineage::ChatSchema11
-            | lineage::SchemaLineage::ChatSchema12
-            | lineage::SchemaLineage::ChatSchema13
-            | lineage::SchemaLineage::ChatSchema14 => {
-                return Err(StoreError::KnownLineage {
-                    lineage: inspection.lineage.as_str(),
-                    found: inspection.found_version,
-                    supported: STORE_SCHEMA_VERSION,
-                });
-            }
-            lineage::SchemaLineage::ForeignPython => {
-                return Err(StoreError::UnsupportedDatabase {
-                    reason: "events/projections do not match the Rust envelope schema",
-                });
-            }
-            lineage::SchemaLineage::Incomplete => {
-                return Err(StoreError::SchemaIncomplete {
-                    found: inspection.found_version,
-                    missing: inspection.missing_required.join(","),
-                });
-            }
-            lineage::SchemaLineage::Future => {
-                return Err(StoreError::NewerSchema {
-                    found: inspection.found_version,
-                    supported: STORE_SCHEMA_VERSION,
-                });
-            }
-            lineage::SchemaLineage::Unknown => {
-                return Err(StoreError::UnsupportedDatabase {
-                    reason: "unrecognized schema layout",
-                });
-            }
-            lineage::SchemaLineage::Empty
-            | lineage::SchemaLineage::LegacyRust
-            | lineage::SchemaLineage::Current => {}
+        if let Some(error) = lineage::refusal(&inspection) {
+            return Err(error);
         }
         self.connection.pragma_update(None, "journal_mode", "WAL")?;
         let found = inspection.found_version;

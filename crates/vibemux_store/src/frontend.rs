@@ -314,7 +314,7 @@ impl SqliteStore {
             events.push(FrontendEventSummary {
                 sequence: event.sequence().get(),
                 event_type: event.event_type().as_str().to_string(),
-                at: event.timestamp().to_string(),
+                at: rfc3339(event.timestamp())?,
                 run_id: event.run_id(),
             });
         }
@@ -374,7 +374,7 @@ impl SqliteStore {
             events.push(FrontendEventSummary {
                 sequence: event.sequence().get(),
                 event_type: event.event_type().as_str().to_string(),
-                at: event.timestamp().to_string(),
+                at: rfc3339(event.timestamp())?,
                 run_id: event.run_id(),
             });
         }
@@ -408,6 +408,12 @@ fn task_summary(
         latest_sequence,
         detail_revision: detail_revision.max(latest_sequence),
     })
+}
+
+fn rfc3339(timestamp: time::OffsetDateTime) -> Result<String, StoreError> {
+    timestamp
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| StoreError::FrontendProjectionMismatch)
 }
 
 fn bounded_utf8(value: &str, max_bytes: usize) -> String {
@@ -509,6 +515,10 @@ mod tests {
         assert_eq!(first.earliest_sequence, sequences[0]);
         assert_eq!(first.latest_sequence, *sequences.last().expect("last"));
         assert!(first.has_more);
+        for event in &first.events {
+            time::OffsetDateTime::parse(&event.at, &time::format_description::well_known::Rfc3339)
+                .expect("event timestamp is RFC 3339");
+        }
 
         let exhausted = store
             .frontend_events(&FrontendEventsQuery {

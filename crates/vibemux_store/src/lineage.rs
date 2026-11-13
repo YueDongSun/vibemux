@@ -200,6 +200,40 @@ pub fn inspect(connection: &Connection) -> Result<SchemaInspection, StoreError> 
     })
 }
 
+/// The refusal for a recognized-but-unsupported or malformed layout.
+///
+/// `SqliteStore::open` runs this against a read-only connection before it
+/// opens the database for writing, so a refused file is not modified.
+pub(crate) fn refusal(inspection: &SchemaInspection) -> Option<StoreError> {
+    match inspection.lineage {
+        SchemaLineage::ReportsSchema10
+        | SchemaLineage::ChatSchema10
+        | SchemaLineage::ChatSchema11
+        | SchemaLineage::ChatSchema12
+        | SchemaLineage::ChatSchema13
+        | SchemaLineage::ChatSchema14 => Some(StoreError::KnownLineage {
+            lineage: inspection.lineage.as_str(),
+            found: inspection.found_version,
+            supported: STORE_SCHEMA_VERSION,
+        }),
+        SchemaLineage::ForeignPython => Some(StoreError::UnsupportedDatabase {
+            reason: "events/projections do not match the Rust envelope schema",
+        }),
+        SchemaLineage::Incomplete => Some(StoreError::SchemaIncomplete {
+            found: inspection.found_version,
+            missing: inspection.missing_required.join(","),
+        }),
+        SchemaLineage::Future => Some(StoreError::NewerSchema {
+            found: inspection.found_version,
+            supported: STORE_SCHEMA_VERSION,
+        }),
+        SchemaLineage::Unknown => Some(StoreError::UnsupportedDatabase {
+            reason: "unrecognized schema layout",
+        }),
+        SchemaLineage::Empty | SchemaLineage::LegacyRust | SchemaLineage::Current => None,
+    }
+}
+
 /// Fail closed unless the database now contains every current object.
 pub(crate) fn verify_current(connection: &Connection) -> Result<(), StoreError> {
     let tables = list_objects(connection, "table")?;
@@ -324,6 +358,7 @@ VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         );
         let inspection = inspect_database(&path).expect("inspect");
         assert_eq!(inspection.lineage, SchemaLineage::ReportsSchema10);
+        let before = fs::read(&path).expect("read before refusal");
         let error = crate::SqliteStore::open(&path)
             .err()
             .expect("known lineage is refused");
@@ -335,6 +370,11 @@ VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 ..
             }
         ));
+        assert_eq!(
+            fs::read(&path).expect("read after refusal"),
+            before,
+            "a refused lineage must not modify the database"
+        );
         assert_eq!(count(&path, "schema_migrations"), 10);
         assert_eq!(count(&path, "workflow_worker_reports"), 0);
         assert!(
@@ -434,10 +474,16 @@ CREATE TABLE runs(run_id TEXT PRIMARY KEY);
             inspect_database(&path).expect("inspect").lineage,
             SchemaLineage::ForeignPython
         );
+        let before = fs::read(&path).expect("read before refusal");
         let error = crate::SqliteStore::open(&path)
             .err()
             .expect("foreign store is refused");
         assert!(matches!(error, StoreError::UnsupportedDatabase { .. }));
+        assert_eq!(
+            fs::read(&path).expect("read after refusal"),
+            before,
+            "a refused foreign store must not be modified"
+        );
         assert_eq!(count(&path, "schema_migrations"), 1);
     }
 
