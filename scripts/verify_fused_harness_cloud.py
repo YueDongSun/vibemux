@@ -45,6 +45,7 @@ CASE_IDS: Final = (
     "A1",
     "A2",
     "C11-SLOTS",
+    "C11-MERGE",
     "C13-LINEAGE",
     "C04-EVENTS",
     "C07-RESTART",
@@ -72,9 +73,8 @@ NOT_RUN_REASONS: Final[dict[str, str]] = {
     "C05": "Requires Hub generation-scoped cancellation wired to the daemon dispatch route.",
     "C07": "Daemon stop/restart over the same store is covered by C07-RESTART; Hub restart recovery of suspended/interrupted tasks is not implemented.",
     "C08": "Requires a second fixture harness adapter with native identity preservation.",
-    "C09": "Requires the Hub skill_refs resolver and bounded context assembly.",
     "C10": "Requires the Hub read-only MCP tool and worker tool-call admission.",
-    "C11": "The worker/candidate merge half requires the workflow candidate path; the managed build-slot contention half is covered by C11-SLOTS.",
+    "C11": "Both halves are now covered by C11-SLOTS (build-slot contention) and C11-MERGE (two-worker candidate integration); this entry records no further C11 gap.",
     "C12": "Requires an AAG checkout and its real server source for v2 receipt interoperability.",
     "C13": "Known layouts are recognized and preserved (reports schema 10, chat schema 10-14, foreign Python store, future and incomplete markers); merging those layouts forward into one current schema is not implemented.",
     "C15": "Requires the shared native host bridge and the two chat layouts.",
@@ -1087,6 +1087,108 @@ def _run_c14_fusion(
         )
 
 
+def _run_c11_merge(*, vibemux_root: Path, build_state_root: Path, timeout: float) -> dict[str, Any]:
+    """Two owned workers build, review, and integrate through the workflow path."""
+    started = time.monotonic()
+    build_storage = vibemux_root / "scripts" / "build_storage.py"
+    try:
+        result = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c11-merge",
+                "--budget-bytes",
+                "12G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemuxd",
+                "--features",
+                "test_helpers",
+                "--test",
+                "workflow_cooperate",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 700))
+        passed = _cargo_passed(result.stdout)
+        if passed < 2:
+            raise VerificationError(f"expected two two-worker tests, saw {passed}")
+        return _case(
+            "C11-MERGE",
+            "passed",
+            evidence_class="actual_daemon_two_worker_integration",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"{passed} tests: two workers build in isolated worktrees, review, "
+                "and integrate through the scoped workflow path"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C11-MERGE",
+            "failed",
+            evidence_class="actual_daemon_two_worker_integration",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
+def _run_c09_skills(*, hub_root: Path, timeout: float) -> dict[str, Any]:
+    """The Hub resolves a declared skill ref into a bounded context bundle.
+
+    The resolver refuses escapes, symlinks, hardlinks, non-UTF-8, and
+    oversized content; the bundle carries the exact content hash and the
+    constant `execution_authority: none`, so skill text never grants tools or
+    permissions.
+    """
+    started = time.monotonic()
+    try:
+        result = _run(
+            ["node", "--test", "tests/skill_refs.test.mjs"],
+            cwd=hub_root,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise VerificationError(_tail(result, 500))
+        passed = 0
+        for line in result.stdout.splitlines():
+            if line.startswith("ℹ pass "):
+                passed = int(line.rsplit(" ", 1)[-1])
+        if passed < 6:
+            raise VerificationError(f"expected six skill-ref tests, saw {passed}")
+        return _case(
+            "C09",
+            "passed",
+            evidence_class="skill_ref_resolution",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=(
+                f"{passed} tests: escape/symlink/hardlink/size refusals, exact "
+                "content hash, bounded bundle, execution_authority=none"
+            ),
+        )
+    except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
+        return _case(
+            "C09",
+            "failed",
+            evidence_class="skill_ref_resolution",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            detail=str(error),
+        )
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="verify_fused_harness_cloud.py",
@@ -1238,6 +1340,31 @@ def main(argv: list[str] | None = None) -> int:
                         timeout=arguments.timeout_seconds,
                     )
                 )
+        if "C09" in selected:
+            if hub_root is None:
+                cases.append(
+                    _case(
+                        "C09",
+                        "blocked",
+                        evidence_class="skill_ref_resolution",
+                        detail="--hub-root is required for the skill resolver",
+                    )
+                )
+            else:
+                cases.append(
+                    _run_c09_skills(
+                        hub_root=hub_root,
+                        timeout=arguments.timeout_seconds,
+                    )
+                )
+        if "C11-MERGE" in selected:
+            cases.append(
+                _run_c11_merge(
+                    vibemux_root=vibemux_root,
+                    build_state_root=build_state_root,
+                    timeout=arguments.timeout_seconds,
+                )
+            )
         if "C14" in selected:
             cases.append(
                 _run_c14_fusion(

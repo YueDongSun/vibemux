@@ -8017,3 +8017,24 @@ retained in the task's local validation artifact.
   reports `offline_fusion_contracts`.
 - Limits: no live Fusion measurement exists; the live path stays opt-in and
   unverified.
+
+
+### 2026-11-13 — C09 skill refs and C11 two-worker integration
+
+- Hub: added `local/rd/skill_refs.mjs`. A skill ref names an allowlisted
+  absolute root and a relative path; the resolver rejects escapes, absolute
+  paths, dot segments, backslashes, symlinks, hardlinks, non-UTF-8 content,
+  empty/oversized files, duplicate ids, unknown roots, and excessive totals.
+  The resolved entry carries the exact SHA-256 and text; `build_context_bundle`
+  emits the versioned context bundle with `execution_authority: none` and a
+  byte budget. Six `node --test` cases cover the resolution and refusals.
+- `C09` runs those tests and reports `skill_ref_resolution`.
+- `C11-MERGE` runs the existing two-worker `workflow_cooperate` tests: two
+  workers build in isolated worktrees, review, and integrate through the
+  scoped workflow path (2 tests, ~45 s), reporting
+  `actual_daemon_two_worker_integration`.
+- Executed on macOS 15.6: skill tests 6/6; workflow_cooperate 2/2; both frame
+  cases passed.
+- Limits: the Hub planning path does not yet consume resolved skills; C09
+  keeps that explicit condition. C11 now has both halves covered by
+  C11-SLOTS and C11-MERGE.

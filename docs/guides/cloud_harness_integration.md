@@ -15,6 +15,8 @@ Capabilities that are not implemented stay `not_run` in the report.
 | `A2` | Python 3.12 | Managed build-storage inventory is valid |
 | `C11-SLOTS` | Python 3.12, Git | Two owned worktrees compete for one managed build slot: serialization, ownership, release, and owned cleanup |
 | `C07-RESTART` | Built `vibemuxctl` | Daemon stop/restart reopens the same store and re-serves health and capability discovery |
+| `C09` | Node, Hub checkout | Resolves a declared skill ref into a bounded context bundle with an exact content hash and `execution_authority: none`; escapes, links, non-UTF-8, and oversized content are refused |
+| `C11-MERGE` | Rust toolchain | Two owned workers build in isolated worktrees, review, and integrate through the scoped workflow path |
 | `C14` | Rust toolchain | Fusion Single/Cascade/Critique contracts run offline with deterministic fixtures; no provider call |
 | `C06` | Rust toolchain | A real in-process daemon, store, Git worktrees and writable fixture worker: the independent trusted verifier rejects a wrong candidate while the reviewer passes it, and accepts the good candidate through the same path |
 | `C04-EVENTS` | Rust toolchain, Node, Hub checkout | Paged task events with a sequence cursor, retention-floor resynchronization, and the Hub consumer |
@@ -117,9 +119,8 @@ unconfigured`; an older daemon falls back to the legacy read path. See
 | C06 | Out-of-process fixture worker on a stock daemon (the in-process fixture path is covered by C06) |
 | C07 | Hub restart recovery of suspended/interrupted tasks (daemon store reuse is covered by C07-RESTART) |
 | C08 | Second fixture harness adapter |
-| C09 | Hub `skill_refs` resolver |
+| C09 | Planning-path consumption of resolved skills (the resolver and bundle are covered by C09) |
 | C10 | Hub read-only MCP tool + worker tool admission |
-| C11 | Worker/candidate merge half (the managed-slot contention half is C11-SLOTS) |
 | C12 | AAG real server source for v2 receipt interoperability |
 | C13 | Forward merge of the recognized layouts (reports schema 10, chat schema 10-14) into one current schema; recognition and preservation are covered by C13-LINEAGE |
 | C14 | Live Fusion measurement (offline contracts are covered by C14) |
