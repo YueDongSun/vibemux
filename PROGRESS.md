@@ -8053,3 +8053,6 @@ retained in the task's local validation artifact.
   keep their remaining conditions in the not_run reasons (Hub generation
   cancellation, a second native harness handoff, and worker-to-Hub tools).
 - Executed on macOS 15.6: all three cases passed.
+- Final full workspace gate after C06/C09/C14: **1719 passed, 0 failed,
+  2 ignored, 151 targets** (583 s); the Fusion example tests run separately
+  through `--example fusion_benchmark`.
