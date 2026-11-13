@@ -954,6 +954,28 @@ impl WorkflowService {
             .is_some_and(|active| active.control.send(control).is_ok())
     }
 
+    /// Content-free planning profile catalog with pinned digests.
+    pub async fn planning_profiles(&self) -> Result<serde_json::Value, WorkflowError> {
+        let setup = self.inner.setup()?;
+        let profiles = setup
+            .config
+            .config
+            .planning_profiles
+            .iter()
+            .map(|profile| {
+                Ok(serde_json::json!({
+                    "profile_id": profile.profile_id,
+                    "profile_digest": profile.digest(setup.config.digest)?,
+                    "workflow_key": profile.workflow_key,
+                    "mode": profile.mode,
+                    "max_tasks": profile.max_tasks,
+                    "allow_execution": profile.allow_execution,
+                }))
+            })
+            .collect::<Result<Vec<_>, WorkflowError>>()?;
+        Ok(serde_json::json!({"schema_version": 1, "profiles": profiles}))
+    }
+
     /// Content-free status of one workflow.
     pub async fn status(&self, workflow_id: Uuid) -> Result<WorkflowStatus, WorkflowError> {
         let located = self.locate(workflow_id).await?;

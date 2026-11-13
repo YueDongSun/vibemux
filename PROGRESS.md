@@ -8125,3 +8125,29 @@ retained in the task's local validation artifact.
 - Limits: the daemon planning-profile compiler, the model-compiler route, and
   the end-to-end Hub goal submission remain not implemented; C02/C03 keep
   those precise conditions.
+
+### 2026-11-13 — Planning profile catalog (C02 configuration surface)
+
+- Added `planning_profiles` to the workflow config (schema 1, optional array,
+  up to 16 entries): each `{profile_id, workflow_key, mode, worker_slots,
+  reviewer_slot, integration_suites, max_tasks, allow_execution, fixture}`
+  entry pins the worker slots to worker roles, the reviewer slot to the
+  reviewer role, and the suites to configured verifier suites; `max_tasks` is
+  1-8 and only `fixture: true` is admitted because the live model-compiler
+  admission (BoundReceiptV2) is not on this branch.
+- Each profile derives a domain-separated `profile_digest`
+  (`vibemux.workflow.planning_profile.v1`) that binds the entry to the pinned
+  workflow-config digest, so a planning observation can only match the exact
+  config revision it was compiled against.
+- New additive v10 Control op `WorkflowPlanningProfiles` serves the
+  content-free catalog (schema 1: profile id, digest, workflow key, mode,
+  max_tasks, allow_execution); `vibemuxctl workflow planning_profiles` prints
+  it. Slot wiring, suite argv, and paths never appear in the response.
+- Tests: settings validation/digest unit tests (fixture-only, role, suite,
+  duplicate, bounds; digest binds profile and config) plus
+  `workflow_planning_profiles` daemon integration tests (pinned digest,
+  stability, key allowlist, unconfigured-empty catalog). `C02-PLAN` now runs
+  both the workflow-contract suites and the daemon catalog tests
+  (VibeMux 4, daemon 2, Hub 3).
+- Still not implemented: the planning compiler, the model-compiler route, and
+  the end-to-end Hub goal submission; C02/C03 keep those conditions.

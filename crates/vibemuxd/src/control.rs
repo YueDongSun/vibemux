@@ -142,6 +142,7 @@ pub enum ControlOperation {
     WorkflowSupervisorStart,
     WorkflowSupervisorStatus,
     WorkflowContractEdit,
+    WorkflowPlanningProfiles,
     WorkflowStatus,
     WorkflowPause,
     WorkflowCancel,
@@ -194,7 +195,7 @@ impl ControlOperation {
             | Self::DshSessionCancel
             | Self::DshSessionClose => CONTROL_PROTOCOL_V7,
             Self::WorkflowSupervisorStart | Self::WorkflowSupervisorStatus => CONTROL_PROTOCOL_V9,
-            Self::WorkflowContractEdit => CONTROL_PROTOCOL_V10,
+            Self::WorkflowContractEdit | Self::WorkflowPlanningProfiles => CONTROL_PROTOCOL_V10,
             Self::WorkflowPrepare
             | Self::WorkflowStart
             | Self::WorkflowStatus
@@ -256,6 +257,7 @@ impl ControlOperation {
         Self::WorkflowSupervisorStart,
         Self::WorkflowSupervisorStatus,
         Self::WorkflowContractEdit,
+        Self::WorkflowPlanningProfiles,
         Self::WorkflowStatus,
         Self::WorkflowPause,
         Self::WorkflowCancel,
@@ -310,6 +312,7 @@ impl ControlOperation {
                 | Self::WorkflowSlots
                 | Self::WorkflowSessionInspect
                 | Self::WorkflowPolicyVersions
+                | Self::WorkflowPlanningProfiles
                 | Self::DecisionList
                 | Self::DecisionShow
                 | Self::Capabilities
@@ -352,6 +355,7 @@ impl ControlOperation {
             | Self::WorkflowSupervisorStart
             | Self::WorkflowSupervisorStatus
             | Self::WorkflowContractEdit
+            | Self::WorkflowPlanningProfiles
             | Self::WorkflowStatus
             | Self::WorkflowPause
             | Self::WorkflowCancel
@@ -2170,6 +2174,7 @@ where
         | ControlOperation::WorkflowSupervisorStart
         | ControlOperation::WorkflowSupervisorStatus
         | ControlOperation::WorkflowContractEdit
+        | ControlOperation::WorkflowPlanningProfiles
         | ControlOperation::WorkflowStatus
         | ControlOperation::WorkflowPause
         | ControlOperation::WorkflowCancel

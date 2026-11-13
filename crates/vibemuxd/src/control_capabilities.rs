@@ -249,7 +249,7 @@ mod tests {
             format!("vibemux.control.v{CONTROL_PROTOCOL_VERSION}")
         );
         assert_eq!(catalog.operations.len(), ControlOperation::ALL.len());
-        assert_eq!(ControlOperation::ALL.len(), 48);
+        assert_eq!(ControlOperation::ALL.len(), 49);
         let mut names: Vec<&str> = catalog
             .operations
             .iter()

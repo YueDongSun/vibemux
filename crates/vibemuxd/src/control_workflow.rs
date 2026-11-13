@@ -195,6 +195,15 @@ impl ControlClient {
         .await
     }
 
+    pub async fn workflow_planning_profiles(&self) -> Result<Value, ControlError> {
+        self.workflow_request(
+            ControlOperation::WorkflowPlanningProfiles,
+            None::<&()>,
+            CONTROL_DEADLINE,
+        )
+        .await
+    }
+
     pub async fn workflow_slots(&self) -> Result<Value, ControlError> {
         self.workflow_request(
             ControlOperation::WorkflowSlots,
@@ -358,6 +367,12 @@ pub(super) async fn dispatch(
             let contract =
                 Sha256Digest::from_hex(&start.contract).ok_or(ControlError::InvalidRequest)?;
             encode(service.start_workflow(contract, start.request_id).await)?
+        }
+        ControlOperation::WorkflowPlanningProfiles => {
+            if argument.is_some() {
+                return Err(ControlError::InvalidRequest);
+            }
+            encode(service.planning_profiles().await)?
         }
         ControlOperation::WorkflowStatus => {
             let lookup: WorkflowLookup = parse_lookup(argument)?;

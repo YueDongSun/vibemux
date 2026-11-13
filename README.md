@@ -272,7 +272,7 @@ The workflow service needs `.vibemux/workflow_config.json` (schema 1; read once 
 - `verifier.suites`: argv templates that must contain `{candidate}` and `{out}` and may use `{verifier_dir}`;
 - `verifier.timeout_ms`, `heartbeat_ms`, and `candidate_limits` (`max_files`, `max_file_bytes`, `max_total_bytes`).
 
-Optional fields are `gateway` (required for `live`, with a binding for every slot's role) and `content_retention_days` (without it no prompt or bundle text is kept). `crates/vibemuxd/tests/workflow_support/mod.rs` writes a complete fixture config, request, and policy.
+Optional fields are `gateway` (required for `live`, with a binding for every slot's role), `content_retention_days` (without it no prompt or bundle text is kept), and `planning_profiles` (up to 16 entries of `{profile_id, workflow_key, mode, worker_slots, reviewer_slot, integration_suites, max_tasks, allow_execution, fixture}`; worker slots must bind worker roles, the reviewer slot the reviewer role, the suites configured verifier suites, and `max_tasks` is 1-8). This revision admits `fixture: true` profiles only — the live model-compiler admission is not implemented. `crates/vibemuxd/tests/workflow_support/mod.rs` writes a complete fixture config, request, and policy.
 
 ```powershell
 .\target\debug\vibemuxctl.exe workflow prepare --request-file request.json --policy-file policy.json --project-root .
@@ -286,6 +286,7 @@ Optional fields are `gateway` (required for `live`, with a binding for every slo
 .\target\debug\vibemuxctl.exe prompt evaluate --candidate <candidate_id> --suite <suite_id> --project-root .
 .\target\debug\vibemuxctl.exe prompt versions --project-root .
 .\target\debug\vibemuxctl.exe prompt rollback --project-root .
+.\target\debug\vibemuxctl.exe workflow planning_profiles --project-root .
 ```
 
 - **Request file.** It holds `request_text`, the compiled `task_specs`, the slot `assignments`, the `reviewer_slot`, and `integration_suites`. Prepare validates every TaskSpec against the exact request text and the operator policy. A rejected contract answers with content-free violation codes.
@@ -293,6 +294,7 @@ Optional fields are `gateway` (required for `live`, with a binding for every slo
 - **Other commands:**
   - `workflow cancel` and `workflow purge` (delete retained content) take a workflow ID.
   - `session attach` is refused with `workflow_native_tui_unavailable`.
+  - `workflow planning_profiles` prints the content-free catalog (schema 1). Each entry carries a `profile_digest` bound to the pinned workflow-config digest, so a later planning observation can only match the exact config revision it was compiled against. No planning compiler or goal submission is implemented yet.
   - Only `session inspect --prompts` prints prompt text.
   - `prompt evaluate` reads `.vibemux/prompt_suites/<suite_id>.json` and `.vibemux/prompt_candidates/<candidate_id>.json`.
   - A case counts only when its workflow finished and holds no lease. A case that stops `blocked`, or leaves a slot reserved for an attempt that never settled, ends the cycle with `optimizer_case_incomplete` before anything is selected or promoted. A repeated `prompt evaluate` resumes the unfinished case workflows.

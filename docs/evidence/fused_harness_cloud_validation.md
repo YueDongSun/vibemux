@@ -147,11 +147,28 @@ Executed on the same host and managed slot:
 The managed core slot held 14.1 GB after the full scope (including Tauri);
 the comparison slots were cleaned after measurement.
 
+## 2026-11-13 addendum — planning profile catalog
+
+After the 2026-11-12 record above, the additive v10 operation
+`workflow_planning_profiles` (content-free catalog, schema 1, per-profile
+digest bound to the pinned workflow-config digest) was added; the catalog now
+reports **49 operations**. Re-run on the same host:
+
+- `C01`: passed, `operations=49 runtimes=11`.
+- `C02-PLAN`: passed, `VibeMux=4 daemon=2 Hub=3` — the planning contract,
+  the daemon catalog integration tests, and the Hub validation.
+- `cargo test --locked -p vibemuxd -p vibemux_cli -p vibemux_workflow
+  --all-features` (managed verify slot): **passed**, 0 failed
+  (`workflow_share` included, 29 s in this run).
+
+The catalog is the configuration/selection surface only: no planning
+compiler, model-compiler route, or end-to-end goal submission is claimed.
+
 ## What this evidence does and does not establish
 
 - It establishes that the current VibeMux daemon descriptor and read-only
   operations are consumable by the Hub's real adapter code on POSIX.
-- It does **not** establish goal submission, planning profiles, worker
+- It does **not** establish goal submission, planning compilation, worker
   execution, follow-up, dual worker, migration lineage, AAG interoperability,
   Fusion benchmarks, or the shared native UI. Those are `not_run` with
   explicit missing capabilities.

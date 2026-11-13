@@ -116,6 +116,8 @@ pub struct FixtureOptions {
     pub acp_route: bool,
     /// Installs a DSH SDK route that can dispatch but cannot run workflow turns.
     pub dsh_route: bool,
+    /// Optional planning-profile JSON entries written into the config.
+    pub planning_profiles: Vec<serde_json::Value>,
 }
 
 impl Default for FixtureOptions {
@@ -141,6 +143,7 @@ impl Default for FixtureOptions {
             content_retention_days: Some(7),
             acp_route: false,
             dsh_route: false,
+            planning_profiles: Vec::new(),
         }
     }
 }
@@ -506,6 +509,7 @@ impl ProjectPaths {
                 "candidate_limits": {"max_files": 256, "max_file_bytes": 1_048_576,
                     "max_total_bytes": 8_388_608},
                 "content_retention_days": options.content_retention_days,
+                "planning_profiles": options.planning_profiles,
             }),
         );
     }

@@ -83,6 +83,7 @@ pub enum WorkflowCommand {
     },
     PromptVersions,
     PromptRollback,
+    PlanningProfiles,
 }
 
 /// Flags one invocation may carry.
@@ -212,6 +213,10 @@ pub(crate) fn parse_workflow_arguments(
             }
         }
         ("workflow", "status") => WorkflowCommand::Status { workflow_id: id()? },
+        ("workflow", "planning_profiles") => {
+            none(positional.is_some())?;
+            WorkflowCommand::PlanningProfiles
+        }
         ("workflow", "supervisor_start") => {
             none(positional.is_some())?;
             WorkflowCommand::SupervisorStart {
@@ -345,6 +350,9 @@ pub async fn run_workflow(
             json!({"ok": true, "purge": client.workflow_purge_content(workflow_id).await.map_err(map_workflow_error)?})
         }
         WorkflowCommand::Export { workflow_id, out } => export(&client, workflow_id, &out).await?,
+        WorkflowCommand::PlanningProfiles => {
+            json!({"ok": true, "planning": client.workflow_planning_profiles().await.map_err(map_workflow_error)?})
+        }
         WorkflowCommand::SlotsList => {
             json!({"ok": true, "slots": client.workflow_slots().await.map_err(map_workflow_error)?})
         }

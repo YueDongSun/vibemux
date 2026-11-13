@@ -27,7 +27,7 @@ use serde_json::json;
 use vibemux_harness::AgentKind;
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier, canonical_json::canonical_digest, gateway::GatewayConfig,
-    gateway::RouteRole, slots::EvidenceClass,
+    gateway::RouteRole, slots::EvidenceClass, task_spec::WorkflowMode,
 };
 
 use super::error::WorkflowError;
@@ -73,6 +73,52 @@ pub struct WorkflowConfig {
     /// Opt-in private content retention; `None` keeps no content.
     #[serde(default)]
     pub content_retention_days: Option<u32>,
+    /// Optional planning profiles. Empty disables the planning entrypoint.
+    #[serde(default)]
+    pub planning_profiles: Vec<PlanningProfileConfig>,
+}
+
+pub const MAX_PLANNING_PROFILES: usize = 16;
+pub const MAX_PLANNING_TASKS: usize = 8;
+const MAX_PLANNING_WORKER_SLOTS: usize = 8;
+const PLANNING_PROFILE_DIGEST_DOMAIN: &str = "vibemux.workflow.planning_profile.v1";
+
+/// One pinned planning profile. It names slots, suites, and an execution
+/// permission; request text and request UUIDs arrive only with a request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanningProfileConfig {
+    pub profile_id: SpecIdentifier,
+    pub workflow_key: SpecIdentifier,
+    pub mode: WorkflowMode,
+    pub worker_slots: Vec<SpecIdentifier>,
+    pub reviewer_slot: SpecIdentifier,
+    pub integration_suites: Vec<SpecIdentifier>,
+    pub max_tasks: usize,
+    pub allow_execution: bool,
+    /// This revision admits fixture planning only: the live model-compiler
+    /// admission (BoundReceiptV2) is not present on this branch.
+    pub fixture: bool,
+}
+
+#[derive(Serialize)]
+struct PlanningProfileDigest<'a> {
+    profile: &'a PlanningProfileConfig,
+    config_digest: Sha256Digest,
+}
+
+impl PlanningProfileConfig {
+    /// The digest binds the profile to the pinned config digest.
+    pub fn digest(&self, config_digest: Sha256Digest) -> Result<Sha256Digest, WorkflowError> {
+        canonical_digest(
+            PLANNING_PROFILE_DIGEST_DOMAIN,
+            &PlanningProfileDigest {
+                profile: self,
+                config_digest,
+            },
+        )
+        .map_err(|_| WorkflowError::Internal)
+    }
 }
 
 /// One worker or reviewer slot.
@@ -283,6 +329,61 @@ fn validate(config: &WorkflowConfig) -> Result<(), WorkflowError> {
             }
         }
     }
+    if config.planning_profiles.len() > MAX_PLANNING_PROFILES {
+        return Err(invalid());
+    }
+    let mut profile_ids: Vec<&SpecIdentifier> = config
+        .planning_profiles
+        .iter()
+        .map(|profile| &profile.profile_id)
+        .collect();
+    profile_ids.sort();
+    profile_ids.dedup();
+    if profile_ids.len() != config.planning_profiles.len() {
+        return Err(invalid());
+    }
+    for profile in &config.planning_profiles {
+        if !profile.fixture
+            || profile.worker_slots.is_empty()
+            || profile.worker_slots.len() > MAX_PLANNING_WORKER_SLOTS
+            || profile.max_tasks == 0
+            || profile.max_tasks > MAX_PLANNING_TASKS
+            || profile.worker_slots.contains(&profile.reviewer_slot)
+            || profile.integration_suites.is_empty()
+            || profile.integration_suites.len() > MAX_SUITES
+        {
+            return Err(invalid());
+        }
+        let mut workers = profile.worker_slots.clone();
+        workers.sort();
+        workers.dedup();
+        if workers.len() != profile.worker_slots.len() {
+            return Err(invalid());
+        }
+        for worker in &profile.worker_slots {
+            let Some(slot) = config.slots.iter().find(|slot| &slot.slot_id == worker) else {
+                return Err(invalid());
+            };
+            if !matches!(slot.route_role, RouteRole::WorkerA | RouteRole::WorkerB) {
+                return Err(invalid());
+            }
+        }
+        let Some(reviewer) = config
+            .slots
+            .iter()
+            .find(|slot| slot.slot_id == profile.reviewer_slot)
+        else {
+            return Err(invalid());
+        };
+        if reviewer.route_role != RouteRole::Reviewer {
+            return Err(invalid());
+        }
+        for suite in &profile.integration_suites {
+            if !config.verifier.suites.contains_key(suite) {
+                return Err(invalid());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -471,5 +572,78 @@ mod tests {
         let mut value = config_json(outside.path(), &executable);
         value["unknown"] = json!(true);
         assert!(serde_json::from_value::<WorkflowConfig>(value).is_err());
+    }
+
+    #[test]
+    fn planning_profile_digest_binds_the_profile_to_the_config() {
+        let profile: PlanningProfileConfig = serde_json::from_value(json!({
+            "profile_id": "fixture_small",
+            "workflow_key": "taskboard",
+            "mode": "cooperate",
+            "worker_slots": ["slot_a"],
+            "reviewer_slot": "review",
+            "integration_suites": ["api"],
+            "max_tasks": 1,
+            "allow_execution": true,
+            "fixture": true,
+        }))
+        .expect("shape");
+        let config_a = Sha256Digest::of(b"config-a");
+        let config_b = Sha256Digest::of(b"config-b");
+        let digest = profile.digest(config_a).expect("digest");
+        assert_eq!(digest, profile.digest(config_a).expect("stable"));
+        assert_eq!(digest.to_hex().len(), 64);
+        assert_ne!(digest, profile.digest(config_b).expect("config bound"));
+        let mut changed = profile.clone();
+        changed.max_tasks = 2;
+        assert_ne!(digest, changed.digest(config_a).expect("profile bound"));
+    }
+
+    #[test]
+    fn planning_profiles_must_pin_fixture_roles_and_known_suites() {
+        let outside = tempfile::tempdir().expect("outside");
+        let executable = outside.path().join("tool.exe");
+        let profile = json!({
+            "profile_id": "fixture_small",
+            "workflow_key": "taskboard",
+            "mode": "cooperate",
+            "worker_slots": ["slot_a"],
+            "reviewer_slot": "review",
+            "integration_suites": ["api"],
+            "max_tasks": 1,
+            "allow_execution": true,
+            "fixture": true,
+        });
+        let with_profile = |mutate: &dyn Fn(&mut serde_json::Value)| {
+            let mut value = config_json(outside.path(), &executable);
+            let mut entry = profile.clone();
+            mutate(&mut entry);
+            value["planning_profiles"] = json!([entry]);
+            value
+        };
+        let config: WorkflowConfig = serde_json::from_value(with_profile(&|_| {})).expect("shape");
+        validate(&config).expect("valid profile");
+
+        let mut rejected: Vec<serde_json::Value> = vec![
+            with_profile(&|entry| entry["fixture"] = json!(false)),
+            with_profile(&|entry| entry["worker_slots"] = json!(["review"])),
+            with_profile(&|entry| entry["reviewer_slot"] = json!("slot_a")),
+            with_profile(&|entry| entry["integration_suites"] = json!(["unknown"])),
+            with_profile(&|entry| entry["integration_suites"] = json!([])),
+            with_profile(&|entry| entry["worker_slots"] = json!([])),
+            with_profile(&|entry| entry["worker_slots"] = json!(["slot_a", "slot_a"])),
+            with_profile(&|entry| entry["max_tasks"] = json!(0)),
+            with_profile(&|entry| entry["max_tasks"] = json!(9)),
+        ];
+        let mut duplicate = with_profile(&|_| {});
+        duplicate["planning_profiles"] = json!([profile, profile]);
+        rejected.push(duplicate);
+        let mut extra_field = with_profile(&|_| {});
+        extra_field["planning_profiles"][0]["request_text"] = json!("not config");
+        assert!(serde_json::from_value::<WorkflowConfig>(extra_field).is_err());
+        for value in rejected {
+            let config: WorkflowConfig = serde_json::from_value(value).expect("shape");
+            assert_eq!(validate(&config), Err(WorkflowError::ConfigInvalid));
+        }
     }
 }

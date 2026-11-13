@@ -73,8 +73,8 @@ CASE_IDS: Final = (
 )
 
 NOT_RUN_REASONS: Final[dict[str, str]] = {
-    "C02": "Request identity, profile digest, and the content-free observation are implemented and Hub-validated (C02-PLAN); the daemon planning-profile compiler and end-to-end Hub goal submission remain not implemented (requires the R&D planning modules).",
-    "C03": "The retained-UUID request key and observation contract are covered by C02-PLAN; lost-submit replay through a real Hub consumer is not implemented.",
+    "C02": "Request identity, profile digest, the content-free observation, and the daemon planning-profile catalog are implemented and Hub-validated (C02-PLAN); the planning compiler and end-to-end Hub goal submission remain not implemented (requires the R&D planning modules).",
+    "C03": "The retained-UUID request key, the observation contract, and the pinned profile catalog are covered by C02-PLAN; lost-submit replay through a real Hub consumer is not implemented.",
     "C05": "Daemon dispatch cancellation is covered by C05-CANCEL; Hub generation-scoped cancellation is not implemented.",
     "C08": "Cross-track operator context sharing is covered by C08-HANDOFF; a second harness adapter taking over with its own native identity is not implemented.",
     "C10": "Both metadata services are covered by C10-MCP; a VibeMux worker calling Hub tools through an admitted broker is not implemented.",
@@ -1459,19 +1459,52 @@ def _run_c02_plan(
         )
         if rust.returncode != 0:
             raise VerificationError(f"planning contract tests failed: {_tail(rust, 500)}")
+        daemon = _run(
+            [
+                sys.executable,
+                str(build_storage),
+                "--state-root",
+                str(build_state_root),
+                "run",
+                "--slot",
+                "verify",
+                "--task-id",
+                "c02-plan",
+                "--budget-bytes",
+                "8G",
+                "--reserve-bytes",
+                "4G",
+                "--",
+                "cargo",
+                "test",
+                "--locked",
+                "-p",
+                "vibemuxd",
+                "--all-features",
+                "--test",
+                "workflow_planning_profiles",
+            ],
+            cwd=vibemux_root,
+            timeout=timeout,
+        )
+        if daemon.returncode != 0:
+            raise VerificationError(
+                f"planning profile catalog tests failed: {_tail(daemon, 500)}"
+            )
         hub = _run(
             ["node", "--test", "tests/planning_contract.test.mjs"], cwd=hub_root, timeout=timeout
         )
         if hub.returncode != 0:
             raise VerificationError(f"Hub planning contract failed: {_tail(hub, 500)}")
         rust_passed = _cargo_passed(rust.stdout)
+        daemon_passed = _cargo_passed(daemon.stdout)
         hub_passed = 0
         for line in hub.stdout.splitlines():
             if line.startswith("ℹ pass "):
                 hub_passed = int(line.rsplit(" ", 1)[-1])
-        if rust_passed < 4 or hub_passed < 3:
+        if rust_passed < 4 or daemon_passed < 2 or hub_passed < 3:
             raise VerificationError(
-                f"expected planning contract tests, saw {rust_passed}/{hub_passed}"
+                f"expected planning tests, saw {rust_passed}/{daemon_passed}/{hub_passed}"
             )
         return _case(
             "C02-PLAN",
@@ -1479,9 +1512,10 @@ def _run_c02_plan(
             evidence_class="planning_contract_fixture",
             duration_ms=int((time.monotonic() - started) * 1000),
             detail=(
-                f"VibeMux={rust_passed} Hub={hub_passed}: profile digest, retained "
-                "request UUID, content-free observation; the daemon planning "
-                "compiler and end-to-end goal submission are not claimed"
+                f"VibeMux={rust_passed} daemon={daemon_passed} Hub={hub_passed}: "
+                "profile digest, retained request UUID, content-free observation, "
+                "pinned daemon catalog; the planning compiler and end-to-end "
+                "goal submission are not claimed"
             ),
         )
     except (VerificationError, OSError, subprocess.TimeoutExpired) as error:
