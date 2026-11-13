@@ -37,7 +37,7 @@
         "command": "cargo test --locked --workspace --all-features",
         "duration_ms_cold": 638884,
         "duration_ms_warm": 363557,
-        "passed": 1708,
+        "passed": 1719,
         "failed": 0,
         "ignored": 2,
         "test_targets": 151,
@@ -114,7 +114,7 @@
   },
   "limits": {
     "windows": "Not executed on this host; scripts/verify_fused_harness_windows.ps1 is the native entry point.",
-    "full_workspace_gate": "Executed on macOS: clippy --workspace --all-targets --all-features -D warnings passed; cargo test --workspace --all-features passed 1708 tests (0 failed, 2 ignored, 151 targets).",
+    "full_workspace_gate": "Executed on macOS: clippy --workspace --all-targets --all-features -D warnings passed; cargo test --workspace --all-features passed 1719 tests (0 failed, 2 ignored, 151 targets) in the final run.",
     "allocated_bytes": "Reported from st_blocks on POSIX. Windows allocation reporting remains unknown until the native run."
   }
 }

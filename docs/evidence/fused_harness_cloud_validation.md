@@ -134,7 +134,7 @@ Executed on the same host and managed slot:
 |---|---|
 | `cargo fmt --all -- --check` | passed |
 | `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | passed (49 s) |
-| `cargo test --locked --workspace --all-features` | **1708 passed, 0 failed, 2 ignored, 151 targets** (638.9 s cold, 493.7 s warm after the capability increment) |
+| `cargo test --locked --workspace --all-features` | **1719 passed, 0 failed, 2 ignored, 151 targets** (final run after C06; 583 s warm) |
 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
 | `python -m pytest` | passed (2 skipped groups) |
 | `ruff check scripts tests`, `ruff format --check` | passed |
