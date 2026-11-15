@@ -1,7 +1,10 @@
 # ADR 035: Native MCP read host
 
 Status: Bounded pre-alpha implementation with native Windows focused evidence;
-whole-workspace qualification and operator acceptance pending
+whole-workspace qualification and operator acceptance pending. Amended
+2026-11-16 by [ADR 075](075_official_rust_mcp_sdk.md) for the protocol
+implementation basis only (proposed; read-only boundary, grants, tools,
+projections, reader process and wire contract unchanged).
 
 ## Context
 
@@ -53,7 +56,7 @@ Tool changes are announced only after `notifications/initialized`.
 
 MCP protocol version 2025-06-18 is supported. Unknown requested versions receive
 that supported version for client negotiation, never an invented future version.
-Control IPC remains v7 and the store remains schema 5. Rust workspace version
+Control IPC is v10 and the store is schema 15 (both advanced after this record; the MCP wire contract did not). Rust workspace version
 `0.2.0-alpha.1` identifies this additive pre-alpha frontend surface.
 
 ## Threat and failure boundary

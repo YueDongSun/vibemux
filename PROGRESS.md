@@ -8269,3 +8269,23 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   daemon integration plan through an `sdd_v1` profile asserting the
   captured compiler call carried the constitution-gate system prompt and
   the goal as the user prompt (FakeAagServer now records prompts).
+
+### 2026-11-16 — ADR 075: official Rust MCP SDK adoption (proposed)
+
+- Recorded a Proposed ADR for adopting `rmcp` (official Rust MCP SDK,
+  Apache-2.0, candidate pin `=3.10.0`, MSRV 1.88 against our 1.92.0) as
+  the protocol basis of `vibemux_mcp` Scope A, amending ADR 035's
+  implementation basis only. Drafted through a research-and-verify
+  workflow (four fact agents, one drafter, three adversarial reviewers);
+  the verified findings shaped the constraints now in the ADR:
+  VibeMux-owned transport and error synthesis (the SDK transport cannot
+  express the 64 KiB bound or surface oversize), VibeMux-owned handshake
+  and grant parsing (the SDK's high-level server cannot preserve the
+  pre-initialize contract and types experimental capabilities as
+  objects, while `vibemux_metadata_read` is a boolean on the wire),
+  first-party admission/cancellation/shutdown finalization (the SDK does
+  not join handler tasks), explicit protocol pinning to `2025-06-18`, and
+  corrected dependency/validation accounting.
+- Numbered 075 because 061-074 are claimed by unpublished branches.
+- Nothing is implemented; the hand-written server stays the default until
+  the ADR's parity gates pass on native Windows and Ubuntu.

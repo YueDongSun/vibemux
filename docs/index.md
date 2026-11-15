@@ -13,6 +13,7 @@
 - [Architecture](architecture.md): ownership and dependency direction.
 - [A2A feature roadmap](a2a_feature_roadmap.md): proposed priorities, phases, and dated upstream snapshots.
 - [Upstream adoption plan](upstream_adoption_plan.md): researched GitHub projects selected for forking/adoption (vibe-kanban relay/executors, goose-mcp, spec-kit templates, promptfoo contract, opencode layouts, ccmanager), with license boundaries; proposal only.
+- [ADR 075](adr/075_official_rust_mcp_sdk.md): proposed adoption of the official Rust MCP SDK (rmcp) for `vibemux_mcp` Scope A, amending ADR 035's implementation basis; not implemented.
 - [A2A implementation plan](a2a_implementation_plan.md): proposed task cards and validation commands.
 - [A2A code-review guide](a2a_code_review_guide.md): review guidance for proposed work, a failure matrix, and a finding format.
 - [A2A implementation path](guides/a2a_implementation_learning_path.md): the earlier guided path to the next domain binding.

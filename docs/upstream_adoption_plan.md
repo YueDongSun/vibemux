@@ -49,11 +49,13 @@ copied into this repository.
   wrapper over the official Rust SDK `rmcp` (`ServerHandler` + stdio
   transport); goose's value is the pattern, not code. Our `vibemux_mcp`
   hand-rolls JSON-RPC 2.0 today.
-- First slice: adopt `rmcp` as the MCP basis for the C10 worker→Hub
-  admitted tool-call boundary (goose's `serve<S: ServerHandler>` shape as
-  reference), behind an accepted ADR; `goose-acp-macros` remains a
-  reference for our ACP route macros. Never a core writer handle
-  (AGENTS §3.2).
+- First slice (**ADR drafted 2026-11-16**): adopt `rmcp` as the MCP basis
+  for `vibemux_mcp` Scope A under [ADR 075](adr/075_official_rust_mcp_sdk.md)
+  (proposed; VibeMux-owned transport, handshake, admission and shutdown
+  seams specified; Scope B needs its own ADR). Goose's
+  `serve<S: ServerHandler>` shape remains a reference;
+  `goose-acp-macros` remains a reference for our ACP route macros. Never a
+  core writer handle (AGENTS §3.2).
 
 ### 3. spec-kit template library (C02 planning profile templates)
 
