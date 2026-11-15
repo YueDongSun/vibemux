@@ -986,6 +986,7 @@ impl WorkflowService {
                     "mode": profile.mode,
                     "max_tasks": profile.max_tasks,
                     "allow_execution": profile.allow_execution,
+                    "template_set": profile.template_set.as_str(),
                 }))
             })
             .collect::<Result<Vec<_>, WorkflowError>>()?;
@@ -1042,6 +1043,7 @@ impl WorkflowService {
             "integration_suites": profile.integration_suites,
             "assignments": assignments,
             "reviewer_slot": profile.reviewer_slot.to_string(),
+            "compiler_template": profile.template_set.as_str(),
         });
         // The rendered workflow request carries the goal inside its JSON
         // envelope; refuse what the workflow request bound cannot hold

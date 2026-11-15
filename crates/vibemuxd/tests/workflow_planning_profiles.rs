@@ -91,9 +91,11 @@ async fn planning_profiles_report_pinned_digests_and_stay_content_free() {
             "mode",
             "profile_digest",
             "profile_id",
+            "template_set",
             "workflow_key"
         ]
     );
+    assert_eq!(observed["template_set"], json!("builtin_v1"));
 
     // Stable across calls, and free of slot wiring, suite argv, and paths.
     let again = fixture

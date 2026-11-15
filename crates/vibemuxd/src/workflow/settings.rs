@@ -27,7 +27,8 @@ use serde_json::json;
 use vibemux_harness::AgentKind;
 use vibemux_workflow::{
     Sha256Digest, SpecIdentifier, canonical_json::canonical_digest, gateway::GatewayConfig,
-    gateway::RouteRole, policy::OperatorPolicy, slots::EvidenceClass, task_spec::WorkflowMode,
+    gateway::RouteRole, planning_templates::PlanningTemplateSet, policy::OperatorPolicy,
+    slots::EvidenceClass, task_spec::WorkflowMode,
 };
 
 use super::error::WorkflowError;
@@ -105,9 +106,18 @@ pub struct PlanningProfileConfig {
     pub policy: serde_json::Value,
     pub max_tasks: usize,
     pub allow_execution: bool,
+    /// The compiler system prompt this profile's requests are compiled
+    /// under. `builtin_v1` unless the operator pins the spec-kit-derived
+    /// `sdd_v1`; the name set is closed and parsing fails closed.
+    #[serde(default = "default_planning_template_set")]
+    pub template_set: PlanningTemplateSet,
     /// This revision admits fixture planning only: the live model-compiler
     /// admission (BoundReceiptV2) is not present on this branch.
     pub fixture: bool,
+}
+
+fn default_planning_template_set() -> PlanningTemplateSet {
+    PlanningTemplateSet::BuiltinV1
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -678,6 +688,7 @@ mod tests {
             "policy": profile_policy(),
             "max_tasks": 1,
             "allow_execution": true,
+            "template_set": "sdd_v1",
             "fixture": true,
         })
     }
@@ -748,6 +759,10 @@ mod tests {
         let mut extra_field = with_profile(&|_| {});
         extra_field["planning_profiles"][0]["request_text"] = json!("not config");
         assert!(serde_json::from_value::<WorkflowConfig>(extra_field).is_err());
+        // The template name set is closed: parsing fails before validation.
+        let mut unknown_template = with_profile(&|_| {});
+        unknown_template["planning_profiles"][0]["template_set"] = json!("constitution_v9");
+        assert!(serde_json::from_value::<WorkflowConfig>(unknown_template).is_err());
         for value in rejected {
             let config: WorkflowConfig = serde_json::from_value(value).expect("shape");
             assert_eq!(validate(&config), Err(WorkflowError::ConfigInvalid));

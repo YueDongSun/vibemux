@@ -47,6 +47,11 @@ pub struct WorkflowRequest {
     /// base commit, read by the daemon from the project checkout.
     #[serde(default)]
     pub shared_contract_paths: BTreeMap<SpecIdentifier, String>,
+    /// Planning template set the model compiler builds its system prompt
+    /// from; `None` uses the builtin compiler instruction. Closed name set,
+    /// parsed fail-closed by the compiler route.
+    #[serde(default)]
+    pub compiler_template: Option<SpecIdentifier>,
     /// Compare mode only: derive a separately identified, never promotable
     /// negative-control mutation of a collected candidate and prove the
     /// selector refuses it (V04).

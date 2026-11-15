@@ -45,21 +45,26 @@ copied into this repository.
 - Verified modules: `crates/goose-mcp/src/{mcp_server_runner.rs,
   subprocess.rs, memory, tutorial, computercontroller, peekaboo,
   autovisualiser}` and `crates/goose-acp-macros`.
-- First slice: fork the `mcp_server_runner` + `subprocess` supervision
-  pattern into a study spike for the C10 worker→Hub admitted tool-call
-  boundary; `goose-acp-macros` is a reference for our ACP route macros.
-  Target: `vibemux_mcp` tool surface or a new `vibemux_tools` crate —
-  never a core writer handle (AGENTS §3.2).
+- Verified finding (2026-11-15): `mcp_server_runner.rs` is a 1.2 KB thin
+  wrapper over the official Rust SDK `rmcp` (`ServerHandler` + stdio
+  transport); goose's value is the pattern, not code. Our `vibemux_mcp`
+  hand-rolls JSON-RPC 2.0 today.
+- First slice: adopt `rmcp` as the MCP basis for the C10 worker→Hub
+  admitted tool-call boundary (goose's `serve<S: ServerHandler>` shape as
+  reference), behind an accepted ADR; `goose-acp-macros` remains a
+  reference for our ACP route macros. Never a core writer handle
+  (AGENTS §3.2).
 
 ### 3. spec-kit template library (C02 planning profile templates)
 
 - Repo `github/spec-kit` — MIT, Python, 149.9k★, active.
 - Verified templates: `templates/{constitution,plan,spec,tasks,
   checklist}-template.md` plus `templates/commands`.
-- First slice: adapt the spec→plan→tasks prompt chain into precompiled
-  planning-profile templates for `plan_request` profiles (the profile
-  `policy` + `task_assignments` surface we already ship). Prompt assets
-  only; deterministic admission stays ours.
+- First slice (**landed 2026-11-15**): `vibemux_workflow::planning_templates`
+  (`builtin_v1` / `sdd_v1`, closed set), profile field `template_set`,
+  catalog field `template_set`, the `compiler_template` passthrough on the
+  workflow request, and NOTICE attribution pinning the adapted spec-kit
+  commit. Prompt assets only; deterministic admission stays ours.
 
 ## P1 — adopted patterns and content
 

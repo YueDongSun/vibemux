@@ -174,6 +174,24 @@ fn other_profile() -> Value {
     })
 }
 
+/// A profile compiled under the spec-kit-derived template set.
+fn sdd_profile() -> Value {
+    json!({
+        "profile_id": "fixture_sdd",
+        "workflow_key": "taskboard_lite",
+        "mode": "cooperate",
+        "worker_slots": ["slot_a"],
+        "reviewer_slot": "review",
+        "integration_suites": ["store"],
+        "task_assignments": [{"task_key": "store", "slots": ["slot_a"]}],
+        "policy": policy(&STORE_SUITE, 2, false),
+        "max_tasks": 1,
+        "allow_execution": true,
+        "template_set": "sdd_v1",
+        "fixture": true,
+    })
+}
+
 /// A profile whose autonomous execution is refused.
 fn frozen_profile() -> Value {
     json!({
@@ -242,7 +260,12 @@ async fn catalog_digest(client: &ControlClient, profile_id: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
     let mut fixture = WorkflowFixture::start(FixtureOptions {
-        planning_profiles: vec![planning_profile(), other_profile(), frozen_profile()],
+        planning_profiles: vec![
+            planning_profile(),
+            other_profile(),
+            sdd_profile(),
+            frozen_profile(),
+        ],
         ..FixtureOptions::default()
     })
     .await;
@@ -502,7 +525,12 @@ async fn plan_compiles_replays_and_never_repeats_the_compiler_call() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn planning_refusals_and_prepare_only_admission() {
     let mut fixture = WorkflowFixture::start(FixtureOptions {
-        planning_profiles: vec![planning_profile(), other_profile(), frozen_profile()],
+        planning_profiles: vec![
+            planning_profile(),
+            other_profile(),
+            sdd_profile(),
+            frozen_profile(),
+        ],
         ..FixtureOptions::default()
     })
     .await;
@@ -599,6 +627,49 @@ async fn planning_refusals_and_prepare_only_admission() {
     assert_eq!(frozen.code(), "workflow_planning_execution_refused");
     assert!(gateway.calls().is_empty(), "refusals precede any compile");
 
+    // The SDD profile compiles the same goal under the spec-kit-derived
+    // template: the compiler request carries the constitution-gate system
+    // prompt, and the observation reports the pinned template set.
+    let sdd_digest = catalog_digest(&client, "fixture_sdd").await;
+    let sdd_catalog = client.workflow_planning_profiles().await.expect("catalog");
+    assert_eq!(
+        sdd_catalog["profiles"]
+            .as_array()
+            .expect("profiles")
+            .iter()
+            .find(|entry| entry["profile_id"] == "fixture_sdd")
+            .and_then(|entry| entry["template_set"].as_str()),
+        Some("sdd_v1")
+    );
+    let sdd_request_id = Uuid::new_v4();
+    let sdd_planned = client
+        .workflow_plan_request(planning_request(
+            "fixture_sdd",
+            &sdd_digest,
+            sdd_request_id,
+            &goal,
+            false,
+        ))
+        .await
+        .expect("plan through the SDD profile");
+    assert_eq!(sdd_planned["status"], json!("prepared"));
+    let sdd_calls = gateway.calls();
+    let sdd_call = sdd_calls
+        .iter()
+        .find(|call| call.alias == COMPILER_ALIAS)
+        .expect("one compiler call");
+    let system = sdd_call.system_prompt.as_deref().expect("system prompt");
+    assert!(system.contains("Constitution gate"), "{system}");
+    assert!(system.contains("Task decomposition"));
+    assert!(system.contains("original_request_ref"));
+    assert!(
+        sdd_call
+            .user_prompt
+            .as_deref()
+            .is_some_and(|user| user.contains(&goal)),
+        "the goal text reaches the compiler as the user prompt"
+    );
+
     // A prepare-only admission compiles once and reports a prepared
     // workflow; its observation stays prepare-only.
     let request_id = Uuid::new_v4();
@@ -661,11 +732,9 @@ async fn planning_refusals_and_prepare_only_admission() {
         upgraded["workflow"]["workflow_id"],
         json!(workflow_id.to_string())
     );
-    assert_eq!(
-        gateway.calls().len(),
-        1,
-        "no second compile for the upgrade"
-    );
+    // One compile per planned workflow (SDD + prepare-only); the execute
+    // upgrade replays the admitted plan and compiles nothing.
+    assert_eq!(gateway.calls().len(), 2, "no compile for the upgrade");
     let mut accepted = false;
     for _ in 0..600 {
         let status = client.workflow_status(workflow_id).await.expect("status");

@@ -8247,3 +8247,25 @@ Validation: lineage 7/7, build-storage 15/15, MCP 48 targets green, web
 default (23) and push (43) suites, planning integration 2 tests including
 terminal replay, execute mismatch, cross-profile, too-large, frozen, and
 prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
+
+### 2026-11-15 — Spec-kit-derived planning template set (upstream P0-③)
+
+- First adoption slice from the upstream plan: a closed planning-template
+  library `vibemux_workflow::planning_templates` with `builtin_v1` (the
+  previous compiler instruction) and `sdd_v1`, which adapts
+  github/spec-kit's constitution/plan/tasks chain (MIT; NOTICE pins
+  commit 2ee2b1e) into the model compiler's system prompt: constitution
+  gate over the pinned profile, technical-context extraction, task
+  decomposition under the profile's assignments, and the unchanged strict
+  TaskSpec output contract.
+- Profiles gained `template_set` (default `builtin_v1`, closed name set,
+  parse fails closed); the catalog reports it; `plan_request` passes the
+  profile's set to the compiler route via the request's new
+  `compiler_template` field. Direct `workflow prepare` without the field
+  keeps the builtin instruction.
+- Tests: template-library units (closed set, bounded prompts, both sets
+  carry the output contract, SDD markers), settings parse-fail for an
+  unknown name, catalog key allowlist + `template_set` value, and a
+  daemon integration plan through an `sdd_v1` profile asserting the
+  captured compiler call carried the constitution-gate system prompt and
+  the goal as the user prompt (FakeAagServer now records prompts).

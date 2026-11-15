@@ -1,0 +1,12 @@
+VibeMux
+Copyright 2026 The VibeMux Authors
+
+This product includes prompt assets adapted from the following upstream
+projects:
+
+- github/spec-kit (https://github.com/github/spec-kit), MIT License,
+  commit 2ee2b1e8005905db05f5717300a469b3068b908f. The
+  constitution/plan/tasks template structure in
+  crates/vibemux_workflow/src/planning_templates.rs (the `sdd_v1`
+  compiler system prompt) is adapted from templates/constitution-template.md,
+  templates/plan-template.md, and templates/tasks-template.md.

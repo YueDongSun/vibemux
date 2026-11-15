@@ -16,6 +16,9 @@ pub struct ObservedCall {
     pub alias: String,
     pub correlation: String,
     pub authorization_ok: bool,
+    /// The compiler-request prompts, when the call carried them.
+    pub system_prompt: Option<String>,
+    pub user_prompt: Option<String>,
 }
 
 pub struct FakeAagServer {
@@ -130,11 +133,22 @@ async fn handle_connection(
                         .map(|value| value.trim().to_string())
                 })
                 .unwrap_or_default();
+            let prompt = |role: &str| {
+                request["messages"].as_array().and_then(|messages| {
+                    messages
+                        .iter()
+                        .find(|message| message["role"] == role)
+                        .and_then(|message| message["content"].as_str())
+                        .map(str::to_string)
+                })
+            };
             calls.lock().expect("fixture calls").push(ObservedCall {
                 alias: alias.clone(),
                 correlation,
                 authorization_ok: headers
                     .contains(&format!("authorization: bearer {FIXTURE_TOKEN}")),
+                system_prompt: prompt("system"),
+                user_prompt: prompt("user"),
             });
             send_json(
                 &mut socket,
