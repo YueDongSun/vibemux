@@ -69,3 +69,6 @@ build/
 # Logs and crash output
 *.log
 *.trace
+
+# macOS Finder metadata
+.DS_Store
