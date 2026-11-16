@@ -8315,3 +8315,30 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   cancellation and shutdown finalization (next slice), parity evidence on
   native Windows/Ubuntu, and the default flip with deletion (separate
   decisions).
+
+### 2026-11-16 — rmcp host contract core (ADR 075 Scope A, slice 2)
+
+- `vibemux_mcp::sdk_driver` (feature `rmcp`) implements the contract core
+  the future SDK session composes: first-party `initialize` parsing with
+  the boolean `vibemux_metadata_read` grant (absent grants the host only,
+  a non-boolean fails closed, the operator grant always caps), parity-
+  tested against the hand-written `Protocol` for six parameter shapes; the
+  pinned `ServerConfig` (protocol 2025-06-18, `tools.listChanged`);
+  `supported_protocol_versions` = `[2025-06-18]`; a single-flight
+  `Admission` gate (`request_busy`, `duplicate_request_id`, cancelled-id
+  suppression records, guard release on drop); a runtime-gated
+  `ServerHandler` whose `list_tools` reads the same
+  `metadata_read && reader_available` predicate; and `dispatch_tool`
+  mirroring the hand-written tool contract (`host_status` synthesis,
+  `metadata_read_denied` as -32001, argument/code parity, reader
+  unavailability as a tool-level `isError` result, execution failures as
+  tool-level errors).
+- Tests: five driver tests (initialize parity matrix, pinned identity,
+  admission semantics, runtime gating, dispatch parity including busy and
+  duplicate paths); `vibemux_mcp` suites 31/43/65 green for
+  default/`rmcp`/all-features; clippy `-D warnings` clean in all three
+  configurations; workspace check (minus dist-gated web/desktop) clean.
+- Not implemented: the live SDK session driver (raw framing loop,
+  `serve_directly` wiring, outbound cancellation suppression, shutdown
+  finalizer), parity evidence on native Windows/Ubuntu, and the default
+  flip (separate decision).

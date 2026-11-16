@@ -160,8 +160,20 @@ run or dependency-reviewed for this draft.
   out-of-band `FatalStatus` code, and a value-identical
   `tools_as_rmcp` mapping of the five-tool contract. Seven seam tests
   pin these; the hand-written session remains the only default path and
-  no protocol behavior changed. The SDK-based session loop, handshake,
-  admission and shutdown are the next slice.
+  no protocol behavior changed.
+- 2026-11-16 — Second slice landed: `vibemux_mcp::sdk_driver` implements
+  the contract core — first-party initialize parsing (boolean grant,
+  fail-closed on a non-boolean, capped by the operator grant; parity-tested
+  against the hand-written `Protocol`), the pinned `ServerConfig`
+  (2025-06-18 only), the single-flight `Admission` gate
+  (`request_busy`/`duplicate_request_id`, cancel marking with the
+  no-reply suppression record the driver will apply), a runtime-gated
+  `ServerHandler` (`list_tools` reads the same availability predicate),
+  and `dispatch_tool` mirroring the hand-written tool contract
+  (`host_status` synthesis, `metadata_read_denied`, argument validation,
+  reader unavailability as a tool-level error). The live session driver
+  (raw framing, `serve_directly`, outbound suppression, shutdown
+  finalizer) is the next slice.
 
 ## Alternatives considered
 
