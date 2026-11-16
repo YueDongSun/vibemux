@@ -7,7 +7,7 @@
 //! serialized writer, and the finalizer that joins every task.
 //! Feature-gated (`rmcp`); the hand-written session remains the default.
 
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 use rmcp::{
     model::ClientConfig,
@@ -51,6 +51,8 @@ pub async fn run_session<R, W, E, F>(
     writer: W,
     host: SdkHost<E>,
     host_grant: bool,
+    on_cancel: Option<Arc<dyn Fn() + Send + Sync>>,
+    mut events: Option<mpsc::Receiver<&'static str>>,
     finalize: F,
 ) -> Result<(), &'static str>
 where
@@ -69,7 +71,17 @@ where
     let inbound = peer.inbound.clone();
     let outbound_task = spawn_outbound(peer, frames.clone(), admission.clone());
 
-    let loop_result = drive(reader, &frames, &inbound, &state, &admission, host_grant).await;
+    let loop_result = drive(
+        reader,
+        &frames,
+        &inbound,
+        &state,
+        &admission,
+        host_grant,
+        on_cancel.as_deref(),
+        events.as_mut(),
+    )
+    .await;
 
     // Close the inbound side first so the service observes EOF, bound its
     // cleanup, then join every task before the finalizer runs.
@@ -86,6 +98,7 @@ where
     loop_result.and(writer_result).and(finalize_result)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive<R: AsyncBufRead + Unpin>(
     reader: R,
     frames: &FrameSender,
@@ -93,11 +106,28 @@ async fn drive<R: AsyncBufRead + Unpin>(
     state: &std::sync::Arc<WireState>,
     admission: &Admission,
     host_grant: bool,
+    on_cancel: Option<&(dyn Fn() + Send + Sync)>,
+    mut events: Option<&mut mpsc::Receiver<&'static str>>,
 ) -> Result<(), &'static str> {
     let mut reader = LineReader::new(reader, MAX_INPUT_BYTES);
     let mut initialization_sent = false;
     loop {
-        let bytes = reader.next().await?;
+        let bytes = match events.as_deref_mut() {
+            Some(events) => tokio::select! {
+                event = events.recv() => {
+                    if event.is_some() && state.initialized() && state.metadata_read() {
+                        send_value(
+                            frames,
+                            json!({"jsonrpc":"2.0","method":"notifications/tools/list_changed"}),
+                        )
+                        .await?;
+                    }
+                    continue;
+                }
+                bytes = reader.next() => bytes?,
+            },
+            None => reader.next().await?,
+        };
         let Some(bytes) = bytes else {
             return Ok(());
         };
@@ -127,6 +157,7 @@ async fn drive<R: AsyncBufRead + Unpin>(
                 state,
                 admission,
                 inbound,
+                on_cancel,
             )
             .await;
             continue;
@@ -201,6 +232,7 @@ async fn handle_notification(
     state: &std::sync::Arc<WireState>,
     admission: &Admission,
     inbound: &InboundSender,
+    on_cancel: Option<&(dyn Fn() + Send + Sync)>,
 ) {
     match method {
         "notifications/initialized" if *initialization_sent && metadata_only(params) => {
@@ -215,6 +247,9 @@ async fn handle_notification(
         "notifications/cancelled" => {
             if let Some(key) = params.get("requestId").and_then(json_id_key) {
                 admission.cancel(&key);
+            }
+            if let Some(hook) = on_cancel {
+                hook();
             }
             if let Ok(typed) =
                 serde_json::from_value::<RxJsonRpcMessage<RoleServer>>(message.clone())
@@ -365,6 +400,8 @@ mod tests {
                 server_writer,
                 host,
                 true,
+                None,
+                None,
                 async move {
                     done.store(true, Ordering::SeqCst);
                     Ok(())

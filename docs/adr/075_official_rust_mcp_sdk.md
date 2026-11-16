@@ -185,9 +185,17 @@ run or dependency-reviewed for this draft.
   initialize refusals. Known deltas from the hand-written loop, both
   recorded here: a duplicate request id echoes the request id instead of
   the hand-written null-id quirk, and idle/unsolicited-output supervision
-  arrives with the production executor adapter (next slice), which also
-  wires the real `Supervisor` as `MetadataExecutor` and its teardown as
-  the finalizer.
+  arrives with the production executor adapter.
+- 2026-11-16 — Fourth slice landed: `vibemux_mcp::sdk_wiring` owns the real
+  `Supervisor` in one actor task (bounded command channel, no mutex across
+  an await): reads run with the read budget, a watch signal cancels and
+  unloads immediately, a periodic tick refreshes the backend snapshot and
+  emits tool-change events, and the finalizer sends the single shutdown
+  command and joins the actor. `run_session` now takes the cancel hook
+  and the event channel (cancellation calls the hook; tool-change events
+  become `notifications/tools_list_changed` only after initialize and a
+  grant). The fixture-backed end-to-end adapter test and the Windows
+  parity matrix remain.
 
 ## Alternatives considered
 

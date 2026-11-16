@@ -15,6 +15,8 @@ pub mod sdk_driver;
 pub mod sdk_seam;
 #[cfg(feature = "rmcp")]
 pub mod sdk_session;
+#[cfg(feature = "rmcp")]
+pub mod sdk_wiring;
 pub mod session;
 pub mod supervisor;
 pub mod tools;

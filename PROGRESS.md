@@ -8364,3 +8364,19 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   hand-written loop answers with a null id); idle supervision and the real
   `Supervisor` adapter with its teardown finalizer are the next slice,
   followed by native Windows parity evidence.
+
+### 2026-11-16 — rmcp supervisor adapter (ADR 075 Scope A, slice 4)
+
+- `vibemux_mcp::sdk_wiring` (feature `rmcp`): one actor task owns the real
+  `Supervisor` behind a bounded command channel (reads with the read
+  budget; a watch signal cancels and unloads immediately; a periodic tick
+  refreshes the backend snapshot and emits tool-change events; the
+  finalizer sends one shutdown command and joins the actor). `run_session`
+  gained the cancel hook and event channel: a cancel notification calls
+  the hook (immediate unload), and tool-change events become
+  `notifications/tools_list_changed` only after initialize and a grant.
+- Tests/gates: `vibemux_mcp` suites 31/46/68 green for default/`rmcp`/
+  all-features; clippy `-D warnings` clean in all three configurations;
+  workspace check (minus dist-gated web/desktop) clean;
+  `check_public_artifacts` 731 files, 0 findings. The fixture-backed
+  adapter end-to-end test and the Windows parity matrix remain.
