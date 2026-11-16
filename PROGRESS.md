@@ -8289,3 +8289,29 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
 - Numbered 075 because 061-074 are claimed by unpublished branches.
 - Nothing is implemented; the hand-written server stays the default until
   the ADR's parity gates pass on native Windows and Ubuntu.
+
+### 2026-11-16 — rmcp seam first slice (ADR 075 Scope A)
+
+- ADR 075 accepted with the pin `=3.10.0`; first implementation slice is
+  the feature-gated seam only. Added the optional `rmcp` crate feature and
+  `vibemux_mcp::sdk_seam`: a bounded two-channel transport (16 slots
+  each) implementing `Transport<RoleServer>`, typed read/write helpers
+  over the existing `LineReader`/`write_json` (64 KiB inbound, 256 KiB
+  outbound before any write, 2 s write deadline), the out-of-band
+  `FatalStatus` code `main` will consult, and `tools_as_rmcp` mapping the
+  hand-written five-tool contract onto SDK `Tool` values by parsing the
+  exact first-party JSON (parity by construction).
+- Dependency: `[workspace.dependencies] rmcp = "=3.10.0"` with default
+  features off and `server`; optional on `vibemux_mcp`; `Cargo.lock`
+  updated (new packages: `rmcp`, `rmcp-macros`, `pastey` and their
+  features). The default build and every shipping path are unchanged.
+- Tests: seven seam tests (channel round trip, boundedness, malformed/
+  oversize/EOF classification, typed write round trip and oversize
+  refusal, tool parity for both grants, fatal-status first-code rule);
+  `vibemux_mcp` suites 31/38/60 green for default/`rmcp`/all-features;
+  clippy clean in all three configurations; workspace check (excluding
+  the dist-gated web/desktop crates) clean.
+- Not implemented: the SDK-based session loop, handshake, admission,
+  cancellation and shutdown finalization (next slice), parity evidence on
+  native Windows/Ubuntu, and the default flip with deletion (separate
+  decisions).

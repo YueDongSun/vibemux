@@ -225,7 +225,7 @@ impl ReaderProcess {
         self.output.take();
         let deadline = Instant::now() + SHUTDOWN_DEADLINE;
         let mut tree = self.tree.take();
-        let mut terminated = if let Some(tree) = tree.as_mut() {
+        let terminated = if let Some(tree) = tree.as_mut() {
             tree.terminate().is_ok()
         } else {
             // Same-executable children receive no input on failed containment;
@@ -236,10 +236,11 @@ impl ReaderProcess {
             let _ = self.child.start_kill();
         }
         #[cfg(feature = "test_helpers")]
-        if self.fail_cleanup {
-            terminated = false;
-            tree = None;
-        }
+        let (terminated, tree) = if self.fail_cleanup {
+            (false, None)
+        } else {
+            (terminated, tree)
+        };
         self.shutdown = ShutdownState::Waiting {
             deadline,
             terminated,

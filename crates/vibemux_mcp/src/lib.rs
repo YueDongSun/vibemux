@@ -9,6 +9,8 @@ pub mod framing;
 pub mod projection;
 pub mod protocol;
 mod reader_owner;
+#[cfg(feature = "rmcp")]
+pub mod sdk_seam;
 pub mod session;
 pub mod supervisor;
 pub mod tools;

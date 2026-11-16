@@ -8,6 +8,9 @@ repository.workspace = true
 
 [features]
 test_helpers = []
+# ADR 075 Scope A: the official Rust MCP SDK seam. Off by default; the
+# hand-written session remains the shipping path until parity holds.
+rmcp = ["dep:rmcp"]
 
 [[bin]]
 name = "vibemux_mcp"
@@ -28,6 +31,7 @@ vibemux_harness = { path = "../vibemux_harness" }
 vibemux_platform = { path = "../vibemux_platform" }
 vibemux_types = { path = "../vibemux_types" }
 vibemuxd = { path = "../vibemuxd" }
+rmcp = { workspace = true, optional = true }
 
 [dev-dependencies]
 sysinfo.workspace = true

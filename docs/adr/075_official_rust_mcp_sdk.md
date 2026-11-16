@@ -1,11 +1,16 @@
 # ADR 075: Adopt the official Rust MCP SDK (rmcp) for vibemux_mcp
 
-Status: Proposed, 2026-11-16. Renumbered to 075: 061-074 are claimed by
+Status: Accepted, 2026-11-16. Renumbered to 075: 061-074 are claimed by
 unpublished branches (`061_native_history_search.md` onward). This ADR
 amends [ADR 035](035_native_mcp_read_host.md) for the protocol
 implementation basis only; the read-only boundary, grant model, tool
 set, projections, reader process, and `2025-06-18` wire contract are
-unchanged.
+unchanged. Operator decisions at acceptance: the pin is `=3.10.0` as
+written; the hand-written server stays the default until parity is green
+on native Windows and Ubuntu, and the default flip plus deletion are
+separate later decisions. First implementation slice: the feature-gated
+transport/model seam and its parity tests only — the hand-written session
+loop and all protocol behavior are unchanged.
 
 ## Context
 
@@ -145,6 +150,19 @@ run or dependency-reviewed for this draft.
     respected (candidate declares 1.88), measured compile time and
     binary size, and green CI on native Windows 10/11 and Ubuntu.
 
+## Implementation notes
+
+- 2026-11-16 — First slice landed: workspace pin `rmcp = "=3.10.0"`
+  (default features off, `server`), an optional `rmcp` crate feature on
+  `vibemux_mcp`, and the `sdk_seam` module: a bounded two-channel
+  transport (16 slots each), typed read/write helpers over the existing
+  `LineReader`/`write_json` (64 KiB in, 256 KiB out, 2 s write), the
+  out-of-band `FatalStatus` code, and a value-identical
+  `tools_as_rmcp` mapping of the five-tool contract. Seven seam tests
+  pin these; the hand-written session remains the only default path and
+  no protocol behavior changed. The SDK-based session loop, handshake,
+  admission and shutdown are the next slice.
+
 ## Alternatives considered
 
 - Keep the hand-rolled loop indefinitely: retained as the fallback while
@@ -264,10 +282,11 @@ Parity gates (all required before the feature is no longer opt-in):
 
 ## Open questions
 
-- Pin cadence: is `=3.10.0` acceptable for a first adoption, or should
-  the §16 review pin the next patch with a scheduled review?
-- Fallback lifetime: is the hand-written server deleted once parity
-  holds, and who owns dual maintenance until then?
+- Pin cadence: resolved at acceptance — `=3.10.0` stands; a patch bump is
+  a normal §16-reviewed dependency change.
+- Fallback lifetime: resolved at acceptance — the hand-written server is
+  the default until parity holds; the default flip and any deletion are
+  separate later decisions.
 - Windows throughput: what baseline must the acceptance measurement
   record before any performance claim, given the blocking stdio path?
 - Scope B shape (client role with `transport-child-process` vs a
