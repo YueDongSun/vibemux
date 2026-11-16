@@ -8380,3 +8380,18 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   workspace check (minus dist-gated web/desktop) clean;
   `check_public_artifacts` 731 files, 0 findings. The fixture-backed
   adapter end-to-end test and the Windows parity matrix remain.
+
+### 2026-11-16 — rmcp fixture end-to-end (ADR 075 Scope A, slice 5)
+
+- New `crates/vibemux_mcp/tests/sdk_session_fixture.rs` (test_helpers +
+  rmcp): the SDK session runs through `sdk_wiring` against the real
+  `vibemux_mcp_fixture` reader process — initialize, five-tool list, a
+  real health read returning the fixture identity payload, a local
+  host_status call, and a clean finalizer shutdown with no leftover
+  process. Writing it found and fixed an actor defect: `lifecycle()` is
+  pending while the supervisor is Ready, so the actor now polls it as a
+  `select!` branch concurrent with commands instead of awaiting it on a
+  tick.
+- Gates: `vibemux_mcp` suites 31/46/53/69/69 green for default/rmcp/
+  test_helpers/test_helpers+rmcp/all-features; clippy `-D warnings`
+  clean; fmt clean; workspace check (minus dist-gated web/desktop) clean.

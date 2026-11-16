@@ -194,8 +194,15 @@ run or dependency-reviewed for this draft.
   command and joins the actor. `run_session` now takes the cancel hook
   and the event channel (cancellation calls the hook; tool-change events
   become `notifications/tools_list_changed` only after initialize and a
-  grant). The fixture-backed end-to-end adapter test and the Windows
-  parity matrix remain.
+  grant).
+- 2026-11-16 — Fifth slice landed: a fixture-backed end-to-end test runs
+  the SDK session through the production wiring against the real
+  `vibemux_mcp_fixture` reader process (initialize, five-tool list, a
+  real health read, a local host_status call, clean finalizer shutdown).
+  Writing it exposed and fixed an actor bug: `Supervisor::lifecycle` stays
+  pending while Ready, so the idle tick must be a `select!` branch
+  concurrent with commands, never an awaited step. The Windows parity
+  matrix remains.
 
 ## Alternatives considered
 

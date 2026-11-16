@@ -12,11 +12,10 @@ use serde_json::Value;
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::JoinHandle,
-    time::{Instant, interval, sleep_until},
+    time::{Instant, sleep_until},
 };
 
 use crate::{
-    config::CHILD_EXIT_POLL_INTERVAL,
     sdk_driver::{Admission, BackendSnapshot, MetadataExecutor, SdkHost, WireState},
     supervisor::Supervisor,
     tools::ReadOperation,
@@ -148,59 +147,67 @@ async fn run_actor(
     state: Arc<WireState>,
 ) {
     state.set_backend(snapshot(&supervisor));
-    let mut tick = interval(CHILD_EXIT_POLL_INTERVAL);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    enum Step {
+        Command(Option<Command>),
+        Lifecycle(Result<bool, &'static str>),
+    }
     loop {
-        tokio::select! {
-            command = commands.recv() => {
-                let Some(command) = command else { break };
-                match command {
-                    Command::Shutdown(reply) => {
-                        let result = supervisor.shutdown().await;
-                        let _ = reply.send(result);
-                        break;
-                    }
-                    Command::Read(operation, reply) => {
-                        enum End {
-                            Finished(Result<Value, &'static str>),
-                            TimedOut,
-                            Cancelled,
-                        }
-                        let end = {
-                            let budget = supervisor.read_budget();
-                            let read = supervisor.read(operation);
-                            tokio::pin!(read);
-                            tokio::select! {
-                                biased;
-                                result = &mut read => End::Finished(result),
-                                _ = sleep_until(Instant::now() + budget) => End::TimedOut,
-                                _ = cancel.changed() => End::Cancelled,
-                            }
-                        };
-                        let outcome = match end {
-                            End::Finished(result) => result,
-                            End::TimedOut => {
-                                supervisor.begin_unload("reader_timeout");
-                                Err("reader_timeout")
-                            }
-                            End::Cancelled => {
-                                supervisor.begin_unload("request_cancelled");
-                                Err("request_cancelled")
-                            }
-                        };
-                        state.set_backend(snapshot(&supervisor));
-                        let _ = reply.send(outcome);
-                    }
-                }
-            }
-            _ = tick.tick() => {
-                if let Ok(changed) = supervisor.lifecycle().await {
+        // `Supervisor::lifecycle` stays pending while the worker is Ready
+        // (exactly the hand-written loop's select branch); polling it here
+        // concurrently with commands keeps idle faults, restarts and cleanup
+        // progressing without ever blocking a read behind it.
+        let step = tokio::select! {
+            command = commands.recv() => Step::Command(command),
+            result = supervisor.lifecycle() => Step::Lifecycle(result),
+        };
+        match step {
+            Step::Lifecycle(result) => {
+                if let Ok(changed) = result {
                     state.set_backend(snapshot(&supervisor));
                     if changed {
                         let _ = events.try_send("tools_changed");
                     }
                 }
             }
+            Step::Command(None) => break,
+            Step::Command(Some(command)) => match command {
+                Command::Shutdown(reply) => {
+                    let result = supervisor.shutdown().await;
+                    let _ = reply.send(result);
+                    break;
+                }
+                Command::Read(operation, reply) => {
+                    enum End {
+                        Finished(Result<Value, &'static str>),
+                        TimedOut,
+                        Cancelled,
+                    }
+                    let end = {
+                        let budget = supervisor.read_budget();
+                        let read = supervisor.read(operation);
+                        tokio::pin!(read);
+                        tokio::select! {
+                            biased;
+                            result = &mut read => End::Finished(result),
+                            _ = sleep_until(Instant::now() + budget) => End::TimedOut,
+                            _ = cancel.changed() => End::Cancelled,
+                        }
+                    };
+                    let outcome = match end {
+                        End::Finished(result) => result,
+                        End::TimedOut => {
+                            supervisor.begin_unload("reader_timeout");
+                            Err("reader_timeout")
+                        }
+                        End::Cancelled => {
+                            supervisor.begin_unload("request_cancelled");
+                            Err("request_cancelled")
+                        }
+                    };
+                    state.set_backend(snapshot(&supervisor));
+                    let _ = reply.send(outcome);
+                }
+            },
         }
     }
     state.set_backend(snapshot(&supervisor));
