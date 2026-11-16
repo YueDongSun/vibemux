@@ -46,7 +46,7 @@ fn valid_id(id: &Value) -> bool {
         || id.as_u64().is_some()
 }
 
-fn valid_envelope(object: &serde_json::Map<String, Value>) -> bool {
+pub(crate) fn valid_envelope(object: &serde_json::Map<String, Value>) -> bool {
     object.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
         && object.get("method").and_then(Value::as_str).is_some()
         && object.get("id").is_none_or(valid_id)
@@ -244,7 +244,7 @@ fn valid_metadata(value: &Value) -> bool {
     value.get("_meta").is_none_or(Value::is_object)
 }
 
-fn metadata_only(value: &Value) -> bool {
+pub(crate) fn metadata_only(value: &Value) -> bool {
     value
         .as_object()
         .is_some_and(|object| object.keys().all(|key| key == "_meta"))

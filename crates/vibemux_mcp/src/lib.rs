@@ -13,6 +13,8 @@ mod reader_owner;
 pub mod sdk_driver;
 #[cfg(feature = "rmcp")]
 pub mod sdk_seam;
+#[cfg(feature = "rmcp")]
+pub mod sdk_session;
 pub mod session;
 pub mod supervisor;
 pub mod tools;

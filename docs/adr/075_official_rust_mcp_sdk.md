@@ -171,9 +171,23 @@ run or dependency-reviewed for this draft.
   `ServerHandler` (`list_tools` reads the same availability predicate),
   and `dispatch_tool` mirroring the hand-written tool contract
   (`host_status` synthesis, `metadata_read_denied`, argument validation,
-  reader unavailability as a tool-level error). The live session driver
-  (raw framing, `serve_directly`, outbound suppression, shutdown
-  finalizer) is the next slice.
+  reader unavailability as a tool-level error).
+- 2026-11-16 — Third slice landed: `vibemux_mcp::sdk_session` is the live
+  driver over `serve_directly` with a VibeMux-owned reader loop — raw
+  parse and `-32700`/`-32600` synthesis, first-party initialize and the
+  pre-initialize gate, single-flight busy/duplicate answers, cancelled-id
+  reply suppression in the outbound filter, one bounded serialized writer
+  task, EOF-then-close-then-join ordering with the finalizer after every
+  task, and bounded cleanup via `close_with_timeout(SHUTDOWN_DEADLINE)`.
+  Three end-to-end in-memory tests cover the full contract (initialize →
+  list → call → parse error → tool error → clean shutdown), cancellation
+  with no reply and a continuing session, and duplicate/invalid
+  initialize refusals. Known deltas from the hand-written loop, both
+  recorded here: a duplicate request id echoes the request id instead of
+  the hand-written null-id quirk, and idle/unsolicited-output supervision
+  arrives with the production executor adapter (next slice), which also
+  wires the real `Supervisor` as `MetadataExecutor` and its teardown as
+  the finalizer.
 
 ## Alternatives considered
 

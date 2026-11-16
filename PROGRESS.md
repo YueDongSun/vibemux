@@ -8342,3 +8342,25 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   `serve_directly` wiring, outbound cancellation suppression, shutdown
   finalizer), parity evidence on native Windows/Ubuntu, and the default
   flip (separate decision).
+
+### 2026-11-16 — rmcp live session driver (ADR 075 Scope A, slice 3)
+
+- `vibemux_mcp::sdk_session` (feature `rmcp`) runs one SDK-backed MCP
+  session over `serve_directly` with the VibeMux-owned reader loop: raw
+  bounded framing, `-32700`/`-32600` synthesis, first-party initialize and
+  the pre-initialize `-32002` gate, single-flight busy/duplicate answers
+  while a call is active, cancelled-id reply suppression in the outbound
+  filter (the SDK's own reply for the cancelled id is dropped), one
+  bounded serialized writer task over the existing `write_json`/
+  `write_typed` path, EOF → service close → task joins → finalizer
+  ordering, and bounded cleanup with `close_with_timeout`.
+- Tests: three end-to-end in-memory sessions (full contract flow with a
+  parse error and a tool-level error; cancellation that receives no reply
+  and leaves the session serving; duplicate and invalid initialize
+  refusals). `vibemux_mcp` suites 31/46/68 green for default/`rmcp`/
+  all-features; clippy `-D warnings` clean in all three configurations;
+  workspace check (minus dist-gated web/desktop) clean.
+- Recorded deltas: a duplicate request id echoes the request id (the
+  hand-written loop answers with a null id); idle supervision and the real
+  `Supervisor` adapter with its teardown finalizer are the next slice,
+  followed by native Windows parity evidence.

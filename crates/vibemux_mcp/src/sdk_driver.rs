@@ -292,6 +292,16 @@ impl<E: MetadataExecutor> SdkHost<E> {
         }
     }
 
+    #[must_use]
+    pub fn state(&self) -> Arc<WireState> {
+        Arc::clone(&self.state)
+    }
+
+    #[must_use]
+    pub fn admission(&self) -> Admission {
+        self.admission.clone()
+    }
+
     fn error(number: i32, code: &'static str) -> McpError {
         McpError::new(ErrorCode(number), code, Some(json!({"code": code})))
     }
