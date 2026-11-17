@@ -8444,3 +8444,16 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
 - Gates: `vibemux_mcp` suites 31/46/53/71/71 green for default/rmcp/
   test_helpers/test_helpers+rmcp/all-features; clippy `-D warnings` clean;
   fmt clean.
+
+### 2026-11-17 — Default workspace entry (first-run persisted)
+
+- `vibemux_client::project_folder::startup_folder` resolves, in order: the
+  saved active project (the GUI already persists the operator's choice),
+  `VIBEMUX_WORKSPACE`, `~/Documents/Codex` when it exists, then the launch
+  directory. The ordering is a pure function (`startup_folder_with`) with
+  an environment-independent test; the older test no longer depends on the
+  host's real home directory.
+- The local launchers (GUI, WebUI, dashboard, TUI, one-shot console,
+  daemon, and the macOS WebUI app) share the same resolution; opening an
+  app no longer starts in the demo project.
+- GUI/CLI binaries rebuilt and both macOS app bundles reinstalled.

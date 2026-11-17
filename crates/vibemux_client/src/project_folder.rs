@@ -212,7 +212,10 @@ mod tests {
             .as_deref(),
             Some(conventional.path())
         );
-        assert_eq!(startup_folder_with(None, None, None, fallback.clone()), fallback);
+        assert_eq!(
+            startup_folder_with(None, None, None, fallback.clone()),
+            fallback
+        );
     }
 
     #[test]
