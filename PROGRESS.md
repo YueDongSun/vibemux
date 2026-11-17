@@ -8395,3 +8395,13 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
 - Gates: `vibemux_mcp` suites 31/46/53/69/69 green for default/rmcp/
   test_helpers/test_helpers+rmcp/all-features; clippy `-D warnings`
   clean; fmt clean; workspace check (minus dist-gated web/desktop) clean.
+
+### 2026-11-17 — Local open-and-use WebUI and OS-following GUI theme
+
+- WebUI with `local_page_without_token`: data API, openapi and service
+  worker skip the bearer for same-origin canonical loopback requests;
+  tailnet/mobile hosts still require the token; cross-site refused.
+  HTTP contract suite 57 passed.
+- GUI follows the OS light/dark appearance (ThemePreference::System,
+  re-evaluated per frame; session pick overrides until restart).
+  Frontend gui suite 251 passed.

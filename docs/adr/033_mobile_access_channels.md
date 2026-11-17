@@ -1,5 +1,7 @@
 # ADR 033: Mobile access — tailnet web first, gateway and IM channels second
 
+Status: amended 2026-11-17 — local_page_without_token also serves the data API to same-origin loopback requests (open-and-use locally); non-loopback hosts keep the token. Original status:
+
 Status: Accepted (operator decision 2026-10-08). Supporting research and track designs live in
 [docs/mobile_access_design.md](../mobile_access_design.md). Track A implementation and verification
 are recorded separately in `PROGRESS.md`; Tracks B/C/D remain unimplemented.
