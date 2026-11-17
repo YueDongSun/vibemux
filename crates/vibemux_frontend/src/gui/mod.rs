@@ -6,6 +6,7 @@
 mod ask_state;
 mod ask_view;
 mod chat;
+mod collaboration;
 mod composer;
 mod console;
 mod daemon_card;

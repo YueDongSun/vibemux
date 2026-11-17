@@ -115,6 +115,10 @@ fn render_expanded(ui: &mut Ui, c: &C, view: &SidebarView<'_>, actions: &mut Sid
             if design::nav_row(ui, c, "Console", Icon::Grid, console) {
                 actions.page = Some(MainPage::Console);
             }
+            let collaborate = !view.settings_open && view.page == MainPage::Collaborate;
+            if design::nav_row(ui, c, "Collaborate", Icon::Share, collaborate) {
+                actions.page = Some(MainPage::Collaborate);
+            }
             ui.add_space(18.0);
             folders_section(ui, c, view, actions);
             ui.add_space(18.0);
@@ -152,6 +156,7 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                     (Icon::Plus, "New task", NEW_TASK_BUTTON_ID),
                     (Icon::Chat, "Conversation", "sidebar_rail_conversation"),
                     (Icon::Grid, "Console", "sidebar_rail_console"),
+                    (Icon::Share, "Collaborate", "sidebar_rail_collaborate"),
                     (Icon::Folder, "Open folder…", "sidebar_rail_folder"),
                     (Icon::Settings, "Settings", "sidebar_rail_settings"),
                 ];
@@ -162,6 +167,7 @@ fn render_rail(ui: &mut Ui, c: &C, actions: &mut SidebarActions) {
                             Icon::Plus => actions.new_task = true,
                             Icon::Chat => actions.page = Some(MainPage::CoordinatorChat),
                             Icon::Grid => actions.page = Some(MainPage::Console),
+                            Icon::Share => actions.page = Some(MainPage::Collaborate),
                             Icon::Folder => actions.open_folder_dialog = true,
                             _ => actions.open_settings = true,
                         }

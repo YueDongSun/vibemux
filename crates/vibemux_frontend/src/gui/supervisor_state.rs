@@ -36,6 +36,8 @@ pub enum MainPage {
     #[default]
     CoordinatorChat,
     Console,
+    /// Read-only Task → Run → Harness → Status flow.
+    Collaborate,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -193,6 +195,13 @@ impl SupervisorUiState {
     pub fn show_console(&mut self) {
         self.welcome_active = false;
         self.page = MainPage::Console;
+    }
+
+    /// Opens the read-only collaboration flow.
+    pub fn show_collaborate(&mut self) {
+        self.welcome_active = false;
+        self.page = MainPage::Collaborate;
+        self.selected_harness = None;
     }
 
     #[must_use]
@@ -643,6 +652,18 @@ mod tests {
             assert!(TaskFilter::Failed.matches(state), "{state} stopped");
             assert!(!TaskFilter::Done.matches(state), "{state} is not a success");
         }
+    }
+
+    #[test]
+    fn collaboration_is_a_distinct_page_that_clears_harness_detail() {
+        let mut state = SupervisorUiState::default();
+        assert!(state.select_harness(1, 3));
+        state.show_collaborate();
+        assert_eq!(state.page(), MainPage::Collaborate);
+        assert_eq!(state.selected_harness(), None);
+        assert!(!state.welcome_active());
+        state.show_coordinator_chat();
+        assert_eq!(state.page(), MainPage::CoordinatorChat);
     }
 
     #[test]

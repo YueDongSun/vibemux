@@ -15,6 +15,8 @@ pub enum Icon {
     Close,
     Pulse,
     Folder,
+    /// A small fan-out: one node on the left, two on the right.
+    Share,
 }
 
 pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
@@ -84,6 +86,19 @@ pub fn icon(ui: &mut Ui, kind: Icon, color: Color32, size: f32) {
         Icon::Close => {
             painter.line_segment([position(0.2, 0.2), position(0.8, 0.8)], stroke);
             painter.line_segment([position(0.8, 0.2), position(0.2, 0.8)], stroke);
+        }
+        Icon::Share => {
+            // One node fanning out to two: the shape of the collaboration
+            // flow (task to runs to harnesses) at 18 px.
+            let radius = rect.width() * 0.10;
+            let left = position(0.2, 0.5);
+            let top = position(0.8, 0.22);
+            let bottom = position(0.8, 0.78);
+            painter.circle_stroke(left, radius, stroke);
+            painter.circle_stroke(top, radius, stroke);
+            painter.circle_stroke(bottom, radius, stroke);
+            painter.line_segment([left, top], stroke);
+            painter.line_segment([left, bottom], stroke);
         }
         Icon::Pulse => {
             // A health trace: flat, one excursion, flat. Reads as "vitals" at

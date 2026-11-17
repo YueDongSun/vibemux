@@ -29,7 +29,7 @@ use super::{
     C,
     ask_state::AskState,
     ask_view::{self, AskViewActions, ConfirmChoice, ConfirmState},
-    chat, composer,
+    chat, collaboration, composer,
     console::{self, ConsoleActions, ConsoleData, ConsoleSection},
     daemon_card::{self, DaemonJob},
     design, diagnostics, folders,
@@ -1075,6 +1075,7 @@ impl SupervisorApp {
                     match page {
                         MainPage::CoordinatorChat => state.show_coordinator_chat(),
                         MainPage::Console => state.show_console(),
+                        MainPage::Collaborate => state.show_collaborate(),
                     }
                 }
                 if let Some(task_id) = actions.task_id {
@@ -1153,6 +1154,7 @@ impl SupervisorApp {
 
             let mut settings_changes = None;
             let mut daemon_click = None;
+            let mut collaboration_selection = None;
             let mut ask_actions = AskViewActions::default();
             let harness_target =
                 self.ui_state
@@ -1281,6 +1283,14 @@ impl SupervisorApp {
                             );
                         }
                     }
+                    MainPage::Collaborate => {
+                        let view = collaboration::CollaborationView {
+                            snapshot,
+                            selected_task_id: selected_task_id.as_deref(),
+                        };
+                        collaboration_selection =
+                            collaboration::render_page(ui, &colors, &view).selected_task_id;
+                    }
                     MainPage::Console => {
                         let (section, selected_harness) = self
                             .ui_state
@@ -1307,6 +1317,9 @@ impl SupervisorApp {
             }
             if let Some(command) = daemon_click {
                 self.request_daemon(command);
+            }
+            if let Some(task_id) = collaboration_selection {
+                self.select_task(&task_id);
             }
             self.apply_ask_actions(ask_actions);
             self.route_pending_ask();
@@ -2384,6 +2397,47 @@ mod tests {
         assert_eq!(agents.page(), MainPage::Console);
         let conversation = start_state(SupervisorUiState::default(), StartPage::Conversation);
         assert_eq!(conversation.page(), MainPage::CoordinatorChat);
+    }
+
+    #[test]
+    fn collaboration_page_renders_the_flow_and_its_list_fallback() {
+        let mut app = test_app();
+        {
+            let mut state = app.ui_state.lock().expect("ui state");
+            state.show_collaborate();
+            assert_eq!(state.page(), MainPage::Collaborate);
+        }
+        let (_, output) = render_at(&mut app, 960.0, 600.0);
+        let texts = shape_texts(&output);
+        assert!(
+            texts.iter().any(|text| text == "Collaboration flow"),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|text| text == "Graph"), "{texts:?}");
+        assert!(texts.iter().any(|text| text == "List"), "{texts:?}");
+        // The painted flow carries the fixture's task labels.
+        assert!(texts.iter().any(|text| text == "First task"), "{texts:?}");
+        assert!(texts.iter().any(|text| text == "Second task"), "{texts:?}");
+        // Rendering alone never opens the task detail.
+        assert!(!app.ui_state.lock().expect("ui state").details_open());
+        assert_eq!(
+            app.ui_state.lock().expect("ui state").page(),
+            MainPage::Collaborate
+        );
+
+        // An empty workspace shows the empty state, not a blank canvas.
+        app.set_supervisor_snapshot(SupervisorSnapshot {
+            tasks: Vec::new(),
+            ..fixture_snapshot()
+        });
+        let (_, output) = render_at(&mut app, 960.0, 600.0);
+        assert!(
+            shape_texts(&output)
+                .iter()
+                .any(|text| text == "No tasks yet"),
+            "{:?}",
+            shape_texts(&output)
+        );
     }
 
     #[test]
