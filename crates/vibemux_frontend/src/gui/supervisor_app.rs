@@ -62,6 +62,9 @@ pub struct SupervisorApp {
     /// clone of the whole snapshot was pure allocation churn.
     snapshot: Arc<RwLock<Arc<SupervisorSnapshot>>>,
     user_config: UserConfig,
+    /// The theme picked in this session; `None` follows the OS appearance
+    /// (`Context::theme()`), which is re-evaluated every frame.
+    theme_override: Option<ThemeId>,
     ui_state: Arc<Mutex<SupervisorUiState>>,
     actions: UiActionQueue,
     /// The full-page settings replace the main area while this is set.
@@ -123,6 +126,7 @@ impl SupervisorApp {
             snapshot: Arc::new(RwLock::new(Arc::new(SupervisorSnapshot::unavailable()))),
             ui_state: Arc::new(Mutex::new(start_state(ui_state, user_config.start_page))),
             user_config,
+            theme_override: None,
             actions,
             settings_open: false,
             settings_section: settings::SettingsSection::default(),
@@ -501,6 +505,7 @@ impl SupervisorApp {
     }
 
     fn set_theme(&mut self, theme: ThemeId) {
+        self.theme_override = Some(theme);
         if self.user_config.theme != theme {
             self.user_config.theme = theme;
             self.pending_write = Some(Instant::now());
@@ -955,7 +960,36 @@ impl eframe::App for SupervisorApp {
     }
 }
 
+/// The OS light/dark appearance decides the palette until the operator
+/// picks a theme in this session; the configured theme supplies the other
+/// mode's counterpart so a chosen dark theme keeps its identity in light
+/// mode and vice versa.
+fn system_theme(ctx: &egui::Context, configured: ThemeId) -> ThemeId {
+    ctx.set_theme(egui::ThemePreference::System);
+    match ctx.theme() {
+        egui::Theme::Light => {
+            if palette_for(configured).is_light() {
+                configured
+            } else {
+                ThemeId::ClaudeLight
+            }
+        }
+        egui::Theme::Dark => {
+            if palette_for(configured).is_light() {
+                ThemeId::Claude
+            } else {
+                configured
+            }
+        }
+    }
+}
+
 impl SupervisorApp {
+    fn effective_theme(&self, ctx: &egui::Context) -> ThemeId {
+        self.theme_override
+            .unwrap_or_else(|| system_theme(ctx, self.user_config.theme))
+    }
+
     fn render_frame(&mut self, root_ui: &mut egui::Ui) {
         let context = root_ui.ctx().clone();
         let ctx = &context;
@@ -966,7 +1000,7 @@ impl SupervisorApp {
                 "Action queue is full. The last action was not sent; please try again.".into(),
             );
         }
-        let palette = palette_for(self.user_config.theme);
+        let palette = palette_for(self.effective_theme(ctx));
         super::apply_theme(ctx, &palette);
         ctx.global_style_mut(|style| {
             style
@@ -1686,6 +1720,7 @@ mod tests {
 
     fn test_app() -> SupervisorApp {
         SupervisorApp {
+            theme_override: None,
             view_model: test_view_model(),
             snapshot: Arc::new(RwLock::new(Arc::new(fixture_snapshot()))),
             user_config: config(),
@@ -2609,6 +2644,7 @@ mod tests {
     fn composer_placeholder_uses_the_muted_text_color() {
         let mut app = test_app();
         app.user_config.theme = ThemeId::ClaudeLight;
+        app.theme_override = Some(ThemeId::ClaudeLight);
         let muted = super::super::pal(&palette_for(ThemeId::ClaudeLight)).muted;
         let (_, output) = render_at(&mut app, 1280.0, 800.0);
         let placeholder = output.shapes.iter().find_map(|shape| match &shape.shape {
@@ -2673,6 +2709,7 @@ mod tests {
     fn focused_icon_button_draws_an_accent_focus_ring() {
         let mut app = test_app();
         app.user_config.theme = ThemeId::ClaudeLight;
+        app.theme_override = Some(ThemeId::ClaudeLight);
         let accent = super::super::pal(&palette_for(ThemeId::ClaudeLight)).accent;
         let context = egui::Context::default();
         let raw = egui::RawInput {

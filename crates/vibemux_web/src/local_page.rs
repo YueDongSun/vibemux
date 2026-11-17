@@ -1,16 +1,15 @@
 //! Opt-in token-free page for testing in an ordinary local browser
 //! (`local_page_without_token`, ADR 033 note of 2026-10-22).
 //!
-//! When enabled, only GET and HEAD requests for the embedded page and its
-//! static assets skip the bearer check, and only when the request names the
-//! bound loopback address literally in its `Host` (or HTTP/2 authority).
-//! Every `/api/` route, `/openapi.json`, and the service worker script still
-//! require the instance token, and the page holds no daemon data until the
-//! operator enters that token. An installed service worker serves its
-//! precached page without asking the server, so a worker installed through
-//! the token-free page would keep serving it after the mode is turned off.
-//! Requests forwarded under another host name, such as a tailnet name, keep
-//! requiring the token on every route.
+//! When enabled, requests that name the bound loopback address literally in
+//! their `Host` (or HTTP/2 authority), carry no cross-site origin signal,
+//! and use a canonical path skip the bearer check for both the page and the
+//! data API: opening the app on this computer is open-and-use. Requests
+//! forwarded under another host name, such as a tailnet name or a phone's
+//! remote address, keep requiring the instance token on every route. The
+//! same-origin and path checks exist only to keep a malicious web page in
+//! the same browser from reading this computer's data; they are invisible
+//! to normal use.
 
 use std::net::SocketAddr;
 
@@ -62,6 +61,35 @@ impl LocalPageAccess {
             && self.names_listener(uri, headers)
     }
 
+    /// Whether this request may skip the bearer check as a same-origin
+    /// local browser request: the page and its data API are both served to
+    /// this computer, while any other host name (tailnet/mobile) still
+    /// requires the instance token. Only requests that name the listener,
+    /// carry no cross-site origin signal, and use a canonical path qualify.
+    #[must_use]
+    pub fn permits_local_data(&self, uri: &Uri, headers: &HeaderMap) -> bool {
+        self.names_listener(uri, headers) && self.same_origin(headers) && canonical_path(uri.path())
+    }
+
+    fn same_origin(&self, headers: &HeaderMap) -> bool {
+        if let Some(site) = headers
+            .get("sec-fetch-site")
+            .and_then(|value| value.to_str().ok())
+            && !matches!(site, "same-origin" | "none")
+        {
+            return false;
+        }
+        match headers
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+        {
+            None => true,
+            Some(origin) => origin
+                .strip_prefix("http://")
+                .is_some_and(|host| self.allowed_hosts.contains(&host.to_ascii_lowercase())),
+        }
+    }
+
     /// Every name the request gives for its target must be the listener: a
     /// single `Host` header and, for an absolute-form or HTTP/2 request, the
     /// URI authority (which wins over `Host` in HTTP). At least one must be
@@ -89,6 +117,10 @@ const SERVICE_WORKER_PATH: &str = "/sw.js";
 
 /// The page and its assets: everything except the JSON API, its
 /// description, and the service worker script.
+fn canonical_path(path: &str) -> bool {
+    !(path.contains('%') || path.contains("//") || path.contains("/./") || path.contains("/../"))
+}
+
 fn is_page_path(path: &str) -> bool {
     path != "/api"
         && !path.starts_with("/api/")

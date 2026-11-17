@@ -110,23 +110,20 @@ async fn every_route_and_fallback_rejects_anonymous_requests_with_security_heade
 }
 
 #[tokio::test]
-async fn local_page_mode_serves_only_the_page_and_assets_without_a_token() {
+async fn local_page_mode_serves_the_page_and_data_to_the_local_browser() {
     let (_temp, _lease, url, stop, task) =
         fixture_with(BridgeSnapshot::default(), ConsoleSnapshot::waiting(), true).await;
     let client = reqwest::Client::new();
     let port = url.rsplit(':').next().unwrap().to_owned();
-    // More anonymous page loads than the failed-attempt limit allows.
-    for _ in 0..3 {
-        for (path, expected_mime) in [
-            ("/", "text/html; charset=utf-8"),
-            ("/vibemux_icon.svg", "image/svg+xml"),
-            ("/manifest.webmanifest", "application/manifest+json"),
-        ] {
-            let response = client.get(format!("{url}{path}")).send().await.unwrap();
-            assert_eq!(response.status(), 200, "{path}");
-            assert_eq!(response.headers()["content-type"], expected_mime);
-            assert_eq!(response.headers()["content-security-policy"], CSP);
-        }
+    for (path, expected_mime) in [
+        ("/", "text/html; charset=utf-8"),
+        ("/vibemux_icon.svg", "image/svg+xml"),
+        ("/manifest.webmanifest", "application/manifest+json"),
+    ] {
+        let response = client.get(format!("{url}{path}")).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(response.headers()["content-type"], expected_mime);
+        assert_eq!(response.headers()["content-security-policy"], CSP);
     }
     let by_name = client
         .get(format!("{url}/"))
@@ -135,31 +132,45 @@ async fn local_page_mode_serves_only_the_page_and_assets_without_a_token() {
         .await
         .unwrap();
     assert_eq!(by_name.status(), 200);
-    // Anything else still needs the token. Each refusal counts toward the
-    // failed-attempt limit, so stay below it.
-    // The service worker script too: an installed worker would keep serving
-    // its cached page after the mode is turned off.
-    for (method, path, host) in [
-        ("get", "/api/v1/console", None),
-        ("get", "/openapi.json", None),
-        ("get", "/sw.js", None),
-        ("post", "/", None),
-        ("get", "/", Some("operator.tailnet.example".to_owned())),
+    // Local open-and-use: the data API and contract serve this browser
+    // without the token, exactly like the page.
+    for path in [
+        "/api/v1/health",
+        "/api/v1/console",
+        "/openapi.json",
+        "/sw.js",
     ] {
-        let mut request = client.request(
-            reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
-            format!("{url}{path}"),
-        );
-        if let Some(host) = host {
-            request = request.header("host", host);
-        }
-        let response = request.send().await.unwrap();
-        assert_eq!(response.status(), 401, "{method} {path}");
-        assert_eq!(response.headers()["cache-control"], "no-store");
+        let response = client.get(format!("{url}{path}")).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{path}");
     }
-    // The page loads did not use up the failed-attempt budget.
+    // Remote, cross-site, and non-canonical requests still need the token.
+    for (request, status) in [
+        (
+            client
+                .get(format!("{url}/api/v1/console"))
+                .header("host", "operator.tailnet.example"),
+            401,
+        ),
+        (
+            client
+                .get(format!("{url}/api/v1/console"))
+                .header("origin", "https://evil.example"),
+            401,
+        ),
+        (
+            client
+                .get(format!("{url}/api/v1/console"))
+                .header("sec-fetch-site", "cross-site"),
+            401,
+        ),
+    ] {
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), status);
+    }
+    // The token still works, and page loads do not consume its budget.
     let health = client
         .get(format!("{url}/api/v1/health"))
+        .header("host", "operator.tailnet.example")
         .bearer_auth(TEST_TOKEN)
         .send()
         .await

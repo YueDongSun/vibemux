@@ -119,10 +119,10 @@ async fn authenticate(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    let local_page = state
-        .local_page
-        .as_ref()
-        .is_some_and(|access| access.permits(request.method(), request.uri(), request.headers()));
+    let local_page = state.local_page.as_ref().is_some_and(|access| {
+        access.permits(request.method(), request.uri(), request.headers())
+            || access.permits_local_data(request.uri(), request.headers())
+    });
     if !local_page && let Err((status, code)) = check_bearer(&state, &request) {
         return error(status, code);
     }
