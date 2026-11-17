@@ -4,12 +4,16 @@
 //! one config digest.
 //!
 //! Beyond the pure shape rules in [`DispatchConfig::parse`], each enabled
-//! route's executable must be trusted on this host: its canonical target
-//! is a regular file outside the project root (so a repository cannot ship
-//! the binary a route runs), and the target's file stem is the harness
-//! command name (so a route cannot name an interpreter such as `cmd.exe`
-//! or `powershell.exe`). DSH's explicit Node launcher pair instead requires
-//! a canonical external entry script owned by the DSH package (ADR 032).
+//! route's executable must be trusted on this host: the canonical target is
+//! a regular file outside the project root (so a repository cannot ship the
+//! binary a route runs) and is itself a directly launchable image, while the
+//! harness command name must appear in the file stem of the configured path
+//! or of the canonical target. Standard versioned installs reach the harness
+//! through a symlink (`claude -> versions/2.1.326`), so requiring only the
+//! canonical stem would refuse them; requiring either stem still refuses a
+//! route that names an unrelated interpreter on both sides (`cmd.exe`,
+//! `powershell.exe`). DSH's explicit Node launcher pair instead requires a
+//! canonical external entry script owned by the DSH package (ADR 032).
 //! Failures carry fixed codes only.
 
 use std::{
@@ -134,21 +138,34 @@ fn trusted_executable(
     policy: ExecutablePolicy,
 ) -> Result<PathBuf, DispatchError> {
     let invalid = DispatchError::ConfigExecutableInvalid;
+    // `DispatchConfig::parse` already applied the shape rules to the
+    // configured path; re-check the launch form here so this function stands
+    // on its own and a route can never reach the filesystem as a relative,
+    // oversized, or interpreter-shim path.
+    validate_executable(&route.executable, policy).map_err(|_| invalid)?;
     let canonical = std::fs::canonicalize(&route.executable).map_err(|_| invalid)?;
     let regular = std::fs::metadata(&canonical)
         .map(|metadata| metadata.is_file())
         .unwrap_or(false);
-    // The configured path passed the shape rules; the target a link resolves
-    // to must pass them too.
+    // The daemon launches the canonical target, so it must be a direct image:
+    // a `.js`/`.cmd` shim has no interpreter in this schema and would fail at
+    // spawn time.
     if !regular
         || canonical.starts_with(canonical_root)
         || validate_executable(&canonical, policy).is_err()
-        || !(if route.protocol.requires_launcher_pair() {
-            executable_is_node_image(&canonical, policy)
-        } else {
-            executable_names_harness(&canonical, route.harness, policy)
-        })
     {
+        return Err(invalid);
+    }
+    let trusted = if route.protocol.requires_launcher_pair() {
+        executable_is_node_image(&canonical, policy)
+    } else {
+        // A symlinked install is trusted when either the configured path or
+        // the resolved target names the harness. Both sides mismatching is
+        // still refused, so a route cannot point at an unrelated program.
+        executable_names_harness(&route.executable, route.harness, policy)
+            || executable_names_harness(&canonical, route.harness, policy)
+    };
+    if !trusted {
         return Err(invalid);
     }
     Ok(canonical)

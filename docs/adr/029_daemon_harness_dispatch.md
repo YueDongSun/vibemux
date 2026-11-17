@@ -227,10 +227,14 @@ it and rejects any edge not listed here.
   Executables must be absolute paths, canonicalized, and `.exe` on Windows;
   `.cmd`, `.bat`, and PowerShell shims are rejected rather than shimmed. The
   loader follows a linked executable and checks its canonical target: it must
-  be a regular file outside the canonical project root, and its file stem must
-  be the harness command name (`codex`, `claude`, `opencode`, `copilot`,
-  `grok`; ASCII case-insensitive on Windows), so a cloned repository cannot
-  plant the binary or point a route at an interpreter (open decision 2).
+  be a regular file outside the canonical project root and a directly
+  launchable image, and the harness command name (`codex`, `claude`,
+  `opencode`, `copilot`, `grok`; ASCII case-insensitive on Windows) must be
+  the file stem of the configured path or of the canonical target, so a cloned
+  repository cannot plant the binary and a route can still name a standard
+  versioned symlink install (`claude -> versions/2.1.326`). A route whose
+  configured and resolved stems both name another program is refused (open
+  decision 2; amended 2026-11-17).
   Failures return `harness_dispatch_config_executable_invalid`. The
   file's trust boundary is the same logon SID as the rest of `.vibemux/`; no
   extra ACL is promised. Schema 1 carries **no operator argv**: every argument
@@ -645,14 +649,17 @@ route in a valid `.vibemux/harness_dispatch.json`.
    it can arrive with a cloned repository and name any absolute `.exe`. The
    config stays in `.vibemux/`, and the loader binds each executable to
    properties the repository cannot choose: the canonical target must lie
-   outside the canonical project root, and its file stem must be the
-   harness command name (Decision 4). A route can therefore name only a
-   binary installed outside the checkout under that harness's own name, not
-   one the checkout ships and not an interpreter such as `cmd.exe` or
-   `powershell.exe`. Rejected alternatives: requiring the probe cache's
-   resolved path, which ties dispatch to a cache refresh and to `PATH`
-   order; and a per-user route file, which adds a second configuration
-   location and precedence rules.
+   outside the canonical project root and be a direct image, and the harness
+   command name must be the stem of the configured path or of the canonical
+   target (Decision 4). A route can therefore name only a binary installed
+   outside the checkout under that harness's own name on at least one side,
+   not one the checkout ships and not an unrelated interpreter named on both
+   sides. Requiring either stem (amended 2026-11-17) keeps standard POSIX
+   versioned symlink installs usable; a `.js` shim still cannot be launched
+   and is reported by provisioning instead of planned. Rejected alternatives:
+   requiring the probe cache's resolved path, which ties dispatch to a cache
+   refresh and to `PATH` order; and a per-user route file, which adds a second
+   configuration location and precedence rules.
 3. **Claude flags — resolved for parsing (Stage 7).** `--strict-mcp-config`
    and `--restricted` were first verified only by `--help`. The Stage 7
    initialize probe of Claude Code 2.1.283 accepted the full route argv,
@@ -800,3 +807,30 @@ Tests preserve the original exited-leader assertion and cover a surviving
 descendant, idempotency, denied enumeration, additional/unknown members, and
 incomplete observations. Multiple residual zombies conservatively remain an
 error. This does not expand process groups into a hostile-code sandbox.
+
+## Amendment (2026-11-17): provisioned configs and standard symlinked installs
+
+`vibemuxctl dispatch provision` derives the route config from the trusted probe
+cache, so it applies the executable trust rule before emitting a route instead
+of writing a config the daemon rejects at startup:
+
+- The probe's resolved launcher is canonicalized. The canonical target must be
+  a regular file outside the canonical project root and be directly launchable
+  under the same shape rule, and the harness command name must be the file
+  stem of the configured path **or** of the canonical target.
+- A standard versioned install (`claude -> versions/2.1.326`) emits the launch
+  path (the symlink whose stem is `claude`); the loader trusts it because the
+  configured stem names the harness and pins the canonical target. Emitting
+  only the canonical versioned file would be refused, because that file's stem
+  is a version number. A `.js` shim (`codex -> codex.js`) is reported
+  `no_executable` rather than planned as a route that cannot launch; a
+  project-relative, missing, moved, or non-regular target is
+  `executable_invalid`.
+- The write path loads the planned bytes through the daemon's own loader
+  before the atomic rename, so a config the daemon would reject is never
+  installed (`harness_dispatch_provision_config_rejected`). A non-regular
+  existing target is `harness_dispatch_provision_unsafe_target`. Duplicate
+  probe rows resolve last-wins, so a refreshed row supersedes a stale one.
+- This is a narrow, read-only filesystem exception in `vibemux_harness`: the
+  planner is an operator-facing CLI helper, not part of dispatch execution,
+  and the protocol and state-machine modules remain I/O-free.

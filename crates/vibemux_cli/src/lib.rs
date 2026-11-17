@@ -312,10 +312,12 @@ pub enum DaemonCliError {
     InvalidPrompt,
     #[error("writing a dispatch config may enable paid vendor turns: pass --yes to confirm")]
     DispatchProvisionConfirmationRequired,
-    #[error(
-        "an existing harness dispatch config differs or is not a regular file: pass --force to replace it"
-    )]
+    #[error("an existing harness dispatch config differs: pass --force to replace it")]
     DispatchProvisionConflict,
+    #[error("the harness dispatch config path is not a regular file")]
+    DispatchProvisionUnsafeTarget,
+    #[error("the planned harness dispatch config would be rejected by the daemon")]
+    DispatchProvisionConfigRejected,
     #[error("no verified harness executable can be provisioned into a dispatch route")]
     DispatchProvisionEmpty,
     #[error("harness dispatch provision could not read or write its files")]
@@ -355,6 +357,8 @@ impl DaemonCliError {
                 "harness_dispatch_provision_confirmation_required"
             }
             Self::DispatchProvisionConflict => "harness_dispatch_provision_conflict",
+            Self::DispatchProvisionUnsafeTarget => "harness_dispatch_provision_unsafe_target",
+            Self::DispatchProvisionConfigRejected => "harness_dispatch_provision_config_rejected",
             Self::DispatchProvisionEmpty => "harness_dispatch_provision_empty",
             Self::DispatchProvisionIo => "harness_dispatch_provision_io",
             Self::DispatchProvisionCacheInvalid => "harness_dispatch_provision_cache_invalid",

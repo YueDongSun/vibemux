@@ -17,12 +17,14 @@ use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 use vibemux_harness::{
-    AgentKind, HarnessDetection,
+    AgentKind, HarnessDetection, ProbeState,
     dispatch::{
         AttemptOutcome, DispatchError, DispatchPhase, DispatchRequest, NativeProtocol,
+        ProvisionProbeRow, ProvisionSkipReason,
         events::{HARNESS_DISPATCH_ADMITTED_EVENT, HARNESS_DISPATCH_FINISHED_EVENT},
+        plan_provisioning,
         request::{DISPATCH_REQUEST_SCHEMA_VERSION, MAX_PROMPT_BYTES},
-        route_config::{MAX_ROUTE_CONFIG_BYTES, ROUTE_CONFIG_SCHEMA_VERSION},
+        route_config::{ExecutablePolicy, MAX_ROUTE_CONFIG_BYTES, ROUTE_CONFIG_SCHEMA_VERSION},
     },
 };
 use vibemux_store::HarnessDispatchRecord;
@@ -1088,15 +1090,36 @@ fn the_loader_refuses_untrusted_executables() {
 }
 
 #[test]
-fn the_loader_checks_the_target_a_link_resolves_to() {
+fn the_loader_accepts_a_symlinked_versioned_launcher() {
+    let layout = LoaderLayout::new();
+    let elsewhere = layout.temp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let link = layout.vendor_dir.join(format!("codex{suffix}"));
+    // The standard POSIX shape: `codex -> versions/1.2.3`. Only the
+    // configured path names the harness; the canonical stem is a version.
+    let versioned = install_executable(&elsewhere, "1.2.3");
+    if let Err(error) = symlink_file(&versioned, &link) {
+        // Windows needs Developer Mode or a privilege to create links.
+        eprintln!("skipped: cannot create a file symlink here ({error})");
+        return;
+    }
+    assert_eq!(
+        layout.load_codex(&link).expect("versioned alias route"),
+        std::fs::canonicalize(&versioned).expect("canonical target")
+    );
+}
+
+#[test]
+fn the_loader_refuses_untrusted_link_targets() {
     let layout = LoaderLayout::new();
     let elsewhere = layout.temp.path().join("elsewhere");
     let inside = layout.canonical_root.join("tools");
     std::fs::create_dir_all(&elsewhere).expect("elsewhere");
     std::fs::create_dir_all(&inside).expect("tools dir");
     let suffix = std::env::consts::EXE_SUFFIX;
-    let link = layout.vendor_dir.join(format!("codex{suffix}"));
     let trusted_target = install_executable(&elsewhere, "codex");
+    let link = layout.vendor_dir.join(format!("codex{suffix}"));
     if let Err(error) = symlink_file(&trusted_target, &link) {
         // Windows needs Developer Mode or a privilege to create links.
         eprintln!("skipped: cannot create a file symlink here ({error})");
@@ -1106,24 +1129,99 @@ fn the_loader_checks_the_target_a_link_resolves_to() {
         layout.load_codex(&link).expect("linked route"),
         std::fs::canonicalize(&trusted_target).expect("canonical target")
     );
-    // A link named for the harness, pointing at another program or into
-    // the project root.
-    for (index, target) in [
-        install_executable(&elsewhere, "vibemux_native_fixture"),
-        install_executable(&inside, "codex"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let link_dir = layout.vendor_dir.join(format!("link_{index}"));
-        std::fs::create_dir_all(&link_dir).expect("link dir");
-        let link = link_dir.join(format!("codex{suffix}"));
-        symlink_file(&target, &link).expect("link");
-        assert_eq!(
-            layout.load_codex(&link).err(),
-            Some(DispatchError::ConfigExecutableInvalid)
-        );
+
+    // Project-relative target: the link names the harness, but the checkout
+    // must never ship the binary a route runs.
+    let project_link_dir = layout.vendor_dir.join("project_link");
+    std::fs::create_dir_all(&project_link_dir).expect("link dir");
+    let project_link = project_link_dir.join(format!("codex{suffix}"));
+    symlink_file(&install_executable(&inside, "codex"), &project_link).expect("link");
+    assert_eq!(
+        layout.load_codex(&project_link).err(),
+        Some(DispatchError::ConfigExecutableInvalid)
+    );
+
+    // Both stems name something else; the configured path cannot launder an
+    // unrelated executable through the harness check.
+    let wrapper_link_dir = layout.vendor_dir.join("wrapper_link");
+    std::fs::create_dir_all(&wrapper_link_dir).expect("link dir");
+    let wrapper_link = wrapper_link_dir.join(format!("wrapper{suffix}"));
+    symlink_file(&install_executable(&elsewhere, "unrelated"), &wrapper_link).expect("link");
+    assert_eq!(
+        layout.load_codex(&wrapper_link).err(),
+        Some(DispatchError::ConfigExecutableInvalid)
+    );
+
+    // A link resolving to a directory is not a regular file.
+    let directory_target = elsewhere.join("codex_dir");
+    std::fs::create_dir_all(&directory_target).expect("directory target");
+    let directory_link_dir = layout.vendor_dir.join("directory_link");
+    std::fs::create_dir_all(&directory_link_dir).expect("link dir");
+    let directory_link = directory_link_dir.join(format!("codex{suffix}"));
+    symlink_file(&directory_target, &directory_link).expect("link");
+    assert_eq!(
+        layout.load_codex(&directory_link).err(),
+        Some(DispatchError::ConfigExecutableInvalid)
+    );
+}
+
+#[test]
+fn a_provisioned_versioned_alias_config_loads_through_the_daemon_loader() {
+    let layout = LoaderLayout::new();
+    let install = layout.temp.path().join("install");
+    let versions = install.join("versions");
+    let bin = install.join("bin");
+    std::fs::create_dir_all(&versions).expect("versions");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let versioned = install_executable(&versions, "2.1.326");
+    let claude_link = bin.join(format!("claude{suffix}"));
+    if let Err(error) = symlink_file(&versioned, &claude_link) {
+        eprintln!("skipped: cannot create a file symlink here ({error})");
+        return;
     }
+    let codex_script = install.join("codex.js");
+    std::fs::write(&codex_script, "#!/usr/bin/env node\n").expect("script");
+    let codex_link = bin.join(format!("codex{suffix}"));
+    symlink_file(&codex_script, &codex_link).expect("codex link");
+
+    let rows = [
+        ProvisionProbeRow::new(AgentKind::Claude, ProbeState::Verified, Some(claude_link)),
+        ProvisionProbeRow::new(AgentKind::Codex, ProbeState::Verified, Some(codex_link)),
+    ];
+    let plan = plan_provisioning(
+        &rows,
+        &layout.canonical_root,
+        true,
+        ExecutablePolicy::for_host(),
+    );
+    // Claude's versioned alias is emitted as its launch path; Codex's Node
+    // shim has no direct-exec form and is skipped.
+    assert_eq!(plan.config.routes.len(), 1);
+    assert_eq!(plan.config.routes[0].harness, AgentKind::Claude);
+    assert_eq!(
+        plan.config.routes[0].executable,
+        bin.join(format!("claude{suffix}"))
+            .to_string_lossy()
+            .into_owned()
+    );
+    assert!(
+        plan.skipped
+            .iter()
+            .any(|entry| entry.harness == AgentKind::Codex
+                && entry.reason == ProvisionSkipReason::NoExecutable)
+    );
+
+    write_json(
+        &layout.config_path,
+        &serde_json::to_value(&plan.config).expect("config json"),
+    );
+    let loaded = load_dispatch_config(&layout.config_path, &layout.canonical_root)
+        .expect("the daemon loads the provisioned config");
+    assert_eq!(
+        loaded.executable(AgentKind::Claude).expect("claude"),
+        std::fs::canonicalize(&versioned).expect("canonical target")
+    );
 }
 
 #[test]

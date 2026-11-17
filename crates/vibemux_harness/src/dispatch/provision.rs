@@ -4,9 +4,9 @@
 //! launcher; the daemon never re-probes. Provisioning therefore takes plain
 //! values — agent kind, verified launcher state, resolved executable — and
 //! applies the same per-route shape rules [`super::DispatchConfig`] enforces,
-//! so a generated config parses and validates. The daemon still canonicalizes
-//! each executable and checks that it lies outside the project when it loads
-//! the file; those filesystem checks belong to its loader, not to this module.
+//! so a generated config parses and validates. The daemon re-applies its own
+//! filesystem trust checks when it loads the file; provisioning runs them
+//! first so it never plans a route the daemon would refuse.
 //!
 //! Only harnesses with an *executing* structured adapter are provisioned.
 //! ACP vendors stay out of reach until a verified per-vendor deny posture
@@ -14,8 +14,20 @@
 //! script, provider, model) that no probe row carries; both are reported as
 //! skips rather than guessed at.
 //!
-//! No I/O happens here: reading the probe cache, writing the config file, and
-//! asking the operator to confirm paid turns belong to the CLI.
+//! Provisioning applies the daemon's executable trust rule to the launcher
+//! the probe actually resolved, which is the one place in this crate that
+//! reads the filesystem: the path is canonicalized, the target must be a
+//! regular file outside the project root, the target must be a directly
+//! launchable image, and the harness name must appear in the launch or
+//! canonical file stem. A standard versioned install such as
+//! `claude -> versions/2.1.326` therefore emits the launch path (the
+//! symlink whose stem is `claude`), which the daemon trusts; a `.js` shim
+//! behind a symlink has no direct-exec form and is skipped as
+//! [`ProvisionSkipReason::NoExecutable`]. Reading the probe cache, writing
+//! the config file, and asking the operator to confirm paid turns still
+//! belong to the CLI.
+
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -39,7 +51,7 @@ pub const PROVISION_SCHEMA_VERSION: u32 = ROUTE_CONFIG_SCHEMA_VERSION;
 pub struct ProvisionProbeRow {
     pub harness: AgentKind,
     pub launcher_state: ProbeState,
-    pub executable: Option<std::path::PathBuf>,
+    pub executable: Option<PathBuf>,
 }
 
 impl ProvisionProbeRow {
@@ -47,7 +59,7 @@ impl ProvisionProbeRow {
     pub fn new(
         harness: AgentKind,
         launcher_state: ProbeState,
-        executable: Option<std::path::PathBuf>,
+        executable: Option<PathBuf>,
     ) -> Self {
         Self {
             harness,
@@ -68,7 +80,9 @@ pub enum ProvisionSkipReason {
     NoExecutingProtocol,
     /// The adapter needs the Node launcher pair a probe row cannot supply.
     LauncherPairRequired,
-    /// A verified row carried no resolved executable path.
+    /// A verified row carried no resolved executable path, or the resolved
+    /// launcher has no direct-exec form (for example a `.js` shim that needs
+    /// an interpreter the route schema cannot express).
     NoExecutable,
     /// The path failed the route config's executable rules.
     ExecutableInvalid,
@@ -180,18 +194,26 @@ pub const fn provisioning_protocol(harness: AgentKind) -> Option<NativeProtocol>
 }
 
 /// Builds the plan in canonical [`AgentKind::all`] order, independent of the
-/// order rows arrive in. A duplicate row for one harness is ignored after the
-/// first, because a probe report holds at most one row per harness.
+/// order rows arrive in. `canonical_project_root` is the already-canonicalized
+/// project root the executable trust rule compares against. A duplicate row
+/// for one harness resolves last-wins, matching the daemon's row resolution.
 #[must_use]
 pub fn plan_provisioning(
     rows: &[ProvisionProbeRow],
+    canonical_project_root: &Path,
     allow_execution: bool,
     policy: ExecutablePolicy,
 ) -> ProvisionPlan {
     let mut routes = Vec::new();
     let mut skipped = Vec::new();
     for harness in AgentKind::all() {
-        match route_for(harness, rows, allow_execution, policy) {
+        match route_for(
+            harness,
+            rows,
+            canonical_project_root,
+            allow_execution,
+            policy,
+        ) {
             Ok(route) => routes.push(route),
             Err(reason) => skipped.push(ProvisionSkipped { harness, reason }),
         }
@@ -208,6 +230,7 @@ pub fn plan_provisioning(
 fn route_for(
     harness: AgentKind,
     rows: &[ProvisionProbeRow],
+    canonical_project_root: &Path,
     allow_execution: bool,
     policy: ExecutablePolicy,
 ) -> Result<ProvisionedRoute, ProvisionSkipReason> {
@@ -221,22 +244,51 @@ fn route_for(
     if protocol.requires_launcher_pair() {
         return Err(ProvisionSkipReason::LauncherPairRequired);
     }
+    // Last row wins, so a report that carries a stale row and a refreshed one
+    // for the same harness resolves the way the daemon would.
     let row = rows
         .iter()
-        .find(|row| row.harness == harness)
+        .rfind(|row| row.harness == harness)
         .ok_or(ProvisionSkipReason::NotProbed)?;
     if row.launcher_state != ProbeState::Verified {
         return Err(ProvisionSkipReason::NotVerified);
     }
-    let executable = row
+    let launch = row
         .executable
         .as_deref()
         .ok_or(ProvisionSkipReason::NoExecutable)?;
-    validate_executable(executable, policy).map_err(|_| ProvisionSkipReason::ExecutableInvalid)?;
-    if !executable_names_harness(executable, harness, policy) {
+    // The launch form must satisfy the route shape rules; the daemon applies
+    // the same check when it reads the written file.
+    validate_executable(launch, policy).map_err(|_| ProvisionSkipReason::ExecutableInvalid)?;
+    // A missing or moved launcher fails here instead of producing a config
+    // the daemon would refuse at startup.
+    let canonical =
+        std::fs::canonicalize(launch).map_err(|_| ProvisionSkipReason::ExecutableInvalid)?;
+    let regular = std::fs::metadata(&canonical)
+        .map(|metadata| metadata.is_file())
+        .unwrap_or(false);
+    if !regular || canonical.starts_with(canonical_project_root) {
         return Err(ProvisionSkipReason::ExecutableInvalid);
     }
-    let executable = executable
+    // The daemon launches the canonical target, so a script shim such as
+    // `codex -> codex.js` has no direct-exec form this schema can express.
+    if validate_executable(&canonical, policy).is_err() {
+        return Err(ProvisionSkipReason::NoExecutable);
+    }
+    // A standard versioned install resolves to a file that does not name the
+    // harness (`claude -> versions/2.1.326`). The daemon trusts either stem,
+    // so emit the launch path in that case; emitting the canonical versioned
+    // file would be refused when the daemon loads the config.
+    let canonical_named = executable_names_harness(&canonical, harness, policy);
+    if !canonical_named && !executable_names_harness(launch, harness, policy) {
+        return Err(ProvisionSkipReason::ExecutableInvalid);
+    }
+    let emitted = if canonical_named {
+        canonical
+    } else {
+        launch.to_path_buf()
+    };
+    let executable = emitted
         .to_str()
         .ok_or(ProvisionSkipReason::ExecutableInvalid)?
         .to_owned();
@@ -252,7 +304,7 @@ fn route_for(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use serde_json::{Value, json};
 
@@ -260,6 +312,35 @@ mod tests {
     use crate::dispatch::route_config::{DispatchConfig, DispatchLimits};
 
     const HOST: ExecutablePolicy = ExecutablePolicy::for_host();
+
+    /// A project root and a vendor directory that stand outside it.
+    struct Fixture {
+        vendor: PathBuf,
+        project: PathBuf,
+        canonical_root: PathBuf,
+        _temp: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("temp");
+            let project = temp.path().join("project");
+            let vendor = temp.path().join("vendor");
+            std::fs::create_dir_all(&project).expect("project");
+            std::fs::create_dir_all(&vendor).expect("vendor");
+            let canonical_root = std::fs::canonicalize(&project).expect("canonical root");
+            Self {
+                vendor,
+                project,
+                canonical_root,
+                _temp: temp,
+            }
+        }
+
+        fn install(&self, name: &str) -> PathBuf {
+            install_executable(&self.vendor, name)
+        }
+    }
 
     fn host_path(name: &str) -> PathBuf {
         if cfg!(windows) {
@@ -269,12 +350,22 @@ mod tests {
         }
     }
 
-    fn verified(harness: AgentKind) -> ProvisionProbeRow {
-        ProvisionProbeRow::new(
-            harness,
-            ProbeState::Verified,
-            Some(host_path(harness.command_name())),
-        )
+    /// Writes a regular, executable fixture image under the host suffix rule.
+    fn install_executable(directory: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(directory).expect("directory");
+        let path = directory.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&path, b"fixture image").expect("write executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("executable mode");
+        }
+        path
+    }
+
+    fn verified(harness: AgentKind, executable: PathBuf) -> ProvisionProbeRow {
+        ProvisionProbeRow::new(harness, ProbeState::Verified, Some(executable))
     }
 
     fn reasons(plan: &ProvisionPlan) -> Vec<(AgentKind, ProvisionSkipReason)> {
@@ -290,8 +381,15 @@ mod tests {
 
     #[test]
     fn verified_codex_and_claude_rows_become_executing_routes() {
+        let fixture = Fixture::new();
+        let claude = fixture.install("claude");
+        let codex = fixture.install("codex");
         let plan = plan_provisioning(
-            &[verified(AgentKind::Claude), verified(AgentKind::Codex)],
+            &[
+                verified(AgentKind::Claude, claude.clone()),
+                verified(AgentKind::Codex, codex.clone()),
+            ],
+            &fixture.canonical_root,
             true,
             HOST,
         );
@@ -301,7 +399,10 @@ mod tests {
                 ProvisionedRoute {
                     harness: AgentKind::Claude,
                     protocol: NativeProtocol::ClaudeStreamJson,
-                    executable: host_path("claude").to_string_lossy().into_owned(),
+                    executable: std::fs::canonicalize(&claude)
+                        .expect("canonical")
+                        .to_string_lossy()
+                        .into_owned(),
                     environment_names: default_environment_names().to_vec(),
                     enabled: true,
                     allow_execution: true,
@@ -309,7 +410,10 @@ mod tests {
                 ProvisionedRoute {
                     harness: AgentKind::Codex,
                     protocol: NativeProtocol::CodexAppServer,
-                    executable: host_path("codex").to_string_lossy().into_owned(),
+                    executable: std::fs::canonicalize(&codex)
+                        .expect("canonical")
+                        .to_string_lossy()
+                        .into_owned(),
                     environment_names: default_environment_names().to_vec(),
                     enabled: true,
                     allow_execution: true,
@@ -322,7 +426,13 @@ mod tests {
 
     #[test]
     fn the_allow_execution_parameter_is_written_through() {
-        let plan = plan_provisioning(&[verified(AgentKind::Codex)], false, HOST);
+        let fixture = Fixture::new();
+        let plan = plan_provisioning(
+            &[verified(AgentKind::Codex, fixture.install("codex"))],
+            &fixture.canonical_root,
+            false,
+            HOST,
+        );
         assert!(
             plan.config
                 .routes
@@ -335,16 +445,16 @@ mod tests {
 
     #[test]
     fn canonical_order_does_not_depend_on_row_order() {
+        let fixture = Fixture::new();
+        let claude = verified(AgentKind::Claude, fixture.install("claude"));
+        let codex = verified(AgentKind::Codex, fixture.install("codex"));
         let forward = plan_provisioning(
-            &[verified(AgentKind::Claude), verified(AgentKind::Codex)],
+            &[claude.clone(), codex.clone()],
+            &fixture.canonical_root,
             true,
             HOST,
         );
-        let reversed = plan_provisioning(
-            &[verified(AgentKind::Codex), verified(AgentKind::Claude)],
-            true,
-            HOST,
-        );
+        let reversed = plan_provisioning(&[codex, claude], &fixture.canonical_root, true, HOST);
         assert_eq!(forward, reversed);
         let order: Vec<AgentKind> = forward
             .config
@@ -357,8 +467,13 @@ mod tests {
 
     #[test]
     fn the_generated_config_is_accepted_by_the_route_parser() {
+        let fixture = Fixture::new();
         let plan = plan_provisioning(
-            &[verified(AgentKind::Claude), verified(AgentKind::Codex)],
+            &[
+                verified(AgentKind::Claude, fixture.install("claude")),
+                verified(AgentKind::Codex, fixture.install("codex")),
+            ],
+            &fixture.canonical_root,
             true,
             HOST,
         );
@@ -379,17 +494,19 @@ mod tests {
 
     #[test]
     fn acp_dsh_unverified_and_terminal_only_rows_are_skipped_with_reasons() {
+        let fixture = Fixture::new();
         let plan = plan_provisioning(
             &[
-                verified(AgentKind::OpenCode),
-                verified(AgentKind::Dsh),
+                verified(AgentKind::OpenCode, host_path("opencode")),
+                verified(AgentKind::Dsh, host_path("dsh")),
                 ProvisionProbeRow::new(
                     AgentKind::Codex,
                     ProbeState::Failed,
-                    Some(host_path("codex")),
+                    Some(fixture.install("codex")),
                 ),
-                verified(AgentKind::Kimi),
+                verified(AgentKind::Kimi, host_path("kimi")),
             ],
+            &fixture.canonical_root,
             true,
             HOST,
         );
@@ -425,23 +542,16 @@ mod tests {
 
     #[test]
     fn a_verified_row_needs_a_path_and_a_harness_named_executable() {
+        let fixture = Fixture::new();
         let missing = ProvisionProbeRow::new(AgentKind::Claude, ProbeState::Verified, None);
-        let mismatched = ProvisionProbeRow::new(
-            AgentKind::Claude,
-            ProbeState::Verified,
-            Some(host_path("codex")),
-        );
-        let relative = ProvisionProbeRow::new(
-            AgentKind::Claude,
-            ProbeState::Verified,
-            Some(PathBuf::from("claude")),
-        );
+        let mismatched = verified(AgentKind::Claude, fixture.install("codex"));
+        let relative = verified(AgentKind::Claude, PathBuf::from("claude"));
         for (row, expected) in [
             (missing, ProvisionSkipReason::NoExecutable),
             (mismatched, ProvisionSkipReason::ExecutableInvalid),
             (relative, ProvisionSkipReason::ExecutableInvalid),
         ] {
-            let plan = plan_provisioning(&[row], true, HOST);
+            let plan = plan_provisioning(&[row], &fixture.canonical_root, true, HOST);
             assert!(
                 plan.config.routes.is_empty(),
                 "{expected:?} unexpectedly provisioned"
@@ -457,14 +567,137 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_project_relative_or_non_regular_target_is_executable_invalid() {
+        let fixture = Fixture::new();
+        let missing = fixture
+            .vendor
+            .join(format!("claude{}", std::env::consts::EXE_SUFFIX));
+        let inside = install_executable(&fixture.project, "claude");
+        let directory = fixture
+            .vendor
+            .join(format!("claude{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir_all(&directory).expect("directory target");
+        for row in [
+            verified(AgentKind::Claude, missing),
+            verified(AgentKind::Claude, inside),
+            verified(AgentKind::Claude, directory),
+        ] {
+            let plan = plan_provisioning(&[row], &fixture.canonical_root, true, HOST);
+            assert!(plan.config.routes.is_empty());
+            assert_eq!(
+                plan.skipped
+                    .iter()
+                    .find(|entry| entry.harness == AgentKind::Claude)
+                    .map(|entry| entry.reason),
+                Some(ProvisionSkipReason::ExecutableInvalid)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_versioned_symlink_is_emitted_as_its_launch_path() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let versions = fixture.vendor.join("versions");
+        let versioned = install_executable(&versions, "2.1.326");
+        let bin = fixture.vendor.join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let launch = bin.join("claude");
+        symlink(&versioned, &launch).expect("symlink");
+        let plan = plan_provisioning(
+            &[verified(AgentKind::Claude, launch.clone())],
+            &fixture.canonical_root,
+            true,
+            HOST,
+        );
+        assert_eq!(
+            plan.config.routes[0].executable,
+            launch.to_string_lossy().into_owned()
+        );
+        // The emitted launch path still parses; only the daemon can canonicalize.
+        let bytes = serde_json::to_vec(&plan.config).expect("config bytes");
+        DispatchConfig::parse(&bytes, HOST).expect("route shape is valid");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interpreter_shim_target_is_no_executable() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let script = fixture.vendor.join("codex.js");
+        std::fs::write(&script, "#!/usr/bin/env node\n").expect("script");
+        let launch = fixture
+            .vendor
+            .join(format!("codex{}", std::env::consts::EXE_SUFFIX));
+        symlink(&script, &launch).expect("symlink");
+        let plan = plan_provisioning(
+            &[verified(AgentKind::Codex, launch)],
+            &fixture.canonical_root,
+            true,
+            HOST,
+        );
+        assert!(plan.config.routes.is_empty());
+        assert_eq!(
+            plan.skipped
+                .iter()
+                .find(|entry| entry.harness == AgentKind::Codex)
+                .map(|entry| entry.reason),
+            Some(ProvisionSkipReason::NoExecutable)
+        );
+    }
+
+    #[test]
+    fn duplicate_rows_for_one_harness_resolve_last_wins() {
+        let fixture = Fixture::new();
+        let stale = install_executable(&fixture.vendor.join("stale"), "codex");
+        let fresh = install_executable(&fixture.vendor.join("fresh"), "codex");
+        let plan = plan_provisioning(
+            &[
+                verified(AgentKind::Codex, stale),
+                verified(AgentKind::Codex, fresh.clone()),
+            ],
+            &fixture.canonical_root,
+            true,
+            HOST,
+        );
+        assert_eq!(
+            plan.config.routes[0].executable,
+            std::fs::canonicalize(&fresh)
+                .expect("canonical")
+                .to_string_lossy()
+                .into_owned()
+        );
+    }
+
+    #[test]
     fn the_serialized_shape_is_stable_and_carries_no_unknown_fields() {
-        let plan = plan_provisioning(&[verified(AgentKind::Codex)], true, HOST);
+        let fixture = Fixture::new();
+        let executable = fixture.install("codex");
+        let plan = plan_provisioning(
+            &[verified(AgentKind::Codex, executable.clone())],
+            &fixture.canonical_root,
+            true,
+            HOST,
+        );
         let text = serde_json::to_string(&plan.config).expect("config text");
-        let expected = if cfg!(windows) {
-            r#"{"schema_version":1,"routes":[{"harness":"codex","protocol":"codex_app_server","executable":"C:\\tools\\codex.exe","environment_names":["APPDATA","LOCALAPPDATA","USERPROFILE"],"enabled":true,"allow_execution":true}]}"#
+        let executable = serde_json::to_string(
+            &std::fs::canonicalize(&executable)
+                .expect("canonical")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .expect("json path");
+        let environment = if cfg!(windows) {
+            r#"["APPDATA","LOCALAPPDATA","USERPROFILE"]"#
         } else {
-            r#"{"schema_version":1,"routes":[{"harness":"codex","protocol":"codex_app_server","executable":"/opt/tools/codex","environment_names":["HOME"],"enabled":true,"allow_execution":true}]}"#
+            r#"["HOME"]"#
         };
+        let expected = format!(
+            r#"{{"schema_version":1,"routes":[{{"harness":"codex","protocol":"codex_app_server","executable":{executable},"environment_names":{environment},"enabled":true,"allow_execution":true}}]}}"#
+        );
         assert_eq!(text, expected);
     }
 

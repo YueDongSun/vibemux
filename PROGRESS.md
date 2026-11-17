@@ -8457,3 +8457,33 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   daemon, and the macOS WebUI app) share the same resolution; opening an
   app no longer starts in the demo project.
 - GUI/CLI binaries rebuilt and both macOS app bundles reinstalled.
+
+### 2026-11-17 — Harness dispatch provisioning fix: configs the daemon accepts
+
+- `vibemux_harness::dispatch::provision` now canonicalizes each planned
+  launcher and applies the daemon's trust rule before emitting a route: the
+  canonical target must be a regular file outside the project root and a
+  directly launchable image, and the harness name must appear in the launch
+  or canonical file stem. A versioned symlink (`claude -> versions/2.1.326`)
+  is emitted as its launch path because the daemon trusts either stem; a
+  `.js` shim (`codex -> codex.js`) is `no_executable` because the route
+  schema carries no interpreter; a project-relative, missing, moved, or
+  non-regular target is `executable_invalid`. Duplicate rows resolve
+  last-wins.
+- `vibemuxd`'s loader now trusts a route when the canonical target is a
+  regular external direct image and either the configured or canonical stem
+  names the harness, so standard POSIX Claude/Codex symlink installs load;
+  both stems mismatching is still refused.
+- `vibemuxctl dispatch provision --write` writes the planned bytes to its
+  private temporary and runs `load_dispatch_config` on it before the
+  rename; a rejected plan leaves the existing file untouched
+  (`harness_dispatch_provision_config_rejected`). A non-regular target is
+  now `harness_dispatch_provision_unsafe_target` instead of a conflict.
+- Validation: `cargo test --offline -p vibemux_harness dispatch` (91 lib
+  dispatch tests), `-p vibemuxd --all-features --lib harness_dispatch` (25),
+  `-p vibemuxd --all-features --test harness_dispatch` (25),
+  `-p vibemux_cli --all-features` (76 lib + 12 integration); clippy
+  `-D warnings` clean on the three crates; fmt clean. New tests cover a
+  provisioned versioned-alias config loading through the daemon loader, a
+  `.js` shim, project-relative/missing/non-regular targets, duplicate rows,
+  and the write gate.

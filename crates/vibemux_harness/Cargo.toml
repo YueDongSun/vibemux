@@ -21,3 +21,4 @@ vibemux_types = { path = "../vibemux_types" }
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile.workspace = true

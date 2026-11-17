@@ -382,6 +382,7 @@ async fn run_provision(
         .map_err(|error| map_provision_cache_error(&cache_path, error))?;
     let plan = plan_provisioning(
         &provision_rows(&report),
+        paths.project_root(),
         allow_execution,
         ExecutablePolicy::for_host(),
     );
@@ -390,14 +391,16 @@ async fn run_provision(
     bytes.push(b'\n');
     let target = paths.state_dir().join(DISPATCH_CONFIG_FILE_NAME);
     let task_target = target.clone();
+    let canonical_project_root = paths.project_root().to_path_buf();
     let (existing, written) = if write {
         if plan.is_empty() {
             return Err(DaemonCliError::DispatchProvisionEmpty);
         }
-        let outcome =
-            tokio::task::spawn_blocking(move || write_config(&task_target, &bytes, force))
-                .await
-                .map_err(|_| DaemonCliError::DispatchProvisionIo)??;
+        let outcome = tokio::task::spawn_blocking(move || {
+            write_config(&task_target, &bytes, force, &canonical_project_root)
+        })
+        .await
+        .map_err(|_| DaemonCliError::DispatchProvisionIo)??;
         let existing = match outcome {
             ConfigWriteOutcome::Created => ExistingConfig::Absent,
             ConfigWriteOutcome::Replaced => ExistingConfig::Differs,
@@ -476,18 +479,21 @@ fn inspect_config(path: &Path, planned: &[u8]) -> Result<ExistingConfig, DaemonC
     })
 }
 
-/// Writes `bytes` atomically: a private sibling temp file, synced, then
-/// renamed over the target. An identical existing file is left untouched; a
-/// different one needs `force`.
+/// Writes `bytes` atomically: a private sibling temp file, synced, loaded
+/// through the daemon's own loader, then renamed over the target. An
+/// identical existing file is left untouched; a different one needs `force`.
+/// The loader gate refuses a plan the daemon would reject before it can
+/// replace a working config.
 fn write_config(
     path: &Path,
     bytes: &[u8],
     force: bool,
+    canonical_project_root: &Path,
 ) -> Result<ConfigWriteOutcome, DaemonCliError> {
     let existing = inspect_config(path, bytes)?;
     match existing {
         ExistingConfig::Identical => return Ok(ConfigWriteOutcome::Unchanged),
-        ExistingConfig::Unsafe => return Err(DaemonCliError::DispatchProvisionConflict),
+        ExistingConfig::Unsafe => return Err(DaemonCliError::DispatchProvisionUnsafeTarget),
         ExistingConfig::Differs if !force => {
             return Err(DaemonCliError::DispatchProvisionConflict);
         }
@@ -502,6 +508,12 @@ fn write_config(
     if let Err(error) = write_temp(&temp, bytes) {
         let _ = std::fs::remove_file(&temp);
         return Err(error);
+    }
+    // The exact planned bytes are on disk under a private temp name; loading
+    // them here runs the daemon's canonicalization and trust checks.
+    if vibemuxd::harness_dispatch::load_dispatch_config(&temp, canonical_project_root).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(DaemonCliError::DispatchProvisionConfigRejected);
     }
     if std::fs::rename(&temp, path).is_err() {
         let _ = std::fs::remove_file(&temp);
@@ -948,6 +960,7 @@ mod tests {
         use vibemux_harness::ProbeState;
 
         let temp = tempfile::tempdir().expect("temp project");
+        let vendor = tempfile::tempdir().expect("temp vendor");
         let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
         assert_eq!(
             run_provision(&paths, false, true, false, false)
@@ -958,22 +971,14 @@ mod tests {
         );
         let cache_path = paths.probe_cache_path();
         let cache_path_for_write = cache_path.clone();
+        let codex = provision_executable(vendor.path(), "codex");
+        std::fs::write(&codex, b"fixture image").expect("executable");
         let report = probe_report(vec![
-            probed_agent(
-                AgentKind::Codex,
-                ProbeState::Verified,
-                Some(provision_executable(
-                    cache_path.parent().expect("state dir"),
-                    "codex",
-                )),
-            ),
+            probed_agent(AgentKind::Codex, ProbeState::Verified, Some(codex.clone())),
             probed_agent(
                 AgentKind::Claude,
                 ProbeState::Failed,
-                Some(provision_executable(
-                    cache_path.parent().expect("state dir"),
-                    "claude",
-                )),
+                Some(provision_executable(vendor.path(), "claude")),
             ),
         ]);
         tokio::task::spawn_blocking(move || cache::write_cache(&report, &cache_path_for_write))
@@ -993,6 +998,15 @@ mod tests {
         assert_eq!(
             dry["config"]["routes"][0]["protocol"],
             json!("codex_app_server")
+        );
+        assert_eq!(
+            dry["config"]["routes"][0]["executable"],
+            json!(
+                std::fs::canonicalize(&codex)
+                    .expect("canonical")
+                    .to_string_lossy()
+                    .into_owned()
+            )
         );
         let skipped = dry["skipped"].as_array().expect("skips");
         assert!(
@@ -1023,6 +1037,13 @@ mod tests {
             vibemux_harness::dispatch::DispatchConfig::parse(&bytes, ExecutablePolicy::for_host())
                 .expect("daemon accepts the written config");
         assert_eq!(parsed.config.routes.len(), 1);
+        let loaded =
+            vibemuxd::harness_dispatch::load_dispatch_config(&config_path, paths.project_root())
+                .expect("the daemon loader accepts the written config");
+        assert_eq!(
+            loaded.executable(AgentKind::Codex).expect("codex"),
+            std::fs::canonicalize(&codex).expect("canonical")
+        );
 
         let again = run_provision(&paths, true, true, false, true)
             .await
@@ -1041,6 +1062,72 @@ mod tests {
             .await
             .expect("forced write");
         assert_eq!(replaced["outcome"], json!("replaced"));
+    }
+
+    #[tokio::test]
+    async fn a_non_regular_target_has_its_own_provisioning_code() {
+        use vibemux_harness::ProbeState;
+
+        let temp = tempfile::tempdir().expect("temp project");
+        let vendor = tempfile::tempdir().expect("temp vendor");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let cache_path = paths.probe_cache_path();
+        let cache_path_for_write = cache_path.clone();
+        let codex = provision_executable(vendor.path(), "codex");
+        std::fs::write(&codex, b"fixture image").expect("executable");
+        let report = probe_report(vec![probed_agent(
+            AgentKind::Codex,
+            ProbeState::Verified,
+            Some(codex),
+        )]);
+        tokio::task::spawn_blocking(move || cache::write_cache(&report, &cache_path_for_write))
+            .await
+            .expect("join")
+            .expect("write cache");
+        let config_path = paths.state_dir().join(DISPATCH_CONFIG_FILE_NAME);
+        std::fs::create_dir(&config_path).expect("directory target");
+        assert_eq!(
+            run_provision(&paths, true, true, false, true)
+                .await
+                .err()
+                .map(|error| error.code().to_string()),
+            Some("harness_dispatch_provision_unsafe_target".to_string())
+        );
+    }
+
+    #[test]
+    fn a_plan_the_daemon_would_reject_never_replaces_the_config() {
+        let temp = tempfile::tempdir().expect("temp");
+        let project = temp.path().join("project");
+        let state = project.join(".vibemux");
+        std::fs::create_dir_all(&state).expect("state dir");
+        let root = std::fs::canonicalize(&project).expect("canonical root");
+        let target = state.join(DISPATCH_CONFIG_FILE_NAME);
+        let bytes = serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "routes": [{
+                "harness": "codex",
+                "protocol": "codex_app_server",
+                "executable": project.join("missing-executable"),
+                "enabled": true,
+                "allow_execution": true
+            }]
+        }))
+        .expect("config bytes");
+        assert_eq!(
+            write_config(&target, &bytes, true, &root)
+                .err()
+                .map(|error| error.code().to_string()),
+            Some("harness_dispatch_provision_config_rejected".to_string())
+        );
+        assert!(!target.exists());
+        let temporaries: Vec<_> = std::fs::read_dir(&state)
+            .expect("state listing")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".harness_dispatch.json.tmp-"))
+            .collect();
+        assert!(temporaries.is_empty(), "temporary left behind");
     }
 
     #[tokio::test]
