@@ -67,12 +67,32 @@ pub fn display_name(path: &Path) -> String {
 }
 
 /// The folder the GUI observes at start: the saved active project while it
-/// still exists, otherwise `fallback` (the directory the GUI started in).
+/// still exists, then the operator's default workspace (`VIBEMUX_WORKSPACE`,
+/// then `~/Documents/Codex`), then `fallback` (the directory the GUI
+/// started in).
 #[must_use]
 pub fn startup_folder(active: Option<&Path>, fallback: Option<PathBuf>) -> Option<PathBuf> {
+    let env_workspace = std::env::var_os("VIBEMUX_WORKSPACE").map(PathBuf::from);
+    let home_workspace = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join("Documents").join("Codex"));
+    startup_folder_with(active, env_workspace, home_workspace, fallback)
+}
+
+/// The ordering rule, pure for tests: saved project, explicit default,
+/// conventional workspace, then the launch directory.
+#[must_use]
+pub fn startup_folder_with(
+    active: Option<&Path>,
+    env_workspace: Option<PathBuf>,
+    home_workspace: Option<PathBuf>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
     active
         .filter(|folder| folder.is_dir())
         .map(Path::to_path_buf)
+        .or(env_workspace.filter(|folder| folder.is_dir()))
+        .or(home_workspace.filter(|folder| folder.is_dir()))
         .or(fallback)
 }
 
@@ -156,6 +176,46 @@ mod tests {
     }
 
     #[test]
+    fn the_default_workspace_orders_saved_env_conventional_and_fallback() {
+        let saved = tempfile::tempdir().expect("saved");
+        let env = tempfile::tempdir().expect("env");
+        let conventional = tempfile::tempdir().expect("conventional");
+        let missing = saved.path().join("missing");
+        let fallback = Some(PathBuf::from("fallback"));
+        assert_eq!(
+            startup_folder_with(
+                Some(saved.path()),
+                Some(env.path().to_path_buf()),
+                Some(conventional.path().to_path_buf()),
+                fallback.clone()
+            )
+            .as_deref(),
+            Some(saved.path())
+        );
+        assert_eq!(
+            startup_folder_with(
+                Some(&missing),
+                Some(env.path().to_path_buf()),
+                Some(conventional.path().to_path_buf()),
+                fallback.clone()
+            )
+            .as_deref(),
+            Some(env.path())
+        );
+        assert_eq!(
+            startup_folder_with(
+                None,
+                Some(missing.clone()),
+                Some(conventional.path().to_path_buf()),
+                fallback.clone()
+            )
+            .as_deref(),
+            Some(conventional.path())
+        );
+        assert_eq!(startup_folder_with(None, None, None, fallback.clone()), fallback);
+    }
+
+    #[test]
     fn the_startup_folder_prefers_an_existing_saved_project() {
         let saved = tempfile::tempdir().expect("saved folder");
         let fallback = PathBuf::from("fallback");
@@ -164,12 +224,18 @@ mod tests {
             Some(saved.path())
         );
         let gone = saved.path().join("gone");
+        // Without default workspaces, a missing saved folder lands on the
+        // launch fallback; `startup_folder` itself also consults the real
+        // environment, which tests must not depend on.
         assert_eq!(
-            startup_folder(Some(&gone), Some(fallback.clone())),
+            startup_folder_with(Some(&gone), None, None, Some(fallback.clone())),
             Some(fallback.clone())
         );
-        assert_eq!(startup_folder(None, Some(fallback.clone())), Some(fallback));
-        assert_eq!(startup_folder(None, None), None);
+        assert_eq!(
+            startup_folder_with(None, None, None, Some(fallback.clone())),
+            Some(fallback)
+        );
+        assert_eq!(startup_folder_with(None, None, None, None), None);
     }
 
     #[test]
