@@ -3,12 +3,15 @@ import test from 'node:test';
 import type { console_response } from '../src/api_client.ts';
 import {
   agent_state_for,
+  agent_state_label,
   detected_harnesses,
   flow_layers,
   needs_attention,
   office_desks,
+  office_hit_at,
   project_collaboration,
   type collaboration_task_input,
+  type office_hit_region,
 } from '../src/lib/collaboration.ts';
 
 function task(overrides: Partial<collaboration_task_input> = {}): collaboration_task_input {
@@ -294,4 +297,49 @@ test('office desks follow route rows, append unknown harnesses, and seat unassig
   ]);
   assert.equal(desks[1].label, 'Unassigned');
   assert.equal(desks[1].agents[0].task_id, 'task_c');
+});
+
+test('blank and whitespace harnesses seat under Unassigned', () => {
+  const projection = project_collaboration([
+    task({
+      task_id: 'task_blank',
+      runs: [
+        run({ run_id: 'run_blank', harness: '' }),
+        run({ run_id: 'run_space', harness: '   ' }),
+        run({ run_id: 'run_padded', harness: ' codex ' }),
+      ],
+    }),
+  ]);
+  const desks = office_desks(projection.agents, ['  ', 'codex']);
+  assert.deepEqual(desks.map((desk) => desk.harness), ['codex', 'unassigned']);
+  assert.deepEqual(desks[1].agents.map((agent) => agent.run_id), ['run_blank', 'run_space']);
+  assert.equal(desks[1].label, 'Unassigned');
+  // A padded name is trimmed onto its existing desk instead of a second one.
+  assert.deepEqual(desks[0].agents.map((agent) => agent.run_id), ['run_padded']);
+});
+
+test('office hit testing prefers the character drawn in front of its desk', () => {
+  const hits: office_hit_region[] = [
+    { x: 0, y: 0, width: 150, height: 112, task_id: 'task_desk' },
+    { x: 16, y: 30, width: 30, height: 48, task_id: 'task_character' },
+  ];
+  assert.equal(office_hit_at(hits, 30, 50)?.task_id, 'task_character');
+  // Away from a character the desk still opens its first agent.
+  assert.equal(office_hit_at(hits, 120, 100)?.task_id, 'task_desk');
+  assert.equal(office_hit_at(hits, 300, 300), null);
+});
+
+test('the office table keeps the daemon state text, including stale', () => {
+  const projection = project_collaboration([
+    task({
+      task_id: 'task_stale',
+      runs: [run({ run_id: 'run_stale', state: 'stale' })],
+    }),
+  ]);
+  const agent = projection.agents[0];
+  assert.equal(agent.state, 'blocked');
+  assert.equal(agent.source_state, 'stale');
+  assert.equal(agent_state_label(agent), 'stale');
+  // The derived pose is the fallback when no source text is available.
+  assert.equal(agent_state_label({ state: 'running', source_state: '  ' }), 'running');
 });

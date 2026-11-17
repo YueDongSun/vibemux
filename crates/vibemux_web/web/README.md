@@ -3,10 +3,11 @@
 This folder contains the static Svelte 5 PWA served by `vibemux_web`. It polls
 the versioned read-only API and shows six views: Tasks (task and run state with
 the latest events and artifacts), Collaborate (a read-only Flow graph and a
-procedural Canvas 2D Office of the same task, run, harness, and worktree
-records), Daemon, Sessions, and Decisions (the ADR 042 console's daemon views),
-and Device (browser push and the server's one-time enrollment QR). Keys `1` to
-`6` switch views and `R` refreshes.
+procedural Canvas 2D Office of the same task, run, and harness records; its
+worktree nodes and `isolated_in` edges appear only when a run payload carries
+`worktree_id`, which the current API omits), Daemon, Sessions, and Decisions
+(the ADR 042 console's daemon views), and Device (browser push and the server's
+one-time enrollment QR). Keys `1` to `6` switch views and `R` refreshes.
 
 The Collaborate projection is content-free: it contains only ids, harness names,
 statuses, and sequence numbers, never a task title, a prompt, an event body, an

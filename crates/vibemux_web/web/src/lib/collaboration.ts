@@ -183,6 +183,16 @@ export function needs_attention(state: agent_state): boolean {
   return state === 'blocked' || state === 'failed';
 }
 
+/**
+ * The state text the office table shows: the daemon's own status string when it
+ * has one, otherwise the derived character pose. Pill styling keeps using the
+ * derived pose through `data-agent-state`, so a `stale` run reads `stale` while
+ * still being drawn as blocked.
+ */
+export function agent_state_label(agent: Pick<collaboration_agent, 'state' | 'source_state'>): string {
+  return agent.source_state?.trim() || agent.state;
+}
+
 /** Harness names from the console route rows, deduplicated in order. */
 export function detected_harnesses(console_data: console_response | null | undefined): string[] {
   const section = console_data?.routes;
@@ -388,8 +398,49 @@ export type office_desk = {
   agents: collaboration_agent[];
 };
 
+/**
+ * A clickable office region. Regions are pushed in draw order, back to front,
+ * and `task_id` is the task a click opens.
+ */
+export type office_hit_region = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  task_id: string;
+};
+
+/**
+ * Resolve a point to the last drawn region containing it. A desk is pushed
+ * before the characters sitting at it, so a click on a character opens that
+ * character's task rather than the desk's first agent.
+ */
+export function office_hit_at(
+  hits: readonly office_hit_region[],
+  x: number,
+  y: number,
+): office_hit_region | null {
+  for (let index = hits.length - 1; index >= 0; index -= 1) {
+    const candidate = hits[index];
+    if (
+      x >= candidate.x &&
+      x <= candidate.x + candidate.width &&
+      y >= candidate.y &&
+      y <= candidate.y + candidate.height
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function desk_label(harness: string): string {
   return harness === 'unassigned' ? 'Unassigned' : harness;
+}
+
+/** A normalized desk key: the trimmed harness name, or `unassigned` when blank. */
+function desk_key(harness: string | null | undefined): string {
+  return harness?.trim() || 'unassigned';
 }
 
 /**
@@ -417,6 +468,6 @@ export function office_desks(
   };
 
   for (const name of harness_names) add_desk(name);
-  for (const agent of agents) add_desk(agent.harness ?? 'unassigned')?.agents.push(agent);
+  for (const agent of agents) add_desk(desk_key(agent.harness))?.agents.push(agent);
   return desks;
 }

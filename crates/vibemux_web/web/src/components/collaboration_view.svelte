@@ -3,14 +3,17 @@
   import type { console_response, freshness, task_activity, task_status } from '../api_client';
   import { short_id } from '../console_policy';
   import {
+    agent_state_label,
     detected_harnesses,
     flow_layers,
     office_desks,
+    office_hit_at,
     project_collaboration,
     type agent_state,
     type collaboration_edge_kind,
     type collaboration_node,
     type office_desk,
+    type office_hit_region,
   } from '../lib/collaboration';
   import Task_detail from './task_detail.svelte';
 
@@ -153,7 +156,7 @@
   }
 
   // ---- Office drawing ------------------------------------------------------
-  type office_hit = { x: number; y: number; width: number; height: number; task_id: string };
+  type office_hit = office_hit_region;
 
   const DESK_WIDTH = 150;
   const DESK_HEIGHT = 112;
@@ -344,6 +347,12 @@
     const label = desk.label.length > 20 ? `${desk.label.slice(0, 19)}…` : desk.label;
     ctx.fillText(label, x + DESK_WIDTH / 2, y + 101);
 
+    // The desk region is pushed before its characters: office_hit_at scans
+    // back to front, so a character click wins over the desk behind it.
+    if (desk.agents[0]) {
+      office_hits.push({ x: x, y: y, width: DESK_WIDTH, height: DESK_HEIGHT, task_id: desk.agents[0].task_id });
+    }
+
     const seats: point[] = [
       { x: x + 16, y: y + 44 },
       { x: x + DESK_WIDTH - 34, y: y + 44 },
@@ -358,10 +367,6 @@
       ctx.font = '600 10px system-ui, sans-serif';
       ctx.textAlign = 'right';
       ctx.fillText(`+${desk.agents.length - seats.length}`, x + DESK_WIDTH - 8, y + 76);
-    }
-
-    if (desk.agents[0]) {
-      office_hits.push({ x: x, y: y, width: DESK_WIDTH, height: DESK_HEIGHT, task_id: desk.agents[0].task_id });
     }
   }
 
@@ -429,9 +434,7 @@
     if (rect.width === 0 || rect.height === 0) return;
     const x = (event.clientX - rect.left) * (office_logical_size.width / rect.width);
     const y = (event.clientY - rect.top) * (office_logical_size.height / rect.height);
-    const hit = [...office_hits].reverse().find((candidate) =>
-      x >= candidate.x && x <= candidate.x + candidate.width && y >= candidate.y && y <= candidate.y + candidate.height,
-    );
+    const hit = office_hit_at(office_hits, x, y);
     if (hit) on_select(hit.task_id);
   }
 
@@ -693,10 +696,10 @@
               {#each projection.agents as agent (agent.id)}
                 <tr class:attention_row={agent.attention}>
                   <td class="mono">{agent.label}</td>
-                  <td>{agent.harness ?? 'Unassigned'}</td>
+                  <td>{agent.harness?.trim() || 'Unassigned'}</td>
                   <td class="mono">{short_id(agent.task_id)}</td>
                   <td class="mono">{agent.run_id ? short_id(agent.run_id) : '—'}</td>
-                  <td><span class="agent_state_pill" data-agent-state={agent.state}>{agent.state}</span></td>
+                  <td><span class="agent_state_pill" data-agent-state={agent.state}>{agent_state_label(agent)}</span></td>
                   <td>{agent.attention ? 'Yes' : '—'}</td>
                   <td><button class="small_button" type="button" onclick={() => on_select(agent.task_id)}>Open task</button></td>
                 </tr>

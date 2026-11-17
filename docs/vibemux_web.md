@@ -11,7 +11,7 @@ The board has six views, switched with tabs or the number keys `1` to `6`
 | Key | View | Shows |
 |---|---|---|
 | `1` | Tasks | task list; the selected task's runs, latest events, and artifacts |
-| `2` | Collaborate | read-only Flow graph and procedural Office of the same task, run, harness, and worktree records |
+| `2` | Collaborate | read-only Flow graph and procedural Office of the same task, run, and harness records; worktree nodes and `isolated_in` edges only when a run payload carries `worktree_id` (the current API omits it) |
 | `3` | Daemon | health and writer queue, plugins, harness dispatch routes |
 | `4` | Sessions | DSH session status, dual-track workflow slots |
 | `5` | Decisions | recorded decision-routing decisions |
@@ -21,8 +21,10 @@ Views 3 to 5 are the daemon views of the terminal console (ADR 042) with the
 same content-free fields. The Collaborate projection contains only ids, harness
 names, statuses, and sequence numbers: it never carries a task title, prompt,
 event body, artifact digest, or filesystem path, and selection only opens the
-existing task detail. Every view is read-only: none can start a probe,
-dispatch, DSH session, workflow, or decision.
+existing task detail. Worktree nodes and the `isolated_in` edge stay dormant
+until a run payload supplies `worktree_id`; the current API does not send that
+field. Every view is read-only: none can start a probe, dispatch, DSH session,
+workflow, or decision.
 
 The implementation is pre-alpha. Local automated checks and live-device,
 tailnet, and release qualification are separate gates; see `PROGRESS.md`.
@@ -271,7 +273,8 @@ Stored VAPID keys, the browser-facing public key, and the encrypted payload
 are unchanged; the VAPID token carries exactly `aud`, `exp`, and `sub`.
 
 Version 0.2.0 adds the console sections route, task events and artifacts on
-the task detail route, the five-view board, and the opt-in local page mode.
+the task detail route, the opt-in local page mode, and the board (five views
+when 0.2.0 shipped; six since the 2026-11-17 Collaborate view).
 It needs the `vibemux_harness` workspace crate for the dispatch route type and
 adds no third-party dependency.
 
