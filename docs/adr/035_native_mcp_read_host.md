@@ -1,6 +1,6 @@
 # ADR 035: Native MCP read host
 
-Status: Bounded pre-alpha implementation with native Windows focused evidence;
+Status: amended 2026-11-17 — the optional metadata grant defaults to granted (`--deny_metadata_read` opts out); local read-only use is open-and-use. Original status: Bounded pre-alpha implementation with native Windows focused evidence;
 whole-workspace qualification and operator acceptance pending. Amended
 2026-11-16 by [ADR 075](075_official_rust_mcp_sdk.md) for the protocol
 implementation basis only (proposed; read-only boundary, grants, tools,

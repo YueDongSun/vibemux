@@ -78,12 +78,13 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
             .map_err(|source| Failure::with_source("workspace_unavailable", source))?,
     };
     let (git, config_keys) = Git::open(&root).await?;
-    let head = git
-        .required(&["rev-parse", "--verify", "HEAD"])
-        .await?
-        .trim()
-        .to_string();
-    if !valid_commit(&head) {
+    // A repository without a first commit is a usable empty project: HEAD
+    // is unborn, not a git failure.
+    let head = match git.query(&["rev-parse", "--verify", "HEAD"]).await? {
+        output if output.success => output.text.trim().to_string(),
+        _ => String::new(),
+    };
+    if !head.is_empty() && !valid_commit(&head) {
         return Err(Failure::new("workspace_invalid_git_output"));
     }
     let current = git
@@ -101,28 +102,36 @@ pub async fn inspect(project_root: Option<PathBuf>) -> Result<Report, Failure> {
             break;
         }
     }
-    let comparison = format!("{baseline}...HEAD");
-    let divergence = git
-        .required(&["rev-list", "--left-right", "--count", &comparison])
-        .await?;
-    let counts = divergence
-        .split_whitespace()
-        .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| Failure::with_source("workspace_invalid_git_output", source))?;
+    let counts = if head.is_empty() {
+        vec![0, 0]
+    } else {
+        let comparison = format!("{baseline}...HEAD");
+        let divergence = git
+            .required(&["rev-list", "--left-right", "--count", &comparison])
+            .await?;
+        divergence
+            .split_whitespace()
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| Failure::with_source("workspace_invalid_git_output", source))?
+    };
     if counts.len() != 2 {
         return Err(Failure::new("workspace_invalid_git_output"));
     }
-    let merged_option = format!("--merged={baseline}");
-    let merged = git
-        .required(&[
-            "for-each-ref",
-            &merged_option,
-            "--format=%(refname:short)",
-            "refs/heads",
-        ])
-        .await?;
-    let integrated = merged.lines().collect::<BTreeSet<_>>();
+    let integrated = if head.is_empty() {
+        BTreeSet::new()
+    } else {
+        let merged_option = format!("--merged={baseline}");
+        let merged = git
+            .required(&[
+                "for-each-ref",
+                &merged_option,
+                "--format=%(refname:short)",
+                "refs/heads",
+            ])
+            .await?;
+        merged.lines().map(str::to_string).collect::<BTreeSet<_>>()
+    };
     let refs = git
         .required(&[
             "for-each-ref",

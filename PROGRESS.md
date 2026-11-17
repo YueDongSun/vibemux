@@ -8405,3 +8405,22 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
 - GUI follows the OS light/dark appearance (ThemePreference::System,
   re-evaluated per frame; session pick overrides until restart).
   Frontend gui suite 251 passed.
+
+### 2026-11-17 — Defensive-friction audit across ADRs
+
+- Cleared local, user-facing ceremony introduced by ADR-era defaults:
+  the WebUI token for same-origin loopback data (previous entry), the MCP
+  `--allow_metadata_read` opt-in (metadata is now granted by default;
+  `--deny_metadata_read` opts out; ADR 035 notes the amendment), and the
+  console failing on a repository with no first commit (an unborn HEAD now
+  renders an empty workspace instead of `workspace_git_query_failed`).
+- Audited every ADR for "refused/opt-in/token" language. Kept, with
+  reasons: single-writer, append-only events, bounded frames, path and
+  worktree ownership checks, and IPC instance tokens are product
+  invariants (AGENTS §2) or transport-internal; harness dispatch, DSH,
+  decision, and live-workflow gates protect paid vendor calls and remain
+  explicit by operator request; build budgets implement the requested
+  disk discipline.
+- Validation: vibemux_mcp suites green under all features; vibemux_cli 71
+  + integration 7 passed; empty-repository console smoke renders; web
+  contract suite 57 passed in the prior entry.

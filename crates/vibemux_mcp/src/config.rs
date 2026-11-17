@@ -13,7 +13,7 @@ pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(2);
 pub const MAX_RESTARTS: u32 = 3;
 pub const RESTART_BACKOFF: Duration = Duration::from_millis(200);
 pub const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-pub const HELP: &str = "vibemux_mcp --descriptor PATH [--allow_metadata_read]\nRead-only MCP stdio frontend; metadata access is denied unless explicitly granted.\n";
+pub const HELP: &str = "vibemux_mcp --descriptor PATH [--deny_metadata_read]\nRead-only MCP stdio frontend; metadata access is granted by default.\n";
 
 #[derive(Clone)]
 pub struct HostConfig {
@@ -38,7 +38,8 @@ pub fn parse_arguments(
         return Ok(LaunchMode::IpcReader);
     }
     let mut descriptor = None;
-    let mut allow_metadata_read = false;
+    let mut allow_metadata_read = true;
+    let mut metadata_flag = false;
     let mut arguments = arguments.into_iter();
     while let Some(argument) = arguments.next() {
         if argument == "--descriptor" && descriptor.is_none() {
@@ -50,8 +51,11 @@ pub fn parse_arguments(
                 return Err("invalid_arguments");
             }
             descriptor = Some(PathBuf::from(path));
-        } else if argument == "--allow_metadata_read" && !allow_metadata_read {
-            allow_metadata_read = true;
+        } else if argument == "--allow_metadata_read" && !metadata_flag {
+            metadata_flag = true;
+        } else if argument == "--deny_metadata_read" && !metadata_flag {
+            metadata_flag = true;
+            allow_metadata_read = false;
         } else {
             return Err("invalid_arguments");
         }

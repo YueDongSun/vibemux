@@ -57,7 +57,7 @@ For MCP clients, run `vibemux_mcp` from the repository root and point it at an
 existing daemon descriptor:
 
 ```text
-cargo run --locked -p vibemux_mcp --bin vibemux_mcp -- --descriptor PATH --allow_metadata_read
+cargo run --locked -p vibemux_mcp --bin vibemux_mcp -- --descriptor PATH
 ```
 
 The host provides `host_status`, `health`, `frontend_tasks`, `frontend_task` and

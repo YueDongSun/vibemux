@@ -9,14 +9,15 @@ to aggregate its separate producers.
 From the repository root, build with Rust 1.92 and launch over stdio:
 
 ```text
-cargo run --locked -p vibemux_mcp --bin vibemux_mcp -- --descriptor PATH --allow_metadata_read
+cargo run --locked -p vibemux_mcp --bin vibemux_mcp -- --descriptor PATH
 ```
 
 `PATH` explicitly names the existing daemon control descriptor. No environment
 variable selects a descriptor, executable or permission. Missing/duplicate flags,
 unknown flags and missing values fail with a fixed error code and exit 2.
 Descriptor paths are bounded to 4096 UTF-8 bytes.
-`--help` prints usage without descriptor access. Omitting `--allow_metadata_read`
+`--help` prints usage without descriptor access. Metadata access is granted by
+`--deny_metadata_read`
 keeps the host usable for initialization and `host_status`, with metadata denied.
 
 MCP initialization may further reduce the launch grant:
