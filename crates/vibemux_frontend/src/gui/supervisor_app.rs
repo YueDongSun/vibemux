@@ -437,6 +437,22 @@ impl SupervisorApp {
         selected
     }
 
+    /// Route a Collaborate node click into the existing task-detail selection.
+    /// The graph is a second way to reach the same read; it never creates state.
+    fn apply_collaboration_selection(&mut self, selection: collaboration::CollaborationActions) {
+        let Some(task_id) = selection.selected_task_id else {
+            return;
+        };
+        if !self.select_task(&task_id) {
+            return;
+        }
+        if let Some(run_id) = selection.selected_run_id
+            && let Ok(mut state) = self.ui_state.lock()
+        {
+            state.details_selection_mut().selected_run_id = Some(run_id);
+        }
+    }
+
     /// Open one native task viewport, reusing the stable task viewport ID.
     pub fn open_task_window(&mut self, task_id: &str) -> bool {
         let mut opened = false;
@@ -1287,9 +1303,10 @@ impl SupervisorApp {
                         let view = collaboration::CollaborationView {
                             snapshot,
                             selected_task_id: selected_task_id.as_deref(),
+                            has_more_runs: snapshot.tasks.iter().any(|task| task.has_more_runs),
                         };
                         collaboration_selection =
-                            collaboration::render_page(ui, &colors, &view).selected_task_id;
+                            Some(collaboration::render_page(ui, &colors, &view));
                     }
                     MainPage::Console => {
                         let (section, selected_harness) = self
@@ -1318,8 +1335,8 @@ impl SupervisorApp {
             if let Some(command) = daemon_click {
                 self.request_daemon(command);
             }
-            if let Some(task_id) = collaboration_selection {
-                self.select_task(&task_id);
+            if let Some(selection) = collaboration_selection {
+                self.apply_collaboration_selection(selection);
             }
             self.apply_ask_actions(ask_actions);
             self.route_pending_ask();
@@ -1944,6 +1961,24 @@ mod tests {
         (context, output)
     }
 
+    /// Render another frame on an existing context, preserving per-visit state
+    /// such as the Collaboration view mode.
+    fn render_again(
+        context: &egui::Context,
+        app: &mut SupervisorApp,
+        width: f32,
+        height: f32,
+    ) -> egui::FullOutput {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, height),
+            )),
+            ..Default::default()
+        };
+        context.run_ui(raw, |context| app.render_frame(context))
+    }
+
     #[test]
     fn opening_a_folder_remembers_it_and_asks_the_live_adapter_to_switch() {
         let directory = tempfile::tempdir().expect("folder");
@@ -2407,7 +2442,7 @@ mod tests {
             state.show_collaborate();
             assert_eq!(state.page(), MainPage::Collaborate);
         }
-        let (_, output) = render_at(&mut app, 960.0, 600.0);
+        let (context, output) = render_at(&mut app, 960.0, 600.0);
         let texts = shape_texts(&output);
         assert!(
             texts.iter().any(|text| text == "Collaboration flow"),
@@ -2425,6 +2460,30 @@ mod tests {
             MainPage::Collaborate
         );
 
+        // The list fallback is a real mode, not just a header label: switch it
+        // and assert a row, that row's run line, and its needs-you badge.
+        edit_snapshot(&mut app, |snapshot| {
+            snapshot.tasks[0].runs[0].state = "failed".to_string();
+            snapshot.tasks[0].has_more_runs = true;
+        });
+        collaboration::set_view_mode(&context, collaboration::ViewMode::List);
+        let output = render_again(&context, &mut app, 960.0, 600.0);
+        let texts = shape_texts(&output);
+        assert!(texts.iter().any(|text| text == "First task"), "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "Claude · implementer · Failed"),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|text| text == "Needs you"), "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "Showing the 12 most recent Runs."),
+            "{texts:?}"
+        );
+
         // An empty workspace shows the empty state, not a blank canvas.
         app.set_supervisor_snapshot(SupervisorSnapshot {
             tasks: Vec::new(),
@@ -2437,6 +2496,39 @@ mod tests {
                 .any(|text| text == "No tasks yet"),
             "{:?}",
             shape_texts(&output)
+        );
+    }
+
+    #[test]
+    fn collaboration_run_selection_routes_into_the_existing_detail_selection() {
+        let mut app = test_app();
+        edit_snapshot(&mut app, |snapshot| {
+            snapshot.tasks[0].runs.push(RunView {
+                run_id: "run_2".to_string(),
+                harness: "Codex".to_string(),
+                role: "reviewer".to_string(),
+                state: "failed".to_string(),
+                ..RunView::default()
+            });
+        });
+        app.apply_collaboration_selection(collaboration::CollaborationActions {
+            selected_task_id: Some("task_1".to_string()),
+            selected_run_id: Some("run_2".to_string()),
+        });
+        {
+            let state = app.ui_state.lock().expect("ui state");
+            assert!(state.details_open());
+            assert_eq!(state.selected_task_id(), Some("task_1"));
+            assert_eq!(
+                state.details_selection().selected_run_id.as_deref(),
+                Some("run_2")
+            );
+        }
+        assert!(
+            app.take_supervisor_actions()
+                .iter()
+                .any(|action| matches!(action, SupervisorAction::LoadTask { task_id } if task_id == "task_1")),
+            "the selected task is still read through the existing path"
         );
     }
 

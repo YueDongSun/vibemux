@@ -9,7 +9,7 @@
 //! ```
 //!
 //! A task fans out to its runs, each run names the harness that executed it,
-//! and a run that needs the operator (blocked, failed, needs input, stale)
+//! and a run that needs the operator (a blocked task, a failed or stale run)
 //! gets a status node. Nothing here writes canonical state: selecting a node
 //! only routes through the existing task-detail selection, which enqueues the
 //! same read the task list uses.
@@ -189,8 +189,10 @@ impl GraphLayout {
     }
 }
 
-/// States that hand work back to the operator. `attention` and `needs_input`
-/// are accepted alongside the canonical tokens the store emits.
+/// States that hand work back to the operator. The store emits `blocked` for a
+/// task and `failed`/`stale` for a run. `input_required`, `needs_input`, and
+/// `attention` are tolerated extras from older or vendor-adjacent sources, not
+/// store tokens; they stay accepted so no state silently loses its badge.
 #[must_use]
 pub fn needs_you(state: &str) -> bool {
     matches!(
@@ -324,16 +326,21 @@ pub fn layout(snapshot: &SupervisorSnapshot, options: LayoutOptions) -> GraphLay
 pub struct CollaborationView<'a> {
     pub snapshot: &'a SupervisorSnapshot,
     pub selected_task_id: Option<&'a str>,
+    /// Any listed task's detail was truncated at the client's run bound, so the
+    /// page shows how many Runs it can display.
+    pub has_more_runs: bool,
 }
 
 /// What the page asks the shell to do. Only existing task-detail selection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CollaborationActions {
     pub selected_task_id: Option<String>,
+    /// The Run whose node was clicked; `None` for a task node.
+    pub selected_run_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum ViewMode {
+pub(crate) enum ViewMode {
     #[default]
     Graph,
     List,
@@ -341,6 +348,7 @@ enum ViewMode {
 
 const VIEW_MODE_ID: &str = "collaboration_view_mode";
 const CANVAS_STATE_ID: &str = "collaboration_canvas_state";
+const VISIT_FRAME_ID: &str = "collaboration_last_graph_frame";
 const MIN_ZOOM: f32 = 0.35;
 const MAX_ZOOM: f32 = 2.5;
 const NODE_RADIUS: u8 = design::BUTTON_RADIUS;
@@ -371,22 +379,20 @@ pub fn render_page(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) -> Col
         render_empty_state(ui, colors);
         return actions;
     }
-    match view_mode(ui) {
+    match view_mode(ui.ctx()) {
         ViewMode::Graph => render_graph(ui, colors, view, &mut actions),
         ViewMode::List => render_list(ui, colors, view, &mut actions),
     }
     actions
 }
 
-fn view_mode(ui: &Ui) -> ViewMode {
-    ui.ctx()
-        .data(|data| data.get_temp::<ViewMode>(egui::Id::new(VIEW_MODE_ID)))
+fn view_mode(ctx: &egui::Context) -> ViewMode {
+    ctx.data(|data| data.get_temp::<ViewMode>(egui::Id::new(VIEW_MODE_ID)))
         .unwrap_or_default()
 }
 
-fn set_view_mode(ui: &Ui, mode: ViewMode) {
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(egui::Id::new(VIEW_MODE_ID), mode));
+pub(crate) fn set_view_mode(ctx: &egui::Context, mode: ViewMode) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(VIEW_MODE_ID), mode));
 }
 
 fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
@@ -421,7 +427,7 @@ fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Added right-to-left: List then Graph reads Graph | List.
             for (mode, label) in [(ViewMode::List, "List"), (ViewMode::Graph, "Graph")] {
-                let selected = view_mode(ui) == mode;
+                let selected = view_mode(ui.ctx()) == mode;
                 if ui
                     .selectable_label(
                         selected,
@@ -433,7 +439,7 @@ fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
                     )
                     .clicked()
                 {
-                    set_view_mode(ui, mode);
+                    set_view_mode(ui.ctx(), mode);
                 }
             }
             ui.label(RichText::new("View").size(12.0).color(colors.muted));
@@ -444,6 +450,13 @@ fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
             .size(12.0)
             .color(colors.muted),
     );
+    if view.has_more_runs {
+        ui.label(
+            RichText::new("Showing the 12 most recent Runs.")
+                .size(12.0)
+                .color(colors.faint),
+        );
+    }
 }
 
 fn render_empty_state(ui: &mut Ui, colors: &C) {
@@ -476,7 +489,8 @@ fn render_graph(
     let layout = layout(view.snapshot, LayoutOptions::default());
     let available = ui.available_size();
     let (canvas_rect, response) = ui.allocate_exact_size(available, Sense::click_and_drag());
-    let transform = update_transform(ui, &response, canvas_rect);
+    let fit_to_view = begin_visit(ui);
+    let transform = update_transform(ui, &response, canvas_rect, &layout, fit_to_view);
     let origin = canvas_rect.min;
     let painter = ui.painter_at(canvas_rect);
 
@@ -522,8 +536,9 @@ fn render_graph(
         let node_response = ui
             .interact(rect, id, Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let accessible = node_accessible_label(node);
         node_response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &node.label));
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &accessible));
         let selected = node
             .task_id
             .as_deref()
@@ -536,22 +551,61 @@ fn render_graph(
             rect,
             selected,
             node_response.hovered(),
+            node_response.has_focus(),
             transform.zoom,
         );
+        // `egui` turns Enter/Space on a focused clickable widget into a click.
         if node_response.clicked() {
-            clicked = node.task_id.clone();
+            clicked = Some((node.task_id.clone(), node.run_id.clone()));
         }
     }
-    if let Some(task_id) = clicked {
-        actions.selected_task_id = Some(task_id);
+    if let Some((task_id, run_id)) = clicked {
+        actions.selected_task_id = task_id;
+        actions.selected_run_id = run_id;
     }
 }
 
-fn update_transform(ui: &Ui, response: &Response, canvas_rect: Rect) -> CanvasTransform {
+/// True on the first frame the graph is drawn after the page was not visible.
+/// egui temp data outlives navigation, so a frame gap means a new visit and
+/// the transform is refitted.
+fn begin_visit(ui: &Ui) -> bool {
+    let frame = ui.ctx().cumulative_frame_nr();
+    let id = egui::Id::new(VISIT_FRAME_ID);
+    let previous = ui.ctx().data(|data| data.get_temp::<u64>(id));
+    ui.ctx().data_mut(|data| data.insert_temp(id, frame));
+    previous.is_none_or(|previous| frame > previous.saturating_add(1))
+}
+
+/// Fit the computed layout into the canvas: never magnify past 1:1, clamp to
+/// the zoom range, centre horizontally, and start at the top so a tall graph
+/// is reached by vertical dragging.
+fn fit_transform(layout: &GraphLayout, canvas: Vec2) -> CanvasTransform {
+    let zoom = if layout.width > 0.0 {
+        (canvas.x / layout.width).min(1.0).clamp(MIN_ZOOM, MAX_ZOOM)
+    } else {
+        1.0
+    };
+    CanvasTransform {
+        pan: vec2((canvas.x - layout.width * zoom) * 0.5, 0.0),
+        zoom,
+    }
+}
+
+fn update_transform(
+    ui: &Ui,
+    response: &Response,
+    canvas_rect: Rect,
+    layout: &GraphLayout,
+    fit_to_view: bool,
+) -> CanvasTransform {
     let id = egui::Id::new(CANVAS_STATE_ID);
-    let mut transform = ui
-        .ctx()
-        .data_mut(|data| *data.get_temp_mut_or_default::<CanvasTransform>(id));
+    let mut transform = if fit_to_view {
+        fit_transform(layout, canvas_rect.size())
+    } else {
+        ui.ctx()
+            .data(|data| data.get_temp::<CanvasTransform>(id))
+            .unwrap_or_else(|| fit_transform(layout, canvas_rect.size()))
+    };
 
     // Zoom over the whole canvas, including over a node, so the wheel never
     // feels dead. The node widgets sit on top of the canvas for clicks, so
@@ -572,11 +626,12 @@ fn update_transform(ui: &Ui, response: &Response, canvas_rect: Rect) -> CanvasTr
         }
     }
     if response.dragged() {
-        transform.pan += response.drag_delta();
+        // The fitted graph is centred horizontally; a tall graph is reached by
+        // vertical drag instead of sideways panning.
+        transform.pan.y += response.drag_delta().y;
     }
 
-    ui.ctx()
-        .data_mut(|data| *data.get_temp_mut_or_default::<CanvasTransform>(id) = transform);
+    ui.ctx().data_mut(|data| data.insert_temp(id, transform));
     transform
 }
 
@@ -599,6 +654,15 @@ fn paint_arrowhead(painter: &egui::Painter, end: Pos2, stroke: Stroke) {
     painter.line_segment([end, end + vec2(-size, size * 0.7)], stroke);
 }
 
+fn node_accessible_label(node: &GraphNode) -> String {
+    format!(
+        "{}: {} ({})",
+        node.kind.caption(),
+        node.label,
+        design::state_text(&node.state)
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_node(
     ui: &Ui,
@@ -608,6 +672,7 @@ fn paint_node(
     rect: Rect,
     selected: bool,
     hovered: bool,
+    focused: bool,
     zoom: f32,
 ) {
     let needs_color = if node.state == "failed" {
@@ -630,6 +695,15 @@ fn paint_node(
         colors.raised
     };
     painter.rect(rect, NODE_RADIUS, fill, border, StrokeKind::Inside);
+    if focused {
+        // Keyboard focus is otherwise invisible on a painted node.
+        painter.rect_stroke(
+            rect,
+            NODE_RADIUS + 3,
+            Stroke::new(2.0 * zoom.max(0.6), colors.accent_text),
+            StrokeKind::Outside,
+        );
+    }
 
     // A small colour bar names the stage without adding another icon set.
     let bar_color = if node.needs_you {
@@ -932,8 +1006,15 @@ mod tests {
     }
 
     #[test]
-    fn blocked_failed_and_attention_states_need_you() {
-        for state in ["blocked", "failed", "input_required", "attention", "stale"] {
+    fn blocked_failed_and_tolerated_extra_states_need_you() {
+        for state in [
+            "blocked",
+            "failed",
+            "stale",
+            "input_required",
+            "needs_input",
+            "attention",
+        ] {
             assert!(needs_you(state), "{state}");
         }
         for state in ["running", "done", "succeeded", "open", "cancelled", ""] {
@@ -1043,5 +1124,77 @@ mod tests {
         let runs: Vec<&GraphNode> = layout.nodes_of_kind(NodeKind::Run).collect();
         let run_center = (runs.first().unwrap().rect.y + runs.last().unwrap().rect.bottom()) / 2.0;
         assert!((task.rect.y + task.rect.height / 2.0 - run_center).abs() < 0.01);
+    }
+
+    #[test]
+    fn run_nodes_carry_their_run_id_and_task_nodes_do_not() {
+        let layout = layout(
+            &snapshot(vec![task(
+                "a",
+                "blocked",
+                vec![run("a1", "Claude", "failed")],
+            )]),
+            options(),
+        );
+        assert_eq!(layout.node("task:a").expect("task").run_id, None);
+        for id in ["run:a:a1", "harness:a:a1", "status:a:a1"] {
+            assert_eq!(
+                layout.node(id).expect(id).run_id.as_deref(),
+                Some("a1"),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn node_accessible_labels_name_the_kind_and_state() {
+        let layout = layout(
+            &snapshot(vec![task(
+                "a",
+                "blocked",
+                vec![run("a1", "Claude", "failed")],
+            )]),
+            options(),
+        );
+        let run = node_accessible_label(layout.node("run:a:a1").expect("run"));
+        assert!(run.contains("Run"), "{run}");
+        assert!(run.contains("Claude"), "{run}");
+        assert!(run.contains("Failed"), "{run}");
+        let task = node_accessible_label(layout.node("task:a").expect("task"));
+        assert!(task.contains("Task"), "{task}");
+        assert!(task.contains("Blocked"), "{task}");
+    }
+
+    #[test]
+    fn a_wide_graph_fits_the_canvas_and_is_centred() {
+        let layout = layout(
+            &snapshot(vec![task(
+                "a",
+                "running",
+                vec![run("a1", "Claude", "running")],
+            )]),
+            options(),
+        );
+        let canvas = vec2(800.0, 400.0);
+        let transform = fit_transform(&layout, canvas);
+        assert!(transform.zoom < 1.0);
+        assert!((transform.zoom - canvas.x / layout.width).abs() < 1e-4);
+        assert!((transform.pan.x - (canvas.x - layout.width * transform.zoom) / 2.0).abs() < 1e-3);
+        assert_eq!(transform.pan.y, 0.0, "a fit starts at the top");
+        assert!(
+            transform.pan.x >= -0.01,
+            "a fitted graph is not cut on the left"
+        );
+        assert!(transform.pan.x + layout.width * transform.zoom <= canvas.x + 0.01);
+    }
+
+    #[test]
+    fn a_short_graph_is_not_magnified_and_tiny_canvases_clamp() {
+        let layout = layout(&snapshot(vec![task("a", "running", Vec::new())]), options());
+        let wide = fit_transform(&layout, vec2(2000.0, 200.0));
+        assert_eq!(wide.zoom, 1.0);
+        assert!((wide.pan.x - (2000.0 - layout.width) / 2.0).abs() < 1e-3);
+        let tiny = fit_transform(&layout, vec2(10.0, 10.0));
+        assert_eq!(tiny.zoom, MIN_ZOOM);
     }
 }
