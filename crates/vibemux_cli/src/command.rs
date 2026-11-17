@@ -273,6 +273,8 @@ const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <p
   vibemuxctl dispatch status <request_id> [--project-root <path>]
   vibemuxctl dispatch output <request_id> [--after-sequence <n>] [--project-root <path>]
   vibemuxctl dispatch cancel <request_id> [--project-root <path>]
+  vibemuxctl dispatch provision [--no-execution] [--project-root <path>]
+  vibemuxctl dispatch provision --write --yes [--no-execution] [--force] [--project-root <path>]
   vibemuxctl decide route --prompt-file <path|-> [--label <label>]... [--allow-external] [--project-root <path>]
   vibemuxctl decisions list [--after-sequence <n>] [--limit <n>] [--project-root <path>]
   vibemuxctl decisions show <decision_id> [--project-root <path>]

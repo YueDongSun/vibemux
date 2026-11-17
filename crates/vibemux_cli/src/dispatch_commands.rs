@@ -6,21 +6,32 @@
 //! of process listings and shell history, and it is bounded before any
 //! byte reaches the daemon. Output pages are reassembled into whole,
 //! byte-exact vendor records.
+//!
+//! `dispatch provision` is the one local subcommand: it derives the route
+//! config from the trusted probe cache and never opens a daemon connection.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use serde_json::{Value, json};
 use uuid::Uuid;
 use vibemux_harness::{
     AgentKind,
     dispatch::{
-        DispatchRequest,
+        DispatchRequest, ProvisionProbeRow, plan_provisioning,
         request::{DISPATCH_REQUEST_SCHEMA_VERSION, MAX_PROMPT_BYTES},
+        route_config::{ExecutablePolicy, MAX_ROUTE_CONFIG_BYTES},
     },
+};
+use vibemux_probe::{
+    ProbeReport,
+    cache::{self, CacheError},
 };
 use vibemuxd::{
     control::{ControlClient, ControlError, DecisionDispatchArgument, HarnessDispatchOutputQuery},
-    harness_dispatch::OutputReassembler,
+    harness_dispatch::{DISPATCH_CONFIG_FILE_NAME, OutputReassembler},
     process::DaemonPaths,
 };
 
@@ -63,6 +74,15 @@ pub enum DispatchCommand {
     Cancel {
         request_id: Uuid,
     },
+    /// Plans a schema-1 route config from the trusted probe cache (or writes
+    /// it with `--write --yes`). Local only: it reads no daemon and sends no
+    /// prompt.
+    Provision {
+        write: bool,
+        allow_execution: bool,
+        force: bool,
+        yes: bool,
+    },
 }
 
 /// Parses the arguments after the `dispatch` verb.
@@ -78,6 +98,10 @@ pub(crate) fn parse_dispatch_arguments(
     let mut request_id = None;
     let mut decision_id = None;
     let mut after_sequence = None;
+    let mut write = false;
+    let mut force = false;
+    let mut yes = false;
+    let mut allow_execution = None;
     let mut positional: Option<&str> = None;
     let mut index = 0;
     while index < rest.len() {
@@ -111,6 +135,26 @@ pub(crate) fn parse_dispatch_arguments(
                         .map_err(|_| DaemonCliError::InvalidArguments)?,
                 );
                 index += 2;
+            }
+            "--write" if action == "provision" && !write => {
+                write = true;
+                index += 1;
+            }
+            "--force" if action == "provision" && !force => {
+                force = true;
+                index += 1;
+            }
+            "--yes" if action == "provision" && !yes => {
+                yes = true;
+                index += 1;
+            }
+            "--allow-execution" if action == "provision" && allow_execution.is_none() => {
+                allow_execution = Some(true);
+                index += 1;
+            }
+            "--no-execution" if action == "provision" && allow_execution.is_none() => {
+                allow_execution = Some(false);
+                index += 1;
             }
             _ if !token.starts_with("--") && positional.is_none() => {
                 positional = Some(token);
@@ -154,6 +198,25 @@ pub(crate) fn parse_dispatch_arguments(
         "cancel" => DispatchCommand::Cancel {
             request_id: parse_id(target()?)?,
         },
+        // Provision takes flags only; none of the request-bearing options
+        // belong to it, and `--force`/`--yes` must accompany `--write`.
+        "provision"
+            if positional.is_none()
+                && prompt.is_none()
+                && request_id.is_none()
+                && decision_id.is_none()
+                && after_sequence.is_none() =>
+        {
+            if (force || yes) && !write {
+                return Err(DaemonCliError::InvalidArguments);
+            }
+            DispatchCommand::Provision {
+                write,
+                allow_execution: allow_execution.unwrap_or(true),
+                force,
+                yes,
+            }
+        }
         _ => return Err(DaemonCliError::InvalidArguments),
     };
     Ok(CliCommand::Dispatch {
@@ -162,12 +225,24 @@ pub(crate) fn parse_dispatch_arguments(
     })
 }
 
-/// Runs one dispatch command against the running daemon and returns its
-/// JSON output. A submitted prompt is read and validated first.
+/// Runs one dispatch command and returns its JSON output. Every subcommand
+/// except `provision` talks to the running daemon; a submitted prompt is
+/// read and validated first.
 pub async fn run_dispatch(
     paths: &DaemonPaths,
     command: DispatchCommand,
 ) -> Result<Value, DaemonCliError> {
+    // Provisioning reads the probe cache and writes the operator config; it
+    // never contacts the daemon, so it must not require a running one.
+    if let DispatchCommand::Provision {
+        write,
+        allow_execution,
+        force,
+        yes,
+    } = &command
+    {
+        return run_provision(paths, *write, *allow_execution, *force, *yes).await;
+    }
     let request = match &command {
         DispatchCommand::Submit {
             harness,
@@ -238,7 +313,251 @@ pub async fn run_dispatch(
             request_id,
             after_sequence,
         } => read_output(&client, request_id, after_sequence).await,
+        DispatchCommand::Provision {
+            write,
+            allow_execution,
+            force,
+            yes,
+        } => run_provision(paths, write, allow_execution, force, yes).await,
     }
+}
+
+/// The measured on-disk state of the target config relative to the planned
+/// bytes. `Unsafe` means the path exists but is not a regular file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExistingConfig {
+    Absent,
+    Identical,
+    Differs,
+    Unsafe,
+}
+
+impl ExistingConfig {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Identical => "identical",
+            Self::Differs => "differs",
+            Self::Unsafe => "unsafe",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigWriteOutcome {
+    Created,
+    Replaced,
+    Unchanged,
+}
+
+impl ConfigWriteOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Replaced => "replaced",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+/// Plans the dispatch route config from the trusted probe cache and, with
+/// `write`, stores it as `<state dir>/harness_dispatch.json`. Execution is
+/// never started; `allow_execution` only records the operator's consent for
+/// later turns, which is why writing demands `--yes`.
+async fn run_provision(
+    paths: &DaemonPaths,
+    write: bool,
+    allow_execution: bool,
+    force: bool,
+    yes: bool,
+) -> Result<Value, DaemonCliError> {
+    if write && !yes {
+        return Err(DaemonCliError::DispatchProvisionConfirmationRequired);
+    }
+    let cache_path = paths.probe_cache_path();
+    let read_path = cache_path.clone();
+    let report = tokio::task::spawn_blocking(move || cache::read_cache(&read_path))
+        .await
+        .map_err(|_| DaemonCliError::DispatchProvisionIo)?
+        .map_err(|error| map_provision_cache_error(&cache_path, error))?;
+    let plan = plan_provisioning(
+        &provision_rows(&report),
+        allow_execution,
+        ExecutablePolicy::for_host(),
+    );
+    let mut bytes =
+        serde_json::to_vec_pretty(&plan.config).map_err(|_| DaemonCliError::DispatchProvisionIo)?;
+    bytes.push(b'\n');
+    let target = paths.state_dir().join(DISPATCH_CONFIG_FILE_NAME);
+    let task_target = target.clone();
+    let (existing, written) = if write {
+        if plan.is_empty() {
+            return Err(DaemonCliError::DispatchProvisionEmpty);
+        }
+        let outcome =
+            tokio::task::spawn_blocking(move || write_config(&task_target, &bytes, force))
+                .await
+                .map_err(|_| DaemonCliError::DispatchProvisionIo)??;
+        let existing = match outcome {
+            ConfigWriteOutcome::Created => ExistingConfig::Absent,
+            ConfigWriteOutcome::Replaced => ExistingConfig::Differs,
+            ConfigWriteOutcome::Unchanged => ExistingConfig::Identical,
+        };
+        (existing, Some(outcome))
+    } else {
+        let existing = tokio::task::spawn_blocking(move || inspect_config(&task_target, &bytes))
+            .await
+            .map_err(|_| DaemonCliError::DispatchProvisionIo)??;
+        (existing, None)
+    };
+    let written_flag = written.is_some();
+    let outcome = written.map_or("planned", ConfigWriteOutcome::as_str);
+    Ok(json!({
+        "ok": true,
+        "written": written_flag,
+        "outcome": outcome,
+        "existing": existing.as_str(),
+        "config": plan.config,
+        "skipped": plan.skipped_json(),
+    }))
+}
+
+/// Reduces the probe report to the three fields provisioning reads.
+fn provision_rows(report: &ProbeReport) -> Vec<ProvisionProbeRow> {
+    report
+        .agents
+        .iter()
+        .map(|agent| {
+            ProvisionProbeRow::new(
+                agent.agent,
+                agent.launcher_state,
+                agent.path.as_ref().map(PathBuf::from),
+            )
+        })
+        .collect()
+}
+
+/// A missing cache keeps the existing `harness_probe_cache_missing`
+/// remediation; every other failure is a provisioning error.
+fn map_provision_cache_error(path: &Path, error: CacheError) -> DaemonCliError {
+    match error {
+        CacheError::Missing => {
+            DaemonCliError::HarnessProbeCacheMissing(path.to_string_lossy().into_owned())
+        }
+        CacheError::Io => DaemonCliError::DispatchProvisionIo,
+        CacheError::UnsafeArtifact | CacheError::TooLarge | CacheError::Invalid => {
+            DaemonCliError::DispatchProvisionCacheInvalid
+        }
+    }
+}
+
+/// Reads the target without following a symlink and compares it with the
+/// planned bytes. A non-regular target is reported as `Unsafe`; the writer
+/// refuses it even with `--force`.
+fn inspect_config(path: &Path, planned: &[u8]) -> Result<ExistingConfig, DaemonCliError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ExistingConfig::Absent);
+        }
+        Err(_) => return Err(DaemonCliError::DispatchProvisionIo),
+    };
+    if !metadata.file_type().is_file() {
+        return Ok(ExistingConfig::Unsafe);
+    }
+    if metadata.len() > MAX_ROUTE_CONFIG_BYTES as u64 {
+        return Ok(ExistingConfig::Differs);
+    }
+    let existing = std::fs::read(path).map_err(|_| DaemonCliError::DispatchProvisionIo)?;
+    Ok(if existing == planned {
+        ExistingConfig::Identical
+    } else {
+        ExistingConfig::Differs
+    })
+}
+
+/// Writes `bytes` atomically: a private sibling temp file, synced, then
+/// renamed over the target. An identical existing file is left untouched; a
+/// different one needs `force`.
+fn write_config(
+    path: &Path,
+    bytes: &[u8],
+    force: bool,
+) -> Result<ConfigWriteOutcome, DaemonCliError> {
+    let existing = inspect_config(path, bytes)?;
+    match existing {
+        ExistingConfig::Identical => return Ok(ConfigWriteOutcome::Unchanged),
+        ExistingConfig::Unsafe => return Err(DaemonCliError::DispatchProvisionConflict),
+        ExistingConfig::Differs if !force => {
+            return Err(DaemonCliError::DispatchProvisionConflict);
+        }
+        ExistingConfig::Absent | ExistingConfig::Differs => {}
+    }
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    create_private_dir(parent)?;
+    let temp = temp_path(parent);
+    if let Err(error) = write_temp(&temp, bytes) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    if std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(DaemonCliError::DispatchProvisionIo);
+    }
+    Ok(match existing {
+        ExistingConfig::Absent => ConfigWriteOutcome::Created,
+        _ => ConfigWriteOutcome::Replaced,
+    })
+}
+
+fn create_private_dir(dir: &Path) -> Result<(), DaemonCliError> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder
+            .create(dir)
+            .map_err(|_| DaemonCliError::DispatchProvisionIo)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir).map_err(|_| DaemonCliError::DispatchProvisionIo)?;
+    }
+    Ok(())
+}
+
+fn write_temp(path: &Path, bytes: &[u8]) -> Result<(), DaemonCliError> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|_| DaemonCliError::DispatchProvisionIo)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| DaemonCliError::DispatchProvisionIo)
+}
+
+fn temp_path(parent: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
+    parent.join(format!(
+        ".{DISPATCH_CONFIG_FILE_NAME}.tmp-{}-{nonce}",
+        std::process::id()
+    ))
 }
 
 /// Reads pages until the transcript is complete or the reader has caught
@@ -518,6 +837,252 @@ mod tests {
             read_valid_prompt(PromptSource::File(temp.path().join("missing.txt"))).await,
             Err(DaemonCliError::PromptUnavailable)
         );
+    }
+
+    #[test]
+    fn provision_flags_parse_only_for_provision() {
+        assert_eq!(
+            dispatch(&["provision"]),
+            DispatchCommand::Provision {
+                write: false,
+                allow_execution: true,
+                force: false,
+                yes: false,
+            }
+        );
+        assert_eq!(
+            dispatch(&["provision", "--allow-execution"]),
+            DispatchCommand::Provision {
+                write: false,
+                allow_execution: true,
+                force: false,
+                yes: false,
+            }
+        );
+        assert_eq!(
+            dispatch(&["provision", "--write", "--yes", "--force", "--no-execution",]),
+            DispatchCommand::Provision {
+                write: true,
+                allow_execution: false,
+                force: true,
+                yes: true,
+            }
+        );
+        match parse(&["provision", "--project-root", "C:\\project"]).expect("root") {
+            CliCommand::Dispatch { project_root, .. } => {
+                assert_eq!(project_root, Some(PathBuf::from("C:\\project")));
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+        for arguments in [
+            &["provision", "--allow-execution", "--no-execution"][..],
+            &["provision", "--force"][..],
+            &["provision", "--yes"][..],
+            &["provision", "codex"][..],
+            &["provision", "--prompt-file", "-"][..],
+            &["catalog", "--write"][..],
+            &["catalog", "--force"][..],
+        ] {
+            assert_eq!(
+                parse(arguments),
+                Err(DaemonCliError::InvalidArguments),
+                "{arguments:?}"
+            );
+        }
+    }
+
+    fn probe_report(agents: Vec<vibemux_probe::AgentProbe>) -> ProbeReport {
+        ProbeReport {
+            schema_version: vibemux_probe::PROBE_SCHEMA_VERSION,
+            observed_at_epoch_seconds: 0,
+            platform: "test".to_string(),
+            agents,
+            gateway: vibemux_probe::GatewayProbe {
+                state: vibemux_harness::ProbeState::NotRun,
+                host: "127.0.0.1".to_string(),
+                port: 0,
+                tcp_reachable: false,
+                health_status: None,
+                telemetry_state: vibemux_harness::ProbeState::NotRun,
+                telemetry: Vec::new(),
+                code: "not_run".to_string(),
+            },
+            a2a: vibemux_probe::A2aSelfTestProbe {
+                state: vibemux_harness::ProbeState::NotRun,
+                correlation_preserved: false,
+                listener_closed: true,
+                code: "not_run".to_string(),
+            },
+        }
+    }
+
+    fn probed_agent(
+        harness: AgentKind,
+        state: vibemux_harness::ProbeState,
+        executable: Option<PathBuf>,
+    ) -> vibemux_probe::AgentProbe {
+        vibemux_probe::AgentProbe {
+            agent: harness,
+            launcher_state: state,
+            authentication_state: vibemux_harness::ProbeState::NotRun,
+            inference_state: vibemux_harness::ProbeState::NotRun,
+            launcher: vibemux_harness::LauncherKind::DirectExecutable,
+            path: executable.map(|path| path.to_string_lossy().into_owned()),
+            version: None,
+            route: vibemux_probe::RouteKind::Unknown,
+            endpoints: Vec::new(),
+            code: "verified".to_string(),
+        }
+    }
+
+    fn provision_executable(root: &Path, name: &str) -> PathBuf {
+        if cfg!(windows) {
+            root.join(format!("{name}.exe"))
+        } else {
+            root.join(name)
+        }
+    }
+
+    #[tokio::test]
+    async fn provisioning_requires_the_probe_cache_and_writes_idempotently() {
+        use vibemux_harness::ProbeState;
+
+        let temp = tempfile::tempdir().expect("temp project");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        assert_eq!(
+            run_provision(&paths, false, true, false, false)
+                .await
+                .err()
+                .map(|error| error.code().to_string()),
+            Some("harness_probe_cache_missing".to_string())
+        );
+        let cache_path = paths.probe_cache_path();
+        let cache_path_for_write = cache_path.clone();
+        let report = probe_report(vec![
+            probed_agent(
+                AgentKind::Codex,
+                ProbeState::Verified,
+                Some(provision_executable(
+                    cache_path.parent().expect("state dir"),
+                    "codex",
+                )),
+            ),
+            probed_agent(
+                AgentKind::Claude,
+                ProbeState::Failed,
+                Some(provision_executable(
+                    cache_path.parent().expect("state dir"),
+                    "claude",
+                )),
+            ),
+        ]);
+        tokio::task::spawn_blocking(move || cache::write_cache(&report, &cache_path_for_write))
+            .await
+            .expect("join")
+            .expect("write cache");
+
+        let dry = run_provision(&paths, false, true, false, false)
+            .await
+            .expect("dry run");
+        assert_eq!(dry["written"], json!(false));
+        assert_eq!(dry["outcome"], json!("planned"));
+        assert_eq!(dry["existing"], json!("absent"));
+        assert_eq!(dry["config"]["schema_version"], json!(1));
+        assert_eq!(dry["config"]["routes"].as_array().map(Vec::len), Some(1));
+        assert_eq!(dry["config"]["routes"][0]["harness"], json!("codex"));
+        assert_eq!(
+            dry["config"]["routes"][0]["protocol"],
+            json!("codex_app_server")
+        );
+        let skipped = dry["skipped"].as_array().expect("skips");
+        assert!(
+            skipped
+                .iter()
+                .any(|entry| entry["harness"] == json!("claude")
+                    && entry["reason"] == json!("not_verified"))
+        );
+
+        // Writing may enable paid vendor turns, so it needs --yes.
+        assert_eq!(
+            run_provision(&paths, true, true, false, false)
+                .await
+                .err()
+                .map(|error| error.code().to_string()),
+            Some("harness_dispatch_provision_confirmation_required".to_string())
+        );
+        let config_path = paths.state_dir().join(DISPATCH_CONFIG_FILE_NAME);
+        assert!(!config_path.exists());
+
+        let created = run_provision(&paths, true, true, false, true)
+            .await
+            .expect("write");
+        assert_eq!(created["outcome"], json!("created"));
+        assert_eq!(created["written"], json!(true));
+        let bytes = std::fs::read(&config_path).expect("config file");
+        let parsed =
+            vibemux_harness::dispatch::DispatchConfig::parse(&bytes, ExecutablePolicy::for_host())
+                .expect("daemon accepts the written config");
+        assert_eq!(parsed.config.routes.len(), 1);
+
+        let again = run_provision(&paths, true, true, false, true)
+            .await
+            .expect("idempotent write");
+        assert_eq!(again["outcome"], json!("unchanged"));
+
+        std::fs::write(&config_path, b"{}\n").expect("differing config");
+        assert_eq!(
+            run_provision(&paths, true, true, false, true)
+                .await
+                .err()
+                .map(|error| error.code().to_string()),
+            Some("harness_dispatch_provision_conflict".to_string())
+        );
+        let replaced = run_provision(&paths, true, true, true, true)
+            .await
+            .expect("forced write");
+        assert_eq!(replaced["outcome"], json!("replaced"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_refuses_an_empty_plan_but_still_reports_skips() {
+        use vibemux_harness::ProbeState;
+
+        let temp = tempfile::tempdir().expect("temp project");
+        let paths = DaemonPaths::from_project_root(temp.path()).expect("daemon paths");
+        let cache_path = paths.probe_cache_path();
+        let cache_path_for_write = cache_path.clone();
+        let report = probe_report(vec![probed_agent(
+            AgentKind::OpenCode,
+            ProbeState::Verified,
+            Some(provision_executable(
+                cache_path.parent().expect("state dir"),
+                "opencode",
+            )),
+        )]);
+        tokio::task::spawn_blocking(move || cache::write_cache(&report, &cache_path_for_write))
+            .await
+            .expect("join")
+            .expect("write cache");
+        let dry = run_provision(&paths, false, true, false, false)
+            .await
+            .expect("dry run");
+        assert_eq!(dry["config"]["routes"], json!([]));
+        assert!(
+            dry["skipped"]
+                .as_array()
+                .expect("skips")
+                .iter()
+                .any(|entry| entry["harness"] == json!("open_code")
+                    && entry["reason"] == json!("no_executing_protocol"))
+        );
+        assert_eq!(
+            run_provision(&paths, true, true, false, true)
+                .await
+                .err()
+                .map(|error| error.code().to_string()),
+            Some("harness_dispatch_provision_empty".to_string())
+        );
+        assert!(!paths.state_dir().join(DISPATCH_CONFIG_FILE_NAME).exists());
     }
 
     #[tokio::test]

@@ -34,6 +34,7 @@ pub mod launch_spec;
 pub mod observation;
 pub mod outcome;
 pub mod protocol_session;
+pub mod provision;
 pub mod request;
 pub mod route_config;
 pub mod writable_profile;
@@ -49,6 +50,10 @@ pub use fixture_guard::{
 pub use observation::{ObservationKind, ObservedRecord};
 pub use outcome::{AttemptOutcome, OutcomeDecision, ProcessExit};
 pub use protocol_session::{ProtocolSession, SessionRoute, SessionTerminal};
+pub use provision::{
+    ProvisionPlan, ProvisionProbeRow, ProvisionSkipReason, ProvisionSkipped, ProvisionedConfig,
+    ProvisionedRoute, plan_provisioning, provisioning_protocol,
+};
 pub use request::{DispatchRequest, PromptDigest};
 pub use route_config::{DispatchConfig, DispatchLimits, DispatchRoute, NativeProtocol};
 

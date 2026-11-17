@@ -310,6 +310,18 @@ pub enum DaemonCliError {
     PromptUnavailable,
     #[error("dispatch prompt must be non-blank UTF-8 of at most 32 KiB")]
     InvalidPrompt,
+    #[error("writing a dispatch config may enable paid vendor turns: pass --yes to confirm")]
+    DispatchProvisionConfirmationRequired,
+    #[error(
+        "an existing harness dispatch config differs or is not a regular file: pass --force to replace it"
+    )]
+    DispatchProvisionConflict,
+    #[error("no verified harness executable can be provisioned into a dispatch route")]
+    DispatchProvisionEmpty,
+    #[error("harness dispatch provision could not read or write its files")]
+    DispatchProvisionIo,
+    #[error("the probe cache cannot be used for dispatch provisioning")]
+    DispatchProvisionCacheInvalid,
     #[error("planning document could not be read")]
     PlanningDocumentUnavailable,
     #[error("planning document must be non-blank UTF-8 JSON within its bound")]
@@ -339,6 +351,13 @@ impl DaemonCliError {
             Self::HarnessProbeCacheMissing(_) => "harness_probe_cache_missing",
             Self::HarnessNotDetected(_) => "harness_not_detected",
             Self::UnknownHarness(_) => "store_unknown_harness",
+            Self::DispatchProvisionConfirmationRequired => {
+                "harness_dispatch_provision_confirmation_required"
+            }
+            Self::DispatchProvisionConflict => "harness_dispatch_provision_conflict",
+            Self::DispatchProvisionEmpty => "harness_dispatch_provision_empty",
+            Self::DispatchProvisionIo => "harness_dispatch_provision_io",
+            Self::DispatchProvisionCacheInvalid => "harness_dispatch_provision_cache_invalid",
             Self::PromptUnavailable => "cli_prompt_unavailable",
             Self::InvalidPrompt => "harness_dispatch_invalid_prompt",
             Self::PlanningDocumentUnavailable => "cli_planning_document_unavailable",
