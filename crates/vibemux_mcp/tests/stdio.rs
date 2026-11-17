@@ -47,9 +47,13 @@ fn initialize() -> Value {
 }
 
 #[tokio::test]
-async fn default_denial_still_initializes_and_lists_without_descriptor_io() {
+async fn deny_flag_still_initializes_and_lists_without_descriptor_io() {
     let replies = exchange(
-        &["--descriptor", "nonexistent_private_descriptor"],
+        &[
+            "--descriptor",
+            "nonexistent_private_descriptor",
+            "--deny_metadata_read",
+        ],
         &[
             initialize(),
             json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
@@ -151,9 +155,11 @@ async fn initialization_reduces_the_host_grant_and_negotiates_only_a_supported_v
         initialize["params"]["capabilities"] =
             json!({"experimental":{"vibemux_metadata_read":false}});
         let mut arguments = vec!["--descriptor", "missing_descriptor"];
-        if host_grant {
-            arguments.push("--allow_metadata_read");
-        }
+        arguments.push(if host_grant {
+            "--allow_metadata_read"
+        } else {
+            "--deny_metadata_read"
+        });
         let replies = exchange(
             &arguments,
             &[
@@ -172,7 +178,7 @@ async fn initialization_reduces_the_host_grant_and_negotiates_only_a_supported_v
     }
     let mut requested = initialize();
     requested["params"]["capabilities"] = json!({"experimental":{"vibemux_metadata_read":true}});
-    let replies = exchange(&["--descriptor", "missing_descriptor"], &[
+    let replies = exchange(&["--descriptor", "missing_descriptor", "--deny_metadata_read"], &[
         requested,
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"health","arguments":{}}}),
@@ -182,7 +188,7 @@ async fn initialization_reduces_the_host_grant_and_negotiates_only_a_supported_v
 
 #[tokio::test]
 async fn standard_request_metadata_is_ignored_without_weakening_tool_argument_schemas() {
-    let replies = exchange(&["--descriptor", "missing_descriptor"], &[
+    let replies = exchange(&["--descriptor", "missing_descriptor", "--deny_metadata_read"], &[
         initialize(),
         json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{"_meta":{"fixture":true}}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"progressToken":uuid::Uuid::new_v4().to_string()}}}),

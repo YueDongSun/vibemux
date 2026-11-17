@@ -8424,3 +8424,23 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
 - Validation: vibemux_mcp suites green under all features; vibemux_cli 71
   + integration 7 passed; empty-repository console smoke renders; web
   contract suite 57 passed in the prior entry.
+
+### 2026-11-17 — rmcp parity matrix (ADR 075 Scope A, slice 6)
+
+- `crates/vibemux_mcp/tests/session_parity.rs`: one wire script
+  (pre-initialize list, initialize, initialized, list, real health read,
+  host_status, unknown tool, duplicate initialize, malformed line, second
+  read, ping) runs through the hand-written session and the SDK session
+  against the same fixture reader; replies are compared per request id
+  (JSON-RPC permits out-of-order replies) with anonymous frames in order,
+  the fixture process id scrubbed, and SDK-only result fields normalized.
+  Both granted and denied configurations match frame for frame. The matrix
+  documented two real behaviors: the SDK may answer a direct refusal
+  before a routed reply, and a client that pipelines requests must await
+  its reply set before closing stdin.
+- The stdio tests that pinned the former default-denied MCP grant now use
+  `--deny_metadata_read` explicitly; default-granted behavior is covered
+  by the parity script and the MCP suites.
+- Gates: `vibemux_mcp` suites 31/46/53/71/71 green for default/rmcp/
+  test_helpers/test_helpers+rmcp/all-features; clippy `-D warnings` clean;
+  fmt clean.

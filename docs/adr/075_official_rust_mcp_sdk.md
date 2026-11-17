@@ -201,8 +201,19 @@ run or dependency-reviewed for this draft.
   real health read, a local host_status call, clean finalizer shutdown).
   Writing it exposed and fixed an actor bug: `Supervisor::lifecycle` stays
   pending while Ready, so the idle tick must be a `select!` branch
-  concurrent with commands, never an awaited step. The Windows parity
-  matrix remains.
+  concurrent with commands, never an awaited step.
+- 2026-11-17 — Sixth slice landed: the parity matrix
+  (`tests/session_parity.rs`) drives one wire script through the
+  hand-written session and the SDK session with the same fixture reader
+  and compares replies per request id (JSON-RPC permits out-of-order
+  replies; the SDK may answer a later direct refusal before a routed
+  reply), with the fixture process id and SDK-only fields normalized.
+  Both the granted and denied configurations match, and the first real
+  difference the matrix caught was the EOF race: a pipelining client must
+  receive its reply set before stdin closes. The stdio tests that pinned
+  the old default-denied MCP grant now exercise `--deny_metadata_read`
+  explicitly. Remaining: native Windows evidence and the default-flip
+  decision.
 
 ## Alternatives considered
 
