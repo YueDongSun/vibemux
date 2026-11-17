@@ -171,3 +171,76 @@ dd { overflow: hidden; margin: 0; color: var(--text_primary); font-size: var(--s
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+/* ---- Collaborate view (read-only Flow and Office) ---- */
+.collaborate_tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.collaborate_tab { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border: 1px solid var(--border); border-radius: var(--radius_pill); color: var(--muted_text); background: var(--surface_alt); font-size: var(--size_action); font-weight: 600; }
+.collaborate_tab:hover { border-color: var(--control_border); background: var(--surface); }
+.collaborate_tab.active { border-color: var(--accent_edge); color: var(--accent_text); background: var(--accent_tint); }
+.attention_badge { display: inline-grid; min-width: 20px; height: 20px; padding: 0 6px; place-items: center; border-radius: var(--radius_pill); color: var(--danger_text); background: var(--danger_tint); font-size: var(--size_micro); font-weight: 700; }
+.collaborate_panel { min-width: 0; padding: 21px; }
+.collaborate_heading { flex-wrap: wrap; }
+.flow_toolbar { display: flex; align-items: center; gap: 7px; }
+.flow_zoom { min-width: 42px; color: var(--muted_text); font-family: var(--font_code); font-size: var(--size_micro); text-align: center; }
+.flow_stage { margin-top: 16px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius_card); background: var(--surface); }
+.flow_canvas { display: block; width: 100%; height: clamp(340px, 52vh, 620px); touch-action: none; cursor: grab; }
+.flow_canvas:active { cursor: grabbing; }
+.flow_node { cursor: pointer; }
+.flow_node[role='listitem'] { cursor: default; }
+.flow_node:focus { outline: none; }
+.flow_node_box { fill: var(--surface_alt); stroke: var(--border); stroke-width: 1.2; }
+.flow_node[data-kind='task'] .flow_node_box { fill: var(--accent_tint); stroke: var(--accent_edge); }
+.flow_node[data-kind='harness'] .flow_node_box { fill: var(--success_tint); }
+.flow_node[data-kind='worktree'] .flow_node_box { fill: var(--surface); }
+.flow_node:hover .flow_node_box, .flow_node:focus-visible .flow_node_box { stroke: var(--accent); stroke-width: 2; }
+.flow_node.selected .flow_node_box { stroke: var(--accent); stroke-width: 2.5; }
+.flow_node_kind { fill: var(--muted_text); font: 600 10px var(--font_ui); letter-spacing: .9px; text-transform: uppercase; }
+.flow_node_state { fill: var(--muted_text); font: 600 10px var(--font_ui); }
+.flow_node_label { fill: var(--text_primary); font: 600 13px var(--font_ui); }
+.flow_edges path { pointer-events: none; }
+.flow_edge { fill: none; stroke: var(--control_border); stroke-width: 1.6; opacity: .85; }
+.flow_edge[data-kind='executed_by'] { stroke: var(--muted_text); }
+.flow_edge[data-kind='handed_off'] { stroke: var(--accent); stroke-dasharray: 6 4; }
+.flow_edge[data-kind='isolated_in'] { stroke: var(--success); stroke-dasharray: 2 4; }
+.flow_edge[data-kind='blocked_by'] { stroke: var(--danger); stroke-dasharray: 4 3; }
+.flow_legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 12px; color: var(--muted_text); font-size: var(--size_micro); }
+.flow_legend span { display: inline-flex; align-items: center; gap: 6px; }
+.flow_legend span::before { content: ''; width: 20px; height: 0; border-top: 2px solid var(--control_border); }
+.flow_legend [data-kind='executed_by']::before { border-top-color: var(--muted_text); }
+.flow_legend [data-kind='handed_off']::before { border-top: 2px dashed var(--accent); }
+.flow_legend [data-kind='isolated_in']::before { border-top: 2px dotted var(--success); }
+.flow_legend [data-kind='blocked_by']::before { border-top: 2px dashed var(--danger); }
+.flow_list { margin-top: 16px; }
+.flow_list summary { color: var(--accent_text); font-size: var(--size_small); font-weight: 600; cursor: pointer; }
+.flow_list .subheading { margin-top: 14px; }
+.collaborate_list { display: grid; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+.collaborate_list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius_button); font-size: var(--size_micro); }
+.collaborate_meta { color: var(--muted_text); }
+.office_summary { display: flex; flex-wrap: wrap; gap: 8px; }
+.attention_metric { border-color: var(--danger_edge); color: var(--danger_text); background: var(--danger_tint); }
+.attention_metric strong { color: var(--danger_text); }
+.office_canvas_wrap { margin-top: 16px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius_card); background: var(--surface); }
+.office_canvas { display: block; width: 100%; image-rendering: pixelated; }
+.office_table { margin-top: 4px; }
+.office_table_caption { caption-side: top; padding: 14px 0 6px; color: var(--muted_text); font-size: var(--size_micro); font-weight: 600; text-align: left; }
+.attention_row td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
+.agent_state_pill { display: inline-flex; align-items: center; white-space: nowrap; padding: 4px 9px; border-radius: var(--radius_pill); color: var(--muted_text); background: var(--surface); font-size: var(--size_micro); font-weight: 600; text-transform: capitalize; }
+.agent_state_pill[data-agent-state='running'], .agent_state_pill[data-agent-state='typing'] { color: var(--accent_text); background: var(--accent_tint); }
+.agent_state_pill[data-agent-state='reading'] { color: var(--accent_text); background: var(--accent_tint); }
+.agent_state_pill[data-agent-state='done'] { color: var(--success_text); background: var(--success_tint); }
+.agent_state_pill[data-agent-state='waiting'], .agent_state_pill[data-agent-state='blocked'] { color: var(--warning_text); background: var(--warning_tint); }
+.agent_state_pill[data-agent-state='failed'] { color: var(--danger_text); background: var(--danger_tint); }
+.collaborate_detail { margin-top: 18px; }
+.visually_hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+@media (max-width: 800px) {
+  .collaborate_heading { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .collaborate_panel { padding: 16px; }
+  .flow_canvas { height: 380px; }
+}
+
+@media (max-width: 560px) {
+  .collaborate_tab { flex: 1 1 auto; justify-content: center; }
+  .flow_canvas { height: 320px; }
+  .flow_toolbar { width: 100%; justify-content: flex-start; }
+}

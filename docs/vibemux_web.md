@@ -5,19 +5,23 @@ authenticated daemon control IPC and serves a bounded status board on loopback.
 The web process does not start the daemon, open SQLite, write canonical state,
 attach terminals, cancel runs, approve tools, or change Git state.
 
-The board has five views, switched with tabs or the number keys `1` to `5`
+The board has six views, switched with tabs or the number keys `1` to `6`
 (`R` refreshes):
 
 | Key | View | Shows |
 |---|---|---|
 | `1` | Tasks | task list; the selected task's runs, latest events, and artifacts |
-| `2` | Daemon | health and writer queue, plugins, harness dispatch routes |
-| `3` | Sessions | DSH session status, dual-track workflow slots |
-| `4` | Decisions | recorded decision-routing decisions |
-| `5` | Device | push notification subscription and device enrollment |
+| `2` | Collaborate | read-only Flow graph and procedural Office of the same task, run, harness, and worktree records |
+| `3` | Daemon | health and writer queue, plugins, harness dispatch routes |
+| `4` | Sessions | DSH session status, dual-track workflow slots |
+| `5` | Decisions | recorded decision-routing decisions |
+| `6` | Device | push notification subscription and device enrollment |
 
-Views 2 to 4 are the daemon views of the terminal console (ADR 042) with the
-same content-free fields. Every view is read-only: none can start a probe,
+Views 3 to 5 are the daemon views of the terminal console (ADR 042) with the
+same content-free fields. The Collaborate projection contains only ids, harness
+names, statuses, and sequence numbers: it never carries a task title, prompt,
+event body, artifact digest, or filesystem path, and selection only opens the
+existing task detail. Every view is read-only: none can start a probe,
 dispatch, DSH session, workflow, or decision.
 
 The implementation is pre-alpha. Local automated checks and live-device,

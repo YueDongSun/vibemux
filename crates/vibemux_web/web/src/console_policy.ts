@@ -10,6 +10,7 @@ import type {
 /** The views of the monitor, in tab and number-key order. */
 export const console_views = [
   { id: 'tasks', label: 'Tasks' },
+  { id: 'collaborate', label: 'Collaborate' },
   { id: 'daemon', label: 'Daemon' },
   { id: 'sessions', label: 'Sessions' },
   { id: 'decisions', label: 'Decisions' },

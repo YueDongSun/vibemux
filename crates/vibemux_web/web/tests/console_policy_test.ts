@@ -32,11 +32,12 @@ function response(overrides: Partial<console_response> = {}): console_response {
 }
 
 test('number keys select the views in tab order and nothing else', () => {
-  assert.deepEqual(console_views.map((view) => view.id), ['tasks', 'daemon', 'sessions', 'decisions', 'device']);
+  assert.deepEqual(console_views.map((view) => view.id), ['tasks', 'collaborate', 'daemon', 'sessions', 'decisions', 'device']);
   assert.equal(view_for_key('1'), 'tasks');
-  assert.equal(view_for_key('4'), 'decisions');
-  assert.equal(view_for_key('5'), 'device');
-  for (const key of ['0', '6', '9', '12', 'r', ' ', '']) assert.equal(view_for_key(key), null, key);
+  assert.equal(view_for_key('2'), 'collaborate');
+  assert.equal(view_for_key('5'), 'decisions');
+  assert.equal(view_for_key('6'), 'device');
+  for (const key of ['0', '7', '9', '12', 'r', ' ', '']) assert.equal(view_for_key(key), null, key);
 });
 
 test('console views report the console poller observation time', () => {
@@ -46,6 +47,7 @@ test('console views report the console poller observation time', () => {
   assert.equal(observed_at_for_view('daemon', console_time, board_time), console_time);
   assert.equal(observed_at_for_view('decisions', console_time, board_time), console_time);
   assert.equal(observed_at_for_view('tasks', console_time, board_time), board_time);
+  assert.equal(observed_at_for_view('collaborate', console_time, board_time), board_time);
   assert.equal(observed_at_for_view('device', console_time, board_time), board_time);
   assert.equal(observed_at_for_view('sessions', null, board_time), null);
   assert.equal(observed_at_for_view('tasks', console_time, undefined), null);

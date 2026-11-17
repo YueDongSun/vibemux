@@ -20,12 +20,14 @@
   import {
     connection_summary,
     console_is_current,
+    console_views,
     type console_view_id,
     is_console_view,
     observed_at_for_view,
     view_for_key,
   } from './console_policy';
   import { snapshots_match } from './presentation_policy';
+  import Collaboration_view from './components/collaboration_view.svelte';
   import Daemon_view from './components/daemon_view.svelte';
   import Decisions_view from './components/decisions_view.svelte';
   import Sessions_view from './components/sessions_view.svelte';
@@ -469,7 +471,7 @@
         <div>
           <p class="eyebrow">Project activity</p>
           <h1>Your VibeMux monitor</h1>
-          <p class="lead">Read-only status from the local VibeMux daemon. Refreshes every five seconds. Keys 1–5 switch views and R refreshes.</p>
+          <p class="lead">Read-only status from the local VibeMux daemon. Refreshes every five seconds. Keys 1–{console_views.length} switch views and R refreshes.</p>
         </div>
         <div class="intro_badges">
           <span class="metric_badge"><strong>{tasks.length}</strong> tasks</span>
@@ -484,12 +486,12 @@
           <strong>{console_data.stale ? 'These views are not current: the last refresh failed or came from the browser cache.' : connection_summary(console_data.connection)}</strong>
         </div>
       {/if}
-      {#if active_view === 'tasks' && (data_freshness?.stale || detail_freshness?.stale || health?.stale)}
+      {#if (active_view === 'tasks' || active_view === 'collaborate') && (data_freshness?.stale || detail_freshness?.stale || health?.stale)}
         <div class="stale_banner" role="status">
           <strong>Status is stale or unavailable.</strong> Task titles stay hidden until a fresh daemon response arrives.
         </div>
       {/if}
-      {#if active_view === 'tasks' && !data_freshness?.stale && tasks_page_truncated}
+      {#if (active_view === 'tasks' || active_view === 'collaborate') && !data_freshness?.stale && tasks_page_truncated}
         <div class="stale_banner" role="status">
           <strong>Task list is bounded.</strong> The board shows the available snapshot page.
         </div>
@@ -507,6 +509,15 @@
           <Task_board tasks={tasks} selected_id={selected_id} freshness={data_freshness} on_select={(task_id) => void select_task(task_id)} />
           <Task_detail task={selected_task} activity={selected_activity} freshness={detail_freshness} />
         </div>
+      {:else if active_view === 'collaborate'}
+        <Collaboration_view
+          tasks={tasks}
+          selected_task={selected_task}
+          selected_activity={selected_activity}
+          freshness={detail_freshness ?? data_freshness}
+          console_data={console_data}
+          on_select={(task_id) => void select_task(task_id)}
+        />
       {:else if active_view === 'daemon'}
         <Daemon_view console_data={console_data} />
       {:else if active_view === 'sessions'}

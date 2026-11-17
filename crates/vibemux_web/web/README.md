@@ -1,10 +1,18 @@
 # VibeMux Monitor frontend
 
 This folder contains the static Svelte 5 PWA served by `vibemux_web`. It polls
-the versioned read-only API and shows five views: Tasks (task and run state with
-the latest events and artifacts), Daemon, Sessions, and Decisions (the ADR 042
-console's daemon views), and Device (browser push and the server's one-time
-enrollment QR). Keys `1` to `5` switch views and `R` refreshes.
+the versioned read-only API and shows six views: Tasks (task and run state with
+the latest events and artifacts), Collaborate (a read-only Flow graph and a
+procedural Canvas 2D Office of the same task, run, harness, and worktree
+records), Daemon, Sessions, and Decisions (the ADR 042 console's daemon views),
+and Device (browser push and the server's one-time enrollment QR). Keys `1` to
+`6` switch views and `R` refreshes.
+
+The Collaborate projection is content-free: it contains only ids, harness names,
+statuses, and sequence numbers, never a task title, a prompt, an event body, an
+artifact digest, or a filesystem path. Its Flow view only selects an existing
+task detail, and its Office characters are drawn procedurally from the same
+snapshot; neither view can start, stop, or dispatch anything.
 
 By default every HTTP route, including `index.html`, JavaScript, CSS, the
 service worker, and enrollment routes, requires the instance bearer in the
