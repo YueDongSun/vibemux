@@ -230,23 +230,28 @@ MCP host, or model request. Claude Desktop reads its configuration from
 supported client.
 
 ```powershell
-\target\debug\vibemuxctl.exe mcp install --project-root . --binary .\vibemux_mcp.exe
+\target\debug\vibemuxctl.exe mcp install --project-root .
 \target\debug\vibemuxctl.exe mcp status  --project-root .
 \target\debug\vibemuxctl.exe mcp doctor  --project-root . --bundle .\mcp-bundle
 ```
 
 `install` resolves `vibemux_mcp` from `--binary`, else the directory beside
-`vibemuxctl`, else `PATH`, and merges `mcpServers.vibemux` with the absolute
-binary path and `--descriptor <project runtime descriptor>` while preserving
-every other entry and its order. It is idempotent; the first change writes a
-timestamped `.bak` beside the configuration and replaces the file atomically.
-Malformed JSON is refused with `mcp_config_malformed` and left untouched.
-`status` reports `match`, `mismatch`, `not_installed`, `config_missing`, or
-`config_malformed` without writing. `doctor` checks the binary, its execute bit,
-the configuration parse, the owned entry, and stale absolute command paths, with
-one remediation per failure; `--bundle <dir>` writes a redacted
-`mcp_doctor.json` containing only the configuration and binary paths and the
-check results, never environment values or prompt text.
+`vibemuxctl` (`\target\debug\` after the workspace build above), else `PATH`,
+and merges `mcpServers.vibemux` with the absolute binary path and
+`--descriptor <project runtime descriptor>` while preserving every other entry
+and its order. Keys it does not own inside the `vibemux` entry and extra
+arguments such as `--deny_metadata_read` are kept, so an already hardened entry
+is left alone. It is idempotent; the first change writes a timestamped `.bak`
+beside the configuration and replaces the file atomically, keeping the existing
+file's permissions (a new configuration is owner-only). Malformed JSON,
+including a duplicate object key, is refused with `mcp_config_malformed` and
+left untouched. `status` reports `match`, `mismatch`, `not_installed`,
+`config_missing`, or `config_malformed` without writing. `doctor` checks the
+binary, its execute bit, the configuration parse, the owned entry, the
+descriptor source, and stale absolute command paths, with one remediation per
+failure; `--bundle <dir>` writes a redacted `mcp_doctor.json` containing only
+the configuration and binary paths and the check results, never environment
+values or prompt text.
 
 ## From the Python `vibemux` CLI
 

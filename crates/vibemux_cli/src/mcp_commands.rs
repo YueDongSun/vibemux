@@ -23,7 +23,10 @@ use std::{
 };
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, MapAccess, SeqAccess, Visitor},
+};
 use serde_json::{Number, Value, json};
 use time::OffsetDateTime;
 use vibemuxd::process::DaemonPaths;
@@ -232,6 +235,8 @@ pub enum McpError {
     ConfigWriteFailed,
     BinaryNotFound,
     BinaryNotExecutable,
+    PathNotUtf8,
+    DescriptorPlaceholder,
     EntryMissing,
     EntryMismatch,
     StaleEntryPath,
@@ -250,6 +255,8 @@ impl McpError {
             Self::ConfigWriteFailed => "mcp_config_write_failed",
             Self::BinaryNotFound => "mcp_binary_not_found",
             Self::BinaryNotExecutable => "mcp_binary_not_executable",
+            Self::PathNotUtf8 => "mcp_path_not_utf8",
+            Self::DescriptorPlaceholder => "mcp_descriptor_placeholder",
             Self::EntryMissing => "mcp_entry_missing",
             Self::EntryMismatch => "mcp_entry_mismatch",
             Self::StaleEntryPath => "mcp_stale_entry_path",
@@ -284,6 +291,10 @@ impl McpError {
             Self::BinaryNotExecutable => {
                 "Make the MCP binary executable or pass --binary with another path."
             }
+            Self::PathNotUtf8 => "Pass --binary and --project-root paths that are valid UTF-8.",
+            Self::DescriptorPlaceholder => {
+                "Run the command from an existing project root or pass --project-root with a path that can be resolved."
+            }
             Self::EntryMissing => {
                 "Run `vibemuxctl mcp install` to register the VibeMux MCP server."
             }
@@ -307,7 +318,7 @@ impl error::Error for McpError {}
 /// An ordered JSON value. `serde_json::Value` sorts object keys because its map
 /// is a `BTreeMap`; this representation keeps client configuration entries in
 /// document order.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ConfigValue {
     Null(()),
@@ -319,6 +330,91 @@ pub enum ConfigValue {
 }
 
 pub type ConfigObject = IndexMap<String, ConfigValue>;
+
+/// Deserializes JSON by hand so a duplicate object key anywhere in the client
+/// configuration is an error instead of a silently collapsed entry. The
+/// default map deserializer keeps the last value, which would let a hostile or
+/// broken file hide a second `command` or `args`.
+impl<'de> Deserialize<'de> for ConfigValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ConfigVisitor;
+
+        impl<'de> Visitor<'de> for ConfigVisitor {
+            type Value = ConfigValue;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON value with unique object keys")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(ConfigValue::Null(()))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(ConfigValue::Null(()))
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(ConfigValue::Bool(value))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(ConfigValue::Number(Number::from(value)))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(ConfigValue::Number(Number::from(value)))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Number::from_f64(value)
+                    .map(ConfigValue::Number)
+                    .ok_or_else(|| E::custom("a JSON number must be finite"))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(ConfigValue::String(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(ConfigValue::String(value))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(ConfigValue::Array(values))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut object = ConfigObject::new();
+                while let Some((key, value)) = map.next_entry::<String, ConfigValue>()? {
+                    if object.contains_key(&key) {
+                        return Err(de::Error::custom(format!("duplicate object key `{key}`")));
+                    }
+                    object.insert(key, value);
+                }
+                Ok(ConfigValue::Object(object))
+            }
+        }
+
+        deserializer.deserialize_any(ConfigVisitor)
+    }
+}
 
 impl ConfigValue {
     fn object(&self) -> Option<&ConfigObject> {
@@ -358,35 +454,89 @@ pub struct ServerEntry {
 }
 
 impl ServerEntry {
-    fn to_config_value(&self) -> ConfigValue {
-        let mut object = ConfigObject::new();
+    fn from_paths(command: &Path, descriptor: &Path) -> Result<Self, McpError> {
+        Ok(Self {
+            command: path_text(&absolute_path(command))?,
+            args: vec![
+                DESCRIPTOR_ARGUMENT.to_string(),
+                path_text(&absolute_path(descriptor))?,
+            ],
+        })
+    }
+
+    /// Whether `value` already carries the fields this module owns: the
+    /// `command` and one `--descriptor <path>` pair. Unknown keys and extra
+    /// arguments (for example `--deny_metadata_read`) are not owned and do not
+    /// make a hardened entry a mismatch.
+    fn matches(&self, value: &ConfigValue) -> bool {
+        let Some(object) = value.object() else {
+            return false;
+        };
+        if object.get("command").and_then(ConfigValue::text) != Some(self.command.as_str()) {
+            return false;
+        }
+        object
+            .get("args")
+            .and_then(ConfigValue::strings)
+            .is_some_and(|args| self.owned_args_match(&args))
+    }
+
+    fn owned_args_match(&self, actual: &[&str]) -> bool {
+        let [flag, value] = self.args.as_slice() else {
+            return false;
+        };
+        let mut found = 0_usize;
+        let mut index = 0;
+        while index < actual.len() {
+            if actual[index] == flag.as_str() {
+                found += 1;
+                if actual.get(index + 1).copied() != Some(value.as_str()) {
+                    return false;
+                }
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+        found == 1
+    }
+
+    /// Keeps every key and argument the existing entry already has, then
+    /// replaces the owned `command` and `--descriptor <path>` pair. A
+    /// previously configured `--deny_metadata_read` (or any other argument)
+    /// survives an install.
+    fn merge_into(&self, existing: Option<&ConfigValue>) -> ConfigValue {
+        let mut object = existing
+            .and_then(ConfigValue::object)
+            .cloned()
+            .unwrap_or_default();
+        let existing_args = object
+            .get("args")
+            .and_then(ConfigValue::strings)
+            .map(|args| args.into_iter().map(str::to_owned).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut args = Vec::with_capacity(existing_args.len() + self.args.len());
+        let mut index = 0;
+        while index < existing_args.len() {
+            if existing_args[index] == DESCRIPTOR_ARGUMENT {
+                // Drop the old flag and its value; exactly one owned pair is
+                // appended below.
+                index += 2;
+                continue;
+            }
+            args.push(existing_args[index].clone());
+            index += 1;
+        }
+        args.extend(self.args.iter().cloned());
         object.insert(
             "command".to_string(),
             ConfigValue::String(self.command.clone()),
         );
         object.insert(
             "args".to_string(),
-            ConfigValue::Array(self.args.iter().cloned().map(ConfigValue::String).collect()),
+            ConfigValue::Array(args.into_iter().map(ConfigValue::String).collect()),
         );
         ConfigValue::Object(object)
-    }
-
-    fn matches(&self, value: &ConfigValue) -> bool {
-        let Some(object) = value.object() else {
-            return false;
-        };
-        object.len() == 2
-            && object.get("command").and_then(ConfigValue::text) == Some(self.command.as_str())
-            && object
-                .get("args")
-                .and_then(ConfigValue::strings)
-                .is_some_and(|args| {
-                    args.len() == self.args.len()
-                        && args
-                            .iter()
-                            .zip(&self.args)
-                            .all(|(actual, expected)| actual == expected)
-                })
     }
 }
 
@@ -558,32 +708,31 @@ pub struct InstallRequest {
     pub config_source: ConfigSource,
     pub binary_path: PathBuf,
     pub descriptor_path: PathBuf,
+    pub descriptor_source: DescriptorSource,
+    pub platform: Platform,
 }
 
 impl InstallRequest {
-    fn server_entry(&self) -> ServerEntry {
-        ServerEntry {
-            command: absolute_path(&self.binary_path)
-                .to_string_lossy()
-                .into_owned(),
-            args: vec![
-                DESCRIPTOR_ARGUMENT.to_string(),
-                self.descriptor_path.to_string_lossy().into_owned(),
-            ],
-        }
+    fn server_entry(&self) -> Result<ServerEntry, McpError> {
+        ServerEntry::from_paths(&self.binary_path, &self.descriptor_path)
     }
 
-    fn report(&self, changed: bool, created: bool, backup: Option<PathBuf>) -> InstallReport {
+    fn report(
+        &self,
+        entry: &ServerEntry,
+        changed: bool,
+        created: bool,
+        backup: Option<PathBuf>,
+    ) -> InstallReport {
         InstallReport {
             schema_version: REPORT_SCHEMA_VERSION,
             ok: true,
             client: self.client.as_str(),
             config_path: self.config_path.to_string_lossy().into_owned(),
             config_source: self.config_source.as_str(),
-            binary: absolute_path(&self.binary_path)
-                .to_string_lossy()
-                .into_owned(),
-            descriptor: self.descriptor_path.to_string_lossy().into_owned(),
+            binary: entry.command.clone(),
+            descriptor: entry.args[1].clone(),
+            descriptor_source: self.descriptor_source.as_str(),
             changed,
             created,
             backup: backup.map(|path| path.to_string_lossy().into_owned()),
@@ -600,6 +749,7 @@ pub struct InstallReport {
     pub config_source: &'static str,
     pub binary: String,
     pub descriptor: String,
+    pub descriptor_source: &'static str,
     pub changed: bool,
     pub created: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -609,10 +759,18 @@ pub struct InstallReport {
 /// Merges `mcpServers.vibemux` into the client configuration.
 ///
 /// A missing file is created; an existing file is backed up (one timestamped
-/// `.bak` containing the original bytes) before the atomic replacement. An
-/// entry that already matches is a no-op. Malformed JSON is refused before any
-/// write, so the original file is untouched.
+/// `.bak` containing the original bytes) before the atomic replacement. The
+/// existing file's permissions are applied to the replacement and the backup;
+/// a brand-new file is owner-only. An entry that already carries the owned
+/// fields is a no-op, so extra keys and arguments keep working. Malformed JSON,
+/// including a duplicate object key, is refused before any write, so the
+/// original file is untouched.
 pub fn install(request: &InstallRequest, now: OffsetDateTime) -> Result<InstallReport, McpError> {
+    if request.platform == Platform::Windows
+        && request.descriptor_source == DescriptorSource::Placeholder
+    {
+        return Err(McpError::DescriptorPlaceholder);
+    }
     let original = load_config(&request.config_path)?;
     let (mut document, created) = match &original {
         Some(bytes) => (parse_config(bytes)?, false),
@@ -621,22 +779,28 @@ pub fn install(request: &InstallRequest, now: OffsetDateTime) -> Result<InstallR
     // Writing through a symlinked configuration (a common dotfile-manager
     // layout) preserves the link instead of replacing it with a regular file.
     let write_path = write_target(&request.config_path)?;
-    let desired = request.server_entry();
+    let permissions = desired_permissions(&write_path);
+    let desired = request.server_entry()?;
     let servers = servers_mut(&mut document)?;
-    if servers
-        .get(SERVER_NAME)
+    let existing = servers.get(SERVER_NAME).cloned();
+    if existing
+        .as_ref()
         .is_some_and(|entry| desired.matches(entry))
     {
-        return Ok(request.report(false, created, None));
+        return Ok(request.report(&desired, false, created, None));
     }
-    servers.insert(SERVER_NAME.to_string(), desired.to_config_value());
+    servers.insert(
+        SERVER_NAME.to_string(),
+        desired.merge_into(existing.as_ref()),
+    );
     let encoded = encode_config(&document)?;
     let backup = match &original {
-        Some(bytes) => Some(write_backup(&write_path, now, bytes)?),
+        Some(bytes) => Some(write_backup(&write_path, now, bytes, permissions.as_ref())?),
         None => None,
     };
-    atomic_write(&write_path, &encoded).map_err(|_| McpError::ConfigWriteFailed)?;
-    Ok(request.report(true, created, backup))
+    atomic_write(&write_path, &encoded, permissions.as_ref())
+        .map_err(|_| McpError::ConfigWriteFailed)?;
+    Ok(request.report(&desired, true, created, backup))
 }
 
 #[derive(Clone, Debug)]
@@ -668,16 +832,8 @@ pub struct StatusReport {
 }
 
 impl StatusRequest {
-    fn server_entry(&self) -> ServerEntry {
-        ServerEntry {
-            command: absolute_path(&self.binary.path)
-                .to_string_lossy()
-                .into_owned(),
-            args: vec![
-                DESCRIPTOR_ARGUMENT.to_string(),
-                self.descriptor.path.to_string_lossy().into_owned(),
-            ],
-        }
+    fn server_entry(&self) -> Result<ServerEntry, McpError> {
+        ServerEntry::from_paths(&self.binary.path, &self.descriptor.path)
     }
 
     fn report(
@@ -717,7 +873,7 @@ pub fn status(request: &StatusRequest) -> Result<StatusReport, McpError> {
             Ok(document) => {
                 let status = match servers(&document) {
                     Ok(servers) => {
-                        let desired = request.server_entry();
+                        let desired = request.server_entry()?;
                         let entry = servers.and_then(|servers| servers.get(SERVER_NAME));
                         let present = entry.is_some();
                         let matches = entry.is_some_and(|entry| desired.matches(entry));
@@ -757,6 +913,7 @@ pub struct DoctorRequest {
     pub config_source: ConfigSource,
     pub binary: LocatedBinary,
     pub descriptor: DescriptorLocation,
+    pub platform: Platform,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -766,7 +923,7 @@ pub struct DoctorCheck {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub remediation: Option<&'static str>,
+    pub remediation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -782,12 +939,22 @@ impl DoctorCheck {
         }
     }
 
+    fn passed_with_detail(name: &'static str, detail: String) -> Self {
+        Self {
+            name,
+            ok: true,
+            code: None,
+            remediation: None,
+            detail: Some(detail),
+        }
+    }
+
     fn failed(name: &'static str, error: McpError) -> Self {
         Self {
             name,
             ok: false,
             code: Some(error.code()),
-            remediation: Some(error.remediation()),
+            remediation: Some(error.remediation().to_string()),
             detail: None,
         }
     }
@@ -797,7 +964,22 @@ impl DoctorCheck {
             name,
             ok: false,
             code: Some(error.code()),
-            remediation: Some(error.remediation()),
+            remediation: Some(error.remediation().to_string()),
+            detail: Some(detail),
+        }
+    }
+
+    fn failed_with_remediation(
+        name: &'static str,
+        error: McpError,
+        detail: String,
+        remediation: String,
+    ) -> Self {
+        Self {
+            name,
+            ok: false,
+            code: Some(error.code()),
+            remediation: Some(remediation),
             detail: Some(detail),
         }
     }
@@ -820,16 +1002,8 @@ pub struct DoctorReport {
 }
 
 impl DoctorRequest {
-    fn server_entry(&self) -> ServerEntry {
-        ServerEntry {
-            command: absolute_path(&self.binary.path)
-                .to_string_lossy()
-                .into_owned(),
-            args: vec![
-                DESCRIPTOR_ARGUMENT.to_string(),
-                self.descriptor.path.to_string_lossy().into_owned(),
-            ],
-        }
+    fn server_entry(&self) -> Result<ServerEntry, McpError> {
+        ServerEntry::from_paths(&self.binary.path, &self.descriptor.path)
     }
 
     fn report(&self, checks: Vec<DoctorCheck>) -> DoctorReport {
@@ -853,6 +1027,21 @@ impl DoctorRequest {
 /// absolute command paths. Every failing check carries exactly one remediation.
 pub fn doctor(request: &DoctorRequest) -> Result<DoctorReport, McpError> {
     let mut checks = Vec::new();
+    let placeholder = request.descriptor.source == DescriptorSource::Placeholder;
+    checks.push(if placeholder && request.platform == Platform::Windows {
+        DoctorCheck::failed_with_detail(
+            "descriptor_source",
+            McpError::DescriptorPlaceholder,
+            request.descriptor.source.as_str().to_string(),
+        )
+    } else if placeholder {
+        DoctorCheck::passed_with_detail(
+            "descriptor_source",
+            request.descriptor.source.as_str().to_string(),
+        )
+    } else {
+        DoctorCheck::passed("descriptor_source")
+    });
     if request.binary.exists && request.binary.path.is_file() {
         checks.push(DoctorCheck::passed("binary_exists"));
         checks.push(if is_executable(&request.binary.path) {
@@ -892,7 +1081,7 @@ pub fn doctor(request: &DoctorRequest) -> Result<DoctorReport, McpError> {
     if let Some(document) = &parsed {
         match servers(document) {
             Ok(servers) => {
-                let desired = request.server_entry();
+                let desired = request.server_entry()?;
                 let entry = servers.and_then(|servers| servers.get(SERVER_NAME));
                 checks.push(if entry.is_some_and(|entry| desired.matches(entry)) {
                     DoctorCheck::passed("entry_match")
@@ -905,10 +1094,11 @@ pub fn doctor(request: &DoctorRequest) -> Result<DoctorReport, McpError> {
                 checks.push(if stale.is_empty() {
                     DoctorCheck::passed("stale_absolute_paths")
                 } else {
-                    DoctorCheck::failed_with_detail(
+                    DoctorCheck::failed_with_remediation(
                         "stale_absolute_paths",
                         McpError::StaleEntryPath,
                         stale.join(","),
+                        stale_remediation(&stale),
                     )
                 });
             }
@@ -928,6 +1118,22 @@ fn stale_servers(servers: &ConfigObject) -> Vec<String> {
             (path.is_absolute() && !path.exists()).then(|| name.clone())
         })
         .collect()
+}
+
+/// Names every stale entry. `mcp install` rewrites only the owned `vibemux`
+/// entry, so the other entries get their own instruction instead.
+fn stale_remediation(names: &[String]) -> String {
+    let mut parts = Vec::with_capacity(names.len());
+    for name in names {
+        if name == SERVER_NAME {
+            parts.push(format!(
+                "Run `vibemuxctl mcp install` to refresh the `{name}` entry"
+            ));
+        } else {
+            parts.push(format!("Update or remove the stale `{name}` entry"));
+        }
+    }
+    format!("{}.", parts.join("; "))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -1016,6 +1222,45 @@ fn absolute_path(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// A path that becomes a configured command argument must be valid UTF-8;
+/// lossy conversion would write a command that points at a different path.
+fn path_text(path: &Path) -> Result<String, McpError> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or(McpError::PathNotUtf8)
+}
+
+/// The permissions an install must carry: the existing file's own mode, or
+/// owner-only for a brand-new configuration.
+fn desired_permissions(path: &Path) -> Option<fs::Permissions> {
+    match fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(_) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                Some(fs::Permissions::from_mode(0o600))
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        }
+    }
+}
+
+/// `install`'s binary admission: it must exist and be executable, reusing the
+/// same execute-bit rule as `doctor`.
+fn check_install_binary(binary: &LocatedBinary) -> Result<(), McpError> {
+    if !binary.exists || !binary.path.is_file() {
+        return Err(McpError::BinaryNotFound);
+    }
+    if !is_executable(&binary.path) {
+        return Err(McpError::BinaryNotExecutable);
+    }
+    Ok(())
+}
+
 fn timestamp(now: OffsetDateTime) -> String {
     format!(
         "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
@@ -1028,7 +1273,12 @@ fn timestamp(now: OffsetDateTime) -> String {
     )
 }
 
-fn write_backup(path: &Path, now: OffsetDateTime, bytes: &[u8]) -> Result<PathBuf, McpError> {
+fn write_backup(
+    path: &Path,
+    now: OffsetDateTime,
+    bytes: &[u8],
+    permissions: Option<&fs::Permissions>,
+) -> Result<PathBuf, McpError> {
     let parent = parent_directory(path);
     fs::create_dir_all(parent).map_err(|_| McpError::ConfigWriteFailed)?;
     let name = path
@@ -1052,6 +1302,10 @@ fn write_backup(path: &Path, now: OffsetDateTime, bytes: &[u8]) -> Result<PathBu
                 file.write_all(bytes)
                     .and_then(|()| file.sync_all())
                     .map_err(|_| McpError::ConfigWriteFailed)?;
+                if let Some(permissions) = permissions {
+                    file.set_permissions(permissions.clone())
+                        .map_err(|_| McpError::ConfigWriteFailed)?;
+                }
                 return Ok(candidate);
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -1061,7 +1315,11 @@ fn write_backup(path: &Path, now: OffsetDateTime, bytes: &[u8]) -> Result<PathBu
     Err(McpError::ConfigWriteFailed)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+fn atomic_write(
+    path: &Path,
+    bytes: &[u8],
+    permissions: Option<&fs::Permissions>,
+) -> io::Result<()> {
     let parent = parent_directory(path);
     fs::create_dir_all(parent)?;
     let temp = temporary_path(parent, path);
@@ -1070,6 +1328,9 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
+        if let Some(permissions) = permissions {
+            fs::set_permissions(&temp, permissions.clone())?;
+        }
         fs::rename(&temp, path)
     })();
     if result.is_err() {
@@ -1107,10 +1368,10 @@ fn bundle_value(report: &DoctorReport) -> Value {
             if let Some(code) = check.code {
                 object.insert("code".to_string(), Value::String(code.to_string()));
             }
-            if let Some(remediation) = check.remediation {
+            if let Some(remediation) = &check.remediation {
                 object.insert(
                     "remediation".to_string(),
-                    Value::String(remediation.to_string()),
+                    Value::String(remediation.clone()),
                 );
             }
             Value::Object(object)
@@ -1133,7 +1394,7 @@ fn write_bundle(directory: &Path, report: &DoctorReport) -> Result<PathBuf, McpE
     let mut text = serde_json::to_string_pretty(&bundle_value(report))
         .map_err(|_| McpError::BundleWriteFailed)?;
     text.push('\n');
-    atomic_write(&path, text.as_bytes()).map_err(|_| McpError::BundleWriteFailed)?;
+    atomic_write(&path, text.as_bytes(), None).map_err(|_| McpError::BundleWriteFailed)?;
     Ok(path)
 }
 
@@ -1158,9 +1419,7 @@ pub fn run(options: &McpOptions) -> Result<Value, Failure> {
     let descriptor = descriptor_location(&project_root);
     let body = match options.verb {
         McpVerb::Install => {
-            if !binary.exists {
-                return Err(to_failure(McpError::BinaryNotFound));
-            }
+            check_install_binary(&binary).map_err(to_failure)?;
             let report = install(
                 &InstallRequest {
                     client: options.client,
@@ -1168,6 +1427,8 @@ pub fn run(options: &McpOptions) -> Result<Value, Failure> {
                     config_source,
                     binary_path: binary.path,
                     descriptor_path: descriptor.path,
+                    descriptor_source: descriptor.source,
+                    platform: environment.platform,
                 },
                 OffsetDateTime::now_utc(),
             )
@@ -1192,6 +1453,7 @@ pub fn run(options: &McpOptions) -> Result<Value, Failure> {
                 config_source,
                 binary,
                 descriptor,
+                platform: environment.platform,
             })
             .map_err(to_failure)?;
             if let Some(directory) = &options.bundle {
@@ -1245,6 +1507,8 @@ mod tests {
             config_source: ConfigSource::Override,
             binary_path,
             descriptor_path,
+            descriptor_source: DescriptorSource::Runtime,
+            platform: Platform::Other,
         }
     }
 
@@ -1356,6 +1620,37 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn install_rejects_a_non_executable_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().expect("temp dir");
+        let binary = binary_in(dir.path());
+        let located = || LocatedBinary {
+            exists: true,
+            path: absolute_path(&binary),
+            source: BinarySource::Explicit,
+        };
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o644)).expect("permissions");
+        assert_eq!(
+            check_install_binary(&located()),
+            Err(McpError::BinaryNotExecutable)
+        );
+
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).expect("permissions");
+        assert_eq!(check_install_binary(&located()), Ok(()));
+
+        let missing = LocatedBinary {
+            exists: false,
+            path: dir.path().join("missing_vibemux_mcp"),
+            source: BinarySource::NotFound,
+        };
+        assert_eq!(
+            check_install_binary(&missing),
+            Err(McpError::BinaryNotFound)
+        );
+    }
+
+    #[test]
     fn install_creates_the_entry_and_preserves_unrelated_order() {
         let dir = tempdir().expect("temp dir");
         let original = r#"{
@@ -1425,6 +1720,79 @@ mod tests {
     }
 
     #[test]
+    fn install_preserves_unknown_keys_and_extra_arguments() {
+        let dir = tempdir().expect("temp dir");
+        let descriptor = dir.path().join("control.json");
+        let config = config_with(
+            dir.path(),
+            r#"{
+  "mcpServers": {
+    "vibemux": {
+      "command": "old",
+      "args": ["--deny_metadata_read", "--descriptor", "/old/control.json"],
+      "env": {"VIBEMUX_ALLOW": "1"},
+      "disabled": false
+    }
+  }
+}"#,
+        );
+        let binary = binary_in(dir.path());
+        let request = install_request(config.clone(), binary, descriptor.clone());
+        assert!(install(&request, fixed_time()).expect("install").changed);
+
+        let document = parse(&config);
+        let entry = &document["mcpServers"]["vibemux"];
+        assert_eq!(
+            entry["env"]["VIBEMUX_ALLOW"],
+            Value::String("1".to_string())
+        );
+        assert_eq!(entry["disabled"], Value::Bool(false));
+        assert_eq!(
+            entry["args"],
+            json!([
+                "--deny_metadata_read",
+                DESCRIPTOR_ARGUMENT,
+                descriptor.to_string_lossy()
+            ])
+        );
+
+        // The extra key and argument are not owned, so a second install is a
+        // no-op even though the entry is "hardened".
+        let second = install(&request, fixed_time()).expect("second");
+        assert!(!second.changed);
+        assert!(second.backup.is_none());
+        assert_eq!(backups(dir.path()).len(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn install_preserves_existing_permissions_and_secures_a_new_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        let dir = tempdir().expect("temp dir");
+        let config = config_with(dir.path(), r#"{"mcpServers":{}}"#);
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o640)).expect("permissions");
+        let binary = binary_in(dir.path());
+        let descriptor = dir.path().join("control.json");
+        let report = install(
+            &install_request(config.clone(), binary.clone(), descriptor.clone()),
+            fixed_time(),
+        )
+        .expect("install");
+        assert_eq!(mode(&config), 0o640);
+        let backup = report.backup.expect("backup path");
+        assert_eq!(mode(Path::new(&backup)), 0o640);
+
+        let new_config = dir.path().join("fresh").join(CONFIG_FILE_NAME);
+        install(
+            &install_request(new_config.clone(), binary, descriptor),
+            fixed_time(),
+        )
+        .expect("install");
+        assert_eq!(mode(&new_config), 0o600);
+    }
+
+    #[test]
     #[cfg(unix)]
     fn install_writes_through_a_symlinked_configuration() {
         let dir = tempdir().expect("temp dir");
@@ -1469,6 +1837,22 @@ mod tests {
     fn malformed_json_is_refused_without_touching_the_file() {
         let dir = tempdir().expect("temp dir");
         let original = "{ this is not json";
+        let config = config_with(dir.path(), original);
+        let binary = binary_in(dir.path());
+        let error = install(
+            &install_request(config.clone(), binary, dir.path().join("control.json")),
+            fixed_time(),
+        )
+        .unwrap_err();
+        assert_eq!(error, McpError::ConfigMalformed);
+        assert_eq!(fs::read_to_string(&config).expect("config"), original);
+        assert!(backups(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn duplicate_object_keys_are_refused_before_any_write() {
+        let dir = tempdir().expect("temp dir");
+        let original = r#"{"mcpServers":{"vibemux":{"command":"a","command":"b"}}}"#;
         let config = config_with(dir.path(), original);
         let binary = binary_in(dir.path());
         let error = install(
@@ -1591,6 +1975,7 @@ mod tests {
                 path: descriptor,
                 source: DescriptorSource::Runtime,
             },
+            platform: Platform::Other,
         }
     }
 
@@ -1614,7 +1999,7 @@ mod tests {
         assert!(!binary.ok);
         assert_eq!(binary.code, Some("mcp_binary_not_found"));
         assert_eq!(
-            binary.remediation,
+            binary.remediation.as_deref(),
             Some(McpError::BinaryNotFound.remediation())
         );
         let config = report
@@ -1660,6 +2045,85 @@ mod tests {
                 .detail
                 .as_deref()
                 .is_some_and(|detail| detail.contains("stale"))
+        );
+        let remediation = stale.remediation.as_deref().expect("stale remediation");
+        assert!(remediation.contains("Update or remove the stale `stale` entry"));
+        assert!(!remediation.contains("vibemuxctl mcp install"));
+    }
+
+    #[test]
+    fn stale_path_remediation_offers_install_only_for_the_vibemux_entry() {
+        let dir = tempdir().expect("temp dir");
+        let binary = binary_in(dir.path());
+        let missing_vibemux = dir.path().join("gone").join(binary_name());
+        let missing_other = dir.path().join("gone").join("other_mcp");
+        let config = config_with(
+            dir.path(),
+            &json!({
+                "mcpServers": {
+                    "vibemux": {"command": missing_vibemux.to_string_lossy(), "args": []},
+                    "other": {"command": missing_other.to_string_lossy(), "args": []}
+                }
+            })
+            .to_string(),
+        );
+        let report = doctor(&doctor_request(
+            config,
+            binary,
+            dir.path().join("control.json"),
+        ))
+        .expect("doctor");
+        let stale = report
+            .checks
+            .iter()
+            .find(|check| check.name == "stale_absolute_paths")
+            .expect("stale check");
+        let detail = stale.detail.as_deref().expect("detail");
+        assert!(detail.contains("vibemux") && detail.contains("other"));
+        let remediation = stale.remediation.as_deref().expect("remediation");
+        assert!(
+            remediation.contains("Run `vibemuxctl mcp install` to refresh the `vibemux` entry")
+        );
+        assert!(remediation.contains("Update or remove the stale `other` entry"));
+        assert_eq!(remediation.matches("vibemuxctl mcp install").count(), 1);
+    }
+
+    #[test]
+    fn doctor_reports_the_descriptor_source_and_rejects_a_windows_placeholder() {
+        let dir = tempdir().expect("temp dir");
+        let binary = binary_in(dir.path());
+        let config = config_with(dir.path(), "{}");
+        let mut request = doctor_request(
+            config.clone(),
+            binary.clone(),
+            dir.path().join("control.json"),
+        );
+        request.platform = Platform::Windows;
+        request.descriptor.source = DescriptorSource::Placeholder;
+        let report = doctor(&request).expect("doctor");
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.name == "descriptor_source")
+            .expect("descriptor check");
+        assert!(!check.ok);
+        assert_eq!(check.code, Some("mcp_descriptor_placeholder"));
+        assert_eq!(check.detail.as_deref(), Some("placeholder"));
+        assert!(
+            check
+                .remediation
+                .as_deref()
+                .is_some_and(|text| !text.is_empty())
+        );
+
+        request.descriptor.source = DescriptorSource::Runtime;
+        let report = doctor(&request).expect("doctor");
+        assert!(
+            report
+                .checks
+                .iter()
+                .find(|check| check.name == "descriptor_source")
+                .is_some_and(|check| check.ok)
         );
     }
 
@@ -1707,17 +2171,18 @@ mod tests {
             dir.path(),
             r#"{"mcpServers":{"vibemux":{"command":"elsewhere","args":[],"env":{"TOKEN":"SUPER-SECRET-TOKEN"}}}}"#,
         );
+        let descriptor = dir.path().join("control.json");
         let report = doctor(&doctor_request(
             config.clone(),
             binary.clone(),
-            dir.path().join("control.json"),
+            descriptor.clone(),
         ))
         .expect("doctor");
         let bundle_dir = dir.path().join("bundle");
         let path = write_bundle(&bundle_dir, &report).expect("bundle");
         let text = fs::read_to_string(&path).expect("bundle text");
         assert!(!text.contains("SUPER-SECRET-TOKEN"));
-        assert!(!text.contains("descriptor"));
+        assert!(!text.contains(&descriptor.to_string_lossy().into_owned()));
         let value: Value = serde_json::from_str(&text).expect("bundle JSON");
         assert_eq!(value["redacted"], Value::Bool(true));
         assert_eq!(
@@ -1748,6 +2213,42 @@ mod tests {
         assert!(location.path.is_absolute());
         assert_eq!(location.path.file_name(), Some(OsStr::new("control.json")));
         assert_eq!(location.source, DescriptorSource::Runtime);
+    }
+
+    #[test]
+    fn install_rejects_a_placeholder_descriptor_on_windows() {
+        let dir = tempdir().expect("temp dir");
+        let config = dir.path().join(CONFIG_FILE_NAME);
+        let mut request = install_request(
+            config.clone(),
+            binary_in(dir.path()),
+            dir.path().join("control.json"),
+        );
+        request.platform = Platform::Windows;
+        request.descriptor_source = DescriptorSource::Placeholder;
+        assert_eq!(
+            install(&request, fixed_time()).unwrap_err(),
+            McpError::DescriptorPlaceholder
+        );
+        assert!(!config.exists());
+
+        request.platform = Platform::Macos;
+        let report = install(&request, fixed_time()).expect("install");
+        assert_eq!(report.descriptor_source, "placeholder");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn non_utf8_paths_are_refused_without_lossy_conversion() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempdir().expect("temp dir");
+        let invalid = PathBuf::from(OsString::from_vec(b"vibemux_\x80".to_vec()));
+        let request = install_request(
+            dir.path().join(CONFIG_FILE_NAME),
+            invalid,
+            dir.path().join("control.json"),
+        );
+        assert_eq!(request.server_entry().unwrap_err(), McpError::PathNotUtf8);
     }
 
     fn os_arguments(values: &[&str]) -> Vec<OsString> {

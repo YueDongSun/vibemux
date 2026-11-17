@@ -393,6 +393,10 @@ fn mcp_text(value: &Value) -> String {
         lines.push(format!("Config: {}", field(value, "config_path")));
         lines.push(format!("Binary: {}", field(value, "binary")));
         lines.push(format!("Descriptor: {}", field(value, "descriptor")));
+        lines.push(format!(
+            "Descriptor source: {}",
+            field(value, "descriptor_source")
+        ));
         for check in rows(value, "checks").iter().take(MAX_TEXT_ROWS) {
             let state = if check["ok"] == true { "ok" } else { "FAIL" };
             let mut line = format!("  [{state}] {}", field(check, "name"));
@@ -400,6 +404,9 @@ fn mcp_text(value: &Value) -> String {
                 line.push_str(&format!(" ({})", safe_text(code)));
             }
             lines.push(line);
+            if let Some(detail) = check["detail"].as_str() {
+                lines.push(format!("        detail: {}", safe_text(detail)));
+            }
             if let Some(remediation) = check["remediation"].as_str() {
                 lines.push(format!("        fix: {}", safe_text(remediation)));
             }
@@ -413,6 +420,10 @@ fn mcp_text(value: &Value) -> String {
         lines.push(format!("Config: {}", field(value, "config_path")));
         lines.push(format!("Binary: {}", field(value, "binary")));
         lines.push(format!("Descriptor: {}", field(value, "descriptor")));
+        lines.push(format!(
+            "Descriptor source: {}",
+            field(value, "descriptor_source")
+        ));
     } else {
         lines.push(format!(
             "VibeMux MCP | {} | {}",
@@ -426,6 +437,10 @@ fn mcp_text(value: &Value) -> String {
         lines.push(format!("Config: {}", field(value, "config_path")));
         lines.push(format!("Binary: {}", field(value, "binary")));
         lines.push(format!("Descriptor: {}", field(value, "descriptor")));
+        lines.push(format!(
+            "Descriptor source: {}",
+            field(value, "descriptor_source")
+        ));
         if let Some(backup) = value["backup"].as_str() {
             lines.push(format!("Backup: {}", safe_text(backup)));
         }
@@ -467,11 +482,13 @@ mod tests {
                 "name": "binary_exists",
                 "ok": false,
                 "code": "mcp_binary_missing",
+                "detail": "expected beside vibemuxctl",
                 "remediation": "Build vibemux_mcp or pass --binary with an absolute path."
             }]
         }));
         assert!(doctor.contains("needs attention"));
         assert!(doctor.contains("mcp_binary_missing"));
+        assert!(doctor.contains("detail: expected beside vibemuxctl"));
         assert!(doctor.contains("fix: Build vibemux_mcp"));
     }
 
