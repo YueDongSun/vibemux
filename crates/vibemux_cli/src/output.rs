@@ -72,6 +72,7 @@ pub fn report(kind: &str, body: &Value, format: Format) -> Result<String, Failur
         "daemon" => daemon_text(body),
         "probe" => probe_text(body),
         "harness" => harness_text(body),
+        "mcp" => mcp_text(body),
         // The daemon-backed control verbs have no text view; their JSON is the contract.
         _ => json_text(body)?,
     })
@@ -377,6 +378,64 @@ fn harness_text(value: &Value) -> String {
     lines.join("\n")
 }
 
+fn mcp_text(value: &Value) -> String {
+    let mut lines = Vec::new();
+    if value["checks"].is_array() {
+        lines.push(format!(
+            "VibeMux MCP | {} | {}",
+            field(value, "client"),
+            if value["ok"] == true {
+                "ok"
+            } else {
+                "needs attention"
+            }
+        ));
+        lines.push(format!("Config: {}", field(value, "config_path")));
+        lines.push(format!("Binary: {}", field(value, "binary")));
+        lines.push(format!("Descriptor: {}", field(value, "descriptor")));
+        for check in rows(value, "checks").iter().take(MAX_TEXT_ROWS) {
+            let state = if check["ok"] == true { "ok" } else { "FAIL" };
+            let mut line = format!("  [{state}] {}", field(check, "name"));
+            if let Some(code) = check["code"].as_str() {
+                line.push_str(&format!(" ({})", safe_text(code)));
+            }
+            lines.push(line);
+            if let Some(remediation) = check["remediation"].as_str() {
+                lines.push(format!("        fix: {}", safe_text(remediation)));
+            }
+        }
+    } else if value["status"].is_string() {
+        lines.push(format!(
+            "VibeMux MCP | {} | {}",
+            field(value, "client"),
+            field(value, "status")
+        ));
+        lines.push(format!("Config: {}", field(value, "config_path")));
+        lines.push(format!("Binary: {}", field(value, "binary")));
+        lines.push(format!("Descriptor: {}", field(value, "descriptor")));
+    } else {
+        lines.push(format!(
+            "VibeMux MCP | {} | {}",
+            field(value, "client"),
+            if value["changed"] == true {
+                "installed"
+            } else {
+                "already installed"
+            }
+        ));
+        lines.push(format!("Config: {}", field(value, "config_path")));
+        lines.push(format!("Binary: {}", field(value, "binary")));
+        lines.push(format!("Descriptor: {}", field(value, "descriptor")));
+        if let Some(backup) = value["backup"].as_str() {
+            lines.push(format!("Backup: {}", safe_text(backup)));
+        }
+    }
+    if let Some(bundle) = value["bundle"].as_str() {
+        lines.push(format!("Bundle: {}", safe_text(bundle)));
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +444,37 @@ mod tests {
         assert_eq!(resolve(Format::Auto, false), Format::Json);
         assert_eq!(resolve(Format::Auto, true), Format::Text);
     }
+    #[test]
+    fn mcp_text_names_the_result_checks_and_remediations() {
+        let install = mcp_text(&json!({
+            "ok": true,
+            "client": "claude-desktop",
+            "config_path": "/home/user/config.json",
+            "binary": "/opt/vibemux/vibemux_mcp",
+            "descriptor": "/project/.vibemux/control.json",
+            "changed": true,
+            "backup": "/home/user/config.json.20260101T000000Z.bak"
+        }));
+        assert!(install.contains("installed"));
+        assert!(install.contains("Backup:"));
+
+        let doctor = mcp_text(&json!({
+            "ok": false,
+            "client": "claude-desktop",
+            "config_path": "/home/user/config.json",
+            "binary": "/opt/vibemux/vibemux_mcp",
+            "checks": [{
+                "name": "binary_exists",
+                "ok": false,
+                "code": "mcp_binary_missing",
+                "remediation": "Build vibemux_mcp or pass --binary with an absolute path."
+            }]
+        }));
+        assert!(doctor.contains("needs attention"));
+        assert!(doctor.contains("mcp_binary_missing"));
+        assert!(doctor.contains("fix: Build vibemux_mcp"));
+    }
+
     #[test]
     fn json_escapes_terminal_controls_without_changing_data() {
         let value = json!({"branch":"topic\u{009b}31m\u{202e}text"});

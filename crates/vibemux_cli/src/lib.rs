@@ -11,6 +11,7 @@ pub mod decision_commands;
 pub mod dispatch_commands;
 pub mod dsh_commands;
 pub mod failure;
+pub mod mcp_commands;
 pub mod output;
 pub mod plugin_commands;
 pub use vibemux_probe::snapshot as probe;

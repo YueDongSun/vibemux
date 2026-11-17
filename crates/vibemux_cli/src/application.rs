@@ -8,7 +8,7 @@ use crate::{
     dispatch_commands::run_dispatch,
     dsh_commands::run_dsh,
     failure::Failure,
-    harness_list, harness_switch,
+    harness_list, harness_switch, mcp_commands,
     plugin_commands::run_plugin_status,
     probe,
     recovery::{inspect_runtime, recover_runtime},
@@ -62,6 +62,16 @@ pub async fn run(command: Command, format: Format) -> Result<Outcome, Failure> {
                 kind: "harness",
                 body: reply.body,
                 success: reply.success,
+            })
+        }
+        Command::Mcp(options) => {
+            let body = tokio::task::spawn_blocking(move || mcp_commands::run(&options))
+                .await
+                .map_err(|source| Failure::with_source("cli_worker_failed", source))??;
+            Ok(Outcome::Data {
+                kind: "mcp",
+                body,
+                success: true,
             })
         }
         Command::Probe { report_path } => {

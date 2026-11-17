@@ -7118,6 +7118,7 @@ name = "vibemux_cli"
 version = "0.2.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
+ "indexmap 2.14.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",

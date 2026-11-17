@@ -1,6 +1,11 @@
 //! One command tree. The daemon lifecycle, daemon-backed control verbs and native
 //! harness parsers remain their boundary owners; this module only routes to them.
-use crate::{CliCommand, failure::Failure, parse_cli_arguments};
+use crate::{
+    CliCommand,
+    failure::Failure,
+    mcp_commands::{self, McpOptions},
+    parse_cli_arguments,
+};
 use std::{collections::BTreeMap, ffi::OsString, path::PathBuf};
 
 pub const DEFAULT_WIDTH: u16 = 100;
@@ -46,6 +51,7 @@ pub enum Topic {
     Workspace,
     Probe,
     Ui,
+    Mcp,
 }
 
 pub enum Command {
@@ -57,6 +63,8 @@ pub enum Command {
     Probe {
         report_path: Option<PathBuf>,
     },
+    /// Claude Desktop MCP registration; local configuration only.
+    Mcp(McpOptions),
     Workspace {
         project_root: Option<PathBuf>,
     },
@@ -121,7 +129,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
             Command::Help(topic(arguments.get(1).and_then(|value| value.to_str()))?)
         }
         Some(
-            "daemon" | "harness" | "workspace" | "probe" | "ui" | "harnesses" | "switch"
+            "daemon" | "harness" | "workspace" | "probe" | "ui" | "mcp" | "harnesses" | "switch"
             | "dispatch" | "decide" | "decisions" | "dsh" | "workflow" | "slots" | "context"
             | "session" | "prompt" | "tasks" | "plugins" | "capabilities" | "terminal",
         ) if arguments.len() == 2 && matches!(arguments[1].to_str(), Some("--help" | "-h")) => {
@@ -162,6 +170,10 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Invocation
                 project_root: options.get("--project-root").map(PathBuf::from),
             }
         }
+        Some("mcp") => Command::Mcp(
+            mcp_commands::parse_arguments(&arguments[1..])
+                .map_err(|error| Failure::new(error.code()))?,
+        ),
         Some("probe") => {
             let options = options(&arguments[1..], &["--report"], false)?;
             Command::Probe {
@@ -258,12 +270,15 @@ fn topic(value: Option<&str>) -> Result<Topic, Failure> {
         Some("workspace" | "status") => Ok(Topic::Workspace),
         Some("probe") => Ok(Topic::Probe),
         Some("ui") => Ok(Topic::Ui),
+        Some("mcp") => Ok(Topic::Mcp),
         _ => Err(usage()),
     }
 }
 fn usage() -> Failure {
     Failure::new("cli_invalid_arguments")
 }
+
+const MCP_HELP: &str = "Claude Desktop MCP registration (local only)\n\n  vibemuxctl mcp install [--project-root <path>] [--client claude-desktop] [--binary <path>] [--config <path>]\n  vibemuxctl mcp status  [--project-root <path>] [--client claude-desktop] [--binary <path>] [--config <path>]\n  vibemuxctl mcp doctor  [--project-root <path>] [--client claude-desktop] [--binary <path>] [--config <path>] [--bundle <dir>]\n\nMerges mcpServers.vibemux into the client configuration. install backs up an\nunmodified file to a timestamped .bak and writes atomically; status and doctor\nnever write. doctor --bundle writes a redacted JSON report.\nNo daemon, MCP host, or model request is started.\n";
 
 const CONTROL_HELP: &str = "Usage:\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n  vibemuxctl harnesses [--cached] [--project-root <path>]\n  vibemuxctl switch <harness> [--project-root <path>]
   vibemuxctl dispatch catalog [--project-root <path>]
@@ -311,6 +326,7 @@ pub fn help(topic: Topic) -> String {
         Topic::Daemon => "Daemon lifecycle (explicit operations)\n\n  vibemuxctl daemon start [--project-root <path>] [--daemon-executable <path>]\n  vibemuxctl daemon health [--project-root <path>]\n  vibemuxctl daemon stop [--project-root <path>]\n  vibemuxctl daemon inspect [--project-root <path>]\n  vibemuxctl daemon recover --confirmation <sha256> [--project-root <path>]\n\nNo daemon starts automatically. Recovery remains confirmation-gated.\n".to_string(),
         Topic::Workspace => "Workspace inventory (read-only)\n\n  vibemuxctl workspace status [--project-root <path>]\n  vibemuxctl status [--project-root <path>]\n\nShows local branches, worktrees, and cached-ref ancestry; no fetch, merge, or cleanup.\nGlobal output flags go before the command: --format text|json|auto.\n".to_string(),
         Topic::Probe => "Diagnostic metadata\n\n  vibemuxctl probe [--report <saved_report.json>]\n\nSaved reports are bounded, validated and redacted. Without --report, fixed local\nread-only probes run. Authentication and inference are separate, untested claims.\n".to_string(),
+        Topic::Mcp => MCP_HELP.to_string(),
         Topic::Ui => "Read-only console (ADR 042)\n\n  vibemuxctl ui [--report <saved_report.json>] [--project-root <path>]\n  vibemuxctl --format text ui --once [--report <file>] [--width <40..240>] [--height <12..80>]\n\n1-7: views (Overview, Harnesses, Workspace, Tasks, Daemon, Sessions, Decisions)\nTab: next view, or next pane | L: layouts (single, split, grid) | z: zoom\nj/k/arrows: selection | Enter: open task or details | /: filter | r: refresh\nt: theme | ?: help | q/Esc: quit\nThe live console polls the running daemon's content-free state every 5 s;\n--once renders the probe and workspace views only.\nNo native TUI attach, daemon start, or model request is performed.\n".to_string(),
         Topic::Control => CONTROL_HELP.to_string(),
         Topic::Root => format!("VibeMux {}
@@ -336,6 +352,9 @@ Operate explicitly (daemon)
   capabilities        Read-only daemon capability catalog
   terminal            Observation-only pane inspect | link | focus | unlink
   help control        Full syntax for the daemon-backed verbs
+
+Integrate (local, no daemon)
+  mcp                 Register the read-only MCP host with Claude Desktop
 
 Native harness (standalone, no daemon)
   harness             catalog | replay | probe | dispatch
@@ -411,6 +430,58 @@ mod tests {
             vec!["--json", "ui"],
         ] {
             assert!(parse(args.into_iter().map(OsString::from)).is_err());
+        }
+    }
+
+    #[test]
+    fn mcp_verbs_route_to_the_local_mcp_parser() {
+        let invocation = parse(
+            [
+                "mcp",
+                "install",
+                "--project-root",
+                "proj",
+                "--binary",
+                "bin/vibemux_mcp",
+                "--config",
+                "client.json",
+            ]
+            .map(OsString::from),
+        )
+        .unwrap();
+        assert!(matches!(
+            invocation.command,
+            Command::Mcp(options)
+                if options.verb == mcp_commands::McpVerb::Install
+                    && options.project_root.as_deref() == Some(Path::new("proj"))
+                    && options.binary.as_deref() == Some(Path::new("bin/vibemux_mcp"))
+                    && options.config.as_deref() == Some(Path::new("client.json"))
+        ));
+        assert!(matches!(
+            parse(["mcp", "doctor", "--bundle", "out"].map(OsString::from))
+                .unwrap()
+                .command,
+            Command::Mcp(options)
+                if options.verb == mcp_commands::McpVerb::Doctor
+                    && options.bundle.as_deref() == Some(Path::new("out"))
+        ));
+        assert!(matches!(
+            parse(["mcp", "--help"].map(OsString::from))
+                .unwrap()
+                .command,
+            Command::Help(Topic::Mcp)
+        ));
+        assert!(matches!(
+            parse(["help", "mcp"].map(OsString::from)).unwrap().command,
+            Command::Help(Topic::Mcp)
+        ));
+        for arguments in [
+            vec!["mcp"],
+            vec!["mcp", "install", "--client", "other"],
+            vec!["mcp", "install", "--bundle", "out"],
+            vec!["mcp", "status", "--unknown", "value"],
+        ] {
+            assert!(parse(arguments.into_iter().map(OsString::from)).is_err());
         }
     }
 

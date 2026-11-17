@@ -220,6 +220,34 @@ vibemuxctl.exe tasks events <task_id> [--after-sequence <n>] [--limit <limit>] -
   harness, or reads terminal output, and a pane is never evidence that a run
   succeeded.
 
+## Register the MCP Host with Claude Desktop
+
+`mcp` writes only the desktop client's JSON configuration; it starts no daemon,
+MCP host, or model request. Claude Desktop reads its configuration from
+`%APPDATA%\Claude\claude_desktop_config.json` on Windows and
+`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS.
+`--config <path>` overrides discovery, and `--client claude-desktop` is the only
+supported client.
+
+```powershell
+\target\debug\vibemuxctl.exe mcp install --project-root . --binary .\vibemux_mcp.exe
+\target\debug\vibemuxctl.exe mcp status  --project-root .
+\target\debug\vibemuxctl.exe mcp doctor  --project-root . --bundle .\mcp-bundle
+```
+
+`install` resolves `vibemux_mcp` from `--binary`, else the directory beside
+`vibemuxctl`, else `PATH`, and merges `mcpServers.vibemux` with the absolute
+binary path and `--descriptor <project runtime descriptor>` while preserving
+every other entry and its order. It is idempotent; the first change writes a
+timestamped `.bak` beside the configuration and replaces the file atomically.
+Malformed JSON is refused with `mcp_config_malformed` and left untouched.
+`status` reports `match`, `mismatch`, `not_installed`, `config_missing`, or
+`config_malformed` without writing. `doctor` checks the binary, its execute bit,
+the configuration parse, the owned entry, and stale absolute command paths, with
+one remediation per failure; `--bundle <dir>` writes a redacted
+`mcp_doctor.json` containing only the configuration and binary paths and the
+check results, never environment values or prompt text.
+
 ## From the Python `vibemux` CLI
 
 The Python prototype is a single-process task and run runner. The Rust daemon
