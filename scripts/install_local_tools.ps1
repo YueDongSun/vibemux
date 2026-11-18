@@ -1,7 +1,8 @@
 # Installs the built VibeMux command-line tools into one directory so that
 # `vibemuxctl` can be run by name. The directory keeps the binaries together on
-# purpose: `vibemuxctl daemon start` looks for `vibemuxd` beside itself, and the
-# daemon looks for the launch trampoline and decision peer beside itself.
+# purpose: `vibemuxctl daemon start` looks for `vibemuxd` beside itself, the
+# daemon looks for the launch trampoline and decision peer beside itself, and
+# `vibemuxctl mcp install` looks for `vibemux_mcp` beside `vibemuxctl`.
 #
 # What this does NOT do: it never starts a daemon, never writes operator
 # configuration, never touches the machine-wide PATH, and never replaces the
@@ -32,6 +33,7 @@ $ErrorActionPreference = "Stop"
 $required_binary_names = @("vibemuxctl", "vibemuxd", "vibemux_launch_trampoline")
 $companion_binary_names = @(
     "vibemux_probe",
+    "vibemux_mcp",
     "vibemux_decision_peer",
     "vibemux_terminal_observer"
 )
@@ -40,6 +42,7 @@ $build_arguments = @(
     "-p", "vibemuxd", "--bin", "vibemuxd", "--bin", "vibemux_launch_trampoline",
     "-p", "vibemux_cli", "--bin", "vibemuxctl",
     "-p", "vibemux_probe", "--bin", "vibemux_probe",
+    "-p", "vibemux_mcp", "--bin", "vibemux_mcp",
     "-p", "vibemux_decision_peer", "--bin", "vibemux_decision_peer",
     "-p", "vibemux_terminal_observer", "--bin", "vibemux_terminal_observer"
 )

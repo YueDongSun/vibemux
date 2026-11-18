@@ -237,6 +237,7 @@ pub enum McpError {
     BinaryNotExecutable,
     PathNotUtf8,
     DescriptorPlaceholder,
+    DescriptorRootInvalid,
     EntryMissing,
     EntryMismatch,
     StaleEntryPath,
@@ -257,6 +258,7 @@ impl McpError {
             Self::BinaryNotExecutable => "mcp_binary_not_executable",
             Self::PathNotUtf8 => "mcp_path_not_utf8",
             Self::DescriptorPlaceholder => "mcp_descriptor_placeholder",
+            Self::DescriptorRootInvalid => "mcp_descriptor_root_invalid",
             Self::EntryMissing => "mcp_entry_missing",
             Self::EntryMismatch => "mcp_entry_mismatch",
             Self::StaleEntryPath => "mcp_stale_entry_path",
@@ -294,6 +296,9 @@ impl McpError {
             Self::PathNotUtf8 => "Pass --binary and --project-root paths that are valid UTF-8.",
             Self::DescriptorPlaceholder => {
                 "Run the command from an existing project root or pass --project-root with a path that can be resolved."
+            }
+            Self::DescriptorRootInvalid => {
+                "Pass --project-root with an existing directory; the MCP descriptor cannot live under a non-directory path."
             }
             Self::EntryMissing => {
                 "Run `vibemuxctl mcp install` to register the VibeMux MCP server."
@@ -437,13 +442,6 @@ impl ConfigValue {
             _ => None,
         }
     }
-
-    fn strings(&self) -> Option<Vec<&str>> {
-        match self {
-            Self::Array(values) => values.iter().map(Self::text).collect(),
-            _ => None,
-        }
-    }
 }
 
 /// The `mcpServers.vibemux` entry this module owns.
@@ -475,22 +473,25 @@ impl ServerEntry {
         if object.get("command").and_then(ConfigValue::text) != Some(self.command.as_str()) {
             return false;
         }
-        object
-            .get("args")
-            .and_then(ConfigValue::strings)
-            .is_some_and(|args| self.owned_args_match(&args))
+        match object.get("args") {
+            Some(ConfigValue::Array(values)) => self.owned_args_match(values),
+            _ => false,
+        }
     }
 
-    fn owned_args_match(&self, actual: &[&str]) -> bool {
+    /// Compares only the owned `--descriptor <path>` pair. Every other
+    /// argument, including an element that is not a string, is ignored here,
+    /// so a hardened entry is not rewritten on every install.
+    fn owned_args_match(&self, actual: &[ConfigValue]) -> bool {
         let [flag, value] = self.args.as_slice() else {
             return false;
         };
         let mut found = 0_usize;
         let mut index = 0;
         while index < actual.len() {
-            if actual[index] == flag.as_str() {
+            if actual[index].text() == Some(flag.as_str()) {
                 found += 1;
-                if actual.get(index + 1).copied() != Some(value.as_str()) {
+                if actual.get(index + 1).and_then(ConfigValue::text) != Some(value.as_str()) {
                     return false;
                 }
                 index += 2;
@@ -502,40 +503,40 @@ impl ServerEntry {
     }
 
     /// Keeps every key and argument the existing entry already has, then
-    /// replaces the owned `command` and `--descriptor <path>` pair. A
-    /// previously configured `--deny_metadata_read` (or any other argument)
-    /// survives an install.
+    /// replaces the owned `command` and `--descriptor <path>` pair. Arguments
+    /// are preserved structurally: only the owned flag and the element that
+    /// follows it are dropped, and every other element keeps its original
+    /// type and position. A previously configured `--deny_metadata_read`, a
+    /// non-string element, and any other argument therefore survive an
+    /// install, and exactly one owned pair is appended at the end.
     fn merge_into(&self, existing: Option<&ConfigValue>) -> ConfigValue {
         let mut object = existing
             .and_then(ConfigValue::object)
             .cloned()
             .unwrap_or_default();
-        let existing_args = object
-            .get("args")
-            .and_then(ConfigValue::strings)
-            .map(|args| args.into_iter().map(str::to_owned).collect::<Vec<_>>())
-            .unwrap_or_default();
+        let existing_args: &[ConfigValue] = match object.get("args") {
+            Some(ConfigValue::Array(values)) => values.as_slice(),
+            _ => &[],
+        };
         let mut args = Vec::with_capacity(existing_args.len() + self.args.len());
         let mut index = 0;
         while index < existing_args.len() {
-            if existing_args[index] == DESCRIPTOR_ARGUMENT {
-                // Drop the old flag and its value; exactly one owned pair is
-                // appended below.
+            if existing_args[index].text() == Some(DESCRIPTOR_ARGUMENT) {
+                // Drop the old flag and the element that follows it (its
+                // value, string or not); exactly one owned pair is appended
+                // below.
                 index += 2;
                 continue;
             }
             args.push(existing_args[index].clone());
             index += 1;
         }
-        args.extend(self.args.iter().cloned());
+        args.extend(self.args.iter().cloned().map(ConfigValue::String));
         object.insert(
             "command".to_string(),
             ConfigValue::String(self.command.clone()),
         );
-        object.insert(
-            "args".to_string(),
-            ConfigValue::Array(args.into_iter().map(ConfigValue::String).collect()),
-        );
+        object.insert("args".to_string(), ConfigValue::Array(args));
         ConfigValue::Object(object)
     }
 }
@@ -612,7 +613,10 @@ pub fn locate_binary(
                 continue;
             }
             let candidate = directory.join(binary_name());
-            if candidate.is_file() {
+            // A stray non-executable file earlier on PATH must not shadow a
+            // real executable later on it, so the scan applies the same
+            // execute-bit rule as install and doctor.
+            if candidate.is_file() && is_executable(&candidate) {
                 return LocatedBinary {
                     path: absolute_path(&candidate),
                     source: BinarySource::PathEntry,
@@ -632,6 +636,10 @@ pub fn locate_binary(
 pub enum DescriptorSource {
     Runtime,
     Placeholder,
+    /// The project root exists but cannot be a project directory (it is a
+    /// file, a symlink to a file, or another non-directory). This is not a
+    /// placeholder: no descriptor path under it can ever work.
+    InvalidRoot,
 }
 
 impl DescriptorSource {
@@ -640,6 +648,7 @@ impl DescriptorSource {
         match self {
             Self::Runtime => "runtime",
             Self::Placeholder => "placeholder",
+            Self::InvalidRoot => "invalid_root",
         }
     }
 }
@@ -651,8 +660,11 @@ pub struct DescriptorLocation {
 }
 
 /// Derives the daemon descriptor path for a project through `DaemonPaths` (the
-/// single owner of that layout). When the root cannot be canonicalized the
-/// project-local legacy path is used as an explicit placeholder.
+/// single owner of that layout). A root that exists but is not a directory is
+/// reported as [`DescriptorSource::InvalidRoot`] instead of silently becoming
+/// a placeholder, because the placeholder path would point inside a
+/// non-directory and no install could work. A root that cannot be resolved at
+/// all keeps the project-local legacy path as an explicit placeholder.
 #[must_use]
 pub fn descriptor_location(project_root: &Path) -> DescriptorLocation {
     match DaemonPaths::from_project_root(project_root) {
@@ -660,12 +672,18 @@ pub fn descriptor_location(project_root: &Path) -> DescriptorLocation {
             path: paths.descriptor_path().to_path_buf(),
             source: DescriptorSource::Runtime,
         },
-        Err(_) => DescriptorLocation {
-            path: absolute_path(project_root)
-                .join(".vibemux")
-                .join("control.json"),
-            source: DescriptorSource::Placeholder,
-        },
+        Err(_) => {
+            let source = match fs::symlink_metadata(project_root) {
+                Ok(metadata) if !metadata.is_dir() => DescriptorSource::InvalidRoot,
+                _ => DescriptorSource::Placeholder,
+            };
+            DescriptorLocation {
+                path: absolute_path(project_root)
+                    .join(".vibemux")
+                    .join("control.json"),
+                source,
+            }
+        }
     }
 }
 
@@ -766,6 +784,9 @@ pub struct InstallReport {
 /// including a duplicate object key, is refused before any write, so the
 /// original file is untouched.
 pub fn install(request: &InstallRequest, now: OffsetDateTime) -> Result<InstallReport, McpError> {
+    if request.descriptor_source == DescriptorSource::InvalidRoot {
+        return Err(McpError::DescriptorRootInvalid);
+    }
     if request.platform == Platform::Windows
         && request.descriptor_source == DescriptorSource::Placeholder
     {
@@ -867,6 +888,9 @@ impl StatusRequest {
 /// Reports whether the client configuration matches the desired entry without
 /// writing anything.
 pub fn status(request: &StatusRequest) -> Result<StatusReport, McpError> {
+    if request.descriptor.source == DescriptorSource::InvalidRoot {
+        return Err(McpError::DescriptorRootInvalid);
+    }
     match load_config(&request.config_path)? {
         None => Ok(request.report(false, true, false, false, "config_missing")),
         Some(bytes) => match parse_config(&bytes) {
@@ -1028,20 +1052,28 @@ impl DoctorRequest {
 pub fn doctor(request: &DoctorRequest) -> Result<DoctorReport, McpError> {
     let mut checks = Vec::new();
     let placeholder = request.descriptor.source == DescriptorSource::Placeholder;
-    checks.push(if placeholder && request.platform == Platform::Windows {
-        DoctorCheck::failed_with_detail(
-            "descriptor_source",
-            McpError::DescriptorPlaceholder,
-            request.descriptor.source.as_str().to_string(),
-        )
-    } else if placeholder {
-        DoctorCheck::passed_with_detail(
-            "descriptor_source",
-            request.descriptor.source.as_str().to_string(),
-        )
-    } else {
-        DoctorCheck::passed("descriptor_source")
-    });
+    checks.push(
+        if request.descriptor.source == DescriptorSource::InvalidRoot {
+            DoctorCheck::failed_with_detail(
+                "descriptor_source",
+                McpError::DescriptorRootInvalid,
+                request.descriptor.source.as_str().to_string(),
+            )
+        } else if placeholder && request.platform == Platform::Windows {
+            DoctorCheck::failed_with_detail(
+                "descriptor_source",
+                McpError::DescriptorPlaceholder,
+                request.descriptor.source.as_str().to_string(),
+            )
+        } else if placeholder {
+            DoctorCheck::passed_with_detail(
+                "descriptor_source",
+                request.descriptor.source.as_str().to_string(),
+            )
+        } else {
+            DoctorCheck::passed("descriptor_source")
+        },
+    );
     if request.binary.exists && request.binary.path.is_file() {
         checks.push(DoctorCheck::passed("binary_exists"));
         checks.push(if is_executable(&request.binary.path) {
@@ -1273,6 +1305,35 @@ fn timestamp(now: OffsetDateTime) -> String {
     )
 }
 
+/// Opens a file for the backup or the atomic replacement with the intended
+/// mode applied at creation on unix. The existing configuration's mode is
+/// preserved, and a new file is owner-only (0600); applying the mode here
+/// means neither artifact is ever briefly more permissive than its target.
+fn create_with_mode(
+    path: &Path,
+    permissions: Option<&fs::Permissions>,
+    create_new: bool,
+) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mode = permissions.map_or(0o600, |permissions| permissions.mode());
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = permissions;
+    }
+    options.open(path)
+}
+
 fn write_backup(
     path: &Path,
     now: OffsetDateTime,
@@ -1293,15 +1354,12 @@ fn write_backup(
             format!("{name}.{stamp}.{attempt}.bak")
         };
         let candidate = parent.join(candidate_name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
+        match create_with_mode(&candidate, permissions, true) {
             Ok(mut file) => {
                 file.write_all(bytes)
                     .and_then(|()| file.sync_all())
                     .map_err(|_| McpError::ConfigWriteFailed)?;
+                #[cfg(not(unix))]
                 if let Some(permissions) = permissions {
                     file.set_permissions(permissions.clone())
                         .map_err(|_| McpError::ConfigWriteFailed)?;
@@ -1324,10 +1382,11 @@ fn atomic_write(
     fs::create_dir_all(parent)?;
     let temp = temporary_path(parent, path);
     let result = (|| {
-        let mut file = File::create(&temp)?;
+        let mut file = create_with_mode(&temp, permissions, true)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
+        #[cfg(not(unix))]
         if let Some(permissions) = permissions {
             fs::set_permissions(&temp, permissions.clone())?;
         }
@@ -1606,6 +1665,11 @@ mod tests {
         fs::create_dir(&path_dir).expect("path directory");
         let on_path = path_dir.join(binary_name());
         write(&on_path, "");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&on_path, fs::Permissions::from_mode(0o755)).expect("permissions");
+        }
         let path_var = env::join_paths([dir.path().join("absent"), path_dir]).expect("join paths");
         let located = locate_binary(None, None, Some(&path_var));
         assert_eq!(located.source, BinarySource::PathEntry);
@@ -1617,6 +1681,28 @@ mod tests {
         assert_eq!(missing.source, BinarySource::NotFound);
         assert!(!missing.exists);
         assert_eq!(missing.path, absolute_path(&elsewhere.join(binary_name())));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_scan_skips_a_non_executable_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().expect("temp dir");
+        let shadow = dir.path().join("shadow");
+        let real = dir.path().join("real");
+        fs::create_dir(&shadow).expect("shadow directory");
+        fs::create_dir(&real).expect("real directory");
+        let stray = shadow.join(binary_name());
+        write(&stray, "stray");
+        fs::set_permissions(&stray, fs::Permissions::from_mode(0o644)).expect("permissions");
+        let executable = real.join(binary_name());
+        write(&executable, "");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).expect("permissions");
+
+        let path_var = env::join_paths([&shadow, &real]).expect("join paths");
+        let located = locate_binary(None, None, Some(&path_var));
+        assert_eq!(located.source, BinarySource::PathEntry);
+        assert_eq!(located.path, absolute_path(&executable));
     }
 
     #[test]
@@ -1765,6 +1851,52 @@ mod tests {
     }
 
     #[test]
+    fn install_preserves_non_string_arguments_and_replaces_only_the_owned_pair() {
+        let dir = tempdir().expect("temp dir");
+        let descriptor = dir.path().join("control.json");
+        let config = config_with(
+            dir.path(),
+            r#"{
+  "mcpServers": {
+    "vibemux": {
+      "command": "old",
+      "args": [
+        "--deny_metadata_read",
+        {"nested": 1},
+        "--descriptor",
+        "/old/control.json",
+        7
+      ]
+    }
+  }
+}"#,
+        );
+        let binary = binary_in(dir.path());
+        let request = install_request(config.clone(), binary, descriptor.clone());
+        assert!(install(&request, fixed_time()).expect("install").changed);
+
+        // Every pre-existing element survives in order with its original
+        // type; only the old `--descriptor /old/control.json` pair is gone.
+        let document = parse(&config);
+        assert_eq!(
+            document["mcpServers"]["vibemux"]["args"],
+            json!([
+                "--deny_metadata_read",
+                {"nested": 1},
+                7,
+                DESCRIPTOR_ARGUMENT,
+                descriptor.to_string_lossy()
+            ])
+        );
+
+        // Non-string elements do not make a hardened entry a mismatch.
+        let second = install(&request, fixed_time()).expect("second");
+        assert!(!second.changed);
+        assert!(second.backup.is_none());
+        assert_eq!(backups(dir.path()).len(), 1);
+    }
+
+    #[test]
     #[cfg(unix)]
     fn install_preserves_existing_permissions_and_secures_a_new_file() {
         use std::os::unix::fs::PermissionsExt;
@@ -1790,6 +1922,38 @@ mod tests {
         )
         .expect("install");
         assert_eq!(mode(&new_config), 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn backup_and_replacement_carry_the_intended_mode_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        let dir = tempdir().expect("temp dir");
+        let config = config_with(dir.path(), r#"{"mcpServers":{}}"#);
+        // 0700 survives any common umask, so this checks the preserved mode
+        // rather than the process umask: the mode is set when each file is
+        // created, not chmod-ed afterwards.
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o700)).expect("permissions");
+        let report = install(
+            &install_request(
+                config.clone(),
+                binary_in(dir.path()),
+                dir.path().join("control.json"),
+            ),
+            fixed_time(),
+        )
+        .expect("install");
+        let backup = report.backup.expect("backup path");
+        assert_eq!(mode(Path::new(&backup)), 0o700);
+        assert_eq!(mode(&config), 0o700);
+        // The atomic replacement leaves no temporary artifact behind.
+        assert!(
+            fs::read_dir(dir.path())
+                .expect("read dir")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp."))
+        );
     }
 
     #[test]
@@ -2213,6 +2377,67 @@ mod tests {
         assert!(location.path.is_absolute());
         assert_eq!(location.path.file_name(), Some(OsStr::new("control.json")));
         assert_eq!(location.source, DescriptorSource::Runtime);
+    }
+
+    #[test]
+    fn an_existing_non_directory_root_is_reported_as_invalid() {
+        let dir = tempdir().expect("temp dir");
+        let file = dir.path().join("not-a-directory");
+        write(&file, "file");
+        let location = descriptor_location(&file);
+        assert_eq!(location.source, DescriptorSource::InvalidRoot);
+        assert_eq!(location.source.as_str(), "invalid_root");
+
+        // A root that simply does not exist keeps the explicit placeholder.
+        assert_eq!(
+            descriptor_location(&dir.path().join("missing")).source,
+            DescriptorSource::Placeholder
+        );
+
+        // `doctor` reports a distinct code with a remediation.
+        let mut doctor_value = doctor_request(
+            config_with(dir.path(), "{}"),
+            binary_in(dir.path()),
+            location.path.clone(),
+        );
+        doctor_value.descriptor.source = DescriptorSource::InvalidRoot;
+        let report = doctor(&doctor_value).expect("doctor");
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.name == "descriptor_source")
+            .expect("descriptor check");
+        assert!(!check.ok);
+        assert_eq!(check.code, Some("mcp_descriptor_root_invalid"));
+        assert!(
+            check
+                .remediation
+                .as_deref()
+                .is_some_and(|text| text.contains("existing directory"))
+        );
+
+        // `install` and `status` refuse instead of writing under the file.
+        let mut install_value = install_request(
+            dir.path().join("install.json"),
+            binary_in(dir.path()),
+            location.path.clone(),
+        );
+        install_value.descriptor_source = DescriptorSource::InvalidRoot;
+        assert_eq!(
+            install(&install_value, fixed_time()).unwrap_err(),
+            McpError::DescriptorRootInvalid
+        );
+
+        let mut status_value = status_request(
+            config_with(dir.path(), "{}"),
+            binary_in(dir.path()),
+            location.path,
+        );
+        status_value.descriptor.source = DescriptorSource::InvalidRoot;
+        assert_eq!(
+            status(&status_value).unwrap_err(),
+            McpError::DescriptorRootInvalid
+        );
     }
 
     #[test]

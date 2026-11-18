@@ -18,8 +18,9 @@ Supervisor Chat GUI and is unrelated to `vibemuxctl ui`.
 
 To run `vibemuxctl` by name instead of through `.\target\debug\`, install the
 release build into one directory and put that directory on your user PATH. The
-daemon, launch trampoline, probe, decision peer, and terminal observer stay
-beside `vibemuxctl` because the CLI and daemon find each other by location.
+daemon, launch trampoline, probe, MCP host, decision peer, and terminal observer
+stay beside `vibemuxctl` because the CLI and daemon find each other by location;
+`mcp install` in particular resolves `vibemux_mcp` from that sibling directory.
 
 ```powershell
 .\scripts\install_local_tools.ps1 -build -dry_run
@@ -243,7 +244,10 @@ and its order. Keys it does not own inside the `vibemux` entry and extra
 arguments such as `--deny_metadata_read` are kept, so an already hardened entry
 is left alone. It is idempotent; the first change writes a timestamped `.bak`
 beside the configuration and replaces the file atomically, keeping the existing
-file's permissions (a new configuration is owner-only). Malformed JSON,
+file's permissions. A new configuration is owner-only on Unix (mode `0600`); on
+Windows the file is created under the client directory and inherits that
+directory's ACLs, so "owner-only" there depends on the directory's access
+control rather than a file mode. Malformed JSON,
 including a duplicate object key, is refused with `mcp_config_malformed` and
 left untouched. `status` reports `match`, `mismatch`, `not_installed`,
 `config_missing`, or `config_malformed` without writing. `doctor` checks the
