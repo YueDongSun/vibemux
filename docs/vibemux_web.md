@@ -107,31 +107,45 @@ qualify an operator's actual bootstrap mechanism.
 ### Local page mode
 
 `"local_page_without_token": true` lets an ordinary browser on the same
-computer open the board, for local testing. The process then serves the page
-and its static assets (HTML, JS, CSS, manifest, icons) without the bearer, but
-only to `GET` and `HEAD` requests whose `Host` header (or HTTP/2 authority)
-names the bound listener literally: `127.0.0.1:<port>` or `localhost:<port>`
-for a `127.0.0.1` bind, `[::1]:<port>` or `localhost:<port>` for `::1`.
-Everything under `/api/`, `/openapi.json`, and the service worker script
-`/sw.js` still require the bearer. The page holds no daemon data until the
-operator pastes the token into it; it keeps the token in tab-scoped
-`sessionStorage`. Token-free page loads do not count toward the
-failed-attempt limit.
+computer load the board and read its data, for local testing. The process
+then serves the page, its static assets (HTML, JS, CSS, manifest, icons),
+the data API under `/api/`, `/openapi.json`, and the service-worker script
+`/sw.js` without the bearer. The request must name the bound listener
+literally in its `Host` header (or HTTP/2 or absolute-form authority):
+`127.0.0.1:<port>` or `localhost:<port>` for a `127.0.0.1` bind,
+`[::1]:<port>` or `localhost:<port>` for `::1`. For the data API, the
+OpenAPI document, and the service worker, the request must also carry no
+cross-site signal: a missing `Sec-Fetch-Site` or `Origin` is accepted,
+`Sec-Fetch-Site` may be `same-origin` or `none`, and a present `Origin`
+must name the loopback listener. Non-canonical paths (percent-encoding,
+`//`, `/./`, `/../`) do not qualify. Every other request still requires
+the instance bearer on every route: another `Host` such as a tailnet name
+or a phone's remote address, a cross-site or `same-site` request, or a
+request with no usable listener name. The exception covers every method,
+including the POST routes that write only web-local enrollment and push
+state. Token-free requests do not count toward the failed-attempt limit.
+The ADR 033 amendment of 2026-11-17 extended this from the page to the
+data API, OpenAPI document, and service worker; the shipped page still
+asks for the token before it starts polling, so paste it as before when
+using the page itself.
 
-Because the browser fetches `/sw.js` without the bearer, a page opened this
-way does not install the service worker: there is no offline cache and no
-push in this mode. That is deliberate. An installed worker serves its
-precached page without asking the server, so a worker installed through the
-token-free page would keep showing the page after the mode is turned off.
-Without it, turning the mode off takes effect on the next page load.
+Because `/sw.js` is now served without the bearer in this mode, the page
+installs the service worker like any other page: the precached shell stays
+available offline, and a worker installed this way can keep serving that
+shell after the mode is turned off. API responses are cached only for
+requests that carry an `Authorization` header, so token-free local data is
+never written to the offline cache and data access still ends when the
+mode is turned off. Service-worker updates still require an explicit
+prompt action.
 
 The `Host` check also turns away DNS-rebinding pages and requests forwarded
 under another name. A reverse proxy that rewrites `Host` to the loopback
-address, however, would publish the page itself without a token. Whether
-`tailscale serve` does so has not been tested, so keep this mode off on a
-port you publish to a tailnet. The setting is off unless the config sets it,
-and a non-loopback bind is rejected as before. This mode was added by operator
-decision on 2026-10-22 (ADR 033 note).
+address, however, would publish the page and its data without a token.
+Whether `tailscale serve` does so has not been tested, so keep this mode
+off on a port you publish to a tailnet. The setting is off unless the
+config sets it, and a non-loopback bind is rejected as before. The page
+mode was added by operator decision on 2026-10-22 (ADR 033 note), and the
+data-API exception on 2026-11-17.
 
 ### Enrollment
 
