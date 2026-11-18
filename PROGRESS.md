@@ -8487,3 +8487,40 @@ prepare-only-upgrade paths; ruff/mypy(scoped)/check_public_artifacts clean.
   provisioned versioned-alias config loading through the daemon loader, a
   `.js` shim, project-relative/missing/non-regular targets, duplicate rows,
   and the write gate.
+
+### 2026-11-18 — Parallel program: auto-provision, web/egui collaboration, desktop MCP commands
+
+- **Dispatch auto-provision (A):** `vibemux_harness::dispatch::provision`
+  plans schema-1 routes from the trusted probe cache (execution-capable
+  adapters only, deterministic order, explicit allow_execution). The
+  daemon loader now trusts a versioned-symlink launcher whose launch or
+  canonical stem names the harness (regular external direct image
+  required; project-relative/non-regular refused). `vibemuxctl dispatch
+  provision [--write --yes] [--force] [--allow-execution|--no-execution]`
+  validates the planned bytes through the real loader before renaming;
+  `.js` shims without an interpreter field are skipped as no_executable.
+  Verified end to end on this host (real probe cache -> one claude route
+  -> daemon catalog accepts it).
+- **Web collaboration (B):** read-only Collaborate page with a Flow view
+  (Svelte SVG graph over the console snapshot; selection opens existing
+  task detail; list fallback) and a procedural Canvas 2D pixel office
+  (desks per detected harness, characters per active task/run, needs-you
+  badges, reduced-motion, table fallback); pure content-free projection
+  with node tests; docs and board copy corrected.
+- **Desktop MCP commands (C):** `vibemuxctl mcp install|status|doctor`
+  merge a read-only-safe `mcpServers.vibemux` entry into the Claude
+  Desktop config for the platform (atomic write, timestamped backup,
+  preserved file mode, structural arg merge keeping hardened flags,
+  duplicate-key rejection, non-UTF-8 refusal, descriptor-source
+  reporting, executable-only binary discovery); doctor explains each
+  failure and can write a redacted bundle; the local installer now also
+  installs vibemux_mcp.
+- **egui collaboration (D):** read-only Collaborate page in the
+  Supervisor Chat shell with a Task->Run->Harness->Status flow (fit on
+  entry and on canvas resize, both-axis panning, wheel zoom, keyboard
+  focus, run-level selection, has_more_runs note, list fallback).
+- All four slices were implemented in parallel worktrees and passed two
+  adversarial verification rounds (the first round's findings — writing
+  daemon-rejected configs, hit-test order, permission/merge defects,
+  lost panning — were fixed and re-verified). Launchers create the
+  dispatch config on first run after one explicit paid-call confirmation.
