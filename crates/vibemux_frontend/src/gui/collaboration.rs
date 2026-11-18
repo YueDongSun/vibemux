@@ -9,10 +9,11 @@
 //! ```
 //!
 //! A task fans out to its runs, each run names the harness that executed it,
-//! and a run that needs the operator (a blocked task, a failed or stale run)
-//! gets a status node. Nothing here writes canonical state: selecting a node
-//! only routes through the existing task-detail selection, which enqueues the
-//! same read the task list uses.
+//! and a run whose own state needs the operator (blocked, failed, stale, or a
+//! tolerated extra) gets a status node. A blocked task with no such run keeps
+//! its needs-you badge on the task node but gets no status node. Nothing here
+//! writes canonical state: selecting a node only routes through the existing
+//! task-detail selection, which enqueues the same read the task list uses.
 
 use eframe::egui::{
     self, Color32, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, vec2,
@@ -326,17 +327,22 @@ pub fn layout(snapshot: &SupervisorSnapshot, options: LayoutOptions) -> GraphLay
 pub struct CollaborationView<'a> {
     pub snapshot: &'a SupervisorSnapshot,
     pub selected_task_id: Option<&'a str>,
-    /// Any listed task's detail was truncated at the client's run bound, so the
-    /// page shows how many Runs it can display.
+    /// Some listed task's detail was truncated at the client's run bound; the
+    /// page notes that those tasks show only their most recent runs.
     pub has_more_runs: bool,
 }
 
-/// What the page asks the shell to do. Only existing task-detail selection.
+/// What the page asks the shell to do. Node clicks reuse the existing
+/// task-detail selection, and the header toggle asks the shell to store the
+/// chosen view mode.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CollaborationActions {
     pub selected_task_id: Option<String>,
     /// The Run whose node was clicked; `None` for a task node.
     pub selected_run_id: Option<String>,
+    /// The view mode the operator picked in the header, applied through the
+    /// shell's collaboration action handler.
+    pub(crate) view_mode: Option<ViewMode>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -348,6 +354,7 @@ pub(crate) enum ViewMode {
 
 const VIEW_MODE_ID: &str = "collaboration_view_mode";
 const CANVAS_STATE_ID: &str = "collaboration_canvas_state";
+const CANVAS_SIZE_ID: &str = "collaboration_canvas_size";
 const VISIT_FRAME_ID: &str = "collaboration_last_graph_frame";
 const MIN_ZOOM: f32 = 0.35;
 const MAX_ZOOM: f32 = 2.5;
@@ -373,7 +380,7 @@ impl Default for CanvasTransform {
 /// empty state when the snapshot holds no tasks.
 pub fn render_page(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) -> CollaborationActions {
     let mut actions = CollaborationActions::default();
-    render_header(ui, colors, view);
+    render_header(ui, colors, view, &mut actions);
     ui.add_space(8.0);
     if view.snapshot.tasks.is_empty() {
         render_empty_state(ui, colors);
@@ -395,7 +402,12 @@ pub(crate) fn set_view_mode(ctx: &egui::Context, mode: ViewMode) {
     ctx.data_mut(|data| data.insert_temp(egui::Id::new(VIEW_MODE_ID), mode));
 }
 
-fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
+fn render_header(
+    ui: &mut Ui,
+    colors: &C,
+    view: &CollaborationView<'_>,
+    actions: &mut CollaborationActions,
+) {
     let task_count = view.snapshot.tasks.len();
     let run_count: usize = view.snapshot.tasks.iter().map(|task| task.runs.len()).sum();
     let needs_you = view
@@ -439,7 +451,7 @@ fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
                     )
                     .clicked()
                 {
-                    set_view_mode(ui.ctx(), mode);
+                    actions.view_mode = Some(mode);
                 }
             }
             ui.label(RichText::new("View").size(12.0).color(colors.muted));
@@ -452,7 +464,7 @@ fn render_header(ui: &mut Ui, colors: &C, view: &CollaborationView<'_>) {
     );
     if view.has_more_runs {
         ui.label(
-            RichText::new("Showing the 12 most recent Runs.")
+            RichText::new("Some tasks show only the most recent runs.")
                 .size(12.0)
                 .color(colors.faint),
         );
@@ -578,7 +590,8 @@ fn begin_visit(ui: &Ui) -> bool {
 
 /// Fit the computed layout into the canvas: never magnify past 1:1, clamp to
 /// the zoom range, centre horizontally, and start at the top so a tall graph
-/// is reached by vertical dragging.
+/// is reached by vertical dragging. A canvas narrower than the minimum zoom
+/// leaves the graph wider than the viewport, but still centred.
 fn fit_transform(layout: &GraphLayout, canvas: Vec2) -> CanvasTransform {
     let zoom = if layout.width > 0.0 {
         (canvas.x / layout.width).min(1.0).clamp(MIN_ZOOM, MAX_ZOOM)
@@ -591,6 +604,22 @@ fn fit_transform(layout: &GraphLayout, canvas: Vec2) -> CanvasTransform {
     }
 }
 
+/// Whether the stored transform must be recomputed instead of reused. A new
+/// visit and a resized canvas both start from a fresh fit; a same-size frame
+/// keeps the operator's pan and zoom.
+fn refit_needed(fit_to_view: bool, last_canvas: Option<Vec2>, canvas: Vec2) -> bool {
+    fit_to_view || last_canvas != Some(canvas)
+}
+
+/// Pan by a drag delta, leaving the (already clamped) zoom untouched. Pure so
+/// both axes are unit-testable without an egui context.
+fn pan_by(transform: CanvasTransform, delta: Vec2) -> CanvasTransform {
+    CanvasTransform {
+        pan: transform.pan + delta,
+        zoom: transform.zoom,
+    }
+}
+
 fn update_transform(
     ui: &Ui,
     response: &Response,
@@ -599,12 +628,16 @@ fn update_transform(
     fit_to_view: bool,
 ) -> CanvasTransform {
     let id = egui::Id::new(CANVAS_STATE_ID);
-    let mut transform = if fit_to_view {
-        fit_transform(layout, canvas_rect.size())
+    let size_id = egui::Id::new(CANVAS_SIZE_ID);
+    let canvas = canvas_rect.size();
+    let stored = ui.ctx().data(|data| data.get_temp::<CanvasTransform>(id));
+    let last_canvas = ui.ctx().data(|data| data.get_temp::<Vec2>(size_id));
+    // Refit on the first frame of a visit and whenever the canvas resizes; a
+    // pan/zoom fitted to the old canvas would otherwise cut or miss the graph.
+    let mut transform = if refit_needed(fit_to_view, last_canvas, canvas) {
+        fit_transform(layout, canvas)
     } else {
-        ui.ctx()
-            .data(|data| data.get_temp::<CanvasTransform>(id))
-            .unwrap_or_else(|| fit_transform(layout, canvas_rect.size()))
+        stored.unwrap_or_else(|| fit_transform(layout, canvas))
     };
 
     // Zoom over the whole canvas, including over a node, so the wheel never
@@ -626,12 +659,15 @@ fn update_transform(
         }
     }
     if response.dragged() {
-        // The fitted graph is centred horizontally; a tall graph is reached by
-        // vertical drag instead of sideways panning.
-        transform.pan.y += response.drag_delta().y;
+        // Drag pans both axes: the fit centres the graph, but a zoomed graph
+        // still has to be reached sideways as well as down.
+        transform = pan_by(transform, response.drag_delta());
     }
 
-    ui.ctx().data_mut(|data| data.insert_temp(id, transform));
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(id, transform);
+        data.insert_temp(size_id, canvas);
+    });
     transform
 }
 
@@ -1196,5 +1232,81 @@ mod tests {
         assert!((wide.pan.x - (2000.0 - layout.width) / 2.0).abs() < 1e-3);
         let tiny = fit_transform(&layout, vec2(10.0, 10.0));
         assert_eq!(tiny.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn a_drag_pans_both_axes_without_changing_the_clamped_zoom() {
+        let layout = layout(
+            &snapshot(vec![task(
+                "a",
+                "running",
+                vec![run("a1", "Claude", "running")],
+            )]),
+            options(),
+        );
+        let fitted = fit_transform(&layout, vec2(960.0, 600.0));
+        assert!(fitted.zoom < 1.0, "the fixture is wider than 960px");
+        let panned = pan_by(fitted, vec2(-40.0, 55.0));
+        assert!((panned.pan.x - (fitted.pan.x - 40.0)).abs() < 1e-4);
+        assert!((panned.pan.y - (fitted.pan.y + 55.0)).abs() < 1e-4);
+        assert!(
+            panned.pan.x != fitted.pan.x,
+            "horizontal dragging is not dropped"
+        );
+        assert_eq!(panned.zoom, fitted.zoom, "drag never changes zoom");
+    }
+
+    #[test]
+    fn the_fit_math_holds_for_several_canvas_sizes() {
+        let layout = layout(
+            &snapshot(vec![task(
+                "a",
+                "running",
+                vec![run("a1", "Claude", "running")],
+            )]),
+            options(),
+        );
+        // Widths above the layout (1:1, centred), around it (fit-width), and
+        // below the minimum-zoom width (clamped, still centred) all keep their
+        // maths; the middle band is what a resize refits into.
+        for (canvas, expected_zoom) in [
+            (vec2(2000.0, 300.0), 1.0),
+            (vec2(1000.0, 300.0), 1000.0 / layout.width),
+            (vec2(700.0, 500.0), 700.0 / layout.width),
+            (vec2(480.0, 400.0), 480.0 / layout.width),
+            (vec2(320.0, 240.0), MIN_ZOOM),
+        ] {
+            let transform = fit_transform(&layout, canvas);
+            assert!(
+                (transform.zoom - expected_zoom).abs() < 1e-4,
+                "{canvas:?}: zoom {} != {expected_zoom}",
+                transform.zoom
+            );
+            assert!((MIN_ZOOM..=MAX_ZOOM).contains(&transform.zoom));
+            // Always centred horizontally and aligned to the top.
+            let expected_pan = (canvas.x - layout.width * transform.zoom) * 0.5;
+            assert!(
+                (transform.pan.x - expected_pan).abs() < 1e-3,
+                "{canvas:?}: pan {} != {expected_pan}",
+                transform.pan.x
+            );
+            assert_eq!(transform.pan.y, 0.0, "{canvas:?} starts at the top");
+        }
+    }
+
+    #[test]
+    fn a_resize_or_new_visit_refits_but_a_same_size_frame_does_not() {
+        let size = vec2(960.0, 600.0);
+        assert!(refit_needed(true, None, size), "first render of a visit");
+        assert!(refit_needed(false, None, size), "no stored canvas yet");
+        assert!(!refit_needed(false, Some(size), size), "same canvas");
+        assert!(
+            refit_needed(false, Some(size), vec2(1024.0, 600.0)),
+            "a wider canvas is a new fit"
+        );
+        assert!(
+            refit_needed(true, Some(size), size),
+            "a new visit refits even at the same size"
+        );
     }
 }

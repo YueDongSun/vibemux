@@ -437,16 +437,24 @@ impl SupervisorApp {
         selected
     }
 
-    /// Route a Collaborate node click into the existing task-detail selection.
-    /// The graph is a second way to reach the same read; it never creates state.
-    fn apply_collaboration_selection(&mut self, selection: collaboration::CollaborationActions) {
-        let Some(task_id) = selection.selected_task_id else {
+    /// Apply the Collaborate page's actions: store the picked view mode and
+    /// route a node click into the existing task-detail selection. The page is
+    /// a second way to reach the same read; it never creates state.
+    fn apply_collaboration_actions(
+        &mut self,
+        context: &egui::Context,
+        actions: collaboration::CollaborationActions,
+    ) {
+        if let Some(mode) = actions.view_mode {
+            collaboration::set_view_mode(context, mode);
+        }
+        let Some(task_id) = actions.selected_task_id else {
             return;
         };
         if !self.select_task(&task_id) {
             return;
         }
-        if let Some(run_id) = selection.selected_run_id
+        if let Some(run_id) = actions.selected_run_id
             && let Ok(mut state) = self.ui_state.lock()
         {
             state.details_selection_mut().selected_run_id = Some(run_id);
@@ -1335,8 +1343,8 @@ impl SupervisorApp {
             if let Some(command) = daemon_click {
                 self.request_daemon(command);
             }
-            if let Some(selection) = collaboration_selection {
-                self.apply_collaboration_selection(selection);
+            if let Some(actions) = collaboration_selection {
+                self.apply_collaboration_actions(ctx, actions);
             }
             self.apply_ask_actions(ask_actions);
             self.route_pending_ask();
@@ -2460,13 +2468,20 @@ mod tests {
             MainPage::Collaborate
         );
 
-        // The list fallback is a real mode, not just a header label: switch it
-        // and assert a row, that row's run line, and its needs-you badge.
+        // The list fallback is a real mode reached through the same action
+        // handler a header click uses, not by poking the stored mode. Assert a
+        // list row, its run line, and its needs-you badge.
         edit_snapshot(&mut app, |snapshot| {
             snapshot.tasks[0].runs[0].state = "failed".to_string();
             snapshot.tasks[0].has_more_runs = true;
         });
-        collaboration::set_view_mode(&context, collaboration::ViewMode::List);
+        app.apply_collaboration_actions(
+            &context,
+            collaboration::CollaborationActions {
+                view_mode: Some(collaboration::ViewMode::List),
+                ..Default::default()
+            },
+        );
         let output = render_again(&context, &mut app, 960.0, 600.0);
         let texts = shape_texts(&output);
         assert!(texts.iter().any(|text| text == "First task"), "{texts:?}");
@@ -2479,6 +2494,13 @@ mod tests {
         assert!(texts.iter().any(|text| text == "Needs you"), "{texts:?}");
         assert!(
             texts
+                .iter()
+                .any(|text| text == "Some tasks show only the most recent runs."),
+            "{texts:?}"
+        );
+        // A per-task flag is not a claim that every task is truncated.
+        assert!(
+            !texts
                 .iter()
                 .any(|text| text == "Showing the 12 most recent Runs."),
             "{texts:?}"
@@ -2511,10 +2533,14 @@ mod tests {
                 ..RunView::default()
             });
         });
-        app.apply_collaboration_selection(collaboration::CollaborationActions {
-            selected_task_id: Some("task_1".to_string()),
-            selected_run_id: Some("run_2".to_string()),
-        });
+        app.apply_collaboration_actions(
+            &egui::Context::default(),
+            collaboration::CollaborationActions {
+                selected_task_id: Some("task_1".to_string()),
+                selected_run_id: Some("run_2".to_string()),
+                ..Default::default()
+            },
+        );
         {
             let state = app.ui_state.lock().expect("ui state");
             assert!(state.details_open());
